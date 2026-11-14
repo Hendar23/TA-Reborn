@@ -675,3 +675,57 @@ fn native_shift_giving_a_queued_reclaim_or_move_again_takes_it_back() {
     assert!(moves_of(&game, commander).is_empty() && moves_of(&game, builder).is_empty(), "the group's move taken back together: {:?} {:?}", moves_of(&game, commander), moves_of(&game, builder));
     println!("native take-back: reclaim and move passed");
 }
+
+#[test]
+#[ignore = "needs installed Total Annihilation data and a Windows graphics adapter"]
+#[allow(deprecated)]
+fn native_a_right_click_gives_its_order_and_only_a_drag_turns_the_view() {
+    let install = ta_vfs::install::discover(None).expect("Total Annihilation install");
+    let mut vfs = ta_vfs::Vfs::new();
+    vfs.mount_game_dir(&install.root, "base").unwrap();
+    let event_loop = winit::event_loop::EventLoop::builder().with_any_thread(true).build().unwrap();
+    let window = Arc::new(event_loop.create_window(winit::window::Window::default_attributes()
+        .with_visible(false).with_inner_size(winit::dpi::PhysicalSize::new(1024, 768))).unwrap());
+    let mut renderer = Renderer::new(window, 1024, 768).unwrap();
+    let assets = Assets::load(Arc::new(vfs), Default::default(), &mut renderer, None, None, &Default::default()).unwrap();
+    let mut game = Game::new(&assets, &mut renderer, &GameSetup::duel("Coast To Coast")).unwrap();
+    game.order_button = ta_config::OrderButton::Right;
+    let commander = game.local_commander().unwrap();
+    let origin = Vec3::from_array(game.sim.unit(commander).unwrap().pos.to_f32());
+    let mut camera = Camera::new(Vec2::new(1024.0, 768.0));
+    camera.focus = origin;
+    let mut input = Input::default();
+    input.mouse = Vec2::new(500.0, 400.0);
+    game.selection = vec![commander];
+    game.cursor_override = Some(origin + Vec3::new(-160.0, 0.0, 96.0));
+    let right = |input: &mut Input, state| input.on_event(&WindowEvent::MouseInput { device_id: DeviceId::dummy(), state, button: MouseButton::Right }, false, false);
+    let frame = |game: &mut Game, input: &mut Input| {
+        game.handle_input(input, &camera, &renderer, false);
+        input.end_frame();
+    };
+    // A click whose pointer shakes by 4 px: its order, the view never turning.
+    let count = game.commands.len();
+    right(&mut input, ElementState::Pressed);
+    frame(&mut game, &mut input);
+    input.mouse.x += 4.0;
+    frame(&mut game, &mut input);
+    assert!(!game.right_dragging(), "a click's few pixels do not turn the view");
+    right(&mut input, ElementState::Released);
+    frame(&mut game, &mut input);
+    assert!(game.commands.len() > count && matches!(game.commands.last(), Some(Command::Order { order: Order::Move(_), .. })), "the click's order: {:?}", game.commands.last());
+    // A drag of 40 px: the view turns, and even let go where it began, it gives no order.
+    let count = game.commands.len();
+    right(&mut input, ElementState::Pressed);
+    frame(&mut game, &mut input);
+    input.mouse.x += 40.0;
+    frame(&mut game, &mut input);
+    assert!(game.right_dragging(), "a drag turns the view");
+    input.mouse.x -= 40.0;
+    frame(&mut game, &mut input);
+    assert!(game.right_dragging(), "still a drag, back where it began");
+    right(&mut input, ElementState::Released);
+    frame(&mut game, &mut input);
+    assert!(!game.right_dragging());
+    assert_eq!(game.commands.len(), count, "a drag gives no order");
+    println!("native right button: a click orders, a drag turns the view");
+}

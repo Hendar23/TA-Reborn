@@ -4239,7 +4239,7 @@ impl State {
         // (Ctrl+right-drag draws a formation when the right button gives orders.)
         let right_orders = self.game.order_button == ta_config::OrderButton::Right;
         let drawing = self.photo.is_none() && (self.game.formation.is_some() || right_orders && input.modifiers.control_key() && !self.game.selection.is_empty());
-        let orbiting = input.button_held(MouseButtonId::Right) && !drawing && self.game.radial.is_none() || (input.button_held(MouseButtonId::Middle) && input.modifiers.alt_key());
+        let orbiting = input.button_held(MouseButtonId::Right) && self.game.right_dragging() && !drawing && self.game.radial.is_none() || (input.button_held(MouseButtonId::Middle) && input.modifiers.alt_key());
         if orbiting && cam.mode == CameraMode::Perspective {
             cam.yaw += input.mouse_delta.x * 0.006;
             cam.pitch = (cam.pitch - input.mouse_delta.y * 0.004).clamp(min_pitch, max_pitch);
