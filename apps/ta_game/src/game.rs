@@ -10,12 +10,11 @@ use ta_render::{Camera, DrawInstance, Renderer};
 use ta_sim::{Command, Fx, FxVec3, Order, PlayerSetup, Seen, Sim, SimEvent, Unit, UnitId};
 use winit::keyboard::KeyCode;
 
-use crate::input::{Input, MouseButtonId};
+use crate::input::{DRAG_THRESHOLD, Input, MouseButtonId};
 use crate::scene::Scene;
 use crate::setup::{Assets, Controller, GameSetup};
 
 pub const TICK_SECONDS: f32 = 1.0 / 30.0;
-const DRAG_THRESHOLD: f32 = 6.0;
 
 /// Index thrown model pieces once per tick, including the unit generation so a reused
 /// simulation slot cannot contribute debris to a different unit's remains.
@@ -501,10 +500,6 @@ pub struct Game {
     accumulator: f32,
     drag_start: Option<Vec2>,
     right_press: Option<Vec2>,
-    /// The right button, held, has gone further than a click's few pixels from where it went
-    /// down: a drag (the 3D view turning, `right_dragging`), never a click's order when it comes
-    /// up, even back where it started.
-    right_dragged: bool,
     /// Ctrl+drag with the order button: the ground path of a formation move being drawn.
     pub formation: Option<Vec<Vec3>>,
     /// Spectators (replays, attract mode): whose fog of war to see through (None = all).
@@ -895,7 +890,6 @@ impl Game {
             accumulator: 0.0,
             drag_start: None,
             right_press: None,
-            right_dragged: false,
             formation: None,
             view_as: None,
             drag_rect: None,
@@ -2427,20 +2421,12 @@ impl Game {
         // units, where the click would not give an order, it opens the unit's radial menu
         // (`radial.rs`: nothing selected, or the unit in the selection, or always with left-button
         // orders; never when the setting keeps the menu to a hold); so does holding the button
-        // there, the pointer still, in every case. A right-drag orbits the camera instead: once it
-        // has gone further than a click's few pixels, so that a click giving an order never turns
-        // the view (players giving orders with the right button found every click turned it a
-        // little), and a drag is never a click.
+        // there, the pointer still, in every case. A right-drag orbits the camera instead
+        // (`Input::right_dragged`: once it has gone further than a click's few pixels, so a click
+        // giving an order never turns the view), and a drag is never a click.
         if input.button_pressed(MouseButtonId::Right) {
             self.right_press = Some(mouse);
             self.right_held_since = Some(std::time::Instant::now());
-            self.right_dragged = false;
-        }
-        if let Some(at) = self.right_press
-            && input.button_held(MouseButtonId::Right)
-            && (at - mouse).length() >= DRAG_THRESHOLD
-        {
-            self.right_dragged = true;
         }
         if let (Some(at), Some(since)) = (self.right_press, self.right_held_since)
             && input.button_held(MouseButtonId::Right)
@@ -2457,7 +2443,7 @@ impl Game {
         }
         let right_click = input.button_released(MouseButtonId::Right)
             && self.right_press.take().is_some_and(|p| (p - mouse).length() < DRAG_THRESHOLD)
-            && !self.right_dragged;
+            && !input.right_dragged();
         if input.button_released(MouseButtonId::Right) {
             self.right_held_since = None;
         }
@@ -2605,12 +2591,6 @@ impl Game {
                 self.voices.push((first, ta_audio::SoundEvent::Ok));
             }
         }
-    }
-
-    /// The right button is down and dragged past a click's few pixels: the 3D view turns with it
-    /// (`App::update_camera`); within them, a click's order, the view still.
-    pub(crate) fn right_dragging(&self) -> bool {
-        self.right_dragged && self.right_press.is_some()
     }
 
     /// The order a click with the order button on `target` gives the selection, by what it is

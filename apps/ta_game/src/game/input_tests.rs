@@ -708,8 +708,8 @@ fn native_a_right_click_gives_its_order_and_only_a_drag_turns_the_view() {
     right(&mut input, ElementState::Pressed);
     frame(&mut game, &mut input);
     input.mouse.x += 4.0;
+    assert!(!input.right_dragging(), "a click's few pixels do not turn the view");
     frame(&mut game, &mut input);
-    assert!(!game.right_dragging(), "a click's few pixels do not turn the view");
     right(&mut input, ElementState::Released);
     frame(&mut game, &mut input);
     assert!(game.commands.len() > count && matches!(game.commands.last(), Some(Command::Order { order: Order::Move(_), .. })), "the click's order: {:?}", game.commands.last());
@@ -718,14 +718,14 @@ fn native_a_right_click_gives_its_order_and_only_a_drag_turns_the_view() {
     right(&mut input, ElementState::Pressed);
     frame(&mut game, &mut input);
     input.mouse.x += 40.0;
+    assert!(input.right_dragging(), "a drag turns the view");
     frame(&mut game, &mut input);
-    assert!(game.right_dragging(), "a drag turns the view");
     input.mouse.x -= 40.0;
+    assert!(input.right_dragging(), "still a drag, back where it began");
     frame(&mut game, &mut input);
-    assert!(game.right_dragging(), "still a drag, back where it began");
     right(&mut input, ElementState::Released);
+    assert!(!input.right_dragging());
     frame(&mut game, &mut input);
-    assert!(!game.right_dragging());
     assert_eq!(game.commands.len(), count, "a drag gives no order");
     println!("native right button: a click orders, a drag turns the view");
 }
