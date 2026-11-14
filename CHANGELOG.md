@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 1.0.6 — 2026-11-15
+
+NVIDIA's graphics driver has more room on the game's main thread, after crashes on some cards, and
+with orders on the right button a click no longer turns the 3D view. Orders on the minimap aim at
+the units marked there, Shift and a click on a queued reclaim or move takes it back, and the economy
+shows by how much you outspend your income. Reclaiming, the D-gun, fire at will and capturing work
+more as they do in TA, and edge scrolling keeps working once a battle has loaded.
 
 ### Added
 - Shift and a click on an order already queued takes it back, as a building put down again on
