@@ -964,7 +964,9 @@ impl App {
         let (tx, result) = std::sync::mpsc::channel();
         let (status, progress) = std::sync::mpsc::channel();
         let (ballast_device, ballast_queue, battle) = (host_device.clone(), host_queue.clone(), self.state.is_some());
-        std::thread::Builder::new().name("battlefield-loader".into()).spawn(move || {
+        // (It builds the battlefield's pipelines: the graphics driver compiles their shaders on
+        // it, with the room the main thread has, `build.rs`, not a thread's usual 2 MiB.)
+        std::thread::Builder::new().name("battlefield-loader".into()).stack_size(16 << 20).spawn(move || {
             let refused = ta_render::out_of_memory_events();
             hold_ballast(&ballast_device, &ballast_queue, battle, true);
             let loaded = work(status);
