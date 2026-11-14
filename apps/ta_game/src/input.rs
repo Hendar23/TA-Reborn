@@ -6,6 +6,10 @@ use glam::Vec2;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 
+/// How far (window pixels) a held button may move from where it went down and still make a
+/// click, not a drag.
+pub const DRAG_THRESHOLD: f32 = 6.0;
+
 #[derive(Default)]
 pub struct Input {
     held: HashSet<KeyCode>,
@@ -40,6 +44,10 @@ pub struct Input {
     /// when it leaves).
     pub cursor_inside: bool,
     pad_actions: HashSet<&'static str>,
+    /// Where the right button last went down (the pointer as that frame ended), and whether it
+    /// has since gone, held, further than a click's few pixels from there (`right_dragged`).
+    right_down: Option<Vec2>,
+    right_drag: bool,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -210,6 +218,23 @@ impl Input {
         self.buttons_released.contains(&b)
     }
 
+    /// The right button, since it last went down, has gone further than a click's few pixels
+    /// (`DRAG_THRESHOLD`) from where it did: a drag, which turns the 3D view
+    /// (`App::update_camera`) and never gives a click's order when the button comes up, even
+    /// back where it began (players giving orders with the right button found every click
+    /// turned the view a little). Kept here, not by the battle, so that every view whose camera
+    /// turns sees it (photo mode and the map editor too, which take no orders). Never in the
+    /// frame the button goes down.
+    pub fn right_dragged(&self) -> bool {
+        !self.buttons_pressed.contains(&MouseButtonId::Right)
+            && (self.right_drag || self.right_down.is_some_and(|at| (self.mouse - at).length() >= DRAG_THRESHOLD))
+    }
+
+    /// The right button is held and dragged (`right_dragged`): the 3D view turns with it.
+    pub fn right_dragging(&self) -> bool {
+        self.button_held(MouseButtonId::Right) && self.right_dragged()
+    }
+
     /// Modifiers when this button was pressed/released, falling back to the current
     /// state for held gestures and scripted input that directly supplies button edges.
     pub fn button_pressed_modifiers(&self, b: MouseButtonId) -> ModifiersState {
@@ -302,6 +327,15 @@ impl Input {
 
     /// Clears per-frame edge state; call at the end of each frame.
     pub fn end_frame(&mut self) {
+        // (The right button's drag, `right_dragged`: where it went down, and whether it has gone
+        // far enough from there, as the frames saw the pointer: scripted input moves it without
+        // window events.)
+        if self.buttons_pressed.contains(&MouseButtonId::Right) {
+            self.right_down = Some(self.mouse);
+            self.right_drag = false;
+        } else if self.right_dragging() {
+            self.right_drag = true;
+        }
         self.claimed.clear();
         self.pad_actions.clear();
         self.pressed.clear();
@@ -443,6 +477,56 @@ mod tests {
         modifiers(&mut input, ModifiersState::CONTROL);
         assert!(plain.pressed(&input), "a later Ctrl press must not change an earlier A");
         assert!(!chord.pressed(&input));
+    }
+
+    #[test]
+    fn only_a_right_drag_past_a_clicks_few_pixels_turns_the_view() {
+        let mut input = Input { mouse: Vec2::new(500.0, 400.0), ..Default::default() };
+        let moved = |input: &mut Input, x: f32| {
+            let p = PhysicalPosition::new(f64::from(x), 400.0);
+            input.on_event(&WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: p }, false, false);
+        };
+        // A click whose pointer shakes by 4 px: never a drag, not even as it comes up.
+        mouse_event(&mut input, MouseButton::Right, ElementState::Pressed, false);
+        assert!(!input.right_dragging(), "not in the frame it goes down");
+        input.end_frame();
+        moved(&mut input, 504.0);
+        assert!(!input.right_dragging(), "a click's few pixels do not turn the view");
+        input.end_frame();
+        mouse_event(&mut input, MouseButton::Right, ElementState::Released, false);
+        assert!(input.button_released(MouseButtonId::Right) && !input.right_dragged(), "a click");
+        input.end_frame();
+        // A drag of 40 px: dragging, and still a drag back where it began and as it comes up.
+        mouse_event(&mut input, MouseButton::Right, ElementState::Pressed, false);
+        assert!(!input.right_dragging(), "a new press starts afresh");
+        input.end_frame();
+        moved(&mut input, 544.0);
+        assert!(input.right_dragging(), "a drag turns the view");
+        input.end_frame();
+        moved(&mut input, 504.0);
+        assert!(input.right_dragging(), "still a drag, back where it began");
+        input.end_frame();
+        mouse_event(&mut input, MouseButton::Right, ElementState::Released, false);
+        assert!(input.right_dragged() && !input.right_dragging(), "a drag's release: no click, and the view still");
+        input.end_frame();
+        // Moved and let go between two frames: a drag all the same.
+        mouse_event(&mut input, MouseButton::Right, ElementState::Pressed, false);
+        input.end_frame();
+        moved(&mut input, 560.0);
+        mouse_event(&mut input, MouseButton::Right, ElementState::Released, false);
+        assert!(input.right_dragged(), "let go far from where it went down");
+        input.end_frame();
+        // A scripted click, down and up in one frame, wherever the pointer was set: a click.
+        input.mouse = Vec2::new(100.0, 100.0);
+        input.buttons_pressed.insert(MouseButtonId::Right);
+        input.buttons_released.insert(MouseButtonId::Right);
+        assert!(!input.right_dragged(), "a click in one frame");
+        input.end_frame();
+        // The left button never drags the view round.
+        mouse_event(&mut input, MouseButton::Left, ElementState::Pressed, false);
+        input.end_frame();
+        moved(&mut input, 700.0);
+        assert!(!input.right_dragging());
     }
 
     #[test]

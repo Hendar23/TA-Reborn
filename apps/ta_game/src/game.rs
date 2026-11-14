@@ -10,12 +10,11 @@ use ta_render::{Camera, DrawInstance, Renderer};
 use ta_sim::{Command, Fx, FxVec3, Order, PlayerSetup, Seen, Sim, SimEvent, Unit, UnitId};
 use winit::keyboard::KeyCode;
 
-use crate::input::{Input, MouseButtonId};
+use crate::input::{DRAG_THRESHOLD, Input, MouseButtonId};
 use crate::scene::Scene;
 use crate::setup::{Assets, Controller, GameSetup};
 
 pub const TICK_SECONDS: f32 = 1.0 / 30.0;
-const DRAG_THRESHOLD: f32 = 6.0;
 
 /// Index thrown model pieces once per tick, including the unit generation so a reused
 /// simulation slot cannot contribute debris to a different unit's remains.
@@ -2422,7 +2421,9 @@ impl Game {
         // units, where the click would not give an order, it opens the unit's radial menu
         // (`radial.rs`: nothing selected, or the unit in the selection, or always with left-button
         // orders; never when the setting keeps the menu to a hold); so does holding the button
-        // there, the pointer still, in every case. A right-drag orbits the camera instead.
+        // there, the pointer still, in every case. A right-drag orbits the camera instead
+        // (`Input::right_dragged`: once it has gone further than a click's few pixels, so a click
+        // giving an order never turns the view), and a drag is never a click.
         if input.button_pressed(MouseButtonId::Right) {
             self.right_press = Some(mouse);
             self.right_held_since = Some(std::time::Instant::now());
@@ -2441,7 +2442,8 @@ impl Game {
             return;
         }
         let right_click = input.button_released(MouseButtonId::Right)
-            && self.right_press.take().is_some_and(|p| (p - mouse).length() < DRAG_THRESHOLD);
+            && self.right_press.take().is_some_and(|p| (p - mouse).length() < DRAG_THRESHOLD)
+            && !input.right_dragged();
         if input.button_released(MouseButtonId::Right) {
             self.right_held_since = None;
         }

@@ -33,6 +33,9 @@
   every unit within its area of effect of its way (sparing those beside the Commander as it
   fires) and the trees, rocks and wrecks in its path; trees catch fire as often as TA's weapon
   file says.
+- With orders on the right button, a right-click in the 3D view gave its order and turned the
+  view a little as well, whenever the pointer shook. The view now turns only once a right-drag
+  has gone further than a click's few pixels, and such a drag never gives an order.
 - Reclaiming paid its metal a little at a time as the work went, so its income came at once and
   reclaiming was worth more than in TA. Now, as in TA, a wreck, rock or tree gives all of its
   metal and energy when it is reclaimed whole, and one of your own units its metal when it is
