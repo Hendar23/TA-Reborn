@@ -40,6 +40,10 @@
 - Capturing the most costly units took far longer than meant: a Commander needed 51 minutes to
   capture the Core's Galactic Gate. Capturing a unit still takes four times its cost in work,
   but never more than two minutes of a Commander's.
+- The game could crash in the graphics driver on some NVIDIA cards ("the graphics driver
+  (nvoglv64.dll) failed", the main thread out of stack): the driver does its work on the
+  game's own threads, and Windows gives a program's main thread little room. The game's main
+  thread and the one that loads a battle now have 16 MiB.
 
 ## 1.0.5 — 2026-11-14
 
