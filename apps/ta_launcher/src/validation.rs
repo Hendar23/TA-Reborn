@@ -414,10 +414,11 @@ fn same_inventory(left: &[ModInfo], right: &[ModInfo]) -> bool {
         // cache/discovery decision instead of silently ignoring the new setting.
         // (Its tags, pictures and links are the library's: a mod whose presentation changed is
         // another to discovery, so that its page shows the new.)
-        let ta_vfs::mods::ModManifest { id, name, version, description, authors, depends, load_after, source, rename, replaces, tags, media, links, theme } = &a.manifest;
+        let ta_vfs::mods::ModManifest { id, name, version, description, authors, depends, load_after, conflicts, requires_reborn, source, rename, replaces, tags, media, links, theme } = &a.manifest;
         a.path == b.path && a.kind == b.kind && id == &b.manifest.id && name == &b.manifest.name
             && version == &b.manifest.version && description == &b.manifest.description && authors == &b.manifest.authors
             && depends == &b.manifest.depends && load_after == &b.manifest.load_after && source == &b.manifest.source
+            && conflicts == &b.manifest.conflicts && requires_reborn == &b.manifest.requires_reborn
             && rename == &b.manifest.rename && replaces == &b.manifest.replaces
             && tags == &b.manifest.tags && media == &b.manifest.media && links == &b.manifest.links && theme == &b.manifest.theme
     }))

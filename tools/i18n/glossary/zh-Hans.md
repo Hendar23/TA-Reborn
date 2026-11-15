@@ -513,3 +513,12 @@ its brackets round the translated words, no spaces: ARM 已损失[[数十亿]], 
 | stamps RECOVERED / BY ORDER OF THE COUNCIL / TRANSMITTED ON ALL BANDS / RESTRICTED / FOR TRAINING USE | 已寻获 / 奉议会之命 / 全频段广播 / 内部资料 / 训练专用 |
 | stamps UNDELIVERED / INTERCEPTED / FLAGGED FOR CORRECTION / SEALED UNTIL NEEDED / CLASSIFIED | 未送达 / 已截获 / 标记待修正 / 必要时启封 / 机密 |
 | FIGHT IT (caption before the campaigns that fight a chapter) | 亲身参战 |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | 简体中文 |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} 不能与 {other} 同时启用：请停用其中一个 / 不能与 {mods} 同时启用 |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} 或更高版本 / 当前为 {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | 需要更高版本的 TA REBORN |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / 此模组可运行的最低 TA Reborn 版本 (not a version: 不是版本号) |

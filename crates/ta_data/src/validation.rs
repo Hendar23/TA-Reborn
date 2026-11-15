@@ -31,8 +31,8 @@ use crate::words::{en, enf, Fill, Words};
 /// engines and how the game plays it, `Report::engine`; 14: a map's own features,
 /// `maps/<map>.features`, checked as definitions and known to its terrain; 15: how a mod presents
 /// itself in the launcher, its pictures, gameplay preview and links, `presentation.*`; 16: its
-/// interface theme, `theme.*`).
-pub const SCHEMA_VERSION: u32 = 16;
+/// interface theme, `theme.*`; 17: a `requires_reborn` that is no version).
+pub const SCHEMA_VERSION: u32 = 17;
 
 /// The keys of `gamedata/sound.tdf`'s categories the game plays (`ta_audio`'s sound events), each
 /// with or without a variant number (`select1`, `select2`…), with `count0` to `count9`; the

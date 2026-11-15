@@ -39,6 +39,14 @@ pub struct ModManifest {
     /// Mods that, if enabled, are loaded before this one.
     #[serde(default, deserialize_with = "lower_case_list")]
     pub load_after: Vec<String>,
+    /// Mods that must not be on with this one (they change the same things in ways that break each
+    /// other): with one of them on too, neither is mounted, as with a mod it needs missing.
+    #[serde(default, deserialize_with = "lower_case_list", skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<String>,
+    /// The oldest TA Reborn the mod plays in (`"1.0.7"`): in an older one it is not mounted, as
+    /// with a mod it needs missing ([`version_older`]).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub requires_reborn: String,
     /// Where the mod came from (its page, e.g. on ModDB), when it was installed from there.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source: String,
@@ -358,6 +366,36 @@ pub enum ModError {
     /// A second mod of an id an earlier folder has (the earlier one is used).
     #[error("duplicate mod id '{id}' in {}: ignored", path.display())]
     Duplicate { id: String, path: PathBuf },
+    /// Two mods on that one of them says must not be on together ([`ModManifest::conflicts`]).
+    #[error("mod '{module}' cannot be on with '{other}'")]
+    Conflict { module: String, other: String },
+    /// A mod on that needs a newer TA Reborn than this ([`ModManifest::requires_reborn`]).
+    #[error("mod '{module}' needs TA Reborn {version} or later")]
+    NeedsNewer { module: String, version: String },
+}
+
+/// This TA Reborn's version, as [`ModManifest::requires_reborn`] is compared with.
+pub const REBORN_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Whether the version `have` is older than `need` (`"1.0.6"` against `"1.0.7"`): their numbers
+/// compared in turn, a missing one 0 (`"1.1"` is `"1.1.0"`), a pre-release's or a build's suffix
+/// left out from its `-` or `+` (`"1.0.7-beta.2"` is `"1.0.7"`), as anything after a number's
+/// digits. None when `need` is no version: then nothing is held back.
+pub fn version_older(have: &str, need: &str) -> Option<bool> {
+    let parts = |v: &str| -> Option<Vec<u64>> {
+        let v = v.trim().trim_start_matches(['v', 'V']);
+        // (Its numbers alone: a suffix's dotted parts, `beta.2`, are none of them.)
+        let v = v.split(['-', '+']).next().unwrap_or_default();
+        if v.is_empty() { return None; }
+        v.split('.').map(|part| {
+            let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse::<u64>().ok()
+        }).collect()
+    };
+    let (have, need) = (parts(have)?, parts(need)?);
+    let at = |v: &[u64], i: usize| v.get(i).copied().unwrap_or(0);
+    let length = have.len().max(need.len());
+    Some((0..length).map(|i| at(&have, i).cmp(&at(&need, i))).find(|o| o.is_ne()) == Some(std::cmp::Ordering::Less))
 }
 
 /// A manifest's place as a player is shown it: its mod's folder and its name (`mymod\mod.toml`).
@@ -976,6 +1014,14 @@ pub fn resolve_load_order<'a>(enabled: &[String], available: &'a [ModInfo]) -> R
                 return Err(ModError::MissingDependency { module: id.clone(), dependency: dep.clone() });
             }
         }
+        // (A mod that says another must not be on with it, the other on; one that needs a newer
+        // TA Reborn than this: neither is mounted, as with a mod it needs missing.)
+        if let Some(other) = m.manifest.conflicts.iter().find(|other| *other != id && enabled_set.contains(other.as_str())) {
+            return Err(ModError::Conflict { module: id.clone(), other: other.clone() });
+        }
+        if version_older(REBORN_VERSION, &m.manifest.requires_reborn) == Some(true) {
+            return Err(ModError::NeedsNewer { module: id.clone(), version: m.manifest.requires_reborn.trim().to_string() });
+        }
     }
 
     // What loads before each mod: its dependencies, then the mods it wishes to follow.
@@ -1232,6 +1278,37 @@ mod tests {
         media.screenshots = (0..20).map(|n| format!("media/{n}.png")).collect();
         assert_eq!(media.shots().count(), MAX_SCREENSHOTS);
         assert_eq!(media.files().count(), MAX_SCREENSHOTS, "no banner, preview or icon");
+    }
+
+    /// Versions are compared number by number, a missing one 0, a suffix left out; a version
+    /// that is none holds nothing back.
+    #[test]
+    fn versions_are_compared_number_by_number() {
+        assert_eq!(version_older("1.0.6", "1.0.7"), Some(true));
+        assert_eq!(version_older("1.0.10", "1.0.9"), Some(false), "10 is after 9");
+        assert_eq!(version_older("1.1", "1.1.0"), Some(false));
+        assert_eq!(version_older("1.0.6", "1.0.6"), Some(false));
+        assert_eq!(version_older("1.0.6", "v1.0.7-beta"), Some(true));
+        assert_eq!(version_older("1.0.6", "1.0.7-beta.preview"), Some(true), "a dotted suffix is no number");
+        assert_eq!(version_older("1.0.6", "1.0.6-beta.1"), Some(false), "the same release, a suffix left out");
+        assert_eq!(version_older("1.0.6", "1.0.7+build.5"), Some(true));
+        assert_eq!(version_older("2.0", "1.9.9"), Some(false));
+        assert_eq!(version_older("1.0.6", ""), None);
+        assert_eq!(version_older("1.0.6", "latest"), None);
+    }
+
+    /// A mod that says another must not be on with it, the other on: neither is mounted; one that
+    /// needs a newer TA Reborn: not mounted either; each told by name.
+    #[test]
+    fn conflicting_mods_and_mods_for_a_newer_reborn_are_not_mounted() {
+        let module = |text: &str| { let manifest: ModManifest = toml::from_str(text).unwrap(); ModInfo { path: PathBuf::from(&manifest.id), manifest, kind: ModKind::Directory } };
+        let mods = [module("id = \"a\"\nname = \"A\"\nconflicts = [\"B\"]"), module("id = \"b\"\nname = \"B\""), module("id = \"c\"\nname = \"C\"")];
+        assert!(matches!(resolve_load_order(&["b".into(), "a".into()], &mods), Err(ModError::Conflict { module, other }) if module == "a" && other == "b"));
+        assert!(resolve_load_order(&["a".into(), "c".into()], &mods).is_ok(), "the other off: fine");
+        let newer = [module("id = \"n\"\nname = \"N\"\nrequires_reborn = \"99.0\"")];
+        assert!(matches!(resolve_load_order(&["n".into()], &newer), Err(ModError::NeedsNewer { module, version }) if module == "n" && version == "99.0"));
+        let older = [module(&format!("id = \"o\"\nname = \"O\"\nrequires_reborn = \"{REBORN_VERSION}\""))];
+        assert!(resolve_load_order(&["o".into()], &older).is_ok(), "this version itself: fine");
     }
 
     /// Only http and https addresses are opened.

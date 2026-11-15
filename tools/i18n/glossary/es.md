@@ -603,3 +603,12 @@ recurso. Delante de o-: «TrueType u OpenType», «.ttf u .otf».
 | a contrast of {ratio}:1 / {least}:1 reads well | un contraste de {ratio}:1 / Con {least}:1 se lee bien |
 | the theme's {key} (una clave del manifiesto) / una clave de color | la entrada {key} del tema / el color {key} |
 | side ([theme.sides.arm]) | bando |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | Español |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} no puede estar activado junto con {other}: desactiva uno de los dos / incompatible con {mods} |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} o posterior / tienes la {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | REQUIERE UN TA REBORN MÁS NUEVO |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / la versión más antigua de TA Reborn en la que funciona el mod |

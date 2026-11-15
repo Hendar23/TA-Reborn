@@ -22,6 +22,12 @@
   mod's theme on its page, and the mod check tells what would not draw as meant. Without a theme
   the HUD is drawn as before, to the pixel. See
   [docs/MODDING.md](docs/MODDING.md#theming-the-interface).
+- A mod's `mod.toml` can name the mods it must not be on with (`conflicts`) and the oldest TA
+  Reborn it plays in (`requires_reborn`): with a conflicting mod on, or in an older TA Reborn, the
+  load order does not resolve, and the launcher and the game say why and what to do (its card
+  shows a red lamp when it needs a newer TA Reborn).
+- `ta-tools mod-new <folder>` makes a new mod's folder: a `mod.toml` naming it, every other key
+  written out and commented, a `media` folder and a read-me of what goes where.
 
 ## 1.0.6 — 2026-11-15
 

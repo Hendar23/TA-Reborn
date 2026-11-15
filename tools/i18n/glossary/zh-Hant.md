@@ -496,3 +496,12 @@ Record: 紀錄 as a noun, 記錄 as a verb.
 
 Mod check (findings): build option 建造選項, wreckage 殘骸, faction 陣營, feature 地物, texture 材質,
 script 腳本, piece 零件, archive 壓縮檔, manifest 資訊清單; lists 「、」「和」「或」.
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | 繁體中文 |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} 無法與 {other} 同時啟用：請停用其中一個 / 無法與 {mods} 同時啟用 |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} 或以上版本 (not 或更新版本: it would sit beside 請更新, update) / 目前為 {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | 需要較新版本的 TA REBORN |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / 此模組可執行的最低 TA Reborn 版本 (not a version: 不是版本號) |

@@ -627,7 +627,9 @@ impl LauncherApp {
             }
         };
         let lamp = if stage.is_some() { Some(SKY) } else if on { Some(GREEN) } else if update.is_some() { Some(AMBER) } else if item.installed { Some(STEEL) } else { None };
-        let check = if !item.installed { None } else {
+        // (A mod that needs a newer TA Reborn than this is not mounted: as grave as errors.)
+        let newer = installed.is_some_and(|entry| ta_vfs::mods::version_older(ta_vfs::mods::REBORN_VERSION, &entry.info.manifest.requires_reborn) == Some(true));
+        let check = if !item.installed { None } else if newer { Some((RED, n("NEEDS A NEWER TA REBORN"))) } else {
             match self.mod_validation.status(&item.id) {
                 crate::validation::ValidationStatus::Ready(ta_data::validation::Status::Errors) => Some((RED, n("ERRORS FOUND"))),
                 _ => None,
@@ -920,6 +922,16 @@ impl LauncherApp {
                 if !manifest.depends.is_empty() {
                     let names: Vec<String> = manifest.depends.iter().map(|id| self.mods.get(id).map_or(id.clone(), |m| m.info.manifest.name.clone())).collect();
                     ui.label(RichText::new(tf("requires {mods}", &[("mods", &names.join(", "))])).color(STEEL));
+                }
+                if !manifest.conflicts.is_empty() {
+                    let names: Vec<String> = manifest.conflicts.iter().map(|id| self.mods.get(id).map_or(id.clone(), |m| m.info.manifest.name.clone())).collect();
+                    ui.label(RichText::new(tf("cannot be on with {mods}", &[("mods", &names.join(", "))])).color(STEEL));
+                }
+                if !manifest.requires_reborn.trim().is_empty() {
+                    let older = ta_vfs::mods::version_older(ta_vfs::mods::REBORN_VERSION, &manifest.requires_reborn) == Some(true);
+                    let words = if older { tf("needs TA Reborn {version} or later: this is {current}", &[("version", &manifest.requires_reborn.trim()), ("current", &ta_vfs::mods::REBORN_VERSION)]) }
+                        else { tf("needs TA Reborn {version} or later", &[("version", &manifest.requires_reborn.trim())]) };
+                    ui.add(egui::Label::new(RichText::new(words).color(if older { RED } else { STEEL })).wrap());
                 }
             }
             (None, None) => {}

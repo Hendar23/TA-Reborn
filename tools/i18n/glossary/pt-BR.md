@@ -554,3 +554,12 @@ and are joined by a comma ("com fonte própria, imagens de fundo nos painéis").
 | contrast of {ratio}:1 / reads well | contraste de {ratio}:1 / a leitura fica boa |
 | a side (in [theme.sides.arm]) | lado ("o lado {side}", "Lados do jogo: {sides}") |
 | TA Reborn's own (colour, font, HUD) | a cor / a fonte / o HUD do próprio TA Reborn |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | Português (Brasil) |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} não pode ficar ativado junto com {other}: desative um dos dois / incompatível com {mods} |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | o TA Reborn {version} ou posterior / a sua versão é {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | REQUER UM TA REBORN MAIS NOVO |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / a versão mais antiga do TA Reborn em que o mod funciona |

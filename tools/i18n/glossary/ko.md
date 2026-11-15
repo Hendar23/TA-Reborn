@@ -605,3 +605,12 @@ its place 옵션 · 인터페이스. {most} (a size limit, "16.0 MB") is followe
 | # and six hexadecimal digits | # 뒤에 16진수 여섯 자리 |
 | side (a theme's, named as sidedata.tdf names it) | 진영 ({side} 진영, 게임의 진영: {sides}) |
 | Off: TA Reborn's own always | 끄면 항상 TA Reborn 고유의 모습으로 표시됩니다 |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | 한국어 |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} 모드는 {other} 모드와 함께 켤 수 없습니다. 둘 중 하나를 끄세요 / 함께 켤 수 없음: {mods} (beside 필요: {mods}; not 충돌, which is a crash here) |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} 이상 (필요) / 현재 {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | TA REBORN 업데이트 필요 |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / 모드가 작동하는 가장 오래된 TA Reborn 버전 |
