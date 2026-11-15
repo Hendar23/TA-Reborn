@@ -378,11 +378,14 @@ pub enum ModError {
 pub const REBORN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Whether the version `have` is older than `need` (`"1.0.6"` against `"1.0.7"`): their numbers
-/// compared in turn, a missing one 0 (`"1.1"` is `"1.1.0"`), anything after a number's digits
-/// (`"1.0.7-beta"`) left out. None when `need` is no version: then nothing is held back.
+/// compared in turn, a missing one 0 (`"1.1"` is `"1.1.0"`), a pre-release's or a build's suffix
+/// left out from its `-` or `+` (`"1.0.7-beta.2"` is `"1.0.7"`), as anything after a number's
+/// digits. None when `need` is no version: then nothing is held back.
 pub fn version_older(have: &str, need: &str) -> Option<bool> {
     let parts = |v: &str| -> Option<Vec<u64>> {
         let v = v.trim().trim_start_matches(['v', 'V']);
+        // (Its numbers alone: a suffix's dotted parts, `beta.2`, are none of them.)
+        let v = v.split(['-', '+']).next().unwrap_or_default();
         if v.is_empty() { return None; }
         v.split('.').map(|part| {
             let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
@@ -1286,6 +1289,9 @@ mod tests {
         assert_eq!(version_older("1.1", "1.1.0"), Some(false));
         assert_eq!(version_older("1.0.6", "1.0.6"), Some(false));
         assert_eq!(version_older("1.0.6", "v1.0.7-beta"), Some(true));
+        assert_eq!(version_older("1.0.6", "1.0.7-beta.preview"), Some(true), "a dotted suffix is no number");
+        assert_eq!(version_older("1.0.6", "1.0.6-beta.1"), Some(false), "the same release, a suffix left out");
+        assert_eq!(version_older("1.0.6", "1.0.7+build.5"), Some(true));
         assert_eq!(version_older("2.0", "1.9.9"), Some(false));
         assert_eq!(version_older("1.0.6", ""), None);
         assert_eq!(version_older("1.0.6", "latest"), None);
