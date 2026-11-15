@@ -156,15 +156,26 @@ fn find(dir: &Path, named: &str, preview: bool, moving: &mut HashMap<String, boo
     let stamp = format!("{}|{}|{time}", path.display(), meta.len());
     let moves = preview && {
         if moving.len() > 256 { moving.clear(); }
-        *moving.entry(stamp.clone()).or_insert_with(|| moves(&path))
+        match moving.get(&stamp) {
+            Some(known) => *known,
+            // (One that cannot be read now, held by another program a moment, is looked at
+            // again the next time it is found: never taken for a still for good.)
+            None => moves(&path).inspect(|known| { moving.insert(stamp.clone(), *known); }).unwrap_or(false),
+        }
     };
     Some(File { path, stamp, moves })
 }
 
 /// Whether the picture at `path` moves: a GIF of two frames or more, read only as far as its
-/// second frame's start (nothing decoded). A still picture, or a GIF of one frame, does not.
-fn moves(path: &Path) -> bool {
-    std::fs::File::open(path).ok().is_some_and(|file| gif_moves(std::io::BufReader::new(file)).unwrap_or(false))
+/// second frame's start (nothing decoded). A still picture, a GIF of one frame or one cut short
+/// does not. None when it cannot be read now (not opened, or a read failing midway).
+fn moves(path: &Path) -> Option<bool> {
+    let file = std::fs::File::open(path).ok()?;
+    match gif_moves(std::io::BufReader::new(file)) {
+        Ok(moves) => Some(moves),
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Some(false),
+        Err(_) => None,
+    }
 }
 
 /// [`moves`] of a GIF's bytes: its blocks walked through to a second image.
@@ -654,6 +665,29 @@ pub fn read_preview(path: &Path, let_go: &dyn Fn() -> bool) -> Result<(Vec<Color
 mod tests {
     use super::*;
 
+    /// A preview another program holds a moment (its size and time read, the file not opened) is
+    /// looked at again the next time it is found, not taken for a still for good: once it can
+    /// be read, it moves.
+    #[cfg(windows)]
+    #[test]
+    fn a_preview_that_cannot_be_read_now_is_looked_at_again() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = std::env::temp_dir().join(format!("ta_mod_media_held_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("media")).unwrap();
+        let path = dir.join("media/p.gif");
+        gif(&path, (8, 8), 2, 10);
+        let mut moving = HashMap::new();
+        {
+            let _held = std::fs::OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
+            let file = find(&dir, "media/p.gif", true, &mut moving).expect("its size and time are read");
+            assert!(!file.moves && moving.is_empty(), "not known while it cannot be read");
+        }
+        let file = find(&dir, "media/p.gif", true, &mut moving).unwrap();
+        assert!(file.moves && moving.len() == 1, "it moves once it can be read");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// An animated GIF of `count` frames of `size`, each `hundredths` of a second, frame `n` a grey
     /// of its own.
     fn gif(path: &Path, size: (u32, u32), count: u32, hundredths: u32) {
@@ -764,8 +798,11 @@ mod tests {
         std::fs::write(path("text.gif"), b"GIF89a, said a text file").unwrap();
         for (name, moving) in [("two.gif", true), ("many.gif", true), ("global_two.gif", true), ("one.gif", false), ("global_one.gif", false),
             ("still.png", false), ("cut.gif", false), ("text.gif", false), ("none.gif", false)] {
-            assert_eq!(moves(&path(name)), moving, "{name}");
+            assert_eq!(moves(&path(name)).unwrap_or(false), moving, "{name}");
         }
+        // (One cut short is known not to move; one not there cannot be read now, and is looked
+        // at again.)
+        assert_eq!((moves(&path("cut.gif")), moves(&path("none.gif"))), (Some(false), None));
         // (The hand-made ones are GIFs the decoder reads: two frames, and one.)
         assert_eq!(read_preview(&path("global_two.gif"), &keep).unwrap().0.len(), 2);
         assert_eq!(read_preview(&path("global_one.gif"), &keep).unwrap().0.len(), 1);

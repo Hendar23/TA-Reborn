@@ -821,14 +821,13 @@ fn is_link(metadata: &std::fs::Metadata) -> bool {
 
 /// The content's fingerprint: the checks' versions and TA Reborn's release (not the launcher's
 /// build: a rebuild that leaves the checks alone keeps every report; a release, whose file readers
-/// and mount rules may read the same files otherwise, checks again), the manifests of `order` and
-/// what they replace of the original game, and every file's digest, but those of the `without`
-/// layer.
-/// The content's fingerprint: `order`'s mods and the files of `snapshot`'s layers (`without`'s
-/// left out). The mod `checked` is fingerprinted whole (its manifest, its pictures' and its
-/// theme's files: its presentation is checked); the others by what decides what the game reads
-/// with them (their ids, their order, their renames and what they replace): their names, their
-/// pictures and their themes change no finding.
+/// and mount rules may read the same files otherwise, checks again), `order`'s mods and what they
+/// replace of the original game, and every file's digest of `snapshot`'s layers, but those of the
+/// `without` layer. The mod `checked` is fingerprinted whole (its manifest, read and as written,
+/// and its pictures' and its theme's files: its presentation and its manifest's keys are
+/// checked); the others by what decides what the game reads with them (their ids, their order,
+/// their renames and what they replace): their names, their pictures and their themes change no
+/// finding.
 fn fingerprint(snapshot: &Snapshot, order: &[&ModInfo], memo: &DigestMemo, cancel: &AtomicBool, without: Option<&str>, checked: Option<&str>) -> Result<String, String> {
     let mut hash = Sha256::new();
     hash.update(format!("{}:{}:{}", CACHE_VERSION, validation::SCHEMA_VERSION, env!("CARGO_PKG_VERSION")));
@@ -841,9 +840,13 @@ fn fingerprint(snapshot: &Snapshot, order: &[&ModInfo], memo: &DigestMemo, cance
         // install's archives of those names were left out is not this mod's as mounted now.
         let replaced = ta_vfs::mods::replaced_claims(module);
         if !replaced.is_empty() { hash.update(serde_json::to_vec(&replaced).map_err(|e| e.to_string())?); }
-        // Its pictures and its theme's files as they are now (they are checked): one changed is
-        // another report.
+        // Its manifest as written (what it holds that is read otherwise than written, a key
+        // misplaced and its line, is checked, and leaves it read the same), and its pictures and
+        // its theme's files as they are now (they are checked): one changed is another report.
         if whole && module.kind == ModKind::Directory {
+            let text = std::fs::read(ta_vfs::mods::manifest_path(&module.path)).unwrap_or_default();
+            hash.update(format!("mod.toml:{}:", text.len()));
+            hash.update(&text);
             for named in module.manifest.media.files().chain(module.manifest.theme.files()) {
                 let stamp = ta_vfs::mods::media_path(&module.path, named).and_then(|path| std::fs::metadata(path).ok())
                     .map(|meta| (meta.len(), meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |t| t.as_nanos())));
@@ -1277,6 +1280,16 @@ mod tests {
         renamed[0].manifest.rename.insert("art".into(), "anims".into());
         let renamed = prints(&renamed);
         assert!(renamed.0 != after.0 && renamed.1 != after.1, "what decides what the game reads changes both");
+        // The mod's own manifest as written (a key read past, the line a key is on) is checked:
+        // another text, read the same, is another check. A dependency's is not.
+        std::fs::write(dir.0.join("target/mod.toml"), "id = \"target\"\nname = \"target\"\n").unwrap();
+        let read_same = prints(&modules("media/banner.png", "one"));
+        std::fs::write(dir.0.join("target/mod.toml"), "id = \"target\"\nname = \"target\"\ndependss = [\"dep\"]\n").unwrap();
+        assert_ne!(prints(&modules("media/banner.png", "one")).0, read_same.0, "the mod's own manifest as written");
+        std::fs::write(dir.0.join("dep/mod.toml"), "id = \"dep\"\nname = \"dep\"\nhomepage = \"x\"\n").unwrap();
+        let with_dep_text = prints(&modules("media/banner.png", "one"));
+        std::fs::write(dir.0.join("dep/mod.toml"), "id = \"dep\"\nname = \"dep\"\n").unwrap();
+        assert_eq!(prints(&modules("media/banner.png", "one")), with_dep_text, "a dependency's manifest text");
     }
 
     #[test]

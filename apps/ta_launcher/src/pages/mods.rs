@@ -1117,10 +1117,11 @@ impl LauncherApp {
         let mut arrows = false;
         if on_top {
             ctx.input_mut(|input| {
+                // (Seen before they are taken: egui moves the focus with them otherwise, ← and → too.)
+                arrows = input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::ArrowUp | egui::Key::ArrowDown | egui::Key::ArrowLeft | egui::Key::ArrowRight, pressed: true, .. }));
                 close |= input.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
                 if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft) { step -= 1; }
                 if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight) { step += 1; }
-                arrows = input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::ArrowUp | egui::Key::ArrowDown | egui::Key::ArrowLeft | egui::Key::ArrowRight, pressed: true, .. }));
             });
         }
         let screen = ctx.content_rect();
@@ -1787,6 +1788,17 @@ mod tests {
         assert_eq!((focused.as_deref(), after.as_deref()), (Some("Close"), Some("Close")), "the keys not moved by the arrows");
         whole_frame(&ctx, &mut app, vec![key(egui::Key::ArrowDown, egui::Modifiers::NONE)]);
         assert_eq!(whole_frame(&ctx, &mut app, Vec::new()).1.as_deref(), Some("Close"), "nor by the arrows up and down");
+        // With the keys on Next, ← steps back and they stay on Next: egui's own move to the button
+        // on its left is cancelled for ← and → too, which the screenshots take.
+        for _ in 0..4 {
+            if whole_frame(&ctx, &mut app, Vec::new()).1.as_deref() == Some("Next") { break; }
+            whole_frame(&ctx, &mut app, vec![key(egui::Key::Tab, egui::Modifiers::NONE)]);
+        }
+        assert_eq!(whole_frame(&ctx, &mut app, Vec::new()).1.as_deref(), Some("Next"));
+        let (_, focused) = whole_frame(&ctx, &mut app, vec![key(egui::Key::ArrowLeft, egui::Modifiers::NONE)]);
+        let (_, after) = whole_frame(&ctx, &mut app, Vec::new());
+        assert_eq!(app.mod_lightbox.as_ref().map(|lightbox| lightbox.index), Some(1), "stepped back");
+        assert_eq!((focused.as_deref(), after.as_deref()), (Some("Next"), Some("Next")), "the keys not moved by ←");
         // The page's keys are not taken under it.
         whole_frame(&ctx, &mut app, vec![key(egui::Key::F, egui::Modifiers::COMMAND)]);
         assert!(!ctx.memory(|memory| memory.has_focus(Id::new("mod_library_search"))), "Ctrl+F finds nothing behind it");
