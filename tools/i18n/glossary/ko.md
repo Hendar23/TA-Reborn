@@ -632,3 +632,24 @@ manifest key is {key} 항목, and mod.toml takes a noun before a particle that d
 | need each other in a circle / nest more than 64 deep (dependencies) | 순환하며 서로를 필요로 하다 / 64단계보다 깊게 중첩 (의존 관계) |
 | plates (the HUD's, panel_texture tiled on them; beside 패널, the panels' colour) / the side's own metal plates | 판 (판에 깔린 이미지) / 진영 고유의 금속판 |
 | TURN OFF {name} / STOP PREVIEW (beside ENABLE {name}, PLAY PREVIEW) | {name} 끄기 / 미리 보기 정지 |
+
+## The launcher's QA fixes: a damaged service record, unreadable profiles, skins, errors (`profile_page.rs`, `profiles.rs`, `play.rs`, `skins.rs`, `http.rs`, `widgets.rs`)
+
+Reasons inserted after "…: {error}" or {why} are polite sentences without a full stop (서버에 연결할 수
+없습니다); a code goes in brackets, so no particle follows it (서버가 오류로 응답했습니다 (오류 {code}),
+{module}에서 예외가 발생했습니다 (코드 {code})). Shortcut key names stay as keyboards print them (Alt,
+Ctrl, Shift, Cmd, Option, Enter, Esc, Tab, Home, End). Launcher pages are 탭 (플레이 탭, 프로필 탭, 맵 탭).
+
+| English | 한국어 |
+|---|---|
+| START A FRESH CAREER / PUT IT RIGHT | 전적 새로 시작 / 바로잡기 |
+| set aside (the damaged record kept in the profile folder) / career file (career.toml) | 따로 보관 / 전적 파일 |
+| unreadable profile, PROFILES THAT CANNOT BE READ / MOVE TO RECYCLE BIN | 읽을 수 없는 프로필 / 휴지통으로 이동 |
+| SERVICE RECORD UNREADABLE / CAREER NEEDS ATTENTION (the Play page's title) | 복무 기록을 읽을 수 없음 / 전적 확인 필요 |
+| YOURS AND ALLIES / ENEMY UNITS / YOUR SKINS (filter) / KEEP BOTH (an id already installed) | 아군과 동맹 / 적 유닛 / 내 스킨 / 둘 다 유지 |
+| Hue / Saturation and brightness (the skin editor's colour picker) | 색조 (not 색상: that is colour) / 채도와 밝기 |
+| screen-reader marks OK / Not present / Error | 정상 / 없음 / 오류 |
+| RUNNING (the PLAY button while the game runs) | 실행 중 |
+| SHOW {count} MORE / SHOW THE LATEST TEN | 나머지 {count}개 보기 / 최근 10개만 보기 |
+| LEGAL / THE PROJECT (About page headings) / MUSIC OPTIONS | 법적 고지 / 프로젝트 / 음악 옵션 |
+| the launcher crashed | 런처가 충돌했습니다 |

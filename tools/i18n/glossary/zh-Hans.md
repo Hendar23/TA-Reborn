@@ -538,3 +538,24 @@ stay as they are. {found} and {expected} hold Chinese words, so no space around 
 | need each other in a circle / nest more than 64 deep (dependencies) | 互相需要、形成循环 / 嵌套超过 64 层（依赖关系） |
 | plates (the HUD's, panel_texture tiled on them; beside 面板, the panels' colour) / the side's own metal plates | 底板（底板图片） / 阵营自己的金属底板 |
 | TURN OFF {name} / STOP PREVIEW (beside 启用 {name}, 播放预览) | 停用 {name} / 停止预览 |
+
+## The launcher's QA fixes: a damaged service record, unreadable profiles, skins, errors (`profile_page.rs`, `profiles.rs`, `play.rs`, `skins.rs`, `http.rs`, `widgets.rs`)
+
+Reasons inserted after "……：{error}" or {why} are short clauses without 。 (连接超时, 无法连接到服务器);
+an inner colon becomes a comma (找不到服务器，电脑是否已联网？). Shortcut key names stay as keyboards print
+them (Alt, Ctrl, Shift, Cmd, Option, Enter, Esc, Tab, Home, End).
+
+| English | 简体中文 |
+|---|---|
+| START A FRESH CAREER / PUT IT RIGHT | 开始新的生涯 / 修复问题 |
+| set aside (the damaged record kept in the profile folder) / career file (career.toml) | 另行存放 / 生涯记录文件 |
+| unreadable profile, PROFILES THAT CANNOT BE READ / MOVE TO RECYCLE BIN | 无法读取的档案 / 移至回收站 |
+| SERVICE RECORD UNREADABLE / CAREER NEEDS ATTENTION (the Play page's title) | 战绩无法读取 / 生涯记录需要处理 |
+| YOURS AND ALLIES / ENEMY UNITS / YOUR SKINS (filter) / KEEP BOTH (an id already installed) | 己方和盟友 / 敌方单位 / 我的皮肤 / 两者都保留 |
+| Hue / Saturation and brightness (the skin editor's colour picker) | 色相 / 饱和度和亮度 |
+| screen-reader marks OK / Not present / Error | 正常 / 不存在 / 错误 |
+| RUNNING (the PLAY button while the game runs) | 运行中 |
+| SHOW {count} MORE / SHOW THE LATEST TEN | 显示其余 {count} 条 / 只显示最近 10 条 |
+| LEGAL / THE PROJECT (About page headings) / MUSIC OPTIONS | 法律信息 / 本项目 / 音乐选项 |
+| a Supreme Commander map's scenario file | 场景文件 (TA Reborn's scenarios stay 剧本) |
+| proxy / redirect / the launcher crashed | 代理服务器 / 重定向 / 启动器崩溃 |

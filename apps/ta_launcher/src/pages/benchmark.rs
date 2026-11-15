@@ -127,6 +127,7 @@ fn work_axis(samples: &[Sample], gpu_timed: bool) -> (f32, f32) {
 
 impl LauncherApp {
     pub(crate) fn benchmark_page(&mut self, ui: &mut Ui) {
+        let top = ui.cursor().min;
         page_header(ui, "BENCHMARK", "Eight scenes on TA Reborn's own worlds and two tests, measured: scores for this computer, the settings that suit it, and what each effect costs.");
         self.benchmark_hero(ui);
         ui.add_space(14.0);
@@ -228,15 +229,21 @@ impl LauncherApp {
             settings_test(ui, &report, rec.as_ref(), yours);
         });
         ui.add_space(14.0);
+        let mut pick = None;
         if ui.available_width() >= 680.0 {
             widgets::columns(ui, 2, |columns| {
                 system_card(&mut columns[0], &report);
-                self.history_card(&mut columns[1]);
+                pick = self.history_card(&mut columns[1]);
             });
         } else {
             system_card(ui, &report);
             ui.add_space(14.0);
-            self.history_card(ui);
+            pick = self.history_card(ui);
+        }
+        // (A run picked comes up from the top of the page: its banner, its scores and the rest.)
+        if let Some(i) = pick {
+            self.benchmarks.shown = i;
+            ui.scroll_to_rect(Rect::from_min_size(top, vec2(1.0, 1.0)), Some(Align::Min));
         }
     }
 
@@ -533,18 +540,24 @@ impl LauncherApp {
         });
     }
 
-    /// The runs before (newest first): each a click away.
-    fn history_card(&mut self, ui: &mut Ui) {
+    /// The runs before (newest first): each a click away (by the keys too), the report it shows
+    /// coming up at the top of the page. The latest ten, and the rest kept on asking.
+    fn history_card(&mut self, ui: &mut Ui) -> Option<usize> {
+        const FIRST: usize = 10;
         let mut pick = None;
         let dir = self.benchmarks.dir.clone();
+        let all_id = egui::Id::new("launcher_benchmark_all_runs");
+        let mut all = ui.ctx().data(|d| d.get_temp::<bool>(all_id)).unwrap_or(false);
         widgets::card(ui, |ui| {
             widgets::card_title(ui, "EARLIER RUNS");
-            for (i, (_, r)) in self.benchmarks.runs.iter().enumerate().take(10) {
+            let count = self.benchmarks.runs.len();
+            for (i, (_, r)) in self.benchmarks.runs.iter().enumerate().take(if all { count } else { FIRST }) {
                 let shown = i == self.benchmarks.shown;
                 let overall = r.scores().overall;
                 let when = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(r.when);
                 let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::click());
-                let hot = response.hovered();
+                widgets::reveal_focus(ui, &response);
+                let hot = response.hovered() || response.has_focus();
                 let painter = ui.painter();
                 if shown || hot {
                     painter.rect_filled(rect, CornerRadius::same(2), if shown { PANEL_HI } else { Color32::from_white_alpha(8) });
@@ -566,12 +579,24 @@ impl LauncherApp {
                     let galley = painter.layout_job(job);
                     painter.galley(pos2(x, y - galley.size().y / 2.0), galley, color);
                 };
-                left_text(crate::battles::age(when), top, body(13.0), if shown { TEXT_BRIGHT } else { TEXT }, score_rect.min.x);
+                let age = crate::battles::age(when);
+                left_text(age.clone(), top, body(13.0), if shown { TEXT_BRIGHT } else { TEXT }, score_rect.min.x);
                 let run = if r.first() { t("first benchmark") } else if r.mode == Mode::Quick { t("quick run") } else { t("full run") };
                 let detail = format!("{run} · {} × {} · v{}", r.width, r.height, r.version);
                 left_text(detail.clone(), bottom, body(12.0), STEEL, class_rect.min.x);
+                // (Named for a screen reader as it reads: when, the run, its score and class; the
+                // one shown, chosen.)
+                response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, shown, format!("{age}, {detail}: {overall}, {}", tier.name())));
+                widgets::focus_ring(ui, &response, rect);
                 if response.hover_tip(detail).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                     pick = Some(i);
+                }
+            }
+            // (The runs past the first ten, a click away.)
+            if count > FIRST {
+                let label = if all { t("SHOW THE LATEST TEN").to_string() } else { tf("SHOW {count} MORE", &[("count", &(count - FIRST))]) };
+                if ui.link(RichText::new(label).font(strong(11.5)).extra_letter_spacing(ta_ui::i18n::tracking(1.0))).clicked() {
+                    all = !all;
                 }
             }
             ui.add_space(space::S);
@@ -579,9 +604,8 @@ impl LauncherApp {
                 self.push(Action::OpenFolder(dir.clone()));
             }
         });
-        if let Some(i) = pick {
-            self.benchmarks.shown = i;
-        }
+        ui.ctx().data_mut(|d| d.insert_temp(all_id, all));
+        pick
     }
 }
 
@@ -1429,6 +1453,82 @@ mod tests {
                 }
             }
         }
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The earlier runs: each named for a screen reader (when, the run, its score and class; the
+    /// one shown, chosen) and reached by the keys; past the latest ten, the rest a click away; a
+    /// run picked brings its report up from the top of the page.
+    #[test]
+    fn earlier_runs_are_named_all_within_reach_and_bring_their_report_up() {
+        use clap::Parser;
+        use egui::accesskit::{Action as Act, Role, Toggled};
+        use ta_config::benchmark::{LevelRun, Part};
+        let root = std::env::temp_dir().join(format!("ta_launcher_bench_runs_{}", std::process::id()));
+        let config = root.join("config.toml");
+        let args = crate::Args::parse_from(["ta-launcher", "--offline", "--pretend-missing", "--config", config.to_str().unwrap()]);
+        let ctx = egui::Context::default();
+        let mut app = LauncherApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()), args);
+        app.skins.shutdown();
+        app.config.gameplay.reduced_motion = true;
+        let stats = Stats { frames: 1000, fps: 100.0, low1: 80.0, frame_ms: 10.0, ..Default::default() };
+        for n in 0..15u64 {
+            app.benchmarks.runs.push((root.join(format!("run{n}.json")), Report {
+                format: 1, when: 1_790_000_000 - n * 86_400, parts: vec![Part { id: "sapphire".into(), stats, ..Default::default() }],
+                levels: LEVELS.iter().map(|&level| LevelRun { level, stats }).collect(), ..Default::default()
+            }));
+        }
+        ctx.enable_accesskit();
+        let mut time = 0.0;
+        // A frame of the page in a scroll of its own, as the launcher's: the runs named, and how
+        // far down the page is.
+        let mut frame = |app: &mut LauncherApp, events: Vec<egui::Event>, offset: Option<f32>| {
+            time += 0.1;
+            let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1120.0, 700.0))), events, time: Some(time), ..Default::default() };
+            let mut down = 0.0;
+            let mut output = ctx.run_ui(raw, |ui| {
+                let mut area = egui::ScrollArea::vertical().id_salt("benchmark_runs_test").auto_shrink([false, false]);
+                if let Some(offset) = offset { area = area.vertical_scroll_offset(offset); }
+                down = area.show(ui, |ui| app.benchmark_page(ui)).state.offset.y;
+            });
+            output.textures_delta.clear();
+            let nodes = output.platform_output.accesskit_update.map(|tree| tree.nodes).unwrap_or_default();
+            let named: Vec<(String, egui::accesskit::Rect, bool, bool, Role)> = nodes.into_iter().filter_map(|(_, node)| Some((node.label()?.to_string(), node.bounds()?,
+                node.supports_action(Act::Focus), node.toggled() == Some(Toggled::True), node.role()))).collect();
+            (named, down)
+        };
+        let click = |at: egui::Pos2| [vec![egui::Event::PointerMoved(at)],
+            vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() }],
+            vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() }]];
+        // (The runs' rows, from the top of the page down.)
+        let runs = |named: &[(String, egui::accesskit::Rect, bool, bool, Role)]| {
+            let mut rows = named.iter().filter(|n| n.0.contains("first benchmark")).cloned().collect::<Vec<_>>();
+            rows.sort_by(|a, b| a.1.y0.total_cmp(&b.1.y0));
+            rows
+        };
+        // (Down to the foot of the page, where the runs are.)
+        let mut named = frame(&mut app, Vec::new(), Some(100_000.0)).0;
+        for _ in 0..3 { named = frame(&mut app, Vec::new(), None).0; }
+        let listed = runs(&named);
+        assert_eq!(listed.len(), 10, "the latest ten");
+        assert!(listed.iter().all(|n| n.2), "each reached by the keys");
+        let overall = app.benchmarks.runs[0].1.scores().overall;
+        assert!(listed[0].0.ends_with(&format!(": {overall}, {}", Tier::of(overall).name())), "named with its score and class: {:?}", listed[0].0);
+        assert!(listed.iter().all(|n| n.4 == Role::Button));
+        assert!(listed[0].3 && listed[1..].iter().all(|n| !n.3), "the one shown is the chosen one");
+        let more = named.iter().find(|n| n.0 == "SHOW 5 MORE").expect("the rest a click away").1;
+        for events in click(egui::pos2(((more.x0 + more.x1) / 2.0) as f32, ((more.y0 + more.y1) / 2.0) as f32)) { frame(&mut app, events, None); }
+        frame(&mut app, Vec::new(), Some(100_000.0));
+        for _ in 0..3 { named = frame(&mut app, Vec::new(), None).0; }
+        assert_eq!(runs(&named).len(), 15, "all of them, on asking");
+        // (The twelfth picked: its report comes up from the top of the page.)
+        let row = runs(&named)[11].1;
+        let mut down = f32::MAX;
+        for events in click(egui::pos2(((row.x0 + row.x1) / 2.0) as f32, ((row.y0 + row.y1) / 2.0) as f32)) { down = frame(&mut app, events, None).1; }
+        for _ in 0..20 { down = frame(&mut app, Vec::new(), None).1; }
+        assert_eq!(app.benchmarks.shown, 11);
+        assert!(down < 1.0, "the page is back at its top: {down}");
         drop(app);
         let _ = std::fs::remove_dir_all(root);
     }

@@ -4,9 +4,10 @@
 //! disk cache when it was made before.
 
 use ta_ui::tooltip::TooltipExt as _;
-use std::{collections::{HashMap, HashSet, VecDeque}, path::PathBuf, sync::{Arc, Condvar, Mutex, atomic::{AtomicBool, Ordering}}, thread::JoinHandle, time::Duration};
+use std::{collections::{HashMap, HashSet, VecDeque}, path::{Path, PathBuf}, sync::{Arc, Condvar, Mutex, atomic::{AtomicBool, Ordering}}, thread::JoinHandle, time::{Duration, Instant, SystemTime}};
 use egui::{ColorImage, TextureHandle, TextureOptions, Ui};
 use ta_ui::i18n::{t, tf};
+use crate::skin_editor::SharedPack;
 use crate::theme::*;
 use crate::widgets;
 use super::Reference;
@@ -21,13 +22,21 @@ const THUMB_SIDE: u32 = 256;
 const THUMB_KEEP: u32 = 192;
 /// Under a thumbnail (its picture has no alpha on disk): the card's well.
 const WELL: [u8; 3] = [9, 10, 8];
+/// How long a thumbnail no card has shown is kept: off the page, or scrolled out of sight, its
+/// texture is let go (read again from the disk cache when it is wanted again).
+const THUMB_UNUSED: Duration = Duration::from_secs(30);
+/// The thumbnails' disk cache: a picture not used for this many days goes, and past this many
+/// pictures the least recently used do.
+const CACHE_DAYS: u64 = 60;
+const CACHE_FILES: usize = 1000;
 
 /// What the preview paints the units with.
 pub enum Paint {
-    /// An installed or built-in skin, by id.
-    Saved(String),
+    /// An installed or built-in skin: its id, its name as the player knows it, and its files'
+    /// version (`ta_skins::Entry::version`: another, and it is read again).
+    Saved { id: String, name: String, version: u64 },
     /// The editor's skin: its models made again when `revision` changes, its livery painted live.
-    Editing { pack: Arc<ta_skins::Pack>, serial: u64, revision: u64, livery: Option<ta_skins::Livery> },
+    Editing { pack: Arc<SharedPack>, serial: u64, revision: u64, livery: Option<ta_skins::Livery>, name: String },
 }
 
 /// A unit the preview can show.
@@ -46,9 +55,9 @@ pub struct Slot {
 }
 
 /// What a preview shows: the game's data (`source`, as of the library's `revision`), the skin
-/// (an id, or the editor's at its `textures` revision) and the units.
+/// (an id at its files' `version`, or the editor's at its `textures` revision) and the units.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Key { source: String, root: PathBuf, skin: String, revision: u64, textures: u64, units: [String; 2] }
+struct Key { source: String, root: PathBuf, skin: String, revision: u64, textures: u64, version: u64, units: [String; 2] }
 
 impl Key {
     /// The game's data it is made from.
@@ -60,7 +69,7 @@ fn data_key(source: &str, revision: u64) -> String { format!("{source}#{revision
 
 enum Painting {
     Saved,
-    Editing { pack: Arc<ta_skins::Pack>, livery: Option<ta_skins::Livery> },
+    Editing { pack: Arc<SharedPack>, livery: Option<ta_skins::Livery> },
 }
 
 struct Request { key: Key, reference: Reference, yaw: f32, ctx: egui::Context, paint: Painting }
@@ -84,6 +93,8 @@ struct Shared {
     ctx: Mutex<Option<egui::Context>>,
     ready: Condvar,
     stop: AtomicBool,
+    /// The disk cache has been kept in bounds (once a session, before the first thumbnail).
+    pruned: AtomicBool,
     /// The player asked to try again: the worker may open a graphics device again after one
     /// failed (`State::broken`).
     retry: AtomicBool,
@@ -109,15 +120,36 @@ pub struct Preview {
     slots: Vec<Slot>,
     slots_from: Option<Arc<SlotImages>>,
     units: Arc<Vec<UnitChoice>>,
-    thumbs: HashMap<String, TextureHandle>,
+    /// The thumbnails made, each with when a card last showed it.
+    thumbs: HashMap<String, (TextureHandle, Instant)>,
     asked: HashSet<String>,
     failed: HashSet<String>,
 }
 
 impl Preview {
     /// Visibility belongs to this frame. A wide details pane can disappear when
-    /// the library reflows, without another call to `show` to clear the flag.
-    pub fn begin_frame(&mut self) { self.visible = false; }
+    /// the library reflows, without another call to `show` to clear the flag. The thumbnails no
+    /// card has shown for a while are let go (the page left, or scrolled past them).
+    pub fn begin_frame(&mut self) {
+        self.visible = false;
+        self.release_unused(Instant::now());
+    }
+
+    /// Lets go of the thumbnails no card has shown since `now` less [`THUMB_UNUSED`].
+    fn release_unused(&mut self, now: Instant) {
+        let unused: Vec<String> = self.thumbs.iter().filter(|(_, (_, used))| now.saturating_duration_since(*used) >= THUMB_UNUSED).map(|(key, _)| key.clone()).collect();
+        for key in unused {
+            self.thumbs.remove(&key);
+            self.asked.remove(&key);
+        }
+    }
+
+    /// The thumbnails that could not be made are tried again when next wanted (the library looked
+    /// at again).
+    pub fn forget_failures(&mut self) {
+        let failed = std::mem::take(&mut self.failed);
+        self.asked.retain(|key| !failed.contains(key));
+    }
 
     pub fn ready(&self) -> bool { (!self.visible || self.error.is_some() || !self.textures.is_empty()) && self.thumbnails_idle() }
 
@@ -137,14 +169,15 @@ impl Preview {
     #[allow(clippy::too_many_arguments)]
     pub fn show(&mut self, ui: &mut Ui, reference: Reference, root: PathBuf, paint: Paint, revision: u64, units: &[String; 2], height: f32) {
         let source = source_key(&reference);
-        let (skin, painting, textures) = match paint {
-            Paint::Saved(id) => (id, Painting::Saved, 0),
-            Paint::Editing { pack, serial, revision: textures, livery } => {
+        let installed = reference.game_dir.is_some();
+        let (skin, painting, textures, version, spoken) = match paint {
+            Paint::Saved { id, name, version } => (id, Painting::Saved, 0, version, name),
+            Paint::Editing { pack, serial, revision: textures, livery, name } => {
                 if self.livery != livery { self.livery = livery.clone(); self.redraw = true; }
-                (format!("<editing:{serial}>"), Painting::Editing { pack, livery }, textures)
+                (format!("<editing:{serial}>"), Painting::Editing { pack, livery }, textures, 0, name)
             }
         };
-        let key = Key { source, root, skin, revision, textures, units: units.clone() };
+        let key = Key { source, root, skin, revision, textures, version, units: units.clone() };
         if self.key.as_ref() != Some(&key) {
             // (The editor's models made again keep its pictures until the new ones come.)
             let editing = matches!(painting, Painting::Editing { .. }) && self.key.as_ref().is_some_and(|old| old.skin == key.skin);
@@ -205,8 +238,9 @@ impl Preview {
             let galley = painter.layout(message.to_string(), body(14.0), if self.error.is_some() { STEEL } else { CREAM }, (width - 24.0).max(1.0));
             painter.galley(rect.center() - galley.size() / 2.0, galley, CREAM);
         }
-        // Named image: decorative rotation never floods the accessibility live region.
-        let name = tf("Live unit preview: {skin}", &[("skin", &self.key.as_ref().map_or("", |key| key.skin.as_str()))]);
+        // Named image (by the skin's name, not its id): decorative rotation never floods the
+        // accessibility live region.
+        let name = tf("Live unit preview: {skin}", &[("skin", &spoken)]);
         let response = ui.interact(rect, ui.id().with("unit_skin_preview"), egui::Sense::click_and_drag());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, name.clone()));
         // Dragged across, the units turn with the pointer (and stay where they are left); a
@@ -250,16 +284,21 @@ impl Preview {
         }).inner;
         let slider = match slider { Some(slider) => slider, None => { let room = ui.available_width(); angle(ui, room) } }.labelled_by(label);
         if slider.changed() { self.yaw = degrees.to_radians(); self.redraw = true; self.paused = true; }
-        if self.error.is_some() && widgets::text_link(ui, "Retry preview").clicked() { self.retry(); }
+        // (Without the game there is nothing to try again: the message says where to choose it.)
+        if self.error.is_some() && installed && widgets::text_link(ui, "Retry preview").clicked() { self.retry(); }
         if visible && !still && self.error.is_none() { ta_ui::motion::next_frame(ui.ctx(), Duration::from_millis(67)); }
     }
 
-    /// The thumbnail of the skin `id` (`revision`: the library's, bumped when skins change),
-    /// asked for once and made on the worker; none until it is made. Also whether it could not
-    /// be.
-    pub fn thumbnail(&mut self, ctx: &egui::Context, id: &str, revision: u64, root: PathBuf, reference: &Reference, cache: PathBuf) -> (Option<TextureHandle>, bool) {
-        let key = format!("{id}#{revision}");
-        if let Some(texture) = self.thumbs.get(&key) { return (Some(texture.clone()), false); }
+    /// The thumbnail of the skin `id` at its files' `version` (`revision`: the library's game
+    /// data's), asked for once and made on the worker; none until it is made. Also whether it
+    /// could not be.
+    #[allow(clippy::too_many_arguments)]
+    pub fn thumbnail(&mut self, ctx: &egui::Context, id: &str, version: u64, revision: u64, root: PathBuf, reference: &Reference, cache: PathBuf) -> (Option<TextureHandle>, bool) {
+        let key = format!("{id}#{version}#{revision}");
+        if let Some((texture, used)) = self.thumbs.get_mut(&key) {
+            *used = Instant::now();
+            return (Some(texture.clone()), false);
+        }
         if self.failed.contains(&key) { return (None, true); }
         if reference.game_dir.is_none() { return (None, true); }
         if self.asked.insert(key.clone()) {
@@ -273,7 +312,8 @@ impl Preview {
         (None, false)
     }
 
-    /// Takes the thumbnails made since, and forgets those of an older library.
+    /// Takes the thumbnails made since, and forgets those made from the game's data as it was
+    /// before (`revision`: the install or the mods changed).
     pub fn poll_thumbnails(&mut self, ctx: &egui::Context, revision: u64) {
         self.take_thumbnails(ctx);
         let current = format!("#{revision}");
@@ -292,7 +332,7 @@ impl Preview {
         let made = self.shared.as_ref().map(|shared| std::mem::take(&mut *shared.made.lock().unwrap_or_else(|e| e.into_inner()))).unwrap_or_default();
         for (key, picture) in made {
             match picture {
-                Ok(image) => { self.thumbs.insert(key.clone(), ctx.load_texture(format!("skin thumbnail {key}"), image, TextureOptions::LINEAR)); }
+                Ok(image) => { self.thumbs.insert(key.clone(), (ctx.load_texture(format!("skin thumbnail {key}"), image, TextureOptions::LINEAR), Instant::now())); }
                 Err(error) => { log::warn!("skin thumbnail {key}: {error}"); self.failed.insert(key); }
             }
         }
@@ -422,13 +462,14 @@ impl Source {
 }
 
 fn load_source(reference: &Reference, shared: &Shared) -> anyhow::Result<Source> {
-    use anyhow::{Context, ensure};
-    let game_dir = reference.game_dir.as_deref().context("no game installation selected")?;
+    use anyhow::{Context, anyhow, ensure};
+    let game_dir = reference.game_dir.as_deref().context(t("Choose your Total Annihilation installation on PLAY to preview units."))?;
     let mounted = ta_vfs::mods::mount_enabled(Some(game_dir), ta_vfs::builtin_dir().as_deref(), &reference.enabled, &reference.available);
-    mounted.install?;
-    mounted.mods?;
+    mounted.install.map_err(|error| anyhow!(tf("The game's files could not be read: {error}", &[("error", &error)])))?;
+    mounted.mods.map_err(|error| anyhow!(tf("The mods that are on could not be read: {error}", &[("error", &error)])))?;
     let vfs = mounted.vfs;
-    let palette = ta_formats::image::Palette::parse(&vfs.read("palettes/palette.pal")?)?;
+    let palette = vfs.read("palettes/palette.pal").map_err(anyhow::Error::from).and_then(|bytes| Ok(ta_formats::image::Palette::parse(&bytes)?))
+        .map_err(|error| anyhow!(tf("The game's palette could not be read: {error}", &[("error", &error)])))?;
     let mut units = Vec::new();
     for path in vfs.list("units", Some("fbi"), false) {
         ensure!(!shared.stop.load(Ordering::Relaxed), "preview closed");
@@ -443,7 +484,7 @@ fn load_source(reference: &Reference, shared: &Shared) -> anyhow::Result<Source>
         ensure!(!shared.stop.load(Ordering::Relaxed), "preview closed");
         if let Some(data) = vfs.read_opt(&path) && let Ok(gaf) = ta_formats::gaf::Gaf::parse(&data) {
             let size: usize = gaf.entries.iter().flat_map(|e| &e.frames).map(|f| f.image.pixels.len() * 2).sum();
-            budget = budget.checked_sub(size).context("installed textures exceed the preview memory limit")?;
+            budget = budget.checked_sub(size).context(t("The game's textures are too large to preview."))?;
             gafs.push(gaf);
         }
     }
@@ -477,7 +518,7 @@ fn subjects(source: &Source, pack: &ta_skins::Pack, wanted: &[String; 2]) -> any
             let Some(bytes) = source.vfs.read_opt(&path) else { continue };
             let Ok(model) = ta_formats::model3do::Model3do::parse(&bytes) else { continue };
             if model.pieces.iter().all(|p| p.primitives.is_empty()) { continue; }
-            names.push(format!("{} · {}", side, unit.display_name));
+            names.push(format!("{} · {}", t(side), unit.display_name));
             let textures = ta_render::model::paintable_textures(&model, |name| source.frames(name));
             slots.push((unit.name.clone(), unit.display_name.clone(), textures.into_iter().map(|name| { let picture = source.picture(&name); (name, picture) }).collect()));
             // (Its own script, else its model's, as the game runs it.)
@@ -487,7 +528,7 @@ fn subjects(source: &Source, pack: &ta_skins::Pack, wanted: &[String; 2]) -> any
             break;
         }
     }
-    ensure!(!models.is_empty(), "no ARM or CORE example models are available in the enabled game data");
+    ensure!(!models.is_empty(), "{}", t("The game and the mods that are on have no Arm or Core unit to show."));
     Ok((models, names, slots))
 }
 
@@ -498,7 +539,8 @@ enum Loaded {
     Editing(Key),
     /// Reborn's models made for liveries (`set_skin_for_editing`), for liveries' thumbnails.
     Liveries(String),
-    /// A skin with images of its own, for its thumbnail.
+    /// A skin with images of its own, for its thumbnail: known by its content
+    /// (`thumb_key`), so that one replaced under the same id is uploaded again.
     Thumb(String),
 }
 
@@ -529,10 +571,11 @@ impl State {
     fn studio(&mut self) -> anyhow::Result<()> {
         if let Some(error) = &self.broken { anyhow::bail!("{error}"); }
         if self.studio.is_none() {
-            match self.open.unwrap_or(ta_render::preview::UnitStudio::new)() {
+            let open = self.open.unwrap_or(ta_render::preview::UnitStudio::new);
+            match on_device(open) {
                 Ok(studio) => self.studio = Some(studio),
                 Err(error) => {
-                    let error = format!("{error:#}");
+                    let error = error.to_string();
                     self.broken = Some(error.clone());
                     anyhow::bail!(error);
                 }
@@ -541,15 +584,18 @@ impl State {
         Ok(())
     }
 
-    /// A picture's outcome: a panic is the driver failing as it drew, and the device is broken
-    /// (`broken`); any failure drops the device and the skin it holds (opened again next time, as
-    /// after a device lost, unless broken).
-    fn settle<T>(&mut self, outcome: std::thread::Result<anyhow::Result<T>>, driver: &str) -> anyhow::Result<T> {
-        let result = outcome.unwrap_or_else(|_| {
-            self.broken = Some(driver.to_string());
-            Err(anyhow::anyhow!(driver.to_string()))
+    /// A picture's outcome. The driver failing as it drew (a panic in the device's work,
+    /// [`on_device`]) breaks the device (`broken`, until the player retries); a panic anywhere
+    /// else is a fault of TA Reborn's (reading the game's data, posing a unit), said as such,
+    /// and the next picture is tried afresh. Any failure drops the device and the skin it holds
+    /// (opened again next time, as after a device lost, unless broken).
+    fn settle<T>(&mut self, outcome: std::thread::Result<anyhow::Result<T>>) -> anyhow::Result<T> {
+        let result = outcome.unwrap_or_else(|panic| {
+            let what = panic.downcast_ref::<&str>().map(|what| what.to_string()).or_else(|| panic.downcast_ref::<String>().cloned()).unwrap_or_default();
+            Err(anyhow::anyhow!(tf("The preview stopped on a fault in TA Reborn: {error}", &[("error", &what)])))
         });
-        if result.is_err() {
+        if let Err(error) = &result {
+            if error.downcast_ref::<DriverFailed>().is_some() { self.broken = Some(error.to_string()); }
             self.studio = None;
             self.loaded = None;
         }
@@ -563,30 +609,43 @@ impl State {
         let (Some((_, source)), Some(studio)) = (&self.source, &mut self.studio) else { unreachable!("made above") };
         match &request.paint {
             Painting::Saved => if self.loaded.as_ref() != Some(&Loaded::Saved(request.key.clone())) {
-                let pack = ta_skins::load(&request.key.skin, &request.key.root)?;
+                let pack = load_skin(&request.key.skin, &request.key.root)?;
                 let (models, names, slots) = subjects(source, &pack, &request.key.units)?;
-                studio.set_skin(&source.gafs, &source.palette, &pack, &models)?;
+                on_device(|| studio.set_skin(&source.gafs, &source.palette, &pack, &models))?;
                 (self.names, self.slots, self.loaded) = (names, Arc::new(slots), Some(Loaded::Saved(request.key.clone())));
             },
             Painting::Editing { pack, livery } => {
                 if self.loaded.as_ref() != Some(&Loaded::Editing(request.key.clone())) {
-                    let (models, names, slots) = subjects(source, pack, &request.key.units)?;
-                    studio.set_skin_for_editing(&source.gafs, &source.palette, pack, &models)?;
+                    // (The editor's images copied here, off the interface's thread.)
+                    let pack = pack.to_pack();
+                    let (models, names, slots) = subjects(source, &pack, &request.key.units)?;
+                    on_device(|| studio.set_skin_for_editing(&source.gafs, &source.palette, &pack, &models))?;
                     (self.names, self.slots, self.loaded) = (names, Arc::new(slots), Some(Loaded::Editing(request.key.clone())));
                 }
-                studio.set_livery(livery.as_ref())?;
+                on_device(|| studio.set_livery(livery.as_ref()))?;
             }
         }
         anyhow::ensure!(!shared.stop.load(Ordering::Relaxed), "preview closed");
-        Ok(Pictures { images: studio.render(request.yaw, 320)?, names: self.names.clone(), slots: self.slots.clone(), units: source.choices.clone() })
+        let images = on_device(|| studio.render(request.yaw, 320))?;
+        Ok(Pictures { images, names: self.names.clone(), slots: self.slots.clone(), units: source.choices.clone() })
     }
 
     /// A skin's thumbnail: from the disk cache, or made (and kept there).
     fn thumbnail(&mut self, thumb: &Thumb, shared: &Shared) -> anyhow::Result<ColorImage> {
-        let pack = ta_skins::load(&thumb.skin, &thumb.root)?;
+        if !shared.pruned.swap(true, Ordering::Relaxed) {
+            let removed = prune_cache(&thumb.cache, SystemTime::now());
+            if removed > 0 { log::info!("skin thumbnails: {removed} old pictures taken out of the cache"); }
+        }
+        let pack = load_skin(&thumb.skin, &thumb.root)?;
         let source_key = source_key(&thumb.reference);
-        let file = crate::library::cache_file(&thumb.cache, &thumb_key(&source_key, &pack));
-        if let Some(cached) = crate::library::read_cached(&file) { return Ok(cached); }
+        // (The skin by its content: one replaced under the same id is another.)
+        let content = thumb_key(&source_key, &pack);
+        let file = crate::library::cache_file(&thumb.cache, &content);
+        if let Some(cached) = crate::library::read_cached(&file) {
+            // (Used: kept the longer.)
+            let _ = std::fs::OpenOptions::new().write(true).open(&file).and_then(|written| written.set_modified(SystemTime::now()));
+            return Ok(cached);
+        }
         // (The same game data as the previews': moving between them reads it once.)
         self.source(&data_key(&source_key, thumb.revision), &thumb.reference, shared)?;
         self.studio()?;
@@ -594,21 +653,84 @@ impl State {
         let examples = [String::new(), String::new()];
         if pack.images.is_empty() {
             if self.loaded.as_ref() != Some(&Loaded::Liveries(source_key.clone())) {
-                let reborn = ta_skins::load("reborn", &thumb.root)?;
+                let reborn = load_skin("reborn", &thumb.root)?;
                 let (models, _, _) = subjects(source, &reborn, &examples)?;
-                studio.set_skin_for_editing(&source.gafs, &source.palette, &reborn, &models)?;
+                on_device(|| studio.set_skin_for_editing(&source.gafs, &source.palette, &reborn, &models))?;
                 self.loaded = Some(Loaded::Liveries(source_key));
             }
-            studio.set_livery(pack.manifest.livery.as_ref())?;
-        } else if self.loaded.as_ref() != Some(&Loaded::Thumb(thumb.skin.clone())) {
+            on_device(|| studio.set_livery(pack.manifest.livery.as_ref()))?;
+        } else if self.loaded.as_ref() != Some(&Loaded::Thumb(content.clone())) {
             let (models, _, _) = subjects(source, &pack, &examples)?;
-            studio.set_skin(&source.gafs, &source.palette, &pack, &models)?;
-            self.loaded = Some(Loaded::Thumb(thumb.skin.clone()));
+            on_device(|| studio.set_skin(&source.gafs, &source.palette, &pack, &models))?;
+            self.loaded = Some(Loaded::Thumb(content));
         }
-        let picture = compose(&studio.render(THUMB_YAW, THUMB_SIDE)?);
+        let picture = compose(&on_device(|| studio.render(THUMB_YAW, THUMB_SIDE))?);
         crate::library::write_cached(&file, &picture);
         Ok(picture)
     }
+}
+
+/// A skin read for a picture, its failure said in the player's words.
+fn load_skin(id: &str, root: &Path) -> anyhow::Result<ta_skins::Pack> {
+    ta_skins::load(id, root).map_err(|error| anyhow::anyhow!(tf("The skin could not be read: {error}", &[("error", &super::describe(&error))])))
+}
+
+/// The graphics driver failed as the device drew (a panic in its work): the device is not tried
+/// again until the player asks.
+#[derive(Debug)]
+struct DriverFailed;
+
+impl std::fmt::Display for DriverFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(t("The graphics driver failed while drawing the preview."))
+    }
+}
+
+impl std::error::Error for DriverFailed {}
+
+/// `work` on the graphics device: its failure said in the player's words, and a panic in it the
+/// driver failing ([`DriverFailed`]).
+fn on_device<T>(work: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(anyhow::anyhow!(tf("The graphics card could not draw the preview: {error}", &[("error", &format!("{error:#}"))]))),
+        Err(_) => Err(anyhow::Error::new(DriverFailed)),
+    }
+}
+
+/// Keeps the thumbnails' disk cache `dir` in bounds: pictures not used (read or written) for
+/// [`CACHE_DAYS`] go, then the least recently used past [`CACHE_FILES`]; pieces of a write cut
+/// short go after an hour. Returns how many files went.
+fn prune_cache(dir: &Path, now: SystemTime) -> usize {
+    let Ok(read) = std::fs::read_dir(dir) else { return 0 };
+    let mut pictures = Vec::new();
+    let mut removed = 0;
+    for child in read.flatten() {
+        let path = child.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+        if !meta.is_file() { continue; }
+        let age = meta.modified().ok().and_then(|at| now.duration_since(at).ok()).unwrap_or_default();
+        let extension = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
+        let gone = match extension {
+            "jpg" => age >= Duration::from_secs(CACHE_DAYS * 24 * 60 * 60),
+            "part" => age >= Duration::from_secs(60 * 60),
+            _ => continue,
+        };
+        if gone {
+            removed += usize::from(std::fs::remove_file(&path).is_ok());
+        } else if extension == "jpg" {
+            pictures.push((age, path));
+        }
+    }
+    if pictures.len() > CACHE_FILES {
+        // (The oldest first.)
+        pictures.sort_by(|a, b| b.0.cmp(&a.0));
+        let excess = pictures.len() - CACHE_FILES;
+        for (_, path) in pictures.into_iter().take(excess) {
+            removed += usize::from(std::fs::remove_file(&path).is_ok());
+        }
+    }
+    removed
 }
 
 /// What a thumbnail is made of: the game's data, and the skin's manifest and images.
@@ -681,7 +803,7 @@ fn worker(shared: Arc<Shared>) {
         if let Some(request) = request {
             if shared.retry.swap(false, Ordering::Relaxed) { state.broken = None; }
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| state.paint(&request, &shared)));
-            let result = state.settle(outcome, "the graphics driver could not render this preview");
+            let result = state.settle(outcome);
             *shared.reply.lock().unwrap_or_else(|e| e.into_inner()) = Some(Reply { key: request.key, pictures: result.map_err(|e| e.to_string()) });
             request.ctx.request_repaint();
             continue;
@@ -691,7 +813,7 @@ fn worker(shared: Arc<Shared>) {
         let stopped = take_each(&shared.thumbs, |thumb| {
             if shared.stop.load(Ordering::Relaxed) { return std::ops::ControlFlow::Break(()); }
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| state.thumbnail(&thumb, &shared)));
-            let result = state.settle(outcome, "the graphics driver could not render this thumbnail");
+            let result = state.settle(outcome);
             shared.made.lock().unwrap_or_else(|e| e.into_inner()).push((thumb.key, result.map_err(|e| e.to_string())));
             if let Some(ctx) = shared.ctx.lock().unwrap_or_else(|e| e.into_inner()).as_ref() { ctx.request_repaint(); }
             std::ops::ControlFlow::Continue(())
@@ -713,6 +835,10 @@ fn take_each<T>(queue: &Mutex<VecDeque<T>>, mut each: impl FnMut(T) -> std::ops:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn saved(id: &str) -> Paint {
+        Paint::Saved { id: id.into(), name: format!("{id} skin"), version: 0 }
+    }
 
     /// The worker makes each thumbnail with the queue unlocked: the interface asking for more
     /// as cards come into view never waits for one being made.
@@ -744,7 +870,7 @@ mod tests {
         preview.begin_frame();
         ctx.run_ui(egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, 400.0))), ..Default::default()
-        }, |ui| preview.show(ui, reference.clone(), PathBuf::new(), Paint::Saved("reborn".into()), 0, &Default::default(), 200.0)).drop_without_applying_deltas();
+        }, |ui| preview.show(ui, reference.clone(), PathBuf::new(), saved("reborn"), 0, &Default::default(), 200.0)).drop_without_applying_deltas();
         assert!(!preview.ready(), "the visible preview still needs its first rendered frame");
         // A narrow library renders cards only, so show is not called next frame.
         preview.begin_frame();
@@ -755,7 +881,7 @@ mod tests {
         let ctx = egui::Context::default();
         crate::theme::install(&ctx);
         let reference = Reference { game_dir: Some("game".into()), enabled: Vec::new(), available: Vec::new() };
-        let key = Key { source: source_key(&reference), root: PathBuf::new(), skin: "reborn".into(), revision: 0, textures: 0, units: Default::default() };
+        let key = Key { source: source_key(&reference), root: PathBuf::new(), skin: "reborn".into(), revision: 0, textures: 0, version: 0, units: Default::default() };
         let shared = Arc::new(Shared::default());
         let texture = ctx.load_texture("cached preview", ColorImage::filled([1, 1], egui::Color32::WHITE), TextureOptions::LINEAR);
         let mut preview = Preview::default();
@@ -766,7 +892,7 @@ mod tests {
         preview.error = Some("temporary readback failure".into());
         preview.retry();
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, 400.0))), ..Default::default() };
-        ctx.run_ui(input, |ui| preview.show(ui, reference.clone(), PathBuf::new(), Paint::Saved("reborn".into()), 0, &Default::default(), 200.0)).drop_without_applying_deltas();
+        ctx.run_ui(input, |ui| preview.show(ui, reference.clone(), PathBuf::new(), saved("reborn"), 0, &Default::default(), 200.0)).drop_without_applying_deltas();
         assert!(shared.request.lock().unwrap().is_some(), "retry must reach the renderer even when the old image is still displayed");
         assert!(preview.waiting);
     }
@@ -780,19 +906,20 @@ mod tests {
         let mut preview = Preview::default();
         preview.shared = Some(shared.clone());
         preview.paused = true;
-        let pack = Arc::new(ta_skins::load("builtin:desert", std::path::Path::new("unused")).unwrap());
+        let desert = ta_skins::load("builtin:desert", std::path::Path::new("unused")).unwrap();
+        let pack = Arc::new(SharedPack { manifest: desert.manifest.clone(), images: Default::default() });
         let show = |preview: &mut Preview, livery: Option<ta_skins::Livery>, revision: u64, serial: u64| {
             let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, 400.0))), ..Default::default() };
             ctx.run_ui(input, |ui| {
-                let paint = Paint::Editing { pack: pack.clone(), serial, revision, livery: livery.clone() };
+                let paint = Paint::Editing { pack: pack.clone(), serial, revision, livery: livery.clone(), name: "Desert copy".into() };
                 preview.show(ui, reference.clone(), PathBuf::new(), paint, 0, &Default::default(), 200.0);
             }).drop_without_applying_deltas();
             shared.request.lock().unwrap().take().map(|request| request.key)
         };
-        let first = show(&mut preview, pack.manifest.livery.clone(), 0, 1).expect("the first picture");
+        let first = show(&mut preview, desert.manifest.livery.clone(), 0, 1).expect("the first picture");
         preview.waiting = false;
         preview.textures = vec![ctx.load_texture("cached", ColorImage::filled([1, 1], egui::Color32::WHITE), TextureOptions::LINEAR)];
-        assert!(show(&mut preview, pack.manifest.livery.clone(), 0, 1).is_none(), "paused, nothing new to paint");
+        assert!(show(&mut preview, desert.manifest.livery.clone(), 0, 1).is_none(), "paused, nothing new to paint");
         let tiger = ta_skins::builtin_livery("builtin:tiger");
         let second = show(&mut preview, tiger, 0, 1).expect("a new livery is a new picture");
         assert_eq!(first, second, "with the same models");
@@ -820,12 +947,12 @@ mod tests {
         let shared = Arc::new(Shared::default());
         let mut preview = Preview::default();
         preview.shared = Some(shared.clone());
-        preview.key = Some(Key { source: source_key(&reference), root: PathBuf::new(), skin: "reborn".into(), revision: 0, textures: 0, units: Default::default() });
+        preview.key = Some(Key { source: source_key(&reference), root: PathBuf::new(), skin: "reborn".into(), revision: 0, textures: 0, version: 0, units: Default::default() });
         preview.textures = vec![ctx.load_texture("cached", ColorImage::filled([1, 1], egui::Color32::WHITE), TextureOptions::LINEAR)];
         let mut requests = 0;
         for frame in 0..60 {
             let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, 400.0))), time: Some(frame as f64 / 15.0), ..Default::default() };
-            ctx.run_ui(input, |ui| preview.show(ui, reference.clone(), PathBuf::new(), Paint::Saved("reborn".into()), 0, &Default::default(), 200.0)).drop_without_applying_deltas();
+            ctx.run_ui(input, |ui| preview.show(ui, reference.clone(), PathBuf::new(), saved("reborn"), 0, &Default::default(), 200.0)).drop_without_applying_deltas();
             if shared.request.lock().unwrap().take().is_some() { requests += 1; }
             // (No worker: as if each frame's picture had come back.)
             preview.waiting = false;
@@ -851,7 +978,7 @@ mod tests {
         assert_eq!(OPENED.load(Ordering::Relaxed), 1, "opened once for five pictures");
         // (A driver failing as it draws is as broken.)
         state.broken = None;
-        let failed: anyhow::Result<()> = state.settle(Err(Box::new("driver")), "the driver failed");
+        let failed: anyhow::Result<()> = state.settle(Ok(on_device(|| -> anyhow::Result<()> { panic!("device lost") })));
         assert!(failed.is_err() && state.broken.is_some());
         assert!(state.studio().is_err());
         assert_eq!(OPENED.load(Ordering::Relaxed), 1, "a broken device is not opened again");
@@ -859,6 +986,89 @@ mod tests {
         state.broken = None;
         assert!(state.studio().is_err());
         assert_eq!(OPENED.load(Ordering::Relaxed), 2);
+    }
+
+    /// A panic outside the device's work (reading the game's data, posing a unit) is a fault of
+    /// TA Reborn's, not the driver's: said so, and the device is tried again for the next
+    /// picture, not shut off until the player retries.
+    #[test]
+    fn a_fault_of_ours_is_not_taken_for_the_driver() {
+        let mut state = State::default();
+        let outcome = std::panic::catch_unwind(|| -> anyhow::Result<()> { panic!("index out of bounds") });
+        let error = state.settle(outcome).unwrap_err().to_string();
+        assert!(state.broken.is_none(), "the device is not given up for it");
+        assert!(error.contains("index out of bounds") && !error.contains("driver"), "{error}");
+        let error = state.settle::<()>(Ok(on_device(|| anyhow::bail!("out of memory")))).unwrap_err().to_string();
+        assert!(state.broken.is_none() && error.contains("out of memory"), "a device's own error, said: {error}");
+    }
+
+    /// Thumbnails no card has shown for a while are let go (the library left, or scrolled past),
+    /// and asked for again when a card wants them.
+    #[test]
+    fn thumbnails_not_shown_for_a_while_are_let_go() {
+        let ctx = egui::Context::default();
+        let mut preview = Preview::default();
+        let start = Instant::now();
+        let texture = || ctx.load_texture("thumbnail", ColorImage::filled([1, 1], egui::Color32::WHITE), TextureOptions::LINEAR);
+        for (key, used) in [("shown#1#0", start + THUMB_UNUSED), ("passed#1#0", start)] {
+            preview.thumbs.insert(key.into(), (texture(), used));
+            preview.asked.insert(key.into());
+        }
+        preview.release_unused(start + THUMB_UNUSED + Duration::from_secs(1));
+        assert!(preview.thumbs.contains_key("shown#1#0") && !preview.thumbs.contains_key("passed#1#0"));
+        assert!(!preview.asked.contains("passed#1#0"), "asked for again when wanted");
+        assert!(preview.thumbnails_idle());
+        // (A failure is tried again when the library is looked at again.)
+        preview.asked.insert("broken#1#0".into());
+        preview.failed.insert("broken#1#0".into());
+        preview.forget_failures();
+        assert!(preview.failed.is_empty() && !preview.asked.contains("broken#1#0"));
+    }
+
+    /// The disk cache keeps the pictures used lately, up to its count; pieces of an old write
+    /// cut short go; files of other kinds stay.
+    #[test]
+    fn the_thumbnail_cache_is_kept_in_bounds() {
+        let dir = std::env::temp_dir().join(format!("ta_launcher_skin_cache_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..CACHE_FILES + 5 { std::fs::write(dir.join(format!("{i:04}.jpg")), b"picture").unwrap(); }
+        std::fs::write(dir.join("0000.123.part"), b"half").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"not ours").unwrap();
+        // (Seen from a while on: the pictures not used for days, the part an hour old.)
+        let later = SystemTime::now() + Duration::from_secs(2 * 60 * 60);
+        assert_eq!(prune_cache(&dir, later), 6, "the five over the count and the part");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), CACHE_FILES + 1);
+        assert!(dir.join("notes.txt").is_file());
+        let much_later = SystemTime::now() + Duration::from_secs((CACHE_DAYS + 1) * 24 * 60 * 60);
+        assert_eq!(prune_cache(&dir, much_later), CACHE_FILES, "none used for months");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The preview is named by the skin's name (a built-in's in the player's language, the
+    /// editor's as it is called), never its id; without the game, nothing offers to try again.
+    #[test]
+    fn the_preview_is_named_by_the_skin_and_offers_no_retry_without_the_game() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        ctx.enable_accesskit();
+        let mut preview = Preview::default();
+        preview.shared = Some(Arc::new(Shared::default()));
+        let missing = Reference { game_dir: None, enabled: Vec::new(), available: Vec::new() };
+        let frame = |preview: &mut Preview| {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, 400.0))), ..Default::default() };
+            let paint = || Paint::Saved { id: "builtin:desert".into(), name: "Wüste".into(), version: 0 };
+            let mut output = ctx.run_ui(input, |ui| preview.show(ui, missing.clone(), PathBuf::new(), paint(), 0, &Default::default(), 200.0));
+            output.textures_delta.clear();
+            output.platform_output.accesskit_update.expect("accesskit is on")
+        };
+        frame(&mut preview);
+        let update = frame(&mut preview);
+        let labels: Vec<String> = update.nodes.iter().filter_map(|(_, node)| node.label().map(str::to_string)).collect();
+        assert!(labels.iter().any(|label| label == "Live unit preview: Wüste"), "{labels:?}");
+        assert!(!labels.iter().any(|label| label.contains("builtin:")), "{labels:?}");
+        assert!(preview.error.is_some(), "it says where to choose the game");
+        assert!(!labels.iter().any(|label| label == "Retry preview"), "{labels:?}");
     }
 
     #[test]
@@ -912,7 +1122,7 @@ mod tests {
     fn new_selection_replaces_pending_preview_instead_of_growing_a_queue() {
         let shared = Shared::default();
         for i in 0..1000 {
-            *shared.request.lock().unwrap() = Some(Request { key: Key { source: "same".into(), root: PathBuf::new(), skin: i.to_string(), revision: 0, textures: 0, units: Default::default() },
+            *shared.request.lock().unwrap() = Some(Request { key: Key { source: "same".into(), root: PathBuf::new(), skin: i.to_string(), revision: 0, textures: 0, version: 0, units: Default::default() },
                 reference: Reference { game_dir: None, enabled: Vec::new(), available: Vec::new() }, yaw: 0.0, ctx: egui::Context::default(), paint: Painting::Saved });
         }
         assert_eq!(shared.request.lock().unwrap().as_ref().unwrap().key.skin, "999");

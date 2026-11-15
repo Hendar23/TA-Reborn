@@ -576,3 +576,23 @@ and are joined by a comma ("com fonte própria, imagens de fundo nos painéis").
 | plates (the HUD's, panel_texture tiled behind them) / the side's own metal plates | placas ("a imagem {path} das placas") / as placas metálicas padrão do lado |
 | line spacing (a font's) | espaçamento entre linhas (altura das linhas) |
 | TURN OFF {name} / STOP PREVIEW (beside VER PRÉVIA) | DESATIVAR {name} (as ATIVAR {name}) / PARAR PRÉVIA |
+
+## The launcher's QA fixes: a damaged service record, unreadable profiles, errors (`profile_page.rs`, `profiles.rs`, `play.rs`, `http.rs`, `maps.rs`, `skins.rs`, `supcom.rs`, `widgets.rs`)
+
+| English | pt-BR |
+|---|---|
+| damaged (a file) / unreadable (a profile; a map's badge UNREADABLE) | danificado / ilegível (EXCLUIR O PERFIL ILEGÍVEL?, badge ILEGÍVEL) |
+| The unreadable profile (fills {name} in "{name} foi removido…") | O perfil ilegível (capitalised: it opens most of those sentences) |
+| set aside (the damaged career file) / put it right / PUT IT RIGHT | guardar à parte / corrigir / CORRIGIR |
+| START A FRESH CAREER / CAREER NEEDS ATTENTION / SERVICE RECORD UNREADABLE | COMEÇAR UMA NOVA CARREIRA / CARREIRA REQUER ATENÇÃO / REGISTRO DE SERVIÇO ILEGÍVEL |
+| MOVE TO RECYCLE BIN | MOVER PARA A LIXEIRA |
+| the Play / Profile / Maps page (in sentences) | a página Jogar / Perfil / Mapas |
+| setup (the downloaded installer) / graphics driver | instalador / driver de vídeo |
+| id (a skin's) / KEEP BOTH (an imported skin beside an installed one) | identificador / MANTER AS DUAS |
+| YOURS AND ALLIES / ENEMY UNITS (whose units wear a skin) | VOCÊ E ALIADOS / UNIDADES INIMIGAS |
+| RUNNING (the PLAY button while the game runs) | EM EXECUÇÃO (as JOGO EM EXECUÇÃO) |
+| key names in shortcut labels | as printed: Alt, Ctrl, Shift, Enter, Esc, Tab, Home, End; the Mac's Cmd, Option |
+| screen-reader marks OK / Not present / Error; "{content}: found / not found" | OK / Ausente / Erro; "{content}: presente / ausente" (two-gender words: the labels are Jogo base, Campanhas, Música…) |
+| error fragments filling {error}, {why} | lowercase clauses ("o tempo da conexão se esgotou", "está vazio") |
+| None of the {n} maps could be made / but {failed} could not be made | Nenhum mapa pôde ser criado (falhas: {n}) / não criados: {failed} (count-safe) |
+| Hue / Saturation and brightness (colour picker, spoken) | Matiz / Saturação e brilho ("saturação {s}%, brilho {v}%") |

@@ -569,3 +569,22 @@ follows a colon, so its items stay nominative noun phrases: "ayrıca şunlar kul
 | plates (the HUD's, panel_texture tiled behind them) / the side's own metal plates | plakalar ("plakaların {path} resmi") / tarafın kendi metal plakaları |
 | line spacing / line height (a font's) | satır aralığı / satır yüksekliği |
 | TURN OFF {name} / STOP PREVIEW (beside ÖNİZLEMEYİ OYNAT) | KAPAT: {name} (as ETKİNLEŞTİR: {name}) / ÖNİZLEMEYİ DURDUR |
+
+## The launcher's QA fixes: a damaged service record, unreadable profiles, errors (`profile_page.rs`, `profiles.rs`, `play.rs`, `http.rs`, `maps.rs`, `skins.rs`, `supcom.rs`, `widgets.rs`)
+
+| English | Türkçe |
+|---|---|
+| damaged (a file) / unreadable (a profile; a map's badge UNREADABLE) | bozuk (Windows' word for a corrupt file) / okunamayan (OKUNAMAYAN PROFİL SİLİNSİN Mİ?; badge OKUNAMIYOR) |
+| set aside (the damaged career file) / put it right / PUT IT RIGHT | bir kenara ayırmak / düzeltmek / DÜZELT |
+| START A FRESH CAREER / START A FRESH CAREER? | YENİ BİR KARİYERE BAŞLA / YENİ BİR KARİYERE BAŞLANSIN MI? |
+| CAREER NEEDS ATTENTION / SERVICE RECORD UNREADABLE | KARİYER İLGİ BEKLİYOR / HİZMET KAYDI OKUNAMIYOR |
+| MOVE TO RECYCLE BIN | GERİ DÖNÜŞÜM KUTUSU'NA TAŞI |
+| the Profile page / the Maps page | PROFİL sayfası / HARİTALAR sayfası (as OYNA sayfası) |
+| setup (the downloaded installer) / graphics driver / the launcher crashed | kurulum dosyası / ekran kartı sürücüsü / Başlatıcı çöktü |
+| id (a skin's) / KEEP BOTH (an imported skin beside an installed one) | kimlik ("{id} kimlikli bir görünüm") / İKİSİNİ DE SAKLA |
+| YOURS AND ALLIES / ENEMY UNITS (whose units wear a skin) | SEN VE MÜTTEFİKLER / DÜŞMAN BİRİMLERİ |
+| RUNNING (the PLAY button while the game runs) | ÇALIŞIYOR (as OYUN ÇALIŞIYOR) |
+| key names in shortcut labels | as printed: Alt, Ctrl, Shift, Enter, Esc, Tab (not Sekme), Home, End; the Mac's Cmd, Option |
+| screen-reader marks OK / Not present / Error; "{content}: found / not found" | Tamam / Yok / Hata; "{content}: bulundu / bulunamadı" |
+| error fragments filling {error}, {why} | lowercase clauses ("bağlantı zaman aşımına uğradı", "içi boş") |
+| Hue / Saturation and brightness (colour picker, spoken) | Renk tonu / Doygunluk ve parlaklık ("doygunluk %{s}, parlaklık %{v}") |

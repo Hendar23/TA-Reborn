@@ -23,6 +23,14 @@ fn map_menu_id() -> Id {
     Id::new("map_library_menu")
 }
 
+/// The widget of the card (or list row) of the map `key`.
+fn map_card_id(key: &str) -> Id {
+    Id::new(("map_card", key))
+}
+
+/// Why a map whose terrain could not be read cannot be played or edited.
+const UNREADABLE: &str = n("This map's terrain could not be read: it cannot be played or edited.");
+
 /// What a map's context menu does: open its details (in the library's place on a narrow page),
 /// or what its buttons do.
 #[derive(Clone, Debug)]
@@ -48,6 +56,8 @@ impl LauncherApp {
             if back || escape {
                 self.maps.details_open = false;
                 self.maps.reveal(self.maps.selected.clone());
+                // (The keys go back to the map's card, drawn again next frame.)
+                ui.memory_mut(|memory| memory.request_focus(map_card_id(&self.maps.selected)));
             }
             ui.add_space(space::S);
             self.map_details(ui, ui.available_height(), idle);
@@ -108,16 +118,21 @@ impl LauncherApp {
         let mounted = entry.active && !entry.shadowed;
         let game = self.detection.install().is_some();
         let playable = entry.available(preferences);
+        let unreadable = entry.unreadable.is_some().then(|| t(UNREADABLE));
         let why = if !game { Some(t("Find your Total Annihilation install on the Play page first.")) }
             else if self.game_running() { Some(t("The game is running.")) }
             else if !idle { Some(t("Wait for the current map or mod work to finish.")) }
+            else if let Some(busy) = self.map_work_blocked() { Some(busy) }
+            else if mounted && unreadable.is_some() { unreadable }
             else if !playable { Some(t(entry.status(preferences))) }
             else { None };
         menu.add(n("QUICK BATTLE"), Icon::Play, MapChoice::Do(Action::Maps(maps::Action::Play(entry.key.clone())))).main().unless(why);
         menu.add(n("SET UP SKIRMISH"), Icon::Setup, MapChoice::Do(Action::Maps(maps::Action::Skirmish(entry.key.clone())))).unless(why);
         let edit_why = if !game { Some(t("Find your Total Annihilation install on the Play page first.")) }
             else if !idle { self.maps_busy_reason() }
+            else if let Some(busy) = self.map_work_blocked() { Some(busy) }
             else if !mounted { Some(t(entry.status(preferences))) }
+            else if unreadable.is_some() { unreadable }
             else { None };
         menu.add(n("EDIT A COPY"), Icon::Edit, MapChoice::Do(Action::Maps(maps::Action::Edit(entry.key.clone())))).unless(edit_why);
         menu.rule();
@@ -140,10 +155,16 @@ impl LauncherApp {
         menu.add(n("SHOW SOURCE FILES"), Icon::Folder, MapChoice::Do(Action::OpenPath(path)));
         if entry.pack() && installed {
             menu.rule();
-            let busy = (self.game_running() || self.installer.busy() || self.maps.busy()).then(|| self.maps_busy_reason()).flatten();
-            menu.add(n("REMOVE MAP PACK"), Icon::Remove, MapChoice::Do(Action::Maps(maps::Action::RemovePack(entry.layer.clone())))).danger().unless(busy);
+            menu.add(n("REMOVE MAP PACK"), Icon::Remove, MapChoice::Do(Action::Maps(maps::Action::RemovePack(entry.layer.clone())))).danger().unless(self.map_work_blocked());
         }
         menu
+    }
+
+    /// Why the maps cannot be played or edited now, nor a map pack removed, if they cannot: map or
+    /// mod work under way, the game running, or Supreme Commander's maps being made (their pack is
+    /// replaced as they finish, and the game does not start meanwhile).
+    fn map_work_blocked(&self) -> Option<&'static str> {
+        self.maps_busy_reason().or_else(|| self.supcom.importing().then(|| t("Wait for the Supreme Commander maps being made, then try again.")))
     }
 
     /// The page's title, and what it does to the library as a whole: import maps, make a new
@@ -162,8 +183,8 @@ impl LauncherApp {
                 .disabled_tip(busy.unwrap_or_default()).clicked() {
                 self.push(Action::SupcomOpen);
             }
-            let new_map_why = if !game { Some(t("Find your Total Annihilation install on the Play page first.")) } else { busy };
-            if ui.add_enabled(idle && game, ActionButton::secondary("NEW MAP").height(height)).hover_tip(t("Open the map editor on a new map."))
+            let new_map_why = if !game { Some(t("Find your Total Annihilation install on the Play page first.")) } else { self.map_work_blocked() };
+            if ui.add_enabled(idle && new_map_why.is_none(), ActionButton::secondary("NEW MAP").height(height)).hover_tip(t("Open the map editor on a new map."))
                 .disabled_tip(new_map_why.unwrap_or_default()).clicked() {
                 self.push(Action::Maps(maps::Action::New));
             }
@@ -186,7 +207,9 @@ impl LauncherApp {
             });
         }
         if !self.maps.catalogue.warnings.is_empty() {
-            ui.collapsing(tf("{n} map sources need attention", &[("n", &self.maps.catalogue.warnings.len())]), |ui| {
+            let count = self.maps.catalogue.warnings.len();
+            let heading = if count == 1 { t("A map source needs attention").to_string() } else { tf("{n} map sources need attention", &[("n", &count)]) };
+            ui.collapsing(heading, |ui| {
                 for warning in &self.maps.catalogue.warnings { super::wrapped(ui, warning, AMBER); }
             });
         }
@@ -347,7 +370,7 @@ impl LauncherApp {
             let card = Card { title: &entry.title, detail: &detail, lamps: &[lamp(entry, preferences)],
                 star: favourite && view == View::List, selected: entry.key == self.maps.selected, spoken: &spoken,
                 ribbon: entry.ribbon() };
-            let id = Id::new(("map_card", &entry.key));
+            let id = map_card_id(&entry.key);
             let paint = |ui: &Ui, frame: Rect| library::picture(ui, frame, picture.as_ref(), failed);
             let response = match view {
                 View::Grid => library::card(ui, id, rect, well, card, paint),
@@ -445,6 +468,9 @@ impl LauncherApp {
             widgets::pill(ui, entry.status(preferences), lamp(entry, preferences));
             ui.label(RichText::new(&entry.source).color(STEEL));
         });
+        if let Some(why) = &entry.unreadable {
+            super::wrapped(ui, &tf("This map's terrain could not be read: {why}", &[("why", why)]), RED);
+        }
         if entry.reborn() {
             reborn_banner(ui);
         } else if entry.origin == ta_data::map::Origin::SupremeCommander {
@@ -469,9 +495,12 @@ impl LauncherApp {
         let mounted = entry.active && !entry.shadowed;
         let game = self.detection.install().is_some();
         let playable = entry.available(&self.config.maps);
+        let unreadable = entry.unreadable.is_some().then(|| t(UNREADABLE));
         let why = if !game { Some(t("Find your Total Annihilation install on the Play page first.")) }
             else if self.game_running() { Some(t("The game is running.")) }
             else if !idle { Some(t("Wait for the current map or mod work to finish.")) }
+            else if let Some(busy) = self.map_work_blocked() { Some(busy) }
+            else if mounted && unreadable.is_some() { unreadable }
             else if !playable { Some(t(entry.status(&self.config.maps))) }
             else { None };
         ui.horizontal_wrapped(|ui| {
@@ -487,9 +516,11 @@ impl LauncherApp {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
             let edit_why = if !game { Some(t("Find your Total Annihilation install on the Play page first.")) }
                 else if !idle { self.maps_busy_reason() }
+                else if let Some(busy) = self.map_work_blocked() { Some(busy) }
                 else if !mounted { Some(t(entry.status(&self.config.maps))) }
+                else if unreadable.is_some() { unreadable }
                 else { None };
-            let edit = ui.add_enabled(game && idle && mounted, ActionButton::secondary("EDIT A COPY").height(28.0));
+            let edit = ui.add_enabled(game && idle && edit_why.is_none(), ActionButton::secondary("EDIT A COPY").height(28.0));
             if edit.hover_tip(t("Open a copy of this map in the map editor: saving it makes a map pack of your own")).disabled_tip(edit_why.unwrap_or_default()).clicked() {
                 self.push(Action::Maps(maps::Action::Edit(entry.key.clone())));
             }
@@ -546,6 +577,8 @@ impl LauncherApp {
         let installed = self.mods.get(&entry.layer).is_some();
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(14.0, 6.0);
+            // (Each link whole: one that does not fit the line's end goes to the next.)
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
             if installed && widgets::text_link(ui, "MANAGE SOURCE IN MODS").clicked() {
                 self.push(Action::Maps(maps::Action::ManageSource(entry.layer.clone())));
             }
@@ -554,9 +587,10 @@ impl LauncherApp {
         });
         if entry.pack() && installed {
             ui.add_space(space::XS);
-            let idle = !self.game_running() && !self.installer.busy() && !self.maps.busy();
-            if ui.add_enabled(idle, ActionButton::danger("REMOVE MAP PACK").height(28.0))
-                .hover_tip(t("The imported map pack goes to the Recycle Bin, with every map in it.")).clicked() {
+            let blocked = self.map_work_blocked();
+            if ui.add_enabled(blocked.is_none(), ActionButton::danger("REMOVE MAP PACK").height(28.0))
+                .hover_tip(t("The imported map pack goes to the Recycle Bin, with every map in it."))
+                .disabled_tip(blocked.unwrap_or_default()).clicked() {
                 self.push(Action::Maps(maps::Action::RemovePack(entry.layer.clone())));
             }
         }
@@ -622,9 +656,11 @@ fn map_detail(entry: &Entry, size: Option<(u32, u32)>) -> String {
     parts.join(" · ")
 }
 
-/// The lamp of a map's state: playable, a campaign's, deactivated by you, or out of reach.
+/// The lamp of a map's state: playable, its terrain unreadable, a campaign's, deactivated by you,
+/// or out of reach.
 fn lamp(entry: &Entry, preferences: &ta_config::maps::Maps) -> Color32 {
     if entry.available(preferences) { GREEN }
+    else if entry.unreadable.is_some() && entry.active && !entry.shadowed { RED }
     else if entry.campaign { SKY }
     else if entry.active && !entry.shadowed && entry.players >= 2 { AMBER }
     else { STEEL_DIM }
@@ -740,6 +776,148 @@ mod tests {
             frame(&mut app, Vec::new());
             assert!(menu::target(&ctx, map_menu_id()).is_none(), "choosing closes it");
         }
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A launcher in a folder of its own whose game is made up there (empty files where TA's
+    /// are), so that what a map's details offer is not held back for want of the game.
+    fn launcher_with_game(name: &str) -> (std::path::PathBuf, egui::Context, LauncherApp) {
+        let root = std::env::temp_dir().join(format!("ta_map_page_{name}_{}_{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        let ctx = egui::Context::default();
+        let args = crate::Args::parse_from(["ta-launcher", "--offline", "--pretend-missing", "--config", root.join("config.toml").to_str().unwrap()]);
+        let mut app = LauncherApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()), args);
+        app.skins.shutdown();
+        let game = root.join("fake_game");
+        std::fs::create_dir_all(&game).unwrap();
+        for file in ta_vfs::install::REQUIRED_FILES {
+            std::fs::write(game.join(file), b"").unwrap();
+        }
+        app.config.game_dir = Some(game.clone());
+        app.detection = crate::detect::detect(Some(&game), true);
+        assert!(app.detection.install().is_some());
+        (root, ctx, app)
+    }
+
+    /// A frame of the Maps page `size` points large: the words drawn, where, in how many lines.
+    fn page(ctx: &egui::Context, app: &mut LauncherApp, size: egui::Vec2, events: Vec<egui::Event>) -> Vec<(String, Rect, usize)> {
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, size)), events, ..Default::default() };
+        let mut output = ctx.run_ui(input, |ui| app.maps_page(ui));
+        output.textures_delta.clear();
+        let mut texts = Vec::new();
+        fn walk(shape: &egui::Shape, into: &mut Vec<(String, Rect, usize)>) {
+            match shape {
+                egui::Shape::Text(text) => into.push((text.galley.text().to_string(), text.galley.rect.translate(text.pos.to_vec2()), text.galley.rows.len())),
+                egui::Shape::Vec(shapes) => for shape in shapes { walk(shape, into); },
+                _ => {}
+            }
+        }
+        for shape in &output.shapes { walk(&shape.shape, &mut texts); }
+        texts
+    }
+
+    /// Clicks at `at`, then draws the page again: what it shows then.
+    fn click(ctx: &egui::Context, app: &mut LauncherApp, size: egui::Vec2, at: egui::Pos2) -> Vec<(String, Rect, usize)> {
+        page(ctx, app, size, vec![egui::Event::PointerMoved(at), egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() }]);
+        page(ctx, app, size, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() }]);
+        page(ctx, app, size, vec![egui::Event::PointerMoved(egui::pos2(1.0, 1.0))])
+    }
+
+    fn rect_of(texts: &[(String, Rect, usize)], words: &str) -> Rect {
+        texts.iter().find(|(text, _, _)| text == words).map(|(_, rect, _)| *rect).unwrap_or_else(|| panic!("{words}: {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>()))
+    }
+
+    /// A map whose terrain does not read says so, with why, and is neither played nor edited;
+    /// a readable map is, but not while Supreme Commander's maps are being made.
+    #[test]
+    fn an_unreadable_map_says_why_and_is_not_played_nor_edited() {
+        let (root, ctx, mut app) = launcher_with_game("unreadable");
+        app.maps.catalogue = crate::maps::tests::sample_catalogue(&root);
+        let key = |app: &LauncherApp, stem: &str| app.maps.catalogue.entries.iter().find(|entry| entry.stem == stem).unwrap().key.clone();
+        let moon = key(&app, "moon");
+        app.maps.catalogue.entries.iter_mut().find(|entry| entry.key == moon).unwrap().unreadable = Some("invalid TNT: unsupported version 0x1".into());
+        app.maps.selected = moon.clone();
+        let size = egui::vec2(1280.0, 900.0);
+        for _ in 0..3 { page(&ctx, &mut app, size, Vec::new()); }
+        let shown = page(&ctx, &mut app, size, Vec::new());
+        rect_of(&shown, "UNREADABLE");
+        rect_of(&shown, "This map's terrain could not be read: invalid TNT: unsupported version 0x1");
+        for button in ["QUICK BATTLE", "SET UP SKIRMISH", "EDIT A COPY"] {
+            click(&ctx, &mut app, size, rect_of(&shown, button).center());
+            assert!(app.actions.is_empty(), "{button} does nothing: {:?}", app.actions);
+        }
+        // A readable map plays; not while Supreme Commander's maps are being made.
+        app.maps.selected = key(&app, "coast");
+        let shown = page(&ctx, &mut app, size, Vec::new());
+        click(&ctx, &mut app, size, rect_of(&shown, "QUICK BATTLE").center());
+        assert!(matches!(std::mem::take(&mut app.actions).as_slice(), [Action::Maps(maps::Action::Play(_))]));
+        app.supcom.pretend_importing(&[]);
+        let shown = page(&ctx, &mut app, size, Vec::new());
+        click(&ctx, &mut app, size, rect_of(&shown, "QUICK BATTLE").center());
+        assert!(app.actions.is_empty(), "not while the maps are made: {:?}", app.actions);
+        app.supcom.stop();
+        while app.supcom.importing() {
+            app.supcom.poll(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A map pack's details in a narrow pane: each link whole on its line, and REMOVE MAP PACK
+    /// held back while Supreme Commander's maps are being made (then it removes it).
+    #[test]
+    fn a_map_packs_links_stay_whole_and_its_removal_waits_for_work_under_way() {
+        let (root, ctx, mut app) = launcher_with_game("pack");
+        crate::maps::tests::sample_catalogue(&root);
+        std::fs::create_dir_all(root.join("mods")).unwrap();
+        std::fs::rename(root.join("source"), root.join("mods/map-pack-test")).unwrap();
+        std::fs::write(root.join("mods/map-pack-test/mod.toml"), "id = \"map-pack-test\"\nname = \"Test maps\"\n").unwrap();
+        app.refresh_mods();
+        assert!(app.mods.get("map-pack-test").is_some());
+        app.maps.catalogue = crate::maps::scan(crate::maps::Request { game_dir: None, builtin: None, mods: app.mods.mods.iter().map(|m| m.info.clone()).collect(), enabled: vec!["map-pack-test".into()] }).unwrap();
+        app.maps.selected = app.maps.catalogue.entries.iter().find(|entry| entry.stem == "moon").unwrap().key.clone();
+        // (The details beside the library, 304 points across: the two links do not fit one line.)
+        let size = egui::vec2(800.0, 1400.0);
+        for _ in 0..3 { page(&ctx, &mut app, size, Vec::new()); }
+        let shown = page(&ctx, &mut app, size, Vec::new());
+        rect_of(&shown, "MANAGE SOURCE IN MODS");
+        let lines = shown.iter().find(|(text, _, _)| text == "SHOW SOURCE FILES").map(|(_, _, lines)| *lines);
+        assert_eq!(lines, Some(1), "SHOW SOURCE FILES whole on its line");
+        app.supcom.pretend_importing(&[]);
+        let shown = page(&ctx, &mut app, size, Vec::new());
+        click(&ctx, &mut app, size, rect_of(&shown, "REMOVE MAP PACK").center());
+        assert!(app.actions.is_empty(), "not while Supreme Commander's maps are made: {:?}", app.actions);
+        app.supcom.stop();
+        while app.supcom.importing() {
+            app.supcom.poll(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let shown = page(&ctx, &mut app, size, Vec::new());
+        click(&ctx, &mut app, size, rect_of(&shown, "REMOVE MAP PACK").center());
+        assert!(matches!(app.actions.as_slice(), [Action::Maps(maps::Action::RemovePack(layer))] if layer == "map-pack-test"), "{:?}", app.actions);
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// On a narrow page a map's details take the library's place: leaving them (Escape) gives the
+    /// keys back to the map's card.
+    #[test]
+    fn leaving_a_maps_details_gives_the_keys_back_to_its_card() {
+        let (root, ctx, mut app) = launcher_with_game("back");
+        app.maps.catalogue = crate::maps::tests::sample_catalogue(&root);
+        let moon = app.maps.catalogue.entries.iter().find(|entry| entry.stem == "moon").unwrap().key.clone();
+        app.maps.selected = moon.clone();
+        app.maps.details_open = true;
+        let size = egui::vec2(700.0, 900.0);
+        for _ in 0..2 { page(&ctx, &mut app, size, Vec::new()); }
+        let escape = egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        page(&ctx, &mut app, size, vec![escape]);
+        assert!(!app.maps.details_open);
+        for _ in 0..2 { page(&ctx, &mut app, size, Vec::new()); }
+        assert_eq!(ctx.memory(|m| m.focused()), Some(map_card_id(&moon)), "the keys on the map's card");
+        assert_eq!(app.maps.selected, moon);
         drop(app);
         let _ = std::fs::remove_dir_all(root);
     }

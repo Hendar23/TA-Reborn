@@ -58,7 +58,7 @@ impl LauncherApp {
     fn load_order_row(&mut self, ui: &mut Ui, rect: Rect, index: usize, id: &str, count: usize, moves: &mut Option<(usize, usize)>) -> Option<Action> {
         let row = ui.interact(rect, Id::new(("load_order_row", id)), Sense::click_and_drag());
         let entry = self.mods.get(id).cloned();
-        let name = entry.as_ref().map_or(id.to_string(), |entry| entry.info.manifest.name.clone());
+        let name = entry.as_ref().map_or(id.to_string(), |entry| crate::supcom::mod_name(&entry.info.manifest).to_string());
         row.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, tf("{n}. {name}", &[("n", &(index + 1)), ("name", &name)])));
         widgets::reveal_focus(ui, &row);
         if let Some((at, keys)) = crate::library::menu::asked(ui, &row) {

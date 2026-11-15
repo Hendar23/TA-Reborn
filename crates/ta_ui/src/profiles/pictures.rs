@@ -1,5 +1,6 @@
-//! Pictures read from disk off the interface's thread (an achievement's moment): `None` while
-//! one is read, its texture after. Each is read once a session, unless its file changes.
+//! Pictures read from disk off the interface's thread (an achievement's moment): being read,
+//! its texture after, or that it could not be read. Each is read once a session, unless its file
+//! changes.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -24,20 +25,32 @@ fn shared(ctx: &Context) -> Shared {
     ctx.data_mut(|d| d.get_temp_mut_or_default::<Shared>(Id::new("ta_ui::profiles::pictures")).clone())
 }
 
-/// The picture at `path`, or `None` while it is read (or when it cannot be).
-pub fn texture(ctx: &Context, path: &Path) -> Option<TextureHandle> {
+/// What there is of a picture.
+#[derive(Clone)]
+pub enum Picture {
+    /// Being read.
+    Reading,
+    Ready(TextureHandle),
+    /// It cannot be read (not a picture, damaged, gone): it is not read again unless its file
+    /// changes.
+    Failed,
+}
+
+/// The picture at `path`: being read, read, or not to be read.
+pub fn texture(ctx: &Context, path: &Path) -> Picture {
     let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
     let key = (path.to_path_buf(), modified);
     let shared = shared(ctx);
     let mut slots = shared.lock().unwrap_or_else(|e| e.into_inner());
     match slots.get(&key).cloned() {
-        Some(Slot::Ready(texture)) => Some(texture),
+        Some(Slot::Ready(texture)) => Picture::Ready(texture),
         Some(Slot::Read(image)) => {
             let texture = ctx.load_texture(format!("picture {}", path.display()), Arc::unwrap_or_clone(image), egui::TextureOptions::LINEAR);
             slots.insert(key, Slot::Ready(texture.clone()));
-            Some(texture)
+            Picture::Ready(texture)
         }
-        Some(Slot::Reading | Slot::Failed) => None,
+        Some(Slot::Reading) => Picture::Reading,
+        Some(Slot::Failed) => Picture::Failed,
         None => {
             slots.insert(key.clone(), Slot::Reading);
             let (shared, ctx) = (shared.clone(), ctx.clone());
@@ -52,7 +65,7 @@ pub fn texture(ctx: &Context, path: &Path) -> Option<TextureHandle> {
                 shared.lock().unwrap_or_else(|e| e.into_inner()).insert(key, slot);
                 ctx.request_repaint();
             });
-            None
+            Picture::Reading
         }
     }
 }

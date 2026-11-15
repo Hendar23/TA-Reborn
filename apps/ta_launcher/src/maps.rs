@@ -21,6 +21,8 @@ const CARD_SIDE: u32 = 320;
 const DETAILS_SIDE: u32 = 960;
 /// The menus' unit of a map's size ("12 × 12"): 512 pixels, 32 cells.
 const UNIT_CELLS: u32 = 32;
+/// What an imported map pack's manifest says it is.
+const IMPORTED_PACK: &str = n("Imported map pack");
 
 #[derive(Clone, Debug)]
 pub enum Action {
@@ -95,6 +97,9 @@ pub struct Entry {
     /// The identity of the map's picture: its terrain's file, the palette it is painted in and
     /// how pictures are drawn. Cached pictures go by it.
     pub picture: String,
+    /// Why its terrain could not be read, once a picture of it was tried and could not be made:
+    /// it cannot be played or edited.
+    pub unreadable: Option<String>,
     palette: Arc<Palette>,
     /// What a search looks in, in lower case.
     search: String,
@@ -103,11 +108,12 @@ pub struct Entry {
 
 impl Entry {
     pub fn available(&self, preferences: &ta_config::maps::Maps) -> bool {
-        self.active && !self.shadowed && !self.campaign && self.players >= 2 && preferences.is_enabled(&self.layer, &self.stem)
+        self.active && !self.shadowed && !self.campaign && self.players >= 2 && self.unreadable.is_none() && preferences.is_enabled(&self.layer, &self.stem)
     }
     pub fn status(&self, preferences: &ta_config::maps::Maps) -> &'static str {
         if !self.active { n("SOURCE DISABLED") }
         else if self.shadowed { n("OVERRIDDEN") }
+        else if self.unreadable.is_some() { n("UNREADABLE") }
         else if self.campaign { n("CAMPAIGN MAP") }
         else if self.players < 2 { n("EDITOR ONLY") }
         else if !preferences.is_enabled(&self.layer, &self.stem) { n("HIDDEN") }
@@ -187,6 +193,9 @@ pub struct Library {
     history_for: Option<Option<String>>,
     visible: Option<(u64, Vec<usize>)>,
     generation: u64,
+    /// Goes up as maps are found unreadable (their pictures could not be made): what is
+    /// available changes with it.
+    unreadable_marks: u64,
     reveal_selected: Option<String>,
     job: Option<Job>,
     imported: VecDeque<String>,
@@ -200,7 +209,7 @@ impl Default for Library {
             size: Size::default(), world: String::new(), favourites: false, sort: Sort::default(), view: View::default(), selected: String::new(),
             feedback: None, needs_scan: false, released: false, loaded_for: None, cache: None, played: BTreeMap::new(),
             thumbs: Pictures::new("map cards", 2, 192), details: Pictures::new("map details", 1, 6), details_open: false, focused: None, notice: None,
-            history: None, history_for: None, visible: None, generation: 0, reveal_selected: None, job: None, imported: VecDeque::new(),
+            history: None, history_for: None, visible: None, generation: 0, unreadable_marks: 0, reveal_selected: None, job: None, imported: VecDeque::new(),
             pending_imports: VecDeque::new(), import_errors: Vec::new() }
     }
 }
@@ -231,13 +240,19 @@ impl Library {
     }
     /// Wait only at application shutdown, then collect a completed import before the
     /// profile's settings are flushed. A closed launcher must not abandon publication (the
-    /// import under way); those not started are dropped (closing asked first).
+    /// import under way); those not started are dropped (closing asked first), and a look
+    /// through the maps is let go of (it writes nothing: nothing waits for it).
     pub fn finish(&mut self, ctx: &egui::Context) -> Vec<String> {
         // (Imports not started yet are dropped: the one under way finishes, the window does not
         // wait minutes for the rest.)
         if !self.pending_imports.is_empty() {
             log::info!("closing: {} map imports not started are dropped", self.pending_imports.len());
             self.pending_imports.clear();
+        }
+        if self.job.as_ref().is_some_and(|job| matches!(job.kind, JobKind::Scan)) {
+            log::info!("closing: the look through the maps under way is not waited for");
+            // (Its worker let go of: it ends on its own, its catalogue sent to no one.)
+            self.job = None;
         }
         while self.busy() {
             self.poll(ctx);
@@ -296,8 +311,10 @@ impl Library {
         });
     }
     pub fn poll(&mut self, ctx: &egui::Context) {
+        let failures = self.thumbs.failures() + self.details.failures();
         self.thumbs.poll(ctx);
         self.details.poll(ctx);
+        if self.thumbs.failures() + self.details.failures() != failures { self.mark_unreadable(); }
         if let Some(history) = &self.history {
             match history.try_recv() {
                 Ok(played) => { self.played = played; self.history = None; self.visible = None; }
@@ -330,6 +347,7 @@ impl Library {
                     // current filters before selecting a playable default.
                     self.selected.clear();
                 }
+                self.prune_pictures();
                 self.prefetch();
             }
             Ok(Completed::Import(id, count)) => {
@@ -360,6 +378,41 @@ impl Library {
             }
         }
     }
+    /// Marks the maps whose pictures could not be made as unreadable, with why (the pictures go by
+    /// the terrain's identity: a map's terrain that does not read makes none).
+    fn mark_unreadable(&mut self) {
+        let mut changed = false;
+        for entry in &mut self.catalogue.entries {
+            let why = self.thumbs.failure(&entry.picture).or_else(|| self.details.failure(&entry.picture));
+            if entry.unreadable.as_deref() != why {
+                entry.unreadable = why.map(str::to_string);
+                changed = true;
+            }
+        }
+        if changed { self.unreadable_marks += 1; }
+    }
+
+    /// Lets go of the card pictures cached on disk for maps no longer there, or changed since (a
+    /// picture is cached by its terrain's identity), away from the interface.
+    fn prune_pictures(&self) {
+        let Some(dir) = self.cache.clone() else { return };
+        let keys: Vec<String> = self.catalogue.entries.iter().map(|entry| card_cache_key(&entry.picture)).collect();
+        if let Err(error) = std::thread::Builder::new().name("map pictures pruned".into()).spawn(move || library::prune_cache(&dir, &keys)) {
+            log::warn!("could not prune the map pictures: {error}");
+        }
+    }
+
+    /// A look through the maps that goes on until the sender is used or dropped: for tests.
+    #[cfg(test)]
+    pub(crate) fn pretend_scanning(&mut self) -> mpsc::Sender<()> {
+        let (release, wait) = mpsc::channel::<()>();
+        self.start(JobKind::Scan, move || {
+            let _ = wait.recv();
+            Ok(Completed::Scan(Box::default()))
+        });
+        release
+    }
+
     pub fn take_imported(&mut self) -> Option<String> { self.imported.pop_front() }
     /// What finished since it was last asked, once (an import, or a failure) and whether it failed.
     pub fn take_notice(&mut self) -> Option<(String, bool)> { self.notice.take() }
@@ -420,6 +473,8 @@ impl Library {
         (self.generation, &self.query, self.filter, &self.source, self.players, self.size, &self.world, self.favourites, self.sort).hash(&mut hash);
         (&preferences.disabled, &preferences.favourites).hash(&mut hash);
         if self.size != Size::Any || self.sort == Sort::Size { (self.thumbs.generation(), self.details.generation()).hash(&mut hash); }
+        // (A map found unreadable is no longer available.)
+        if matches!(self.filter, Filter::Available | Filter::Unavailable) { self.unreadable_marks.hash(&mut hash); }
         let stamp = hash.finish();
         if let Some((cached, visible)) = &self.visible && *cached == stamp { return visible.clone(); }
         let query = self.query.trim().to_lowercase();
@@ -482,7 +537,9 @@ impl Library {
     /// whether it could not be.
     pub fn thumb(&mut self, index: usize) -> (Option<egui::TextureHandle>, bool) {
         let Some(entry) = self.catalogue.entries.get(index) else { return (None, true) };
-        if self.thumbs.wanted(&entry.picture) { self.thumbs.request(entry.picture.clone(), make_picture(entry, self.cache.clone(), CARD_SIDE)); }
+        // (Not while the game and mods are let go of: no picture could be made from them, and the
+        // map would be taken for unreadable.)
+        if self.thumbs.wanted(&entry.picture) && !self.released { self.thumbs.request(entry.picture.clone(), make_picture(entry, self.cache.clone(), CARD_SIDE)); }
         (self.thumbs.get(&entry.picture), self.thumbs.failed(&entry.picture))
     }
 
@@ -498,7 +555,7 @@ impl Library {
     /// the details yet (a narrow one), and they open at once when it does.
     pub fn want_details(&mut self) {
         let Some(entry) = self.catalogue.entries.iter().find(|entry| entry.key == self.selected) else { return };
-        if self.details.wanted(&entry.picture) {
+        if self.details.wanted(&entry.picture) && !self.released {
             self.details.cancel_queued();
             self.details.request(entry.picture.clone(), make_picture(entry, None, DETAILS_SIDE));
         }
@@ -514,8 +571,15 @@ impl Library {
 }
 
 impl Drop for Library {
-    fn drop(&mut self) { if let Some(job) = self.job.take() { let _ = job.worker.join(); } }
+    /// An import under way is waited for (its pack is published whole); a look through the maps
+    /// is not: it writes nothing.
+    fn drop(&mut self) {
+        if let Some(job) = self.job.take() && matches!(job.kind, JobKind::Import) { let _ = job.worker.join(); }
+    }
 }
+
+/// What a map's card picture is cached under (its terrain's identity and the picture's size).
+fn card_cache_key(picture: &str) -> String { format!("{picture}|{CARD_SIDE}") }
 
 /// A map's name as a battle records it, in lower case without its folder or extension.
 fn normal_stem(map: &str) -> String {
@@ -542,7 +606,7 @@ fn make_picture(entry: &Entry, cache: Option<PathBuf>, side: u32) -> impl FnOnce
         let bytes = vfs.read(&format!("maps/{stem}.tnt"))?;
         let map = TntMap::parse(&bytes)?;
         let picture = ta_render::map_preview::render(&map, &palette, side);
-        ensure!(picture.width > 0 && picture.height > 0, "this map has no picture");
+        ensure!(picture.width > 0 && picture.height > 0, "{}", ta_ui::i18n::t("it is empty"));
         let image = egui::ColorImage::from_rgba_unmultiplied([picture.width, picture.height], &picture.rgba);
         if let Some(file) = &file
             && std::fs::create_dir_all(file.parent().unwrap_or(Path::new("."))).is_ok()
@@ -645,8 +709,11 @@ pub fn scan(request: Request) -> Result<Catalogue> {
     let effective = game.vfs;
     for info in &request.mods {
         let mut vfs = Vfs::new();
+        // (The pack of Supreme Commander's maps by its name in the language in use: its manifest
+        // keeps it in English.)
+        let name = crate::supcom::mod_name(&info.manifest).to_string();
         match mount(&mut vfs, info) {
-            Ok(()) => sources.push((Arc::new(vfs), info.manifest.name.clone(), mounted.contains(&info.manifest.id))),
+            Ok(()) => sources.push((Arc::new(vfs), name, mounted.contains(&info.manifest.id))),
             Err(error) => out.warnings.push(error.to_string()),
         }
     }
@@ -672,7 +739,7 @@ pub fn scan(request: Request) -> Result<Catalogue> {
             let campaigns = if active && !shadowed { &effective_campaigns }
                 else { source_campaigns.get_or_insert_with(|| campaign_maps(&vfs)) };
             let bytes = assets.read_opt(&format!("maps/{stem}.ota")).unwrap_or_default();
-            if bytes.len() > 1 << 20 { out.warnings.push(format!("{stem}: map description exceeds 1 MiB")); continue; }
+            if bytes.len() > 1 << 20 { out.warnings.push(ta_ui::i18n::tf("{map}: its description is over 1 MiB, so the map is left out.", &[("map", &stem)])); continue; }
             let info = ta_data::MapInfo::from_ota(&tdf::parse_bytes(&bytes));
             let listed = info.schemas.first().map_or(0, |schema| schema.start_positions.len());
             let designed = info.num_players.split(|c: char| !c.is_ascii_digit()).filter_map(|number| number.parse::<usize>().ok()).max();
@@ -703,7 +770,7 @@ pub fn scan(request: Request) -> Result<Catalogue> {
                 players, source, origin: map_origin, layer: origin.layer.clone(), path: origin.path.clone(),
                 active, shadowed, campaign, min_wind: info.min_wind, max_wind: info.max_wind, tidal: info.tidal_strength,
                 gravity: info.gravity, lava: info.lava_world, water_damage: if info.water_does_damage { info.water_damage.max(0.0) } else { 0.0 },
-                picture, palette, search, vfs: assets.clone(),
+                picture, unreadable: None, palette, search, vfs: assets.clone(),
             });
         }
     }
@@ -772,13 +839,14 @@ impl Workspace {
         // The folders made for imports (`cache` and `map-imports` in the settings folder) must be
         // the launcher's own. Above them the folders are the player's: a settings folder (or a
         // whole user folder) moved to another drive and linked back is theirs to make.
+        use ta_ui::i18n::t;
         for folder in [root.parent(), Some(root)].into_iter().flatten() {
             if let Ok(metadata) = std::fs::symlink_metadata(folder) {
-                ensure!(metadata.is_dir() && !is_link(&metadata), "map workspace path contains a link or non-directory");
+                ensure!(metadata.is_dir() && !is_link(&metadata), "{}", t(import_errors::WORKSPACE_LINK));
             }
         }
         std::fs::create_dir_all(root)?;
-        ensure!(!is_link(&std::fs::symlink_metadata(root)?), "map library must be an ordinary directory");
+        ensure!(!is_link(&std::fs::symlink_metadata(root)?), "{}", t(import_errors::LIBRARY_FOLDER));
         for sequence in 0..1000 {
             let path = root.join(format!(".maps-{}-{}-{sequence}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos()));
             match std::fs::create_dir(&path) {
@@ -787,7 +855,7 @@ impl Workspace {
                 Err(error) => return Err(error.into()),
             }
         }
-        bail!("could not create private map workspace")
+        bail!("{}", t(import_errors::NO_WORKSPACE))
     }
 }
 impl Drop for Workspace { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
@@ -813,21 +881,29 @@ mod import_errors {
     pub const CONTENT_TOO_LARGE: &str = n("map content exceeds 2 GiB");
     pub const NO_OTA: &str = n("map is missing its OTA description: {path}");
     pub const BAD_TERRAIN: &str = n("invalid terrain: {path}");
+    pub const OPENING: &str = n("the map package could not be opened");
+    pub const LIBRARY_FOLDER: &str = n("the map library must be an ordinary folder");
+    pub const NO_PARENT: &str = n("the map library has no folder above it");
+    pub const WORKSPACE_LINK: &str = n("the folder maps are imported in is a link or not a folder");
+    pub const NO_WORKSPACE: &str = n("a folder to import the maps in could not be made");
+    pub const TOO_MANY_FILES: &str = n("the map package has too many files");
+    pub const UNSAFE_PATH: &str = n("the map package has a file of an unsafe name: {path}");
     /// Every one (the test that each is translated).
     #[cfg(test)]
-    pub const ALL: [&str; 13] = [ORDINARY_FILE, PACKAGE_TOO_LARGE, KIND, SEVEN_ZIP, NO_MAPS_FOUND, FOLDERS, UNREADABLE,
-        GAME_DATA, NON_MAP_DATA, MAP_COUNT, CONTENT_TOO_LARGE, NO_OTA, BAD_TERRAIN];
+    pub const ALL: [&str; 20] = [ORDINARY_FILE, PACKAGE_TOO_LARGE, KIND, SEVEN_ZIP, NO_MAPS_FOUND, FOLDERS, UNREADABLE,
+        GAME_DATA, NON_MAP_DATA, MAP_COUNT, CONTENT_TOO_LARGE, NO_OTA, BAD_TERRAIN, OPENING, LIBRARY_FOLDER, NO_PARENT,
+        WORKSPACE_LINK, NO_WORKSPACE, TOO_MANY_FILES, UNSAFE_PATH];
 }
 
 pub fn import(path: &Path, mods_dir: &Path) -> Result<(String, usize)> {
     use ta_ui::i18n::t;
-    let metadata = std::fs::symlink_metadata(path).context("opening map package")?;
+    let metadata = std::fs::symlink_metadata(path).context(t(import_errors::OPENING))?;
     ensure!(metadata.is_file() && !is_link(&metadata), "{}", t(import_errors::ORDINARY_FILE));
     ensure!(metadata.len() <= 2 << 30, "{}", t(import_errors::PACKAGE_TOO_LARGE));
     if let Ok(metadata) = std::fs::symlink_metadata(mods_dir) {
-        ensure!(metadata.is_dir() && !is_link(&metadata), "map library must be an ordinary directory");
+        ensure!(metadata.is_dir() && !is_link(&metadata), "{}", t(import_errors::LIBRARY_FOLDER));
     }
-    let workspace = Workspace::new(&mods_dir.parent().context("map library has no parent directory")?.join("cache").join("map-imports"))?;
+    let workspace = Workspace::new(&mods_dir.parent().context(t(import_errors::NO_PARENT))?.join("cache").join("map-imports"))?;
     let mut vfs = Vfs::new();
     let extension = path.extension().and_then(|value| value.to_str()).unwrap_or("").to_ascii_lowercase();
     if ta_vfs::ARCHIVE_EXTENSIONS.contains(&extension.as_str()) {
@@ -855,9 +931,9 @@ fn install_map_data(vfs: &Vfs, mods_dir: &Path, workspace: &Path, name: &str) ->
     // The archive containers and readmes themselves are not game data. Root files
     // and documentation are never installed, including any bundled executables.
     let files: Vec<_> = vfs.list("", None, true).into_iter().filter(|path| path.contains('/') && !path.starts_with("docs/")).collect();
-    ensure!(files.len() <= 20_000, "map package has too many files");
+    ensure!(files.len() <= 20_000, "{}", t(import_errors::TOO_MANY_FILES));
     for path in &files {
-        ensure!(path.split('/').all(package::safe_component), "unsafe map asset path: {path}");
+        ensure!(path.split('/').all(package::safe_component), "{}", tf(import_errors::UNSAFE_PATH, &[("path", path)]));
         ensure!(map_asset(path), "{}", tf(import_errors::NON_MAP_DATA, &[("path", path)]));
     }
     let maps = vfs.list("maps", Some("tnt"), false);
@@ -881,8 +957,9 @@ fn install_map_data(vfs: &Vfs, mods_dir: &Path, workspace: &Path, name: &str) ->
         std::fs::write(target, bytes)?;
     }
     let id = format!("map-pack-{:x}", hash.finalize());
+    // (Its words kept in English, as a mod's own are: the Mods page shows them translated.)
     let manifest = ModManifest { id: id.clone(), name: name.to_string(), version: String::new(),
-        description: "Imported map pack".into(), authors: Vec::new(), depends: Vec::new(), load_after: Vec::new(), source: String::new(), rename: BTreeMap::new(), replaces: Vec::new(), ..Default::default() };
+        description: IMPORTED_PACK.into(), authors: Vec::new(), depends: Vec::new(), load_after: Vec::new(), source: String::new(), rename: BTreeMap::new(), replaces: Vec::new(), ..Default::default() };
     // The existing package transaction validates paths, locks the pack, stages files,
     // and rolls back a failed replacement. Only the private copy is moved.
     package::install(&package::plan(&payload)?, &manifest, mods_dir)?;
@@ -993,7 +1070,7 @@ pub(crate) mod tests {
         assert_eq!(of("lakes"), (Origin::CoreContingency, "Core Contingency".into(), None));
         assert_eq!(of("ridges"), (Origin::BattleTactics, "Battle Tactics".into(), None));
         assert_eq!(of("pack"), (Origin::Mod, "tamec.ufo".into(), None));
-        assert_eq!(of("setons clutch (sc)"), (Origin::SupremeCommander, "Source map-pack-supreme-commander".into(), Some("SUPREME COMMANDER")));
+        assert_eq!(of("setons clutch (sc)"), (Origin::SupremeCommander, "Supreme Commander maps".into(), Some("SUPREME COMMANDER")), "the pack by its name in the language in use");
         // The source filter by name: the expansions' maps apart from TA's.
         let preferences = ta_config::maps::Maps::default();
         let named = |source: &str| catalogue.entries.iter().filter(|entry| matches(entry, &preferences, "", Filter::All, source)).count();
@@ -1130,6 +1207,99 @@ pub(crate) mod tests {
         assert_eq!(normal_stem("Maps\\Coast To Coast.tnt"), "coast to coast");
         assert_eq!(typed_size(" 12 x 10  Islands"), Some((12, 10)));
         assert_eq!(typed_size("2 v 2 on islands"), None);
+    }
+
+    /// A map whose terrain does not read (its picture could not be made from it) is marked
+    /// unreadable, with why: not available, not offered by the AVAILABLE filter, while the rest
+    /// still are.
+    #[test]
+    fn a_map_whose_terrain_does_not_read_is_unreadable_not_available() {
+        let temp = Temp::new(); let source = temp.0.join("source");
+        map(&source, "coast", "Coast"); map(&source, "broken", "Broken Map");
+        std::fs::write(source.join("maps/broken.tnt"), b"broken").unwrap();
+        let mut library = Library::default();
+        library.catalogue = scan(Request { game_dir: Some(source), builtin: None, mods: Vec::new(), enabled: Vec::new() }).unwrap();
+        let preferences = ta_config::maps::Maps::default();
+        let find = |library: &Library, stem: &str| library.catalogue.entries.iter().find(|entry| entry.stem == stem).unwrap().clone();
+        assert!(find(&library, "broken").available(&preferences), "nothing known of its terrain yet");
+        library.filter = Filter::Available;
+        assert_eq!(library.visible(&preferences).len(), 2);
+        library.prefetch();
+        let ctx = egui::Context::default();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !library.thumbs.idle() && std::time::Instant::now() < until {
+            library.poll(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        library.poll(&ctx);
+        let broken = find(&library, "broken");
+        assert!(broken.unreadable.as_deref().is_some_and(|why| !why.is_empty()), "{:?}", broken.unreadable);
+        assert_eq!(broken.status(&preferences), "UNREADABLE");
+        assert!(!broken.available(&preferences));
+        assert!(find(&library, "coast").unreadable.is_none() && find(&library, "coast").available(&preferences));
+        let titles = |library: &mut Library| library.visible(&preferences).into_iter().map(|index| library.catalogue.entries[index].title.clone()).collect::<Vec<_>>();
+        assert_eq!(titles(&mut library), ["Coast"], "no longer offered as available");
+        library.filter = Filter::Unavailable;
+        assert_eq!(titles(&mut library), ["Broken Map"]);
+    }
+
+    /// The card pictures cached for maps no longer there, or changed since, are deleted once the
+    /// maps are looked through; those of the maps there, and what is not the cache's, are kept.
+    #[test]
+    fn cached_pictures_of_maps_gone_or_changed_are_let_go_of() {
+        let temp = Temp::new();
+        let source = temp.0.join("source"); map(&source, "coast", "Coast");
+        let cache = temp.0.join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let picture = egui::ColorImage::filled([4, 4], egui::Color32::RED);
+        let gone = library::cache_file(&cache, &card_cache_key("base|old map|gone|1|2|aa|v1"));
+        library::write_cached(&gone, &picture);
+        std::fs::write(gone.with_extension("size"), "16 16").unwrap();
+        let theirs = cache.join("notes.txt");
+        std::fs::write(&theirs, "not the cache's").unwrap();
+        // (One being written, and one left half written by a launcher that stopped long ago.)
+        let writing = gone.with_extension("123.part");
+        std::fs::write(&writing, b"half").unwrap();
+        let abandoned = library::cache_file(&cache, "abandoned").with_extension("456.part");
+        std::fs::write(&abandoned, b"half").unwrap();
+        std::fs::File::options().write(true).open(&abandoned).unwrap().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(7200)).unwrap();
+        let mut library = Library::default();
+        library.cache = Some(cache.clone());
+        library.scan(Request { game_dir: Some(source), builtin: None, mods: Vec::new(), enabled: Vec::new() });
+        let ctx = egui::Context::default();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while (library.busy() || !library.thumbs.idle()) && std::time::Instant::now() < until {
+            library.poll(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let kept = library::cache_file(&cache, &card_cache_key(&library.catalogue.entries[0].picture));
+        while (gone.exists() || !kept.exists()) && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(kept.exists() && kept.with_extension("size").exists(), "the map there keeps its picture and size");
+        assert!(!gone.exists() && !gone.with_extension("size").exists(), "the one gone does not");
+        assert!(theirs.exists() && writing.exists(), "nor is anything else touched, or a picture being written");
+        assert!(!abandoned.exists(), "one left half written long ago goes");
+    }
+
+    /// Closing does not wait for a look through the maps (it writes nothing); nor does a library
+    /// let go of with one under way.
+    #[test]
+    fn closing_does_not_wait_for_a_look_through_the_maps() {
+        let ctx = egui::Context::default();
+        let mut library = Library::default();
+        let hold = library.pretend_scanning();
+        assert!(library.busy() && !library.importing());
+        let started = std::time::Instant::now();
+        // (Let go of in ten seconds whatever happens: no wait must take that long.)
+        std::thread::spawn(move || { std::thread::sleep(std::time::Duration::from_secs(10)); drop(hold); });
+        assert!(library.finish(&ctx).is_empty());
+        assert!(!library.busy());
+        let mut dropped = Library::default();
+        let hold = dropped.pretend_scanning();
+        std::thread::spawn(move || { std::thread::sleep(std::time::Duration::from_secs(10)); drop(hold); });
+        drop(dropped);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "waited {:?}", started.elapsed());
     }
 
     #[test]

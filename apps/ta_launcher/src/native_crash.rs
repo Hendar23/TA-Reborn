@@ -29,6 +29,18 @@ pub fn what_failed(module: &str, code: u32) -> String {
     }
 }
 
+/// What the box says of a crash in `module` (its file's name): in the language of the menus,
+/// where the report (`what_failed`) stays in English.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn box_text(module: &str, code: u32, report: &str) -> String {
+    use ta_ui::i18n::tf;
+    if graphics_module(&module.to_ascii_lowercase()) {
+        tf("The launcher crashed: the graphics driver ({module}) failed. Updating the graphics driver may help.\n\nThe details were saved to {path}.", &[("module", &module), ("path", &report)])
+    } else {
+        tf("The launcher crashed: exception {code} in {module}.\n\nThe details were saved to {path}.", &[("code", &format!("{code:#010x}")), ("module", &module), ("path", &report)])
+    }
+}
+
 /// Reports native crashes to `path` from now on (no box in captures and films: `unattended`).
 #[cfg(windows)]
 pub fn report_native_crashes(path: PathBuf, unattended: bool) {
@@ -74,8 +86,7 @@ pub fn report_native_crashes(path: PathBuf, unattended: bool) {
         }
         if !UNATTENDED.get().copied().unwrap_or(false) {
             use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
-            let advice = if graphics_module(&module.to_ascii_lowercase()) { "\n\nUpdating the graphics driver may help." } else { "" };
-            let text = format!("The launcher crashed: {what}.{advice}\n\nThe details were saved to {}.", PATH.get().map_or_else(String::new, |p| p.display().to_string()));
+            let text = box_text(&module, code, &PATH.get().map_or_else(String::new, |p| p.display().to_string()));
             let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
             let (text, title) = (wide(&text), wide("TA Reborn"));
             // SAFETY: a message box of our own, its strings ending in a nul and alive while it shows.
@@ -105,5 +116,15 @@ mod tests {
         assert_eq!(what_failed("amdvlk64.dll", 0xc0000005), "the graphics driver (amdvlk64.dll) failed");
         assert_eq!(what_failed("igvk64.dll", 0xc0000005), "the graphics driver (igvk64.dll) failed");
         assert_eq!(what_failed("ta-launcher.exe", 0xc0000005), "exception 0xc0000005 in ta-launcher.exe");
+    }
+
+    /// The box says the same as the report does, in the menus' words (English here): the
+    /// driver's advice only for a driver's crash.
+    #[test]
+    fn the_crash_box_says_what_failed_and_where_the_report_is() {
+        let driver = box_text("nvoglv64.dll", 0xc0000005, r"C:\logs\launcher-crash.txt");
+        assert!(driver.contains("the graphics driver (nvoglv64.dll) failed") && driver.contains("Updating the graphics driver may help") && driver.ends_with(r"C:\logs\launcher-crash.txt."), "{driver}");
+        let other = box_text("ta-launcher.exe", 0xc0000005, "crash.txt");
+        assert!(other.contains("exception 0xc0000005 in ta-launcher.exe") && !other.contains("driver"), "{other}");
     }
 }

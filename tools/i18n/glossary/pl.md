@@ -632,3 +632,23 @@ te kolory, a także …”, joined by a comma („własną czcionkę, obrazy w t
 | plates (the HUD's, panel_texture tiled behind them) / the side's own metal plates | płyty („na obrazie płyt {path}”) / własne metalowe płyty frakcji |
 | line spacing (a font's) | interlinia |
 | TURN OFF {name} / STOP PREVIEW (beside ODTWÓRZ PODGLĄD) | WYŁĄCZ {name} (as WŁĄCZ {name}) / ZATRZYMAJ PODGLĄD |
+
+## The launcher's QA fixes: a damaged service record, unreadable profiles, errors (`profile_page.rs`, `profiles.rs`, `play.rs`, `http.rs`, `maps.rs`, `skins.rs`, `supcom.rs`, `widgets.rs`)
+
+| English | Polski |
+|---|---|
+| damaged (a file) / unreadable (a profile; a map's badge UNREADABLE) | uszkodzony / nieczytelny (USUNĄĆ NIECZYTELNY PROFIL?; badge NIECZYTELNA, as UKRYTA, DOSTĘPNA) |
+| The unreadable profile (fills {name} in „Usunięto {name} (jest w Koszu)”) | nieczytelny profil (lowercase: it stands mid-sentence in most of them; nominative, as names are) |
+| set aside (the damaged career file) / put it right / PUT IT RIGHT | odłożyć na bok / naprawić / NAPRAW |
+| START A FRESH CAREER / CAREER NEEDS ATTENTION / SERVICE RECORD UNREADABLE | ROZPOCZNIJ NOWĄ KARIERĘ / KARIERA WYMAGA UWAGI / NIECZYTELNY PRZEBIEG SŁUŻBY |
+| MOVE TO RECYCLE BIN | PRZENIEŚ DO KOSZA |
+| the Profile page / the Maps page | strona PROFIL / strona MAPY (as strona GRAJ) |
+| setup (the downloaded installer) / graphics driver / the launcher crashed | instalator / sterownik karty graficznej / Launcher uległ awarii |
+| id (a skin's) / KEEP BOTH (an imported skin beside an installed one) | identyfikator / ZACHOWAJ OBIE |
+| YOURS AND ALLIES / ENEMY UNITS (whose units wear a skin) | TY I SOJUSZNICY / WROGIE JEDNOSTKI |
+| RUNNING (the PLAY button while the game runs) | TRWA GRA (as TRWA POMIAR) |
+| key names in shortcut labels | as printed: Alt, Ctrl, Shift, Enter, Esc, Tab, Home, End; the Mac's Cmd, Option |
+| screen-reader marks OK / Not present / Error; "{content}: found / not found" | OK / Brak / Błąd; „{content}: znaleziono / nie znaleziono” (impersonal: no agreement with the label) |
+| error fragments filling {error}, {why} | lowercase clauses („upłynął limit czasu połączenia”, „jest pusty”) |
+| None of the {n} maps could be made / but {failed} could not be made | „Nie udało się utworzyć żadnej mapy (nieudane: {n})” / „nie udało się utworzyć: {failed}” (count-safe) |
+| Hue / Saturation and brightness (colour picker, spoken) | Odcień / Nasycenie i jasność („nasycenie {s}%, jasność {v}%”) |

@@ -7,7 +7,9 @@ TA Reborn or kept in this repository.
 
 - **Players:** the launcher's Maps page, **SUPREME COMMANDER…**. The dialog finds the game,
   lists its skirmish maps and the player's own (downloaded maps and Forged Alliance Forever's
-  vault) with the game's own pictures of them, and makes the chosen ones, one after another:
+  vault) with the game's own pictures of them, and makes the chosen ones, one after another (at
+  first the game's own maps not imported yet, or changed since, are chosen; the player's own
+  never are; after an import, only those not made stay chosen, to try again):
   most in seconds, the largest in up to about three minutes; all 54 of the game's take about 20
   minutes and 1.2 GB. STOP AFTER THIS MAP ends it once the map in hand is made; closing the
   launcher asks first, then ends it at once, the map in hand left out. Either way the maps made

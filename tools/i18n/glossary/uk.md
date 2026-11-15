@@ -609,3 +609,24 @@ Keys, `[table]`, `[{table}]`, `depends`, `load_after`, `conflicts`, `panel_textu
 | one frame in {stride} / choppier than it was made | один кадр із {stride} / менш плавно, ніж в оригіналі |
 | plates (the HUD's metal plates) / its plates' picture / the side's own metal plates | панелі / фонове зображення панелей / власні металеві панелі сторони |
 | line spacing / its letters show at {percent}% | міжрядковий інтервал / літери відображаються в масштабі {percent}% ("в {line} раза": раза after a fraction) |
+
+## A damaged service record, unreadable profiles and the launcher's errors (`profile_page.rs`, `profiles.rs`, `play.rs`, `http.rs`, `maps.rs`, `skins.rs`)
+
+A button named in a launcher sentence goes in «», with кнопка where it is the subject ("кнопка «КЕРУВАННЯ ПРОФІЛЯМИ» покаже його", as "кнопка «ПЕРЕВІРИТИ ЗАРАЗ»"; the mod check's ПРО МОД / ПОВТОРИТИ ТЕСТ stay bare); the Recycle Bin is always Кошик, capitalised (the skins page's older lines have "до кошика").
+
+| English | Українська |
+|---|---|
+| could not be read / unreadable (the service record, a profile, a map's terrain) | не вдалося прочитати / не читається (ПОСЛУЖНИЙ СПИСОК НЕ ЧИТАЄТЬСЯ; the map pill UNREADABLE: НЕ ЧИТАЄТЬСЯ); a profile: нечитабельний профіль (НЕЧИТАБЕЛЬНІ ПРОФІЛІ), as "нечитабельні архіви карт" |
+| START A FRESH CAREER… / ? / a fresh career begins | ПОЧАТИ КАР'ЄРУ НАНОВО… / ? / починається нова кар'єра |
+| PUT IT RIGHT / repair (a file) | ВИПРАВИТИ / виправити файл |
+| set aside (the damaged career.toml, renamed career.damaged-…) | зберегти окремо |
+| CAREER NEEDS ATTENTION (the Play page's title) | КАР'ЄРА ПОТРЕБУЄ УВАГИ |
+| RUNNING (the PLAY slab while the game runs) | ЗАПУЩЕНО (as the screen reader's Running: Запущено) |
+| screen reader marks OK / Not present / Error | У нормі / Немає (no gender to agree) / Помилка |
+| lower-case fragments after a colon ({error}, {why}) | lower-case clauses: "сервер не знайдено: чи підключено комп'ютер до інтернету?", "минув час очікування з'єднання", "він порожній" (рельєф) |
+| the launcher crashed | лаунчер аварійно завершив роботу |
+| id (a skin's) / KEEP BOTH (an imported skin beside yours) | ідентифікатор / ЗАЛИШИТИ ОБИДВА |
+| YOURS AND ALLIES / ENEMY UNITS / YOUR SKINS (the skins page) | ВАШІ Й СОЮЗНІ / ВОРОЖІ ЮНІТИ / ВАШІ СКІНИ |
+| Hue / Saturation and brightness (the colour picker, spoken) | Відтінок / Насиченість і яскравість |
+| LEGAL / THE PROJECT (About's headings) / MUSIC OPTIONS | ПРАВОВА ІНФОРМАЦІЯ / ПРО ПРОЄКТ / ПАРАМЕТРИ МУЗИКИ (options: параметри) |
+| MiB | МіБ (as ГіБ) |

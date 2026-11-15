@@ -1644,6 +1644,16 @@ impl Config {
 /// changes to them, though it keeps the rest of the launcher's section as the file has it.
 const SHARED_LAUNCHER_KEYS: [&str; 2] = ["seasonal_effects", "seasonal_theme"];
 
+impl Launcher {
+    /// Takes from `other` the settings of this section the game's options change too
+    /// ([`SHARED_LAUNCHER_KEYS`]: the seasons); the rest stay this one's (the launcher keeping its
+    /// own section as it has it, but for what the game saved of those).
+    pub fn take_shared(&mut self, other: &Launcher) {
+        self.seasonal_effects = other.seasonal_effects;
+        self.seasonal_theme = other.seasonal_theme;
+    }
+}
+
 fn check_settings_size(bytes: u64) -> std::io::Result<()> {
     if bytes > MAX_CONFIG_BYTES {
         Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "settings file exceeds the 4 MiB limit"))
@@ -1733,6 +1743,24 @@ fn put_changes(base: &toml::Value, mine: &toml::Value, theirs: &mut toml::Value)
 #[cfg(test)]
 mod preset_tests {
     use super::*;
+
+    /// What the launcher takes of its own section from the file after a game is exactly what the
+    /// game saves of it: every key of [`SHARED_LAUNCHER_KEYS`], and nothing else.
+    #[test]
+    fn the_launcher_takes_the_shared_keys_and_only_those() {
+        // (Every field set apart from its default: a new one has to be set here too.)
+        let other = Launcher { on_play: OnPlay::Close, seasonal_effects: false, seasonal_theme: SeasonalTheme::Halloween, themed_cursor: false,
+            window: Some([800.0, 600.0]), maximized: true, seen_version: "9.9.9".into() };
+        let mut mine = Launcher::default();
+        mine.take_shared(&other);
+        let value = |launcher: &Launcher| toml::Value::try_from(launcher).unwrap();
+        let (mine, other, default) = (value(&mine), value(&other), value(&Launcher::default()));
+        for (key, theirs) in other.as_table().unwrap() {
+            let expected = if SHARED_LAUNCHER_KEYS.contains(&key.as_str()) { Some(theirs) } else { default.get(key) };
+            assert_eq!(mine.get(key), expected, "{key}");
+            assert!(SHARED_LAUNCHER_KEYS.contains(&key.as_str()) || default.get(key) != Some(theirs), "{key} is set apart from its default");
+        }
+    }
 
     #[test]
     fn alternating_game_and_launcher_edits_merge_by_field() {

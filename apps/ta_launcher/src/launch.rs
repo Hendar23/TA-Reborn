@@ -83,18 +83,15 @@ impl GameState {
 /// show it in).
 pub fn launch(game_dir: &Path, log_dir: &Path, profile_root: &Path, profile_id: Option<&str>, extra: &[OsString]) -> GameState {
     let Some(exe) = game_exe() else {
-        return GameState::Failed(ta_ui::i18n::t("Could not tell where the launcher is installed.").to_string());
+        return failed(ta_ui::i18n::t("Could not tell where the launcher is installed.").to_string());
     };
     if !exe.is_file() {
-        return GameState::Failed(ta_ui::i18n::tf(
-            "{exe} was not found next to the launcher (expected {path}). Reinstall TA Reborn, or build it with `cargo build -p ta_game`.",
-            &[("exe", &GAME_EXE), ("path", &exe.display())],
-        ));
+        return failed(missing_exe(&exe, cfg!(debug_assertions)));
     }
 
     let mut command = match game_command(&exe, game_dir, profile_root, profile_id, extra) {
         Ok(command) => command,
-        Err(e) => return GameState::Failed(ta_ui::i18n::tf("Could not start {exe}: {error}", &[("exe", &exe.display()), ("error", &e)])),
+        Err(e) => return failed(ta_ui::i18n::tf("Could not start {exe}: {error}", &[("exe", &exe.display()), ("error", &e)])),
     };
     let log = match open_log(log_dir) {
         Some((file, path)) => match file.try_clone() {
@@ -123,7 +120,27 @@ pub fn launch(game_dir: &Path, log_dir: &Path, profile_root: &Path, profile_id: 
     log::info!("launching {} --game-dir {} {}", exe.display(), game_dir.display(), extra.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" "));
     match command.spawn() {
         Ok(child) => GameState::Running { child, since: Instant::now(), started: SystemTime::now(), log },
-        Err(e) => GameState::Failed(ta_ui::i18n::tf("Could not start {exe}: {error}", &[("exe", &exe.display()), ("error", &e)])),
+        Err(e) => failed(ta_ui::i18n::tf("Could not start {exe}: {error}", &[("exe", &exe.display()), ("error", &e)])),
+    }
+}
+
+/// A launch that went wrong, as the Play page says it: written in the log too (what a report
+/// has to go on).
+pub fn failed(message: String) -> GameState {
+    log::warn!("the game was not started: {message}");
+    GameState::Failed(message)
+}
+
+/// The game's program is not beside the launcher: reinstall it (a `developer`'s build of the
+/// launcher is told how to build it, as no player's need be).
+fn missing_exe(exe: &Path, developer: bool) -> String {
+    if developer {
+        ta_ui::i18n::tf(
+            "{exe} was not found next to the launcher (expected {path}). Reinstall TA Reborn, or build it with `cargo build -p ta_game`.",
+            &[("exe", &GAME_EXE), ("path", &exe.display())],
+        )
+    } else {
+        ta_ui::i18n::tf("{exe} was not found next to the launcher (expected {path}). Reinstall TA Reborn to put it back.", &[("exe", &GAME_EXE), ("path", &exe.display())])
     }
 }
 
@@ -164,10 +181,23 @@ pub fn poll(state: &mut GameState, log_dir: &Path) -> bool {
             let crash = if status.success() { None } else { crash_report(log_dir, *started) };
             GameState::Exited { code: status.code(), success: status.success(), ran_for: since.elapsed(), log: log.take(), crash }
         }
-        Err(e) => GameState::Failed(ta_ui::i18n::tf("Lost track of the game process: {error}", &[("error", &e)])),
+        Err(e) => {
+            log::warn!("lost track of the game process: {e}");
+            GameState::Failed(ta_ui::i18n::tf("Lost track of the game process: {error}", &[("error", &e)]))
+        }
     };
     *state = next;
     false
+}
+
+/// The game's log (`game.log` in the logs), if it was written since `since`: a game the launcher
+/// follows but did not start (its own, started again with a battle's mods) writes it too.
+pub fn log_written_since(log_dir: &Path, since: SystemTime) -> Option<PathBuf> {
+    let log = log_dir.join("game.log");
+    let metadata = std::fs::metadata(&log).ok().filter(std::fs::Metadata::is_file)?;
+    let written = metadata.modified().ok()?;
+    // (A second's grace, as for the crash report.)
+    (!since.duration_since(written).is_ok_and(|age| age > Duration::from_secs(1))).then_some(log)
 }
 
 /// The game's crash report (`crash.txt` in the logs), if it was written since `since`: its
@@ -216,6 +246,32 @@ mod tests {
             GameState::Failed(message) => assert!(message.contains(GAME_EXE), "{message}"),
             other => panic!("expected a failure, got {other:?}"),
         }
+    }
+
+    /// A player's launcher without its game is told to reinstall, never to build it (a
+    /// developer's build is told that too).
+    #[test]
+    fn a_missing_game_is_told_to_players_as_players_mend_it() {
+        let exe = Path::new(r"C:\Program Files\TA Reborn").join(GAME_EXE);
+        let player = missing_exe(&exe, false);
+        assert!(player.contains(GAME_EXE) && player.contains("Reinstall TA Reborn") && !player.contains("cargo"), "{player}");
+        assert!(missing_exe(&exe, true).contains("cargo build -p ta_game"));
+        assert!(matches!(failed(player.clone()), GameState::Failed(message) if message == player));
+    }
+
+    /// The game's log is offered for a game followed but not started here when it was written
+    /// since that game was seen; an older one is another game's.
+    #[test]
+    fn a_followed_games_log_is_the_one_written_since_it_was_seen() {
+        let dir = std::env::temp_dir().join(format!("ta_launcher_log_since_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let seen = SystemTime::now();
+        assert_eq!(log_written_since(&dir, seen), None, "no log");
+        std::fs::write(dir.join("game.log"), "INFO TA Reborn\n").unwrap();
+        assert_eq!(log_written_since(&dir, seen), Some(dir.join("game.log")));
+        assert_eq!(log_written_since(&dir, seen + Duration::from_secs(60)), None, "written before the game was seen");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -179,7 +179,7 @@ impl LauncherApp {
 
     /// The armies' skins (click one to see it), and whether the enemy's follows yours.
     fn skin_armies(&mut self, ui: &mut Ui) {
-        let sides = [("YOURS AND ALLIES", self.config.graphics.unit_skin.clone(), GREEN), ("ENEMY UNITS", self.config.graphics.enemy_skin().to_owned(), AMBER)];
+        let sides = [(n("YOURS AND ALLIES"), self.config.graphics.unit_skin.clone(), GREEN), (n("ENEMY UNITS"), self.config.graphics.enemy_skin().to_owned(), AMBER)];
         let mut inspect = None;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(10.0, 6.0);
@@ -234,7 +234,8 @@ impl LauncherApp {
     fn skins_toolbar(&mut self, ui: &mut Ui) {
         let shortcuts = self.search_shortcuts_allowed(ui);
         let width = ui.available_width();
-        let filters = [(Filter::All, n("ALL")), (Filter::Builtin, n("BUILT IN")), (Filter::Custom, n("YOURS"))];
+        // (The skins of one's own: words of their own, not the jukebox's YOURS, "your music".)
+        let filters = [(Filter::All, n("ALL")), (Filter::Builtin, n("BUILT IN")), (Filter::Custom, n("YOUR SKINS"))];
         let hint = t("Search skins or creators…");
         let shown = self.matching_skins().len();
         let total = self.skins.catalog.entries.len();
@@ -306,7 +307,7 @@ impl LauncherApp {
             let card = Card { title: &name, detail: &detail, lamps: &lamps, star: false, selected: entry.id == browser.inspecting, spoken: &spoken, ribbon: None };
             let id = Id::new(("skin_card", &entry.id));
             let (picture, failed) = if ui.is_rect_visible(rect) {
-                browser.preview.thumbnail(&ctx, &entry.id, revision, root.clone(), &reference, cache.clone())
+                browser.preview.thumbnail(&ctx, &entry.id, entry.version, revision, root.clone(), &reference, cache.clone())
             } else { (None, false) };
             let paint = |ui: &Ui, frame: Rect| library::picture(ui, frame, picture.as_ref(), failed);
             let response = match view {
@@ -359,7 +360,8 @@ impl LauncherApp {
             let options: Vec<_> = crate::skins::Subjects::ALL.iter().map(|s| (*s, s.label())).collect();
             widgets::segmented_fill(ui, &mut self.skins.browser.subjects, &options).hover_tip(t("Show the skin on other units"));
             let units = self.skins.browser.subjects.units();
-            self.skins.browser.preview.show(ui, reference, self.store.dir().join("skins"), crate::skins::preview::Paint::Saved(entry.id.clone()), self.skins.preview_revision, &units, preview_height);
+            let paint = crate::skins::preview::Paint::Saved { id: entry.id.clone(), name: builtin_name(&entry.id).unwrap_or_else(|| entry.name.clone()), version: entry.version };
+            self.skins.browser.preview.show(ui, reference, self.store.dir().join("skins"), paint, self.skins.preview_revision, &units, preview_height);
             ui.add_space(space::S);
             super::wrapped(ui, &description(&entry), TEXT);
             self.skin_facts(ui, &entry);
@@ -368,7 +370,7 @@ impl LauncherApp {
             if !self.skins.catalog.errors.is_empty() {
                 ui.add_space(space::S);
                 egui::CollapsingHeader::new(RichText::new(tf("{n} skins need attention", &[("n", &self.skins.catalog.errors.len())])).color(RED)).show(ui, |ui| {
-                    for error in &self.skins.catalog.errors { super::wrapped(ui, error, RED); }
+                    for problem in &self.skins.catalog.errors { super::wrapped(ui, &crate::skins::problem_text(problem), RED); }
                 });
             }
             ui.add(egui::Label::new(RichText::new(t("Applies when you next launch the game or benchmark.")).small().color(STEEL)).wrap());
@@ -451,8 +453,11 @@ impl LauncherApp {
         }
     }
 
-    /// The Skins page's questions: remove a skin, leave the editor with changes, a new skin's name.
+    /// The Skins page's questions: remove a skin, leave the editor with changes, a new skin's name,
+    /// a skin imported whose id is installed already.
     pub(crate) fn skin_dialogs(&mut self, ctx: &egui::Context) {
+        // (SAVE AS's name takes the keys as the question opens: once.)
+        if !matches!(self.skins.ask, Some(Ask::SaveAs(_))) { self.skins.save_as_focused = false; }
         let Some(ask) = self.skins.ask.clone() else { return };
         use ta_ui::panel::{Exit, Panel};
         let width = (ctx.content_rect().width() - 80.0).clamp(1.0, 520.0);
@@ -494,7 +499,10 @@ impl LauncherApp {
                     });
                 });
                 if save {
+                    // (Saved, the editor closes, back to the library; should the save fail, it
+                    // stays open with what went wrong.)
                     self.skins.ask = None;
+                    self.skins.leaving = true;
                     self.push(Action::SaveSkin);
                 } else if discard {
                     self.skins.ask = None;
@@ -505,12 +513,21 @@ impl LauncherApp {
             }
             Ask::SaveAs(mut name) => {
                 let mut save = false;
+                let focus = !std::mem::replace(&mut self.skins.save_as_focused, true);
                 let response = ta_ui::panel::modal(ctx, "launcher_skin_save_as", Panel::new(t("SAVE AS A NEW SKIN")).exit(Exit::Close).width(width).max_height(max_height).accent(SKY), true, |ui| {
                     ui.spacing_mut().item_spacing.y = 8.0;
                     ui.label(widgets::caption("SKIN NAME"));
-                    let field = ui.add(egui::TextEdit::singleline(&mut name).char_limit(80).desired_width(ui.available_width()).hint_text(t("My unit skin")));
+                    let field = ui.add(egui::TextEdit::singleline(&mut name).char_limit(ta_skins::MAX_NAME).desired_width(ui.available_width()).hint_text(t("My unit skin")));
                     ui.ctx().accesskit_node_builder(field.id, |node| node.set_label(t("SKIN NAME")));
-                    if !field.has_focus() && !ui.memory(|memory| memory.has_focus(field.id)) && name.is_empty() { field.request_focus(); }
+                    // The name has the keys as the question opens, the name offered chosen to type
+                    // over; after that Tab takes them on, empty or not.
+                    if focus {
+                        field.request_focus();
+                        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), field.id) {
+                            state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(name.chars().count()))));
+                            state.store(ui.ctx(), field.id);
+                        }
+                    }
                     let enter = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 10.0;
@@ -525,6 +542,37 @@ impl LauncherApp {
                     self.skins.ask = None;
                 } else if self.skins.ask.is_some() {
                     self.skins.ask = Some(Ask::SaveAs(name));
+                }
+            }
+            Ask::Replace { file, id, name } => {
+                let installed = selected_name(&self.skins.catalog, &id);
+                // (The editor's own skin is not replaced under it.)
+                let open = self.skins.editor.as_ref().is_some_and(|editor| editor.id.as_deref() == Some(id.as_str()));
+                let idle = !self.skins.busy();
+                let title = tf("{name} IS INSTALLED ALREADY", &[("name", &ta_ui::i18n::upper(&installed))]);
+                let (mut replace, mut both) = (false, false);
+                let response = ta_ui::panel::modal(ctx, "launcher_skin_replace", Panel::new(&title).exit(Exit::Close).width(width).max_height(max_height).accent(AMBER), true, |ui| {
+                    ui.spacing_mut().item_spacing.y = 8.0;
+                    let text = tf("{name}, in {file}, has the id of a skin you have: {installed}. Replace that skin with it (yours goes to the Recycle Bin), or keep both: the new one goes in under an id of its own.",
+                        &[("name", &name), ("file", &ta_skins::shown(&file)), ("installed", &installed)]);
+                    ui.add(egui::Label::new(RichText::new(text).color(TEXT)).wrap());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        replace = ui.add_enabled(idle && !open, ActionButton::danger("REPLACE")).hover_tip(t("Put the imported skin in place of yours, which goes to the Recycle Bin"))
+                            .disabled_tip(if open { t("Close the editor first: it has this skin open.") } else { t("Wait for the skin being read or saved.") }).clicked();
+                        both = ui.add_enabled(idle, ActionButton::primary("KEEP BOTH")).hover_tip(t("Import it beside yours, under an id of its own")).disabled_tip(t("Wait for the skin being read or saved.")).clicked();
+                        if ui.add(ActionButton::secondary("CANCEL")).clicked() { self.skins.ask = None; }
+                    });
+                });
+                let root = self.store.dir().join("skins");
+                if replace {
+                    self.skins.ask = None;
+                    self.skins.start(root, crate::skins::Operation::ImportReplacing(file));
+                } else if both {
+                    self.skins.ask = None;
+                    self.skins.start(root, crate::skins::Operation::ImportKeepingBoth(file));
+                } else if response.exit {
+                    self.skins.ask = None;
                 }
             }
         }
@@ -792,11 +840,109 @@ mod tests {
         std::fs::remove_dir_all(folder).unwrap();
     }
 
+    fn frame_with_dialogs(ctx: &egui::Context, app: &mut LauncherApp, events: Vec<egui::Event>) -> Vec<(String, Rect)> {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 900.0))), events, ..Default::default() };
+        let mut output = ctx.run_ui(input, |ui| { app.skins_page(ui); app.skin_dialogs(ui.ctx()); });
+        output.textures_delta.clear();
+        let mut texts = Vec::new();
+        fn walk(shape: &egui::Shape, into: &mut Vec<(String, Rect)>) {
+            match shape {
+                egui::Shape::Text(text) => into.push((text.galley.text().to_string(), text.galley.rect.translate(text.pos.to_vec2()))),
+                egui::Shape::Vec(shapes) => for shape in shapes { walk(shape, into); },
+                _ => {}
+            }
+        }
+        for shape in &output.shapes { walk(&shape.shape, &mut texts); }
+        texts
+    }
+
+    fn click(at: egui::Pos2) -> [Vec<egui::Event>; 2] {
+        [vec![egui::Event::PointerMoved(at), egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() }],
+            vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() }]]
+    }
+
+    /// SAVE AS's name has the keys as it opens, empty or not, and gives them up to Tab (empty, it
+    /// took them back every frame; offered a name, it never had them).
+    #[test]
+    fn the_save_as_name_has_the_keys_once_and_gives_them_up() {
+        let (folder, ctx, mut app) = app("save_as_keys");
+        app.skins.catalog = ta_skins::list(&folder.join("skins"));
+        app.skins.editor = Some(crate::skin_editor::Editor::open(ta_skins::load("builtin:desert", &folder).unwrap(), None));
+        for offered in ["Desert copy", ""] {
+            app.skins.ask = Some(Ask::SaveAs(offered.into()));
+            frame_with_dialogs(&ctx, &mut app, Vec::new());
+            frame_with_dialogs(&ctx, &mut app, Vec::new());
+            let field = ctx.memory(|memory| memory.focused()).unwrap_or_else(|| panic!("{offered:?}: the name has the keys"));
+            assert!(ctx.text_edit_focused(), "{offered:?}: the name has the keys");
+            let tab = egui::Event::Key { key: egui::Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+            frame_with_dialogs(&ctx, &mut app, vec![tab]);
+            for _ in 0..3 { frame_with_dialogs(&ctx, &mut app, Vec::new()); }
+            assert_ne!(ctx.memory(|memory| memory.focused()), Some(field), "{offered:?}: Tab took the keys on, and they stay there");
+            assert_eq!(app.skins.ask, Some(Ask::SaveAs(offered.into())));
+            app.skins.ask = None;
+            frame_with_dialogs(&ctx, &mut app, Vec::new());
+        }
+        drop(app);
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
+    /// The skins of one's own have a filter of their own words (not the jukebox's YOURS); the
+    /// armies' captions are translatable words.
+    #[test]
+    fn the_libraries_words_are_their_own() {
+        let (folder, ctx, mut app) = app("words");
+        app.skins.catalog = ta_skins::list(&folder.join("skins"));
+        let labels = render(&ctx, &mut app, 1280.0, 900.0, Vec::new());
+        assert!(labels.contains("YOUR SKINS") && labels.contains("YOURS AND ALLIES") && labels.contains("ENEMY UNITS"), "{labels}");
+        // (A row of choices too narrow for its segments becomes a list, named by its choices.)
+        ctx.enable_accesskit();
+        let mut subjects = crate::skins::Subjects::Tanks;
+        let options: Vec<_> = crate::skins::Subjects::ALL.iter().map(|s| (*s, s.label())).collect();
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(160.0, 200.0))), ..Default::default() };
+        let mut output = ctx.run_ui(input, |ui| { widgets::segmented_fill(ui, &mut subjects, &options); });
+        output.textures_delta.clear();
+        let update = output.platform_output.accesskit_update.expect("accesskit is on");
+        assert!(update.nodes.iter().any(|(_, node)| node.role() == egui::accesskit::Role::ComboBox && node.label() == Some("TANKS, KBOTS, COMMANDERS, AIRCRAFT, BUILDINGS")),
+            "{:?}", update.nodes.iter().map(|(_, node)| (node.role(), node.label().map(str::to_string))).collect::<Vec<_>>());
+        drop(app);
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
+    /// Importing a skin whose id is installed puts the question, and KEEP BOTH installs it beside
+    /// the one installed.
+    #[test]
+    fn a_skin_imported_again_is_kept_beside_the_installed_one() {
+        let (folder, ctx, mut app) = app("import_again");
+        let root = folder.join("skins");
+        let mut pack = ta_skins::load("builtin:navy", &root).unwrap();
+        (pack.manifest.id, pack.manifest.name) = ("harbour".into(), "Harbour".into());
+        ta_skins::add(&pack, &root).unwrap();
+        let file = folder.join("harbour.taskin");
+        ta_skins::export("harbour", &root, &file).unwrap();
+        app.skins.catalog = ta_skins::list(&root);
+        app.skins.start(root.clone(), crate::skins::Operation::Import(file.clone()));
+        app.skins.shutdown();
+        assert!(matches!(&app.skins.ask, Some(Ask::Replace { id, .. }) if id == "harbour"));
+        frame_with_dialogs(&ctx, &mut app, Vec::new());
+        let shown = frame_with_dialogs(&ctx, &mut app, Vec::new());
+        for words in ["HARBOUR IS INSTALLED ALREADY", "REPLACE", "KEEP BOTH", "CANCEL"] {
+            assert!(shown.iter().any(|(text, _)| text == words), "{words}: {:?}", shown.iter().map(|(t, _)| t).collect::<Vec<_>>());
+        }
+        let both = shown.iter().find(|(text, _)| text == "KEEP BOTH").unwrap().1.center();
+        for events in click(both) { frame_with_dialogs(&ctx, &mut app, events); }
+        assert_eq!(app.skins.ask, None);
+        app.skins.shutdown();
+        assert_eq!(app.skins.browser.inspecting, "harbour-2");
+        assert!(ta_skins::load("harbour-2", &root).is_ok() && ta_skins::load("harbour", &root).is_ok());
+        drop(app);
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
     #[test]
     fn a_large_library_draws_only_the_cards_in_view() {
         let (folder, ctx, mut app) = app("large");
         app.skins.catalog.entries = (0..2000).map(|i| Entry { id: format!("skin-{i:04}"), name: format!("Skin {i:04}"),
-            author: format!("Maker {i:04}"), description: "Custom paint".into(), builtin: false, path: None, livery: None, texture_count: 1, unit_count: 0 }).collect();
+            author: format!("Maker {i:04}"), description: "Custom paint".into(), builtin: false, path: None, livery: None, texture_count: 1, unit_count: 0, version: 0 }).collect();
         app.config.graphics.unit_skin = "skin-0000".into();
         app.skins.browser.inspecting = "skin-0000".into();
         let labels = render(&ctx, &mut app, 1120.0, 720.0, Vec::new());

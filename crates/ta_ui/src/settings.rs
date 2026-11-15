@@ -150,12 +150,20 @@ pub struct SettingsView {
     in_launcher: bool,
     /// RESTORE DEFAULT KEYS was clicked once (a second click confirms).
     confirm_keys: bool,
+    /// The other commanders' names on this device (the launcher's): a name one of them has is
+    /// said at once to be one the profile cannot take.
+    taken_names: Vec<String>,
 }
 
 impl SettingsView {
     /// The category shown.
     pub fn category(&self) -> Category {
         self.category
+    }
+
+    /// The names of this device's other commanders, which the player's name cannot be.
+    pub fn set_taken_names(&mut self, names: Vec<String>) {
+        self.taken_names = names;
     }
 
     /// Shows a category (e.g. Controls from the controls reference), without a search.
@@ -411,7 +419,7 @@ impl SettingsView {
         for category in categories {
             rows.begin(category);
             match category {
-                Category::Gameplay => gameplay(ui, &mut rows, &mut config.gameplay),
+                Category::Gameplay => gameplay(ui, &mut rows, &mut config.gameplay, &self.taken_names),
                 Category::Controls => self.controls(ui, &mut rows, &mut config.gameplay, &mut config.keys),
                 Category::Interface => interface(ui, &mut rows, &mut config.gameplay, &mut config.launcher, host),
                 Category::Accessibility => accessibility(ui, &mut rows, &mut config.gameplay),
@@ -745,9 +753,39 @@ fn picture_error_id() -> Id {
     Id::new("ta_ui::settings::picture_error")
 }
 
-fn gameplay(ui: &mut Ui, rows: &mut Rows, p: &mut Gameplay) {
+fn dialog_parent_id() -> Id {
+    Id::new("ta_ui::settings::dialog_parent")
+}
+
+/// The window the file dialogs of the settings and the profile editor stand over, for the host
+/// to give each frame: a dialog built with its `set_parent` (the launcher's frame). Without one
+/// a dialog has no parent, and can open behind the window.
+pub fn set_dialog_parent(ctx: &egui::Context, dialog: rfd::FileDialog) {
+    ctx.data_mut(|d| d.insert_temp(dialog_parent_id(), dialog));
+}
+
+/// A file dialog over the host's window ([`set_dialog_parent`]), else a dialog of its own.
+pub(crate) fn file_dialog(ctx: &egui::Context) -> rfd::FileDialog {
+    ctx.data(|d| d.get_temp::<rfd::FileDialog>(dialog_parent_id())).unwrap_or_default()
+}
+
+/// Why `name` cannot be the player's (a profile's) name, if it cannot: none at all, or another
+/// commander's (`taken`).
+fn name_problem(name: &str, taken: &[String]) -> Option<String> {
+    if ta_config::profiles::clean_name(name).is_err() {
+        return Some(t("Type your commander's name (1 to 24 characters)").to_string());
+    }
+    let other = taken.iter().find(|other| ta_config::profiles::same_name(other, name.trim()))?;
+    Some(tf("Another commander on this device is called {name}. Choose another: this one is not kept.", &[("name", other)]))
+}
+
+fn gameplay(ui: &mut Ui, rows: &mut Rows, p: &mut Gameplay, taken: &[String]) {
     setting_row(ui, rows, "COMMANDER NAME", "Your name in multiplayer games", "player name multiplayer nickname", |ui| {
         ui.add(TextEdit::singleline(&mut p.player_name).char_limit(limits::PLAYER_NAME_CHARS).hint_text(t("Commander")).margin(Margin::symmetric(10, 6)).min_size(vec2(0.0, widgets::CONTROL_HEIGHT)).vertical_align(egui::Align::Center).desired_width(ui.available_width()));
+        // (A name the profile cannot take is said at once: it would be put back, unsaid.)
+        if let Some(problem) = name_problem(&p.player_name, taken) {
+            ui.add(Label::new(RichText::new(problem).font(body(12.0)).color(AMBER)).wrap());
+        }
     });
     setting_row(ui, rows, "YOUR PICTURE", "Beside your lines on the chat and in the players panel (the computer players show their side's Commander)", "portrait avatar profile picture image photo", |ui| {
         ui.horizontal(|ui| {
@@ -773,7 +811,7 @@ fn gameplay(ui: &mut Ui, rows: &mut Rows, p: &mut Gameplay) {
                 crate::profiles::badge(ui.painter(), rect, profile.allegiance);
             }
             if ui.add(widgets::ActionButton::secondary("CHOOSE…")).clicked()
-                && let Some(file) = rfd::FileDialog::new().set_title(crate::i18n::t("Your picture")).add_filter(crate::i18n::t("Pictures"), &["png", "jpg", "jpeg"]).pick_file()
+                && let Some(file) = file_dialog(ui.ctx()).set_title(crate::i18n::t("Your picture")).add_filter(crate::i18n::t("Pictures"), &["png", "jpg", "jpeg"]).pick_file()
             {
                 match crate::portrait::set_from(&file) {
                     Ok(()) => ui.ctx().data_mut(|d| d.remove::<String>(picture_error_id())),
@@ -1029,7 +1067,7 @@ fn sound(ui: &mut Ui, rows: &mut Rows, a: &mut Audio) {
                     a.music_folder = None;
                 }
                 if ui.add(ActionButton::secondary("CHOOSE…")).clicked()
-                    && let Some(dir) = rfd::FileDialog::new().set_title(t("Your music folder")).pick_folder()
+                    && let Some(dir) = file_dialog(ui.ctx()).set_title(t("Your music folder")).pick_folder()
                 {
                     a.music_folder = Some(dir);
                 }
@@ -1110,8 +1148,9 @@ fn resolution_text(width: u32, height: u32, native: Option<(u32, u32)>) -> Strin
 
 /// Every category's settings back to their defaults (the launcher's RESET ALL SETTINGS): what each
 /// category's RESTORE DEFAULTS puts back, the keys included, and nothing else. The player's name and
-/// language stay, and so does what is not a setting: the game folder, the mods, the graphics card
-/// found, the multiplayer games joined lately, the launcher's window.
+/// language stay, and so does what is not a setting here: the game folder, the mods, the units'
+/// skins (the Skins page's), the graphics card found and whether it traces rays, the multiplayer
+/// games joined lately, the launcher's window.
 pub fn restore_all(config: &mut Config) {
     for category in Category::ALL {
         restore(category, config);
@@ -1174,10 +1213,15 @@ fn restore(category: Category, config: &mut Config) {
             p.message_duration = d.gameplay.message_duration;
         }
         Category::Graphics => {
-            // (The display's settings are Display's, though kept with the graphics.)
+            // (The display's settings are Display's, though kept with the graphics; the units'
+            // skins are chosen on the launcher's Skins page; what the graphics card found can do
+            // is no setting.)
             let g = &config.graphics;
             config.graphics = Graphics {
                 gpu: g.gpu.clone(),
+                gpu_ray_tracing: g.gpu_ray_tracing,
+                unit_skin: g.unit_skin.clone(),
+                enemy_unit_skin: g.enemy_unit_skin.clone(),
                 width: g.width,
                 height: g.height,
                 window_mode: g.window_mode,
@@ -1572,6 +1616,61 @@ mod tests {
         assert!(!config.launcher.themed_cursor);
         restore(Category::Launcher, &mut config);
         assert!(config.launcher.themed_cursor);
+    }
+
+    /// The graphics' RESTORE DEFAULTS, and RESET ALL SETTINGS, put the graphics settings back but
+    /// keep the units' skins (the Skins page's) and what the graphics card found can do.
+    #[test]
+    fn graphics_defaults_keep_the_skins_and_the_cards_ray_tracing() {
+        let mut config = Config::default();
+        config.graphics.unit_skin = "builtin:tiger".into();
+        config.graphics.enemy_unit_skin = "builtin:desert".into();
+        config.graphics.gpu = "NVIDIA GeForce RTX 4080".into();
+        config.graphics.gpu_ray_tracing = true;
+        config.graphics.ray_tracing = true;
+        config.graphics.bloom = false;
+        let kept = |g: &Graphics| (g.unit_skin.clone(), g.enemy_unit_skin.clone(), g.gpu.clone(), g.gpu_ray_tracing);
+        let before = kept(&config.graphics);
+        restore(Category::Graphics, &mut config);
+        assert_eq!(kept(&config.graphics), before);
+        assert!(!config.graphics.ray_tracing && config.graphics.bloom, "the settings themselves come back");
+        config.graphics.ray_tracing = true;
+        restore_all(&mut config);
+        assert_eq!(kept(&config.graphics), before);
+        assert!(!config.graphics.ray_tracing);
+        // (The card's own line is not "no hardware ray tracing" after a reset.)
+        let mut view = SettingsView::default();
+        view.open(Category::Graphics);
+        let (_, texts) = frame(&mut view, &mut config, &host());
+        assert!(!texts.iter().any(|text| text == "This graphics card has no hardware ray tracing"));
+    }
+
+    #[test]
+    fn a_name_the_profile_cannot_take_is_said_at_once() {
+        let taken = vec!["Second".to_string()];
+        assert_eq!(name_problem("First", &taken), None);
+        assert!(name_problem("  second ", &taken).is_some_and(|problem| problem.contains("Second")));
+        assert!(name_problem("   ", &taken).is_some());
+        let mut view = SettingsView::default();
+        view.set_taken_names(taken);
+        view.open(Category::Gameplay);
+        let mut config = Config::default();
+        config.gameplay.player_name = "SECOND".into();
+        let mut host = host();
+        host.in_game = false;
+        let (_, texts) = frame(&mut view, &mut config, &host);
+        assert!(texts.iter().any(|text| text.starts_with("Another commander on this device is called Second.")), "{texts:?}");
+        config.gameplay.player_name = "Third".into();
+        let (_, texts) = frame(&mut view, &mut config, &host);
+        assert!(!texts.iter().any(|text| text.starts_with("Another commander")));
+    }
+
+    #[test]
+    fn file_dialogs_stand_over_the_hosts_window() {
+        let ctx = egui::Context::default();
+        assert!(!format!("{:?}", file_dialog(&ctx)).contains("over the launcher"), "none given: a dialog of its own");
+        set_dialog_parent(&ctx, rfd::FileDialog::new().set_title("over the launcher"));
+        assert!(format!("{:?}", file_dialog(&ctx)).contains("over the launcher"), "the host's dialog is the one built on");
     }
 
     #[test]

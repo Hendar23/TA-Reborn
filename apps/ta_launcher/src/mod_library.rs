@@ -79,7 +79,7 @@ pub fn items(mods: &ModList) -> Vec<Item> {
     }).collect();
     let after = items.len();
     items.extend(mods.mods.iter().filter(|entry| catalogue::get(entry.id()).is_none()).map(|entry| Item {
-        id: entry.id().to_string(), name: entry.info.manifest.name.clone(), catalogue: None, installed: true, order: after,
+        id: entry.id().to_string(), name: crate::supcom::mod_name(&entry.info.manifest).to_string(), catalogue: None, installed: true, order: after,
     }));
     items
 }
@@ -130,7 +130,7 @@ pub fn catalogue_matches(entry: &Entry, query: &str) -> bool {
 /// Whether an installed mod matches a search: its name, id, words, authors and tags.
 pub fn installed_matches(entry: &ModEntry, query: &str) -> bool {
     let manifest = &entry.info.manifest;
-    matches_words(query, [manifest.name.as_str(), manifest.id.as_str(), manifest.description.as_str(), t(&manifest.description)]
+    matches_words(query, [manifest.name.as_str(), crate::supcom::mod_name(manifest), manifest.id.as_str(), manifest.description.as_str(), t(&manifest.description)]
         .into_iter().chain(manifest.authors.iter().map(String::as_str)).chain(manifest.tags.iter().map(String::as_str)))
 }
 

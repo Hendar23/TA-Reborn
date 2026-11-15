@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::{Arc, Mutex};
 
+use ta_ui::i18n::{t, tf};
+
 pub const SITE: &str = "https://www.moddb.com";
 
 pub fn mod_page(slug: &str) -> String {
@@ -40,10 +42,10 @@ pub fn fetch_text(url: &str, referer: Option<&str>) -> Result<String, String> {
     if let Some(r) = referer {
         command.arg("-e").arg(r);
     }
-    command.arg("--url").arg(url);
+    command.arg("--url").arg(&url);
     let out = crate::http::text_output(command)?;
     if !out.status.success() {
-        return Err(first_line(&out.stderr, ta_ui::i18n::t("the request failed")));
+        return Err(crate::http::failure(out.status.code(), &first_line(&out.stderr), &url));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -52,22 +54,23 @@ pub fn fetch_text(url: &str, referer: Option<&str>) -> Result<String, String> {
 pub fn fetch_file(url: &str, to: &Path) -> Result<(), String> {
     let url = crate::http::address(url, crate::http::Policy::Web)?;
     let mut command = crate::http::curl(crate::http::Policy::Web);
-    command.args(["--max-time", "60", "--max-filesize", "16777216", "--url"]).arg(url);
+    command.args(["--max-time", "60", "--max-filesize", "16777216", "--url"]).arg(&url);
     // Before curl 8.4, --max-filesize did not limit unknown-length bodies. Bound
     // stdout ourselves before writing any cache file, even for chunked images.
     let out = crate::http::bounded_output(command, 16 << 20)?;
     if !out.status.success() {
-        return Err(first_line(&out.stderr, ta_ui::i18n::t("the download failed")));
+        return Err(crate::http::failure(out.status.code(), &first_line(&out.stderr), &url));
     }
     if let Some(dir) = to.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(dir).map_err(|e| tf("Could not create {path}: {error}", &[("path", &dir.display()), ("error", &e)]))?;
     }
-    std::fs::write(to, out.stdout).map_err(|e| e.to_string())
+    std::fs::write(to, out.stdout).map_err(|e| tf("Could not write {path}: {error}", &[("path", &to.display()), ("error", &e)]))
 }
 
-fn first_line(bytes: &[u8], fallback: &str) -> String {
+/// What curl said first (its error), for the log.
+fn first_line(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
-    text.lines().map(str::trim).find(|l| !l.is_empty()).map_or(fallback.to_string(), |l| l.trim_start_matches("curl: ").to_string())
+    text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default().trim_start_matches("curl: ").to_string()
 }
 
 /// One file of a mod's downloads feed.
@@ -171,7 +174,7 @@ impl Transfer {
     pub(crate) fn start_with_policy(url: &str, referer: &str, to: &Path, policy: crate::http::Policy, limit: u64) -> Result<Transfer, String> {
         let url = crate::http::address(url, policy)?;
         if let Some(dir) = to.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(dir).map_err(|e| tf("Could not create {path}: {error}", &[("path", &dir.display()), ("error", &e)]))?;
         }
         let _ = std::fs::remove_file(to);
         let mut child = crate::http::curl(policy)
@@ -191,7 +194,10 @@ impl Transfer {
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("curl: {e}"))?;
+            .map_err(|e| {
+                log::warn!("curl did not start: {e}");
+                tf("curl could not be started: {error}", &[("error", &e)])
+            })?;
         let errors = child.stderr.take().expect("piped errors");
         let errors = Some(std::thread::spawn(move || crate::http::diagnostics(errors)));
         Ok(Transfer { child: Arc::new(Mutex::new(Some(child))), path: to.to_path_buf(), limit, errors })
@@ -213,18 +219,21 @@ impl Transfer {
         // Also bound chunked/unknown-length responses while they are being written.
         if self.received() > self.limit {
             self.stopper().stop();
-            return Some(Err(ta_ui::i18n::t("The download exceeded its expected size.").into()));
+            return Some(Err(t("The download exceeded its expected size.").into()));
         }
-        let Ok(mut guard) = self.child.lock() else { return Some(Err(ta_ui::i18n::t("stopped").into())) };
-        let Some(child) = guard.as_mut() else { return Some(Err(ta_ui::i18n::t("stopped").into())) };
+        let Ok(mut guard) = self.child.lock() else { return Some(Err(t("stopped").into())) };
+        let Some(child) = guard.as_mut() else { return Some(Err(t("stopped").into())) };
         match child.try_wait() {
             Ok(None) => None,
             Ok(Some(status)) if status.success() => Some(Ok(())),
-            Ok(Some(_)) => {
+            Ok(Some(status)) => {
                 let errors = self.errors.take().and_then(|reader| reader.join().ok()).unwrap_or_default();
-                Some(Err(first_line(&errors, ta_ui::i18n::t("the download failed"))))
+                Some(Err(crate::http::failure(status.code(), &first_line(&errors), &self.path.display().to_string())))
             }
-            Err(e) => Some(Err(e.to_string())),
+            Err(e) => {
+                log::warn!("download into {}: {e}", self.path.display());
+                Some(Err(t("the download failed").into()))
+            }
         }
     }
 
@@ -310,6 +319,26 @@ mod tests {
         }
         transfer.cancel();
         assert!(!target.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A download that fails says so in words of the launcher's own, not curl's.
+    #[test]
+    fn a_failed_download_is_told_in_words_of_our_own() {
+        let dir = std::env::temp_dir().join(format!("ta_transfer_failure_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let url = url::Url::from_file_path(dir.join("missing.zip")).unwrap();
+        let mut transfer = Transfer::start_with_policy(url.as_str(), "", &dir.join("download.part"), crate::http::Policy::Update { local_files: true }, 1024).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let error = loop {
+            if let Some(result) = transfer.poll() {
+                break result.unwrap_err();
+            }
+            assert!(std::time::Instant::now() < deadline, "download never ended");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert_eq!(error, t("the file could not be read"));
+        transfer.cancel();
         let _ = std::fs::remove_dir_all(dir);
     }
 

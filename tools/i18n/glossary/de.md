@@ -667,3 +667,26 @@ accusative.
 | line spacing / its letters show at {percent}% of their size | Zeilenabstand / ihre Buchstaben erscheinen mit {percent}% ihrer Größe |
 | one frame in {stride} (a preview played with fewer of its frames) / choppier | einen von {stride} Frames / ruckeliger |
 | TURN OFF {name} (a mod, beside ENABLE {name}) / STOP PREVIEW (beside PLAY PREVIEW) | {name} DEAKTIVIEREN / VORSCHAU STOPPEN |
+
+## A damaged service record, unreadable profiles and the launcher's keys (`app/profile_page.rs`, `app/profiles.rs`, `pages/play.rs`, `app/polish.rs`)
+
+The launcher's KEYBOARD SHORTCUTS name the keys as German keyboards print them (Strg+1, Umschalt+Tab,
+Alt+Pos1): an exception to "key names stay English" above, for `polish.rs` only; the Mac's Cmd and
+Option stay as they are. No sentence opens on "Sie" or "Ihre" for a profile, a file or a map (it reads
+as the formal you): "Die Profile bleiben unverändert", "Die Karte kann weder …". Counts of maps made
+and not made read for any number: "Karten importiert: {n}; nicht erstellt: {failed}.", "Keine der
+gewählten Karten konnte erstellt werden ({n})."
+
+| English | Deutsch |
+|---|---|
+| key labels Ctrl / Shift / Enter / Home / End (launcher shortcuts) | Strg / Umschalt / Eingabe / Pos1 / Ende (Alt, Esc, Tab, Cmd, Option kept) |
+| unreadable (a profile, a service record, a map) / UNREADABLE (a map's status) | unlesbar / UNLESBAR (UNLESBARE PROFILE, DIENSTAKTE UNLESBAR) |
+| career file / set aside (the damaged career.toml) / put back | Karrieredatei / beiseitelegen / zurücklegen |
+| START A FRESH CAREER(…) / a fresh career | NEUE KARRIERE BEGINNEN(…) / eine neue Karriere |
+| PUT IT RIGHT (button, link) / CAREER NEEDS ATTENTION (the Play page's title) | BEHEBEN / PROBLEM MIT DER KARRIERE |
+| MOVE TO RECYCLE BIN (button) | IN DEN PAPIERKORB |
+| YOURS AND ALLIES / ENEMY UNITS (the armies' skins) / YOUR SKINS (filter) | EIGENE UND VERBÜNDETE / FEINDE (as FÜR FEINDE) / DEINE SKINS |
+| KEEP BOTH (an imported skin whose id is taken) | BEIDE BEHALTEN |
+| hue / saturation / brightness (colour picker) | Farbton / Sättigung / Helligkeit |
+| screen-reader marks OK / Not present / Error; {content}: found / not found | OK / Nicht vorhanden / Fehler; gefunden / nicht gefunden |
+| LEGAL / THE PROJECT (About page headings) | RECHTLICHES / DAS PROJEKT |

@@ -561,3 +561,24 @@ Keys, `[table]`, `[{table}]`, `depends`, `load_after`, `conflicts`, `panel_textu
 | one frame in {stride} / choppier than it was made | один кадр из {stride} / менее плавно, чем в оригинале |
 | plates (the HUD's metal plates) / its plates' picture / the side's own metal plates | панели / фоновое изображение панелей / собственные металлические панели стороны |
 | line spacing / its letters show at {percent}% | межстрочный интервал / буквы отображаются в масштабе {percent}% ("в {line} раза": раза after a fraction) |
+
+## A damaged service record, unreadable profiles and the launcher's errors (`profile_page.rs`, `profiles.rs`, `play.rs`, `http.rs`, `maps.rs`, `skins.rs`)
+
+A button named in a launcher sentence goes in «», with кнопка where it is the subject ("кнопка «УПРАВЛЕНИЕ ПРОФИЛЯМИ» покажет его"); the Recycle Bin is always Корзина, capitalised (the skins page's older lines have корзина).
+
+| English | Русский |
+|---|---|
+| could not be read / unreadable (the service record, a profile, a map's terrain) | не удалось прочитать / не читается (ПОСЛУЖНОЙ СПИСОК НЕ ЧИТАЕТСЯ; the map pill UNREADABLE: НЕ ЧИТАЕТСЯ, no gender to agree); a profile: нечитаемый профиль (НЕЧИТАЕМЫЕ ПРОФИЛИ), as нечитаемый файл настроек |
+| START A FRESH CAREER… / ? / a fresh career begins | НАЧАТЬ КАРЬЕРУ ЗАНОВО… / ? / начинается новая карьера |
+| PUT IT RIGHT / repair (a file) | ИСПРАВИТЬ / исправить файл |
+| set aside (the damaged career.toml, renamed career.damaged-…) | сохранить отдельно |
+| CAREER NEEDS ATTENTION (the Play page's title) | КАРЬЕРА ТРЕБУЕТ ВНИМАНИЯ |
+| RUNNING (the PLAY slab while the game runs) | ЗАПУЩЕНО (as the screen reader's Running: Запущено) |
+| screen reader marks OK / Not present / Error | В порядке / Отсутствует / Ошибка |
+| lower-case fragments after a colon ({error}, {why}) | lower-case clauses: "сервер не найден: компьютер подключён к интернету?", "истекло время ожидания соединения", "он пуст" (рельеф) |
+| the launcher crashed | лаунчер аварийно завершил работу (as "Игра аварийно завершилась") |
+| id (a skin's) / KEEP BOTH (an imported skin beside yours) | идентификатор / ОСТАВИТЬ ОБА |
+| YOURS AND ALLIES / ENEMY UNITS / YOUR SKINS (the skins page) | ВАШИ И СОЮЗНЫЕ / ВРАЖЕСКИЕ ЮНИТЫ / ВАШИ ОБЛИКИ |
+| Hue / Saturation and brightness (the colour picker, spoken) | Оттенок / Насыщенность и яркость |
+| LEGAL / THE PROJECT (About's headings) / MUSIC OPTIONS | ПРАВОВАЯ ИНФОРМАЦИЯ / О ПРОЕКТЕ / НАСТРОЙКИ МУЗЫКИ |
+| MiB | МиБ (as ГиБ) |

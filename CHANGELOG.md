@@ -76,6 +76,35 @@
   another enemy it could hit; it now turns to one in reach, and fires on the first again the moment
   it comes back. Units on attack-move or patrol kept stopping short of a target their weapons could
   not reach yet: they now close until they can fire. An attack order keeps its target as before.
+- The launcher, after a QA pass over every page:
+  - RESTORE DEFAULTS under Graphics, and RESET ALL SETTINGS, wiped the unit skins chosen on the
+    Skins page and said the graphics card had no ray tracing: they keep them now.
+  - A damaged profile of another commander stopped every profile from being edited, created or
+    renamed, with no way to remove it: it is listed apart, with OPEN FOLDER and MOVE TO RECYCLE
+    BIN, and holds nothing else up. A damaged service record (the career file) kept PLAY from
+    starting while the Play page said all was well: the Play page and the profile now say so, and
+    START A FRESH CAREER sets the damaged file aside (it is kept) and begins anew.
+  - Saving an edited skin could fail every time ("destination already exists"); every visit to
+    the Skins page read the whole game again; the pattern tiles were redrawn while a slider was
+    dragged, holding up the window; the colour picker's hex field could not be typed into.
+    Importing a skin you already have offers REPLACE or KEEP BOTH.
+  - A game that restarted itself with a saved battle's mods and then crashed was never
+    reported; a game that could not start showed a developer's instruction and was not logged;
+    the launcher's music kept it redrawing four times a second; "UPDATED TO" showed on a first
+    install when the game had been started first.
+  - At large interface scales the page list hid SETTINGS, BENCHMARK and ABOUT, and at window
+    heights of 640 to 680 points (a 1080p laptop at 150%) PLAY covered ABOUT: every page is in
+    reach now. Turning SEASONAL EFFECTS off in the game's Options was undone when the game closed.
+    Saving the settings no longer holds up the window, and a rare crash of the footer's "saved"
+    timer is gone.
+  - The Supreme Commander import's dialog copied every map picture twice a frame (40 ms a frame
+    with 450 maps), chose every map not imported after an import, and its failures went unsaid
+    once it was closed; closing the launcher while maps were being looked through was refused. A
+    map whose terrain cannot be read is no longer offered to play.
+  - Screen readers hear the notices, the Play page's state and headings, and the editors' and
+    pickers' controls; the gamepad's first press on the Play page reaches PLAY, not the website;
+    shortcuts name the keys as the platform and the language do (Ctrl, Strg, ⌘).
+  - Messages that were in English only, or raw technical errors, are in the player's language.
 
 ## 1.0.6 — 2026-11-15
 

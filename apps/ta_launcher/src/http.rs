@@ -2,7 +2,7 @@
 
 use std::io::Read;
 use std::process::{Command, Output, Stdio};
-use ta_ui::i18n::t;
+use ta_ui::i18n::{t, tf};
 
 pub const METADATA_LIMIT: usize = 2 << 20;
 
@@ -57,6 +57,39 @@ pub fn curl(policy: Policy) -> Command {
     command
 }
 
+/// A request curl could not make, in words of the launcher's own (translated), by curl's exit
+/// `code`; what curl itself said (`detail`: English, with the address) goes to the log, `what`
+/// naming the request.
+pub(crate) fn failure(code: Option<i32>, detail: &str, what: &str) -> String {
+    let detail = detail.trim().trim_start_matches("curl: ");
+    log::warn!("{what}: curl {}: {detail}", code.map_or_else(|| "stopped".to_string(), |code| format!("exit {code}")));
+    match code {
+        Some(6) => t("the server could not be found: is the computer online?").to_string(),
+        Some(5) => t("the proxy could not be found").to_string(),
+        Some(7) => t("the server could not be reached").to_string(),
+        Some(28) => t("the connection timed out").to_string(),
+        Some(22) => match http_status(detail) {
+            Some(status) => tf("the server answered with error {code}", &[("code", &status)]),
+            None => t("the server answered with an error").to_string(),
+        },
+        Some(35 | 51 | 53 | 54 | 58 | 59 | 60 | 64 | 66 | 77 | 80 | 82 | 83 | 90 | 91 | 98) => t("a secure connection to the server could not be made").to_string(),
+        Some(18 | 52 | 55 | 56 | 92 | 95) => t("the connection was interrupted").to_string(),
+        Some(23) => t("the download could not be written to the disk").to_string(),
+        Some(63) => t("The download exceeded its expected size.").to_string(),
+        Some(47) => t("the server redirected too many times").to_string(),
+        Some(37) => t("the file could not be read").to_string(),
+        Some(1 | 3) => t("invalid download address").to_string(),
+        Some(code) => tf("the request failed (curl error {code})", &[("code", &code)]),
+        None => t("the request failed").to_string(),
+    }
+}
+
+/// The HTTP status in curl's "The requested URL returned error: 404".
+fn http_status(detail: &str) -> Option<u16> {
+    let (_, status) = detail.rsplit_once("error: ")?;
+    status.trim().split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+}
+
 /// Bound text responses even when the server omits Content-Length or sends chunks.
 pub fn text_output(command: Command) -> Result<Output, String> {
     bounded_output(command, METADATA_LIMIT)
@@ -65,7 +98,10 @@ pub fn text_output(command: Command) -> Result<Output, String> {
 /// Apply our own bound while reading, independently of Content-Length and the
 /// installed curl version's treatment of chunked responses.
 pub(crate) fn bounded_output(mut command: Command, limit: usize) -> Result<Output, String> {
-    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("curl: {e}"))?;
+    let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| {
+        log::warn!("curl did not start: {e}");
+        tf("curl could not be started: {error}", &[("error", &e)])
+    })?;
     // Drain both pipes concurrently: a long curl diagnostic must not fill stderr
     // while this thread waits for stdout's EOF. Keep diagnostics bounded as well.
     let errors = child.stderr.take().expect("piped errors");
@@ -155,6 +191,21 @@ mod tests {
         // as an older curl streaming an unknown-length image would behave.
         assert_eq!(bounded_output(body(4096), 4096).unwrap().stdout.len(), 4096);
         assert!(bounded_output(body(8192), 4096).unwrap_err().contains("too large"));
+    }
+
+    /// curl's failures are said in words of the launcher's own (translated), the address and
+    /// curl's English left to the log.
+    #[test]
+    fn curl_failures_are_said_in_words_of_our_own() {
+        assert_eq!(failure(Some(6), "curl: (6) Could not resolve host: www.moddb.com", "test"), t("the server could not be found: is the computer online?"));
+        assert_eq!(failure(Some(22), "curl: (22) The requested URL returned error: 503", "test"), tf("the server answered with error {code}", &[("code", &503)]));
+        assert_eq!(failure(Some(22), "", "test"), t("the server answered with an error"));
+        assert_eq!(failure(Some(60), "curl: (60) SSL certificate problem", "test"), t("a secure connection to the server could not be made"));
+        assert_eq!(failure(Some(99), "curl: (99) something new", "test"), tf("the request failed (curl error {code})", &[("code", &99)]));
+        for code in [Some(6), Some(7), Some(22), Some(28), Some(56), Some(99), None] {
+            let words = failure(code, "curl: (99) Could not resolve host: example.org", "test");
+            assert!(!words.contains("example.org") && !words.contains("curl:"), "{words}");
+        }
     }
 
     #[test]

@@ -31,6 +31,12 @@ impl CareerData {
     /// stay separate from verified wins, which are the achievement source.
     pub fn load(store: &ProfileStore, id: &str) -> io::Result<Self> {
         let (career, history) = store.career_with_history(id)?;
+        Self::around(store, id, career, history)
+    }
+
+    /// The record around a career and its history read already ([`ProfileStore::career_with_history`]):
+    /// its pictures and its campaigns' progress read with them.
+    pub fn around(store: &ProfileStore, id: &str, career: Career, history: Vec<MatchRecord>) -> io::Result<Self> {
         let mut data = Self { career, history,
             avatar_path: store.avatar_path(id).ok(), ..Default::default() };
         match store.achievement_pictures(id) {
@@ -72,6 +78,9 @@ pub struct CareerView {
     pub tab: CareerTab,
     achievements: super::achievements::AchievementsView,
     history_page: usize,
+    /// The tabs laid out at their own height, for a page that scrolls whole (the launcher's
+    /// Profile page in a short window or at a large interface scale): no scroll of their own.
+    pub natural: bool,
 }
 
 /// The game's dossier controller. The launcher supplies its own loading controller
@@ -159,7 +168,16 @@ impl CareerView {
         ui.push_id(profile.id.as_str(), |ui| {
             if self.tab == CareerTab::Achievements {
                 let record = super::achievements::Record { career: &data.career, pictures: &data.pictures, folder: data.picture_folder.as_deref(), showcase: &profile.showcase };
+                self.achievements.natural = self.natural;
                 self.achievements.show(ui, &record)
+            } else if self.natural {
+                match self.tab {
+                    CareerTab::Overview => super::overview::overview(ui, data),
+                    CareerTab::Campaign => self.campaign(ui, data),
+                    CareerTab::History => self.history(ui, data),
+                    CareerTab::Achievements => unreachable!(),
+                }
+                None
             } else {
                 // Each tab remembers its own position, while identity and navigation
                 // remain visible. On very short screens the outer panel can also scroll.

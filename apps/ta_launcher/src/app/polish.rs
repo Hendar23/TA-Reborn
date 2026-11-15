@@ -1,6 +1,6 @@
 //! Discoverable shortcuts and background activity shared by every launcher page.
 use ta_ui::tooltip::TooltipExt as _;
-use egui::{Align, Align2, Color32, Rect, RichText, Ui, pos2, vec2};
+use egui::{Align, Align2, Color32, Modifiers, Rect, RichText, Ui, pos2, vec2};
 use ta_ui::i18n::{n, t, tf};
 use ta_ui::panel::{Exit, Panel};
 use super::{Action, LauncherApp, Page, ModsTab, page_label};
@@ -9,10 +9,33 @@ use crate::theme::*;
 use crate::widgets;
 use crate::update::Step;
 
-/// A page's key: Ctrl and its place in the rail.
-pub(super) fn page_shortcut(page: Page) -> String {
+/// A page's key: Ctrl (a Mac's Cmd) and its place in the rail.
+pub(super) fn page_shortcut(ctx: &egui::Context, page: Page) -> String {
     let place = super::PAGES.iter().position(|&p| p == page).unwrap_or(0) + 1;
-    format!("Ctrl+{place}")
+    keys(ctx, Modifiers::COMMAND, &place.to_string())
+}
+
+/// `key` with `modifiers` held, as this computer's keyboard names them: Ctrl+1 on Windows and
+/// Linux, Cmd+1 on a Mac (or ⌘1 where the fonts the keys are shown in have the Mac's symbols), and
+/// the names in the player's language (Strg+1). `key` is as it is shown (a word, translated).
+pub(crate) fn keys(ctx: &egui::Context, modifiers: Modifiers, key: &str) -> String {
+    let mac = ctx.os().is_mac();
+    let names = if mac && ctx.fonts_mut(|fonts| [mono(11.5), body(13.0)].iter().all(|font| fonts.has_glyphs(font, "⌘⇧⌥⌃"))) {
+        egui::ModifierNames::SYMBOLS
+    } else {
+        egui::ModifierNames { is_short: false, alt: t("Alt"), ctrl: t("Ctrl"), shift: t("Shift"), mac_cmd: t("Cmd"), mac_alt: t("Option"), concat: "+" }
+    };
+    let mut text = names.format(&modifiers, mac);
+    if !text.is_empty() {
+        text.push_str(names.concat);
+    }
+    text.push_str(key);
+    text
+}
+
+/// Two keys' names, one or the other ("Ctrl+Z / Ctrl+Y").
+fn either(one: String, other: String) -> String {
+    format!("{one} / {other}")
 }
 
 /// Something going on, for the footer: where it is (`page`, `mods_tab`), what it is, how far
@@ -40,57 +63,60 @@ impl LauncherApp {
             Panel::new("KEYBOARD SHORTCUTS").exit(Exit::Close)
                 .width((ctx.content_rect().width() - 64.0).clamp(1.0, 460.0))
                 .max_height((ctx.content_rect().height() - 24.0).max(1.0)), true, |ui| {
+            let ctx = ui.ctx().clone();
             for page in super::PAGES {
-                shortcut_row(ui, &page_shortcut(page), page_label(page));
+                shortcut_row(ui, &page_shortcut(&ctx, page), page_label(page));
             }
             ui.separator();
-            shortcut_row(ui, "Enter", n("Start the game from the Play page"));
+            shortcut_row(ui, t("Enter"), n("Start the game from the Play page"));
             shortcut_row(ui, "F5", n("Refresh game files, mods, maps or skins on the current page"));
-            shortcut_row(ui, "Ctrl+F", n("Search mods, maps, skins or settings"));
-            shortcut_row(ui, "Esc", n("Clear the focused search or close a dialog"));
-            shortcut_row(ui, "Tab / Shift+Tab", n("Move keyboard focus"));
+            shortcut_row(ui, &keys(&ctx, Modifiers::COMMAND, "F"), n("Search mods, maps, skins or settings"));
+            shortcut_row(ui, t("Esc"), n("Clear the focused search or close a dialog"));
+            shortcut_row(ui, &either(t("Tab").to_string(), keys(&ctx, Modifiers::SHIFT, t("Tab"))), n("Move keyboard focus"));
             shortcut_row(ui, "F1", "KEYBOARD SHORTCUTS");
             ui.separator();
             ui.label(widgets::caption("CONTROLLER"));
             for (buttons, what) in controller_rows() {
                 shortcut_row(ui, &buttons, what);
             }
-            let here = self.page_keys();
+            let here = self.page_keys(&ctx);
             if !here.is_empty() {
                 ui.separator();
                 ui.label(widgets::caption("ON THIS PAGE"));
                 for (keys, what) in here {
-                    shortcut_row(ui, keys, what);
+                    shortcut_row(ui, &keys, what);
                 }
             }
         });
         if response.exit { self.show_shortcuts = false; }
     }
 
-    /// The keys of the page shown (its library, the load order, the skin editor).
-    fn page_keys(&self) -> Vec<(&'static str, &'static str)> {
+    /// The keys of the page shown (its library, the load order, the skin editor), named as this
+    /// computer's keyboard has them.
+    fn page_keys(&self, ctx: &egui::Context) -> Vec<(String, &'static str)> {
+        let menu = keys(ctx, Modifiers::SHIFT, "F10");
         let library = |favourite: bool| {
             let mut keys = vec![
-                ("← ↑ → ↓", n("Move from one to the next")),
-                ("Enter", n("Open the chosen one's details")),
-                ("Shift+F10", n("Open its menu, as a right-click does (the Menu key too)")),
-                ("Esc", n("Back to the library")),
+                ("← ↑ → ↓".to_string(), n("Move from one to the next")),
+                (t("Enter").to_string(), n("Open the chosen one's details")),
+                (menu.clone(), n("Open its menu, as a right-click does (the Menu key too)")),
+                (t("Esc").to_string(), n("Back to the library")),
             ];
             if favourite {
-                keys.push(("F", n("Mark the chosen map a favourite, or not")));
+                keys.push(("F".to_string(), n("Mark the chosen map a favourite, or not")));
             }
             keys
         };
         match self.page {
             Page::Mods if self.mods_tab == super::ModsTab::LoadOrder => vec![
-                ("Alt+↑ / Alt+↓", n("Move the chosen mod up or down the load order")),
-                ("Alt+Home / Alt+End", n("Move it to the top or the bottom")),
-                ("Shift+F10", n("Open its menu, as a right-click does (the Menu key too)")),
+                (either(keys(ctx, Modifiers::ALT, "↑"), keys(ctx, Modifiers::ALT, "↓")), n("Move the chosen mod up or down the load order")),
+                (either(keys(ctx, Modifiers::ALT, t("Home")), keys(ctx, Modifiers::ALT, t("End"))), n("Move it to the top or the bottom")),
+                (menu.clone(), n("Open its menu, as a right-click does (the Menu key too)")),
             ],
             Page::Skins if self.skins.editor.is_some() => vec![
-                ("Ctrl+Z / Ctrl+Y", n("Undo, redo")),
-                ("Ctrl+S", n("Save the skin")),
-                ("Esc", n("Leave the editor")),
+                (either(keys(ctx, Modifiers::COMMAND, "Z"), keys(ctx, Modifiers::COMMAND, "Y")), n("Undo, redo")),
+                (keys(ctx, Modifiers::COMMAND, "S"), n("Save the skin")),
+                (t("Esc").to_string(), n("Leave the editor")),
             ],
             Page::Mods | Page::Skins => library(false),
             Page::Maps => library(true),
@@ -136,13 +162,14 @@ impl LauncherApp {
         if let Some(download) = &self.download {
             let progress = match download.step { Step::Downloading { got, total, .. } => fraction(got, total), _ => None };
             // (A setup that did not start, Windows' question answered no, waits for INSTALL NOW:
-            // nothing is under way.)
-            let failed = matches!(download.step, Step::Failed(_))
-                || (matches!(download.step, Step::Ready(_)) && !self.update_go && self.update_error.is_some());
+            // nothing is under way. Nor is anything while one checked is put off till later.)
+            let waiting = matches!(download.step, Step::Ready(_)) && !self.update_go;
+            let failed = matches!(download.step, Step::Failed(_)) || (waiting && self.update_error.is_some());
             let color = if failed { RED } else { SKY };
             let text = if failed { t("UPDATE FAILED").to_string() }
+                else if waiting { tf("UPDATE v{version}", &[("version", &download.version)]) }
                 else { tf("UPDATING TO v{version}", &[("version", &download.version)]) };
-            let work = !failed;
+            let work = !failed && !waiting;
             items.push(Activity { mods_tab: None, page: Page::Play, text, progress, color, update: true, work });
         }
         if self.download.is_none() && let crate::update::UpdateState::Available(release) = &self.update {
@@ -196,8 +223,11 @@ impl LauncherApp {
             if activity_chip(ui, &item).clicked() {
                 if item.update { self.push(Action::ShowUpdate); }
                 else {
-                    self.page = item.page;
-                    self.reset_activity_scroll = item.page != Page::Skins;
+                    // As the rail opens it (a page's scan or refresh with it); a page that scrolls
+                    // as a whole is shown from its top (the libraries scroll within, and would
+                    // leave the request to the next such page).
+                    self.open_page(item.page);
+                    self.reset_activity_scroll = !matches!(item.page, Page::Mods | Page::Maps | Page::Skins | Page::Profile);
                     if let Some(tab) = item.mods_tab { self.mods_tab = tab; }
                 }
             }
@@ -298,6 +328,7 @@ fn controller_rows() -> [(String, &'static str); 9] {
     ]
 }
 
+/// A key (as shown: [`keys`]) and what it does (`label`, translated here).
 fn shortcut_row(ui: &mut Ui, key: &str, label: &str) {
     ui.horizontal_top(|ui| {
         ui.allocate_ui_with_layout(vec2(112.0, 18.0), egui::Layout::top_down(Align::Min), |ui| {
@@ -332,6 +363,53 @@ mod tests {
         app.show("update");
         app.update_hidden = true;
         assert!(app.activities().iter().any(|item| item.update && item.text.contains("2.2.0")));
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The keys are named as the computer's keyboard has them: Ctrl on Windows and Linux; on a Mac
+    /// Cmd (or ⌘, where the fonts have it) and Option, never Ctrl. The shortcuts' list names them so.
+    #[test]
+    fn keys_are_named_as_the_computers_keyboard_has_them() {
+        use egui::os::OperatingSystem;
+        let root = std::env::temp_dir().join(format!("ta_shortcut_names_{}", std::process::id()));
+        let config = root.join("config.toml");
+        let ctx = egui::Context::default();
+        let mut app = LauncherApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()),
+            crate::Args::parse_from(["ta-launcher", "--offline", "--pretend-missing", "--config", config.to_str().unwrap()]));
+        app.skins.shutdown();
+        app.show_shortcuts = true;
+        // (Every text a frame of the shortcuts' list painted.)
+        let painted = |app: &mut LauncherApp| {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.shortcuts_dialog(ui.ctx()));
+            output.textures_delta.clear();
+            fn collect(shape: &egui::Shape, out: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => out.push(text.galley.text().to_string()),
+                    egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect(s, out)),
+                    _ => {}
+                }
+            }
+            let mut texts = Vec::new();
+            output.shapes.iter().for_each(|clipped| collect(&clipped.shape, &mut texts));
+            texts
+        };
+        ctx.set_os(OperatingSystem::Windows);
+        painted(&mut app);
+        assert_eq!(page_shortcut(&ctx, Page::Mods), "Ctrl+2");
+        assert_eq!(keys(&ctx, Modifiers::SHIFT, "F10"), "Shift+F10");
+        let texts = painted(&mut app);
+        for row in ["Ctrl+1", "Ctrl+8", "Ctrl+F", "Tab / Shift+Tab", "Enter", "Esc"] {
+            assert!(texts.iter().any(|text| text == row), "{row}: {texts:?}");
+        }
+        ctx.set_os(OperatingSystem::Mac);
+        let mods = page_shortcut(&ctx, Page::Mods);
+        assert!(mods == "Cmd+2" || mods == "⌘2", "{mods}");
+        let option = keys(&ctx, Modifiers::ALT, "↑");
+        assert!(option == "Option+↑" || option == "⌥↑", "{option}");
+        let texts = painted(&mut app);
+        assert!(!texts.iter().any(|text| text.contains("Ctrl")), "no Ctrl on a Mac: {texts:?}");
+        assert!(texts.iter().any(|text| text == &keys(&ctx, Modifiers::COMMAND, "F")), "{texts:?}");
         drop(app);
         let _ = std::fs::remove_dir_all(root);
     }
