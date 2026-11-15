@@ -116,6 +116,8 @@ impl LauncherApp {
 
         // (Any game: END GAME only for the one this launcher started.)
         let running = self.game_running();
+        // (A service record that cannot be read keeps battles from starting: said here, with the way to the Profile page.)
+        let career = !running && self.career_unreadable();
         let summary = self.settings_summary();
         let mods = self.mods_summary();
         // A child that lays out inside the already-allocated hero without moving our cursor.
@@ -170,11 +172,15 @@ impl LauncherApp {
                     ta_ui::motion::next_frame(ui.ctx(), std::time::Duration::from_millis(33));
                 }
                 let wrong = self.game.went_wrong();
-                let colour = if running || wrong { AMBER } else { GREEN };
+                let colour = if career { RED } else if running || wrong { AMBER } else { GREEN };
                 ui.painter().add(metal::lamp(lamp.center(), 4.0, colour, on));
                 let status = match self.game.running_for() {
                     Some(time) => tf("OPERATION IN PROGRESS · {time}", &[("time", &battles::length(time.as_secs()))]),
                     None if running => t("OPERATION IN PROGRESS").to_string(),
+                    // (The service record first: whatever else, no game starts till it is put right.)
+                    None if career => t("SERVICE RECORD UNREADABLE").to_string(),
+                    // (No game got going: it did not start, or was not let start.)
+                    None if wrong && launch_failed(&self.game) => t("THE GAME DID NOT START · SEE BELOW").to_string(),
                     None if wrong => t("THE LAST GAME WENT WRONG · SEE BELOW").to_string(),
                     None => t("ALL SYSTEMS GO").to_string(),
                 };
@@ -187,10 +193,13 @@ impl LauncherApp {
                 if self.game.is_running() && widgets::text_link(ui, "END GAME").hover_tip(t("Close the game at once, if it has stopped responding")).clicked() {
                     self.push(Action::EndGame);
                 }
+                if career && widgets::text_link(ui, "PUT IT RIGHT").hover_tip(t("The Profile page: start a fresh career, the damaged record kept, or try reading it again")).clicked() {
+                    self.show_career_problem();
+                }
             });
             // (Larger in a taller banner.)
             let size = 40.0 + 8.0 * ((tall - 210.0) / 90.0).clamp(0.0, 1.0);
-            widgets::fitted_title(ui, t(if running { "GAME RUNNING" } else { "READY FOR DEPLOYMENT" }), size, TEXT_BRIGHT);
+            widgets::fitted_title(ui, t(if running { "GAME RUNNING" } else if career { "CAREER NEEDS ATTENTION" } else { "READY FOR DEPLOYMENT" }), size, TEXT_BRIGHT);
             ui.add_space(2.0);
             ui.add(egui::Label::new(RichText::new(&summary).color(TEXT)).truncate()).hover_tip(&summary);
             let last = ui.add(egui::Label::new(RichText::new(&mods).color(TEXT)).truncate()).hover_tip(&mods);
@@ -205,12 +214,16 @@ impl LauncherApp {
         ui.with_layout(if stacked { Layout::left_to_right(Align::Center) } else { Layout::right_to_left(Align::Center) }, |ui| {
             let state = if running { PlayState::Running } else { PlayState::Ready };
             let response = widgets::play_button(ui, state, compact);
+            // (Where the gamepad's first move or A puts the focus: PLAY, not a link out.)
+            if !running { crate::pad::main_action(ui.ctx(), response.id); }
             button = response.rect;
             if response.clicked() {
                 self.push(Action::Play);
             }
             if running {
                 response.hover_tip(t("The game is running. Close it to launch again."));
+            } else if career {
+                response.hover_tip(t("Your service record must be put right first: the Profile page shows how"));
             } else {
                 response.hover_tip(t("Start the game (Enter)"));
             }
@@ -378,14 +391,17 @@ impl LauncherApp {
                 let secs = ran_for.as_secs_f32();
                 let title = if crash.is_some() {
                     t("THE GAME CRASHED")
-                } else if secs < FAILED_START {
+                } else if launch_failed(&self.game) {
                     t("LAUNCH FAILED")
                 } else {
                     t("THE GAME STOPPED")
                 };
-                let length = if secs < 60.0 { format!("{secs:.1} s") } else { battles::length(ran_for.as_secs()) };
+                let length = if secs < 60.0 { seconds_in(secs, &ta_ui::i18n::language()) } else { battles::length(ran_for.as_secs()) };
                 let text = match code {
                     Some(c) => tf("The game stopped after {time} with exit code {code}.", &[("time", &length), ("code", c)]),
+                    // (A crash of a game the launcher followed but did not start: neither how long
+                    // it ran nor its exit code is known, only its report.)
+                    None if crash.is_some() => t("The game stopped.").to_string(),
                     None => tf("The game stopped after {time}.", &[("time", &length)]),
                 };
                 (title, text, log.clone(), crash.clone())
@@ -501,10 +517,27 @@ impl LauncherApp {
     /// A battle chosen to continue or watch: opened at once when its mods are as they were (or it
     /// names none), else asked about first ([`LauncherApp::battle_dialog`]).
     pub(crate) fn open_battle(&mut self, record: Record, flag: &'static str) {
+        if !self.battle_still_there(&record, flag) {
+            return;
+        }
         match battles::mod_check(&record, &self.mods).filter(battles::asks) {
             Some(check) => self.battle_prompt = Some(battles::BattlePrompt { record, flag, check }),
             None => self.push(Action::PlayWith(vec![flag.into(), record.path.into_os_string()])),
         }
+    }
+
+    /// Whether the battle's file is still where Your battles found it: one moved or deleted since
+    /// is said so (the game would fail to open it), and the folders looked at again.
+    fn battle_still_there(&mut self, record: &Record, flag: &str) -> bool {
+        if record.path.is_file() {
+            return true;
+        }
+        log::info!("{} is gone: the battles are looked at again", record.path.display());
+        let save = flag == "--load";
+        let text = if save { t("That saved game is no longer there: it was moved or deleted.") } else { t("That replay is no longer there: it was moved or deleted.") };
+        self.notify(text, AMBER);
+        self.battles.refresh();
+        false
     }
 
     /// A battle made with other mods than those on: which, and how they stand (as the game says
@@ -572,6 +605,10 @@ impl LauncherApp {
     /// missing mod got (or its card shown), it opened as it is, or nothing.
     fn choose_for_battle(&mut self, choice: BattleChoice) {
         let Some(prompt) = self.battle_prompt.take() else { return };
+        // (Gone while the question was up: said, and nothing changed for it.)
+        if matches!(choice, BattleChoice::Switch | BattleChoice::Anyway) && !self.battle_still_there(&prompt.record, prompt.flag) {
+            return;
+        }
         let args = |anyway: bool| {
             let mut args = vec![prompt.flag.into(), prompt.record.path.clone().into_os_string()];
             if anyway { args.push("--anyway".into()); }
@@ -866,8 +903,11 @@ fn content_card(ui: &mut Ui, content: &Content, height: f32) -> f32 {
         });
         for item in items {
             ui.horizontal(|ui| {
-                widgets::status_mark(ui, if item.present { Mark::Ok } else { Mark::Absent });
-                ui.label(label(t(item.label), item.present));
+                // (Its words say whether it is there to a screen reader, not the mark's colour:
+                // "Battle Tactics: not found".)
+                widgets::status_mark_named(ui, if item.present { Mark::Ok } else { Mark::Absent }, None);
+                let said = if item.present { tf("{content}: found", &[("content", &t(item.label))]) } else { tf("{content}: not found", &[("content", &t(item.label))]) };
+                ui.label(label(t(item.label), item.present)).widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &said));
                 if show_files {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(files(item.files));
@@ -881,6 +921,16 @@ fn content_card(ui: &mut Ui, content: &Content, height: f32) -> f32 {
         ui.cursor().min.y - ui.spacing().item_spacing.y - top
     })
     .inner
+}
+
+/// No game got going: it failed to start, was not let start (the settings unsaved, the mods at
+/// odds), or stopped at once without crashing. The Play page says LAUNCH FAILED.
+fn launch_failed(game: &GameState) -> bool {
+    match game {
+        GameState::Failed(_) => true,
+        GameState::Exited { success: false, crash: None, ran_for, .. } => ran_for.as_secs_f32() < FAILED_START,
+        _ => false,
+    }
 }
 
 /// A step of getting the game, at least `least` points tall (its contents', returned).
@@ -924,11 +974,11 @@ fn record_slot(ui: &mut Ui, heading: &str, latest: Option<&Record>, older: &[Rec
         ui.set_min_height(62.0);
         ui.spacing_mut().item_spacing.y = 3.0;
         let top = ui.min_rect().top();
-        ui.label(caption(heading));
+        let heading = ui.label(caption(heading));
         if let Some(index) = selected {
             if records.len() > 1 {
                 let width = ui.available_width();
-                egui::ComboBox::from_id_salt(("recent_record", flag)).width(width).truncate()
+                let chooser = egui::ComboBox::from_id_salt(("recent_record", flag)).width(width).truncate()
                     .height((ui.ctx().content_rect().height() * 0.65).clamp(100.0, 360.0))
                     .selected_text(RichText::new(&records[index].title).font(strong(15.0)).color(TEXT_BRIGHT))
                     .show_ui(ui, |ui| {
@@ -941,7 +991,11 @@ fn record_slot(ui: &mut Ui, heading: &str, latest: Option<&Record>, older: &[Rec
                                 ui.ctx().data_mut(|data| data.insert_temp(id, record.path.clone()));
                             }
                         }
-                    }).response.hover_tip(t("Choose a recent battle"));
+                    }).response;
+                // (Reached with the keys, it comes into sight; a screen reader names it by its
+                // slot's heading.)
+                widgets::reveal_focus(ui, &chooser);
+                chooser.labelled_by(heading.id).hover_tip(t("Choose a recent battle"));
             } else {
                 ui.add(egui::Label::new(RichText::new(&records[index].title).font(strong(15.0)).color(TEXT_BRIGHT)).truncate())
                     .hover_tip(records[index].path.display().to_string());
@@ -1009,6 +1063,15 @@ fn selected_record(records: &[&Record], chosen: Option<&Path>) -> Option<usize> 
     chosen.and_then(|path| records.iter().position(|record| record.path == path))
         .or_else(|| records.iter().position(|record| record.playable))
         .or_else(|| (!records.is_empty()).then_some(0))
+}
+
+/// Seconds to a tenth as the language `code` writes them ("" English): "2.5 s", "2,5 s" with
+/// the decimal comma of the languages that group thousands with a point or a space (as
+/// `ta_ui::i18n::grouped` does), the unit translated.
+fn seconds_in(secs: f32, code: &str) -> String {
+    let tenths = format!("{:.1}", secs.max(0.0));
+    let comma = matches!(code.split('-').next().unwrap_or(""), "de" | "es" | "fr" | "it" | "pl" | "pt" | "ru" | "tr" | "uk");
+    tf("{seconds} s", &[("seconds", &if comma { tenths.replace('.', ",") } else { tenths })])
 }
 
 fn record_details(record: &Record) -> String {
@@ -1108,6 +1171,9 @@ mod tests {
         app.skins.shutdown();
         let mayhem = ta_config::records::RecordMod { id: "totalmayhem".into(), name: "Total Mayhem".into(), version: "11.3.0".into(), digest: [1; 16] };
         let save = Record { path: root.join("saves/mayhem.tasav"), title: "With Mayhem".into(), length: 300, when: std::time::SystemTime::now(), autosave: false, playable: true, mods: Some(vec![mayhem.clone()]) };
+        // (The battle's file is there: one gone is not opened.)
+        std::fs::create_dir_all(root.join("saves")).unwrap();
+        std::fs::write(&save.path, b"").unwrap();
         let plays = |app: &mut LauncherApp| app.actions.drain(..).filter_map(|a| match a { Action::PlayWith(args) => Some(args), _ => None }).collect::<Vec<_>>();
         // Off: asked; its mods turned on (the map pack kept) and it opened.
         app.open_battle(save.clone(), "--load");
@@ -1135,10 +1201,91 @@ mod tests {
         assert_eq!((app.page, app.mod_library.selected.as_str(), app.mod_library.details_open), (crate::app::Page::Mods, "escalation", true));
         assert!(plays(&mut app).is_empty());
         // A record that names no mods (made before records did) opens as before.
-        app.open_battle(Record { mods: None, ..save }, "--load");
+        app.open_battle(Record { mods: None, ..save.clone() }, "--load");
         assert!(app.battle_prompt.is_none() && plays(&mut app).len() == 1);
+        // Deleted while it was asked about: not handed to the game, whatever the answer.
+        app.config.mods.enabled = vec!["map-pack-1f".into()];
+        app.mods.refresh(&app.config.mods.enabled);
+        for choice in [BattleChoice::Switch, BattleChoice::Anyway] {
+            std::fs::write(&save.path, b"").unwrap();
+            app.open_battle(save.clone(), "--load");
+            assert!(app.battle_prompt.is_some());
+            std::fs::remove_file(&save.path).unwrap();
+            app.choose_for_battle(choice);
+            assert!(app.battle_prompt.is_none() && plays(&mut app).is_empty());
+        }
+        assert_eq!(app.config.mods.enabled, ["map-pack-1f"], "its mods were not turned on for it");
+        // And gone before it is chosen: nothing asked, nothing opened.
+        app.open_battle(save, "--load");
+        assert!(app.battle_prompt.is_none() && plays(&mut app).is_empty());
         drop(app);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// What a screen reader is told on the Play page: whether each part of the install is there,
+    /// in words ("Battle Tactics: not found"), not by a mark's colour alone; the cards' titles;
+    /// a slot's chooser of recent battles named by the slot's heading.
+    #[test]
+    fn the_play_pages_state_is_told_in_words() {
+        use egui::accesskit::Role;
+        let root = std::env::temp_dir().join(format!("ta_launcher_play_words_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let args = crate::Args::parse_from(["ta-launcher", "--offline", "--pretend-missing", "--config", root.join("config.toml").to_str().unwrap()]);
+        let ctx = egui::Context::default();
+        let mut app = LauncherApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()), args);
+        app.skins.shutdown();
+        let recent = Record { path: root.join("saves/latest.tasav"), title: "Coast To Coast — 2 players".into(), length: 754, when: std::time::SystemTime::now(), autosave: true, playable: true, mods: None };
+        app.battles.save = Some(recent.clone());
+        app.battles.older_saves = vec![Record { path: root.join("saves/older.tasav"), ..recent }];
+        ctx.enable_accesskit();
+        let content = Content { base_game: true, campaigns: true, core_contingency: true, battle_tactics: false, patch_3_1: true, music: true, movies: false };
+        let mut nodes = Vec::new();
+        for _ in 0..2 {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1200.0, 1600.0))), ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| {
+                content_card(ui, &content, 0.0);
+                app.battles_card(ui);
+            });
+            output.textures_delta.clear();
+            nodes = output.platform_output.accesskit_update.expect("an accessibility tree").nodes;
+        }
+        let labels: Vec<&str> = nodes.iter().filter(|(_, node)| node.role() == Role::Label).filter_map(|(_, node)| node.value()).collect();
+        for words in ["DETECTED CONTENT", "Base game: found", "Battle Tactics: not found", "Movies: not found", "YOUR BATTLES", "AUTOSAVE"] {
+            assert!(labels.contains(&words), "{words:?} in {labels:?}");
+        }
+        assert!(!labels.contains(&"Not present") && !labels.contains(&"OK"), "the rows' marks say nothing their words do not: {labels:?}");
+        let heading = nodes.iter().find(|(_, node)| node.role() == Role::Label && node.value() == Some("RECENT SAVES")).map(|(id, _)| *id).expect("the slot's heading");
+        let chooser = nodes.iter().find(|(_, node)| node.role() == Role::ComboBox).map(|(_, node)| node).expect("the chooser");
+        assert!(chooser.labelled_by().contains(&heading), "named by its heading");
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Seconds as the language writes them: a decimal comma where the language groups thousands
+    /// with a point or a space, a point elsewhere.
+    #[test]
+    fn short_runs_are_timed_as_the_language_writes_numbers() {
+        assert_eq!(seconds_in(2.46, ""), "2.5 s");
+        assert_eq!(seconds_in(2.46, "de"), "2,5 s");
+        assert_eq!(seconds_in(0.04, "pt-BR"), "0,0 s");
+        assert_eq!(seconds_in(9.96, "ja"), "10.0 s");
+    }
+
+    /// A game that did not get going (it failed to start, was not let start, or stopped at once
+    /// without crashing) is told as a launch that failed, on the banner too; a crash or a game
+    /// that stopped later, as a game that went wrong.
+    #[test]
+    fn a_launch_that_failed_is_told_as_one() {
+        let exited = |secs: u64, crash: bool| GameState::Exited {
+            code: Some(1), success: false, ran_for: std::time::Duration::from_secs(secs), log: None,
+            crash: crash.then(|| crate::launch::Crash { report: PathBuf::from("crash.txt"), message: "boom".into() }),
+        };
+        assert!(launch_failed(&GameState::Failed("ta-reborn.exe was not found".into())));
+        assert!(launch_failed(&exited(2, false)));
+        assert!(!launch_failed(&exited(2, true)), "a crash at once is a crash");
+        assert!(!launch_failed(&exited(600, false)));
+        assert!(!launch_failed(&GameState::Idle));
     }
 
     #[test]

@@ -4,7 +4,7 @@
 use ta_ui::tooltip::TooltipExt as _;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use egui::{
     Align, Align2, Color32, CornerRadius, Frame, Layout, Margin, Rect, RichText, ScrollArea, Ui,
@@ -437,10 +437,12 @@ pub const MAX_FPS: f64 = 120.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Elsewhere {
     None,
-    /// One holds the lock.
-    Running,
+    /// One holds the lock, seen first then (a crash report written since is its own).
+    Running(SystemTime),
     /// This launcher's game started itself again, then (the new one has not the lock yet).
-    Restarting(Instant),
+    Restarting(Instant, SystemTime),
+    /// `--show running`: as if one held it, for captures.
+    Shown,
 }
 
 impl LauncherApp {
@@ -463,8 +465,9 @@ impl LauncherApp {
         // The first start: set up for this computer (its graphics level, the screen's own
         // size, full screen; on a handheld the interface's scale and this window maximised:
         // `Config::set_up_for`). After that the settings are the player's. (`TA_FIRST_RUN`
-        // shows it in a capture.) A level put back to Auto waits for the game, as it says.
-        let first_run = (config.first_start() && (args.screenshot.is_none() || std::env::var_os("TA_FIRST_RUN").is_some())).then(|| {
+        // shows it in a capture; a film's settings are never set up: they stay as it has them.)
+        // A level put back to Auto waits for the game, as it says.
+        let first_run = (config.first_start() && ((args.screenshot.is_none() && args.film.is_none()) || std::env::var_os("TA_FIRST_RUN").is_some())).then(|| {
             let hw = ta_config::hardware::Hardware::detect();
             config.set_up_for(&hw);
             log::info!("first start on {}: {} graphics", hw.summary(), config.graphics.preset.label());
@@ -778,6 +781,8 @@ impl LauncherApp {
                 };
             }
             ("drop", _) => self.show_drop = true,
+            // The game running, as one the launcher follows by its lock shows it.
+            ("running", _) => self.elsewhere = Elsewhere::Shown,
             // The question closing the window asks with work under way (as if a mod downloaded).
             ("close", _) => {
                 self.pretend_at_risk = true;
@@ -820,7 +825,9 @@ impl LauncherApp {
                     title: "TA Reborn 2.2.0".into(),
                     notes: "The launcher made new: your battles a click away, mods that come and go, crashes told, and updates that install themselves.\n\n### Highlights\n- **The launcher:**\n  - The last saved game and replay on the Play page, a click from going on.\n  - Mods removed to the Recycle Bin, or installed by dropping them on the window.\n  - New versions downloaded, checked and installed from here.\n- **The licence:** TA Reborn is free software under the [GNU GPL](https://www.gnu.org/licenses/gpl-3.0.html), version 3 or later.".into(),
                     setup: Some(crate::update::Asset { name: "TA-Reborn-2.2.0-setup.exe".into(), url: String::new(), size }),
-                    sums: None,
+                    // (A release with its sums to check it against, in a copy Setup installed, as
+                    // offline captures cannot have: UPDATE NOW shown, never the real download.)
+                    sums: Some(crate::update::Asset { name: "TA-Reborn-2.2.0-SHA256SUMS.txt".into(), url: String::new(), size: 192 }),
                     local_files: false,
                 });
                 self.pretend_installed = true;
@@ -986,8 +993,13 @@ impl LauncherApp {
     /// Navigation picks up newly added mods without restarting validation of an
     /// unchanged library. Explicit refreshes still recheck the installed bytes.
     pub(crate) fn discover_mods(&mut self) {
-        self.skins.invalidate_preview();
-        self.mods = ModList::scan(mod_folders(&self.config, &self.store), &self.config.mods.enabled);
+        let mods = ModList::scan(mod_folders(&self.config, &self.store), &self.config.mods.enabled);
+        // (The skins' preview reads the game with the mods: read again only when they changed, not
+        // at every visit to the Mods page.)
+        if !mods.mods.iter().map(|m| &m.info).eq(self.mods.mods.iter().map(|m| &m.info)) {
+            self.skins.invalidate_preview();
+        }
+        self.mods = mods;
         self.installer.set_installed(self.mods.mods.iter().map(|m| m.info.manifest.id.clone()));
         self.mod_validation.sync_discovered(self.detection.install().map(|i| i.root.clone()),
             self.mods.mods.iter().map(|m| m.info.clone()).collect());
@@ -1025,10 +1037,10 @@ impl LauncherApp {
             return;
         }
         match action {
-            Action::Maps(action) => self.maps_action(action),
+            Action::Maps(action) => self.maps_action(action, frame),
             Action::SupcomOpen => self.supcom.show(&self.store.dir().join("mods")),
             Action::SupcomBrowse => {
-                if let Some(dir) = rfd::FileDialog::new().set_title(ta_ui::i18n::t("Supreme Commander: Forged Alliance's folder")).pick_folder()
+                if let Some(dir) = rfd::FileDialog::new().set_title(ta_ui::i18n::t("Supreme Commander: Forged Alliance's folder")).set_parent(frame).pick_folder()
                     && !self.supcom.pick(&dir, &self.store.dir().join("mods"))
                 {
                     self.notify(ta_ui::i18n::tf("Supreme Commander: Forged Alliance is not in {folder}: choose the folder it is installed in (it holds gamedata and maps).", &[("folder", &dir.display())]), AMBER);
@@ -1167,7 +1179,7 @@ impl LauncherApp {
                     Ok(mut pack) => {
                         let name = crate::pages::builtin_skin_name(&id).unwrap_or_else(|| pack.manifest.name.clone());
                         pack.manifest.id = "new-skin".into();
-                        pack.manifest.name = ta_ui::i18n::tf("{name} copy", &[("name", &name)]);
+                        pack.manifest.name = crate::skin_editor::copy_name(&name);
                         pack.manifest.author = self.profiles.active.as_ref().map(|profile| profile.name.clone()).unwrap_or_default();
                         pack.manifest.description = String::new();
                         self.open_skin_editor(pack);
@@ -1225,10 +1237,10 @@ impl LauncherApp {
             Action::Rescan => {
                 self.rescan();
                 self.browse_error = None;
-                match &self.detection.result {
-                    Ok(install) => self.notify(ta_ui::i18n::tf("Found Total Annihilation in {path}", &[("path", &install.root.display())]), GREEN),
-                    Err(_) => self.notify("Still no Total Annihilation install found", RED),
-                }
+                // (Your battles too: saved games and replays moved, deleted or copied in meanwhile.)
+                self.battles.refresh();
+                let (text, color) = detect::rescan_notice(&self.detection);
+                self.notify(text, color);
             }
             Action::BrowseInstall => self.browse_install(frame),
             Action::UseAutoDetect => {
@@ -1351,14 +1363,25 @@ impl LauncherApp {
         if self.elsewhere_checked.is_none_or(|at| at.elapsed() >= Duration::from_secs(1)) {
             self.elsewhere_checked = Some(Instant::now());
             let held = ta_config::running::held(&self.store.dir());
+            // (`ended`: when the game that ended was first seen.)
             let (next, ended) = match self.elsewhere {
-                _ if held => (Elsewhere::Running, false),
-                Elsewhere::Restarting(since) if since.elapsed() < RESTART_GRACE => (Elsewhere::Restarting(since), false),
-                Elsewhere::None => (Elsewhere::None, false),
-                Elsewhere::Running | Elsewhere::Restarting(_) => (Elsewhere::None, true),
+                Elsewhere::Shown => (Elsewhere::Shown, None),
+                Elsewhere::Running(seen) | Elsewhere::Restarting(_, seen) if held => (Elsewhere::Running(seen), None),
+                Elsewhere::None if held => (Elsewhere::Running(SystemTime::now()), None),
+                Elsewhere::Restarting(at, seen) if at.elapsed() < RESTART_GRACE => (Elsewhere::Restarting(at, seen), None),
+                Elsewhere::None => (Elsewhere::None, None),
+                Elsewhere::Running(seen) | Elsewhere::Restarting(_, seen) => (Elsewhere::None, Some(seen)),
             };
             self.elsewhere = next;
-            if ended {
+            if let Some(seen) = ended {
+                // It crashed: told as a crash of the launcher's own game is (by the report it
+                // wrote: no exit code comes from a game the launcher did not start).
+                let logs = self.log_dir();
+                if let Some(crash) = launch::crash_report(&logs, seen) {
+                    log::warn!("the game followed by its lock crashed: {}", crash.message);
+                    let ran_for = SystemTime::now().duration_since(seen).unwrap_or_default();
+                    self.game = GameState::Exited { code: None, success: false, ran_for, log: launch::log_written_since(&logs, seen), crash: Some(crash) };
+                }
                 self.game_ended(ctx);
             }
         }
@@ -1388,9 +1411,19 @@ impl LauncherApp {
             self.profiles.refresh();
         }
         if let Some(error) = self.profiles.error.clone() {
-            self.game = GameState::Failed(ta_ui::i18n::tf("Your profile could not be read, so the game has not started: {error}. Switch commanders on the Profile page, or restart the launcher.", &[("error", &error)]));
+            self.game = GameState::Failed(ta_ui::i18n::tf("Your profile could not be read, so the game has not started: {error}. Switch commanders on the Profile page, or restart the launcher.", &[("error", &ta_ui::profiles::first_line(&error))]));
             self.page = Page::Play;
             return;
+        }
+        // (Battles are recorded in the career: one that cannot be read keeps the game from
+        // starting, but for the benchmark, which records none. It is known, or read now.)
+        if !extra.iter().any(|a| a == "--benchmark") {
+            self.profiles.settle_career();
+            if self.career_unreadable() {
+                self.game = GameState::Failed(ta_ui::i18n::t("Your service record could not be read, so the game has not started: its battles could not be recorded. Put it right on the Profile page: start a fresh career there (the damaged file is kept), or repair the file and try again.").to_string());
+                self.page = Page::Play;
+                return;
+            }
         }
         if self.game_running() {
             self.notify("The game is already running: close it to start another", AMBER);
@@ -1422,12 +1455,12 @@ impl LauncherApp {
             self.store.flush(&mut self.config)
         });
         if let Err(error) = saved {
-            self.game = GameState::Failed(ta_ui::i18n::tf("Your settings could not be saved, so the game has not started. Use Retry in the status bar, then launch again. {error}", &[("error", &error)]));
+            self.game = launch::failed(ta_ui::i18n::tf("Your settings could not be saved, so the game has not started. Use Retry in the status bar, then launch again. {error}", &[("error", &error)]));
             self.page = Page::Play;
             return;
         }
         if let Some(error) = self.profiles.error.clone() {
-            self.game = GameState::Failed(ta_ui::i18n::tf("Your profile could not be read, so the game has not started: {error}. Switch commanders on the Profile page, or restart the launcher.", &[("error", &error)]));
+            self.game = launch::failed(ta_ui::i18n::tf("Your profile could not be read, so the game has not started: {error}. Switch commanders on the Profile page, or restart the launcher.", &[("error", &ta_ui::profiles::first_line(&error))]));
             self.page = Page::Play;
             return;
         }
@@ -1438,11 +1471,17 @@ impl LauncherApp {
         if !extra.iter().any(|a| a == "--no-mods")
             && let modlist::Resolution::Err(problem) = &self.mods.resolution
         {
-            self.game = GameState::Failed(ta_ui::i18n::tf("The mods that are on cannot be loaded together, so the game has not started: {problem}. Put it right in the load order, or turn them off.", &[("problem", problem)]));
+            self.game = launch::failed(ta_ui::i18n::tf("The mods that are on cannot be loaded together, so the game has not started: {problem}. Put it right in the load order, or turn them off.", &[("problem", problem)]));
             self.page = Page::Play;
             return;
         }
-        let Some(root) = self.detection.install().map(|i| i.root.clone()) else { return };
+        let Some(root) = self.detection.install().map(|i| i.root.clone()) else {
+            // (Gone since it was found, or never found: a battle dropped on the window, say.)
+            log::warn!("the game was not started: Total Annihilation was not found");
+            self.page = Page::Play;
+            self.notify("Total Annihilation was not found, so the game has not started: the Play page shows how to find it.", AMBER);
+            return;
+        };
         self.game = launch::launch(&root, &self.log_dir(), &self.store.dir(), self.profiles.active.as_ref().map(|p| p.id.as_str()), extra);
         self.installer.set_game_running(self.game.is_running());
         if !self.game.is_running() {
@@ -1704,30 +1743,58 @@ impl LauncherApp {
                 let x = rect.max.x - 2.0;
                 ui.painter().vline(x, rect.y_range(), egui::Stroke::new(1.0, LINE));
                 let inside = Rect::from_min_max(rect.min, pos2(rect.max.x - 4.0, rect.max.y));
+                // Items as tall as the window leaves room for, 44 points at most: every page in
+                // reach, whatever the interface's scale. Short of 30, the gaps between the groups and
+                // over them go first, and the items shrink to 20 (twice that in pixels at 200%);
+                // shorter still (the footer's chips taking a row), the rail scrolls.
+                const SPACING: f32 = 1.0;
+                const GAP: f32 = 4.0;
+                const SMALLEST: f32 = 20.0;
+                let (count, groups) = (PAGES.len() as f32, PAGES.iter().filter(|&&page| starts_group(page)).count() as f32);
+                let fit = |top: f32, gap: f32| (inside.height() - top - groups * gap - count * SPACING) / count;
+                let (top, gap) = if fit(space::S, GAP) >= 30.0 { (space::S, GAP) } else { (2.0, 0.0) };
+                let size = fit(top, gap).clamp(SMALLEST, 44.0);
+                let scroll = top + groups * gap + count * (size + SPACING) > inside.height() + 0.5;
                 let ui = &mut ui.new_child(UiBuilder::new().max_rect(inside).layout(Layout::top_down(Align::Min)));
-                ui.add_space(space::S);
-                ui.spacing_mut().item_spacing.y = 1.0;
-                // (Items as tall as a short window leaves room for.)
-                let size = ((inside.height() - 40.0) / PAGES.len() as f32 - 1.0).clamp(30.0, 44.0);
-                let mut shown_at = None;
-                for page in PAGES {
-                    if starts_group(page) {
-                        ui.add_space(4.0);
+                ui.set_clip_rect(ui.clip_rect().intersect(inside));
+                ui.add_space(top);
+                ui.spacing_mut().item_spacing.y = SPACING;
+                // (Scrolling, the page shown is brought into view as it changes, or as the rail
+                // comes to scroll.)
+                let reveal = scroll && ui.ctx().data(|d| d.get_temp::<(Page, bool)>(egui::Id::new("nav_compact_shown"))) != Some((self.page, true));
+                let mut pages = |ui: &mut Ui| {
+                    let mut shown_at = None;
+                    for page in PAGES {
+                        if starts_group(page) && gap > 0.0 {
+                            ui.add_space(gap);
+                        }
+                        let (badge, why) = self.nav_badge(page);
+                        let hint = polish::page_shortcut(ui.ctx(), page);
+                        let hint = match why { Some(why) => format!("{hint} · {why}"), None => hint };
+                        let item = widgets::nav_icon_item(ui, page_icon(page), page_label(page), badge, self.page == page, size, Some(&hint));
+                        if self.page == page {
+                            shown_at = Some(item.rect);
+                            // (Where a pad's first move puts the focus, when the page has no main
+                            // action of its own.)
+                            crate::pad::page_anchor(ui.ctx(), item.id);
+                            if reveal {
+                                item.scroll_to_me(None);
+                            }
+                        }
+                        if item.clicked() {
+                            self.open_page(page);
+                        }
                     }
-                    let (badge, why) = self.nav_badge(page);
-                    let hint = polish::page_shortcut(page);
-                    let hint = match why { Some(why) => format!("{hint} · {why}"), None => hint };
-                    let item = widgets::nav_icon_item(ui, page_icon(page), page_label(page), badge, self.page == page, size, Some(&hint));
-                    if self.page == page {
-                        shown_at = Some(item.rect);
+                    if let Some(at) = shown_at {
+                        widgets::nav_marker(ui, "pages_compact", at);
                     }
-                    if item.clicked() {
-                        self.open_page(page);
-                    }
+                };
+                if scroll {
+                    ScrollArea::vertical().id_salt("nav_compact_pages").auto_shrink([false, false]).show(ui, |ui| pages(ui));
+                } else {
+                    pages(ui);
                 }
-                if let Some(at) = shown_at {
-                    widgets::nav_marker(ui, "pages_compact", at);
-                }
+                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("nav_compact_shown"), (self.page, scroll)));
             });
     }
 
@@ -1751,7 +1818,8 @@ impl LauncherApp {
         if self.download.as_ref().is_some_and(|download| matches!(download.step, Step::Downloading { .. } | Step::Checking)) {
             risks.push(n("The update is still downloading."));
         }
-        if self.maps.busy() {
+        // (A look through the maps is no work at risk: closing lets it go.)
+        if self.maps.importing() {
             risks.push(n("Maps are still being imported."));
         }
         if self.supcom.importing() {
@@ -1803,8 +1871,10 @@ impl LauncherApp {
         }
         let risks = self.work_at_risk();
         if risks.is_empty() {
-            // (Done meanwhile: nothing to ask any more.)
+            // (Done meanwhile: nothing to ask any more, and the launcher closes, as asked.)
             self.confirm_close = false;
+            self.close_confirmed = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
         let mut close = false;
@@ -1958,9 +2028,10 @@ impl LauncherApp {
 
     fn save_status_ui(&mut self, ui: &mut Ui) {
         use ta_ui::i18n::t;
-        // ("Saved" goes again after a moment.)
-        if let SaveStatus::Saved(at) = &self.store.status && at.elapsed() < SAVED_SHOWN {
-            ui.ctx().request_repaint_after(SAVED_SHOWN - at.elapsed());
+        // ("Saved" goes again after a moment. The clock is read once: read again, it may have
+        // passed the moment, and a duration cannot go below nothing.)
+        if let SaveStatus::Saved(at) = &self.store.status && let Some(left) = saved_left(*at) {
+            ui.ctx().request_repaint_after(left);
         }
         let status = self.save_status_label();
         ui.horizontal_wrapped(|ui| {
@@ -2115,46 +2186,75 @@ impl LauncherApp {
                 ui.painter().add(metal::pipe(pos2(x, rect.min.y), pos2(x, rect.max.y), FRAME_PIPE));
                 // (The items stop short of the pipe.)
                 let inside = Rect::from_min_max(rect.min, pos2(rect.max.x - 2.0 * FRAME_PIPE_AT - 2.0, rect.max.y));
-                let ui = &mut ui.new_child(UiBuilder::new().max_rect(inside).layout(Layout::top_down(Align::Min)));
-                ta_ui::seasonal::navigation(ui.painter(), Rect::from_min_size(inside.min + vec2(0.0, 6.0), vec2(inside.width(), space::XL)));
-                ui.add_space(space::XL);
-                ui.spacing_mut().item_spacing.y = 2.0;
                 let missing = self.detection.install().is_none();
-                let mut shown_at = None;
-                for page in PAGES {
-                    if starts_group(page) {
-                        // (A seam between the groups.)
-                        let (seam, _) = ui.allocate_exact_size(vec2(ui.available_width(), 9.0), egui::Sense::hover());
-                        ui.painter().hline(seam.x_range().shrink(18.0), seam.center().y, egui::Stroke::new(1.0, LINE));
-                    }
-                    let (badge, why) = self.nav_badge(page);
-                    let shortcut = polish::page_shortcut(page);
-                    let hint = match why { Some(why) => format!("{shortcut} · {why}"), None => shortcut };
-                    let item = widgets::nav_item_hinted(ui, page_icon(page), page_label(page), badge, self.page == page, widgets::NAV_ITEM_HEIGHT, Some(&hint));
-                    if self.page == page {
-                        shown_at = Some(item.rect);
-                    }
-                    if item.clicked() {
-                        self.open_page(page);
-                    }
+                // One unified launch control includes readiness on every page: PLAY at the foot of
+                // the rail (on every page but Play's own, whose banner has it), laid out first, the
+                // pages in the room above it. They never go under it, however short the window.
+                let mut room = inside;
+                if self.page != Page::Play && !missing {
+                    let mut foot = ui.new_child(UiBuilder::new().max_rect(inside).layout(Layout::bottom_up(Align::Min)));
+                    foot.add_space(space::L);
+                    let play = Frame::NONE.inner_margin(Margin { left: 16, right: 12, top: 0, bottom: 14 }).show(&mut foot, |ui| {
+                        let running = self.game_running();
+                        let state = if running { widgets::PlayState::Running } else { widgets::PlayState::Ready };
+                        let button = widgets::play_button_width(ui, state, ui.available_width());
+                        // (While the game runs, it says so, as the compact header's does.)
+                        let tip = if running { "The game is running" } else { "Start the game" };
+                        if button.hover_tip(ta_ui::i18n::t(tip)).clicked() {
+                            self.actions.push(Action::Play);
+                        }
+                    });
+                    room.max.y = (play.response.rect.min.y - space::S).max(room.min.y);
                 }
-                if let Some(at) = shown_at {
-                    widgets::nav_marker(ui, "pages", at);
+                // The pages as tall as that room leaves them: 46 points, less in a short window (the
+                // space over them going first), 32 at the least; shorter still, the rail scrolls.
+                const SPACING: f32 = 2.0;
+                const SEAM: f32 = 9.0;
+                const SMALLEST: f32 = 32.0;
+                let (count, groups) = (PAGES.len() as f32, PAGES.iter().filter(|&&page| starts_group(page)).count() as f32);
+                let fixed = groups * (SEAM + SPACING) + count * SPACING;
+                let roomy = (room.height() - space::XL - fixed) / count >= widgets::NAV_ITEM_HEIGHT;
+                let top = if roomy { space::XL } else { space::S };
+                let height = ((room.height() - top - fixed) / count).clamp(SMALLEST, widgets::NAV_ITEM_HEIGHT);
+                let scroll = top + fixed + count * height > room.height() + 0.5;
+                let ui = &mut ui.new_child(UiBuilder::new().max_rect(room).layout(Layout::top_down(Align::Min)));
+                ui.set_clip_rect(ui.clip_rect().intersect(room));
+                if roomy {
+                    ta_ui::seasonal::navigation(ui.painter(), Rect::from_min_size(room.min + vec2(0.0, 6.0), vec2(room.width(), space::XL)));
                 }
-                ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                    ui.add_space(space::L);
-                    // One unified launch control includes readiness on every page.
-                    if self.page != Page::Play && !missing {
-                        Frame::NONE.inner_margin(Margin { left: 16, right: 12, top: 0, bottom: 14 }).show(ui, |ui| {
-                            let running = self.game_running();
-                            let state = if running { widgets::PlayState::Running } else { widgets::PlayState::Ready };
-                            let button = widgets::play_button_width(ui, state, ui.available_width());
-                            if button.hover_tip(ta_ui::i18n::t("Start the game")).clicked() {
-                                self.actions.push(Action::Play);
-                            }
-                        });
+                ui.add_space(top);
+                ui.spacing_mut().item_spacing.y = SPACING;
+                let mut pages = |ui: &mut Ui| {
+                    let mut shown_at = None;
+                    for page in PAGES {
+                        if starts_group(page) {
+                            // (A seam between the groups.)
+                            let (seam, _) = ui.allocate_exact_size(vec2(ui.available_width(), SEAM), egui::Sense::hover());
+                            ui.painter().hline(seam.x_range().shrink(18.0), seam.center().y, egui::Stroke::new(1.0, LINE));
+                        }
+                        let (badge, why) = self.nav_badge(page);
+                        let shortcut = polish::page_shortcut(ui.ctx(), page);
+                        let hint = match why { Some(why) => format!("{shortcut} · {why}"), None => shortcut };
+                        let item = widgets::nav_item_hinted(ui, page_icon(page), page_label(page), badge, self.page == page, height, Some(&hint));
+                        if self.page == page {
+                            shown_at = Some(item.rect);
+                            // (Where a pad's first move puts the focus, when the page has no main
+                            // action of its own.)
+                            crate::pad::page_anchor(ui.ctx(), item.id);
+                        }
+                        if item.clicked() {
+                            self.open_page(page);
+                        }
                     }
-                });
+                    if let Some(at) = shown_at {
+                        widgets::nav_marker(ui, "pages", at);
+                    }
+                };
+                if scroll {
+                    ScrollArea::vertical().id_salt("nav_pages").auto_shrink([false, false]).show(ui, |ui| pages(ui));
+                } else {
+                    pages(ui);
+                }
             });
     }
 
@@ -2199,20 +2299,26 @@ impl LauncherApp {
                 // let the whole page scroll instead of clipping them out forever.
                 let page_id = self.page;
                 let offset = self.capture_scroll;
+                const MIN_LIBRARY_HEIGHT: f32 = 520.0;
+                // (The Profile page then runs on at its own height, its tabs' lists in the page's
+                // scroll rather than in short scrolls of their own.)
+                let natural = page_id == Page::Profile && bounds.height() < MIN_LIBRARY_HEIGHT;
+                self.profiles.natural = natural;
                 let mut draw = |ui: &mut Ui| match page_id {
                     Page::Maps => self.maps_page(ui),
                     Page::Mods => self.mods_page(ui),
                     Page::Profile => self.profile_page(ui),
                     _ => self.skins_page(ui),
                 };
-                const MIN_LIBRARY_HEIGHT: f32 = 520.0;
                 if bounds.height() < MIN_LIBRARY_HEIGHT {
                     let mut area = ScrollArea::vertical().id_salt(("launcher_library_page", page_id))
                         .max_height(bounds.height()).auto_shrink([false, false]);
                     if let Some(offset) = offset { area = area.vertical_scroll_offset(offset); }
                     ta_ui::scroll::show(&mut page, area, ta_ui::scroll::Behind::Backdrop(BG), |ui| {
                         ui.with_visual_transform(entrance, |ui| {
-                            ui.allocate_ui_with_layout(vec2(ui.available_width(), MIN_LIBRARY_HEIGHT), Layout::top_down(Align::Min), &mut draw);
+                            if natural { draw(ui); } else {
+                                ui.allocate_ui_with_layout(vec2(ui.available_width(), MIN_LIBRARY_HEIGHT), Layout::top_down(Align::Min), &mut draw);
+                            }
                         });
                     });
                 } else {
@@ -2321,67 +2427,123 @@ impl LauncherApp {
         ta_ui::progress::paint(&progress_ui, bar, None, true);
     }
 
+    /// The notices at the foot of the page: the first given, and while those shown are errors
+    /// (which stay until they are dismissed) the next as well, over them: a notice given after an
+    /// error is not held back behind it. Each is told to screen readers as it comes (a live
+    /// region; an error, an alert).
     fn paint_notice(&mut self, ui: &mut Ui, area: Rect) {
-        let Some(notice) = &mut self.notice else { return };
-        let now = ui.input(|i| i.time);
-        if notice.since.is_none() {
-            let sound = match notice.color {
-                RED => Some(ta_ui::sound::UiSound::Refuse),
-                GREEN => Some(ta_ui::sound::UiSound::Done),
-                AMBER => Some(ta_ui::sound::UiSound::Message),
-                _ => None,
-            };
-            if let Some(sound) = sound {
-                ta_ui::sound::play(ui.ctx(), sound);
-            }
-        }
-        let age = now - *notice.since.get_or_insert(now);
-        // (An error stays until it is dismissed; others go after their time, the next after.)
-        if age >= NOTICE_TIME && notice.color != RED {
-            self.notice = self.notices.pop_front();
-            ui.ctx().request_repaint();
+        if self.notice.is_none() && self.notices.is_empty() {
             return;
         }
-        let waiting = self.notices.len();
-        let Some(notice) = &self.notice else { return };
-        // (It slides in from the right.)
-        let slide = if ta_ui::motion::reduced(ui.ctx()) { 0.0 } else { 1.0 - (age as f32 / 0.25).clamp(0.0, 1.0) };
-        let error = notice.color == RED;
-        if slide > 0.0 {
-            ui.ctx().request_repaint();
-        } else if !error {
-            ui.ctx().request_repaint_after(Duration::from_secs_f64(NOTICE_TIME - age));
+        let now = ui.input(|i| i.time);
+        let mut list: Vec<Notice> = self.notice.take().into_iter().chain(self.notices.drain(..)).collect();
+        // (Each sounds as it first shows; but for errors, each goes after its time, the next after.)
+        let mut index = 0;
+        while index < notices_shown(&list) {
+            let notice = &mut list[index];
+            if notice.since.is_none() {
+                let sound = match notice.color {
+                    RED => Some(ta_ui::sound::UiSound::Refuse),
+                    GREEN => Some(ta_ui::sound::UiSound::Done),
+                    AMBER => Some(ta_ui::sound::UiSound::Message),
+                    _ => None,
+                };
+                if let Some(sound) = sound {
+                    ta_ui::sound::play(ui.ctx(), sound);
+                }
+            }
+            let age = now - *notice.since.get_or_insert(now);
+            if age >= NOTICE_TIME && notice.color != RED {
+                list.remove(index);
+                ui.ctx().request_repaint();
+                continue;
+            }
+            index += 1;
         }
-        // (Room at its right for the close button, and how many more wait.)
-        let more = (waiting > 0).then(|| ta_ui::i18n::tf("+{n} MORE", &[("n", &waiting)]));
+        let shown = notices_shown(&list);
+        let waiting = list.len() - shown;
         let width = (area.width() - 2.0 * space::L).min(600.0);
-        let right = 44.0 + if more.is_some() { 64.0 } else { 0.0 };
-        let text = widgets::wrapped_galley(ui, RichText::new(&notice.text).font(strong(13.0)).color(TEXT_BRIGHT), (width - 40.0 - right).max(1.0));
-        let size = vec2((text.size().x + 40.0 + right).min(width), (text.size().y + 24.0).max(44.0));
-        let rect = Align2::RIGHT_BOTTOM.align_size_within_rect(size, area.shrink(space::L)).translate(vec2(slide.powi(2) * (size.x + 40.0), 0.0));
-        let colour = notice.color;
-        let painter = ui.painter().clone();
-        painter.add(egui::Shadow { offset: [0, 6], blur: 16, spread: 0, color: Color32::from_black_alpha(150) }.as_shape(rect, CornerRadius::same(3)));
-        painter.add(metal::riveted_plate(ui.ctx(), rect, PANEL_HI, 0.0));
-        painter.add(metal::lamp(pos2(rect.min.x + 24.0, rect.center().y), 4.5, colour, 1.0));
-        painter.galley(pos2(rect.min.x + 40.0, rect.center().y - text.size().y / 2.0), text, TEXT_BRIGHT);
-        if let Some(more) = more {
-            painter.text(pos2(rect.max.x - 44.0, rect.center().y), Align2::RIGHT_CENTER, more, strong(10.5), STEEL);
+        // (Each over the one before it.)
+        let mut room = area.shrink(space::L);
+        let mut dismissed = None;
+        for (index, notice) in list.iter_mut().enumerate().take(shown) {
+            let age = now - notice.since.unwrap_or(now);
+            // (It slides in from the right.)
+            let slide = if ta_ui::motion::reduced(ui.ctx()) { 0.0 } else { 1.0 - (age as f32 / 0.25).clamp(0.0, 1.0) };
+            let error = notice.color == RED;
+            if slide > 0.0 {
+                ui.ctx().request_repaint();
+            } else if !error {
+                ui.ctx().request_repaint_after(Duration::from_secs_f64((NOTICE_TIME - age).max(0.0)));
+            }
+            // (Room at its right for the close button, and on the top one how many more wait.)
+            let more = (index + 1 == shown && waiting > 0).then(|| ta_ui::i18n::tf("+{n} MORE", &[("n", &waiting)]));
+            let right = 44.0 + if more.is_some() { 64.0 } else { 0.0 };
+            let text = widgets::wrapped_galley(ui, RichText::new(&notice.text).font(strong(13.0)).color(TEXT_BRIGHT), (width - 40.0 - right).max(1.0));
+            let size = vec2((text.size().x + 40.0 + right).min(width), (text.size().y + 24.0).max(44.0));
+            let rect = Align2::RIGHT_BOTTOM.align_size_within_rect(size, room).translate(vec2(slide.powi(2) * (size.x + 40.0), 0.0));
+            room.max.y = rect.min.y - space::S;
+            let colour = notice.color;
+            let painter = ui.painter().clone();
+            painter.add(egui::Shadow { offset: [0, 6], blur: 16, spread: 0, color: Color32::from_black_alpha(150) }.as_shape(rect, CornerRadius::same(3)));
+            painter.add(metal::riveted_plate(ui.ctx(), rect, PANEL_HI, 0.0));
+            painter.add(metal::lamp(pos2(rect.min.x + 24.0, rect.center().y), 4.5, colour, 1.0));
+            painter.galley(pos2(rect.min.x + 40.0, rect.center().y - text.size().y / 2.0), text, TEXT_BRIGHT);
+            if let Some(more) = more {
+                painter.text(pos2(rect.max.x - 44.0, rect.center().y), Align2::RIGHT_CENTER, more, strong(10.5), STEEL);
+            }
+            // Painted words are nothing to a screen reader: each notice is a node of its own, by
+            // its words (moving up or down the pile, it is not told again), a live region.
+            ui.ctx().accesskit_node_builder(egui::Id::new(("launcher_notice", notice.text.as_str())), |node| {
+                node.set_role(if error { egui::accesskit::Role::Alert } else { egui::accesskit::Role::Status });
+                node.set_label(notice.text.as_str());
+                node.set_live(if error { egui::accesskit::Live::Assertive } else { egui::accesskit::Live::Polite });
+                node.set_live_atomic();
+                node.set_bounds(egui::accesskit::Rect { x0: rect.min.x as f64, y0: rect.min.y as f64, x1: rect.max.x as f64, y1: rect.max.y as f64 });
+            });
+            // Its close button; the pointer over it holds it (an error stays anyway).
+            let close = Rect::from_center_size(pos2(rect.max.x - 22.0, rect.center().y), vec2(26.0, 26.0));
+            let closed = ui.scope_builder(egui::UiBuilder::new().max_rect(close).id_salt(("launcher_notice_close", notice.text.as_str())), |ui| {
+                widgets::icon_button(ui, widgets::Glyph::Close, true).hover_tip(ta_ui::i18n::t("Dismiss")).clicked()
+            }).inner;
+            if closed {
+                dismissed = Some(index);
+            } else if !error && ui.rect_contains_pointer(rect) {
+                notice.since = Some(now - age.min(NOTICE_TIME * 0.5));
+                ui.ctx().request_repaint_after(Duration::from_millis(250));
+            }
         }
-        // Its close button; the pointer over it holds it (an error stays anyway).
-        let close = Rect::from_center_size(pos2(rect.max.x - 22.0, rect.center().y), vec2(26.0, 26.0));
-        let dismissed = ui.scope_builder(egui::UiBuilder::new().max_rect(close), |ui| {
-            widgets::icon_button(ui, widgets::Glyph::Close, true).hover_tip(ta_ui::i18n::t("Dismiss")).clicked()
-        }).inner;
-        let hovered = ui.rect_contains_pointer(rect);
-        if dismissed {
-            self.notice = self.notices.pop_front();
+        if let Some(index) = dismissed {
+            list.remove(index);
             ui.ctx().request_repaint();
-        } else if hovered && !error && let Some(notice) = &mut self.notice {
-            notice.since = Some(now - age.min(NOTICE_TIME * 0.5));
-            ui.ctx().request_repaint_after(Duration::from_millis(250));
+        }
+        let mut list = list.into_iter();
+        self.notice = list.next();
+        self.notices = list.collect();
+    }
+}
+
+/// How many notices show at once, at most: the errors held (until dismissed) and the notice
+/// given after them.
+const NOTICES_SHOWN: usize = 3;
+
+/// How many of `notices` (the first, then those waiting) show: the first, and while those shown
+/// are errors, the next as well.
+fn notices_shown(notices: &[Notice]) -> usize {
+    let mut shown = 0;
+    while shown < notices.len().min(NOTICES_SHOWN) {
+        shown += 1;
+        if notices[shown - 1].color != RED {
+            break;
         }
     }
+    shown
+}
+
+/// How long the footer still says the settings were saved at `at`: None once it no longer does.
+/// (The clock read once, the time left never below nothing.)
+fn saved_left(at: Instant) -> Option<Duration> {
+    Some(SAVED_SHOWN.saturating_sub(at.elapsed())).filter(|left| !left.is_zero())
 }
 
 /// How warm a link is (0 at rest, 1 under the pointer or with the keys): it warms over a moment,
@@ -2517,7 +2679,7 @@ impl eframe::App for LauncherApp {
                 self.game_ended(ctx);
             } else if ta_config::running::take_restart(&self.store.dir()) {
                 // (It started itself again, with a battle's mods: the new one is followed.)
-                self.elsewhere = Elsewhere::Restarting(Instant::now());
+                self.elsewhere = Elsewhere::Restarting(Instant::now(), SystemTime::now());
                 self.elsewhere_checked = None;
             } else {
                 self.game_ended(ctx);
@@ -2543,15 +2705,18 @@ impl eframe::App for LauncherApp {
             self.notify(ta_ui::i18n::tf("{mod}: the data check found errors. MOD INFO on the Mods page lists them.", &[("mod", &name)]), RED);
         }
         self.maps_tick(ctx);
-        if let Some(outcome) = self.supcom.poll(ctx)
-            && !outcome.imported.is_empty()
-        {
-            modlist::set_enabled(&mut self.config.mods.enabled, crate::supcom::PACK_ID, true);
-            self.refresh_mods();
-            self.maps.needs_scan = true;
-            self.supcom.rescan(&self.store.dir().join("mods"));
-            if !self.supcom.open {
-                self.notify(ta_ui::i18n::tf("Imported {n} Supreme Commander maps: they are in the map library, and in skirmish.", &[("n", &outcome.imported.len())]), GREEN);
+        if let Some(outcome) = self.supcom.poll(ctx) {
+            if !outcome.imported.is_empty() {
+                modlist::set_enabled(&mut self.config.mods.enabled, crate::supcom::PACK_ID, true);
+                self.refresh_mods();
+                self.maps.needs_scan = true;
+            }
+            // (The dialog says what it came to, and lists its maps again; closed, a notice says
+            // it, failures and all, and the dialog looks again when next opened.)
+            if self.supcom.open {
+                self.supcom.rescan(&self.store.dir().join("mods"));
+            } else if let Some(text) = outcome.notice() {
+                self.notify(text, outcome.went().colour());
             }
         }
         // CLOSE ANYWAY during the import: closed now it has stopped (its maps turned on above).
@@ -2601,6 +2766,8 @@ impl eframe::App for LauncherApp {
     }
 
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
+        // (The settings' and the profile editor's file dialogs stand over this window, never behind it.)
+        ta_ui::settings::set_dialog_parent(ui.ctx(), rfd::FileDialog::new().set_parent(&*frame));
         repaint_cost(ui.ctx(), frame.info().cpu_usage);
         let ctx = ui.ctx().clone();
         if self.film.is_none() {
@@ -3187,11 +3354,15 @@ mod tests {
     #[test]
     fn enlarged_launcher_uses_compact_navigation_and_keeps_settings_reachable() {
         let dir = temp_dir("accessibility_scale");
-        let (ctx, mut app) = launcher(&dir.join("config.toml"), &[]);
+        let (ctx, mut app) = launcher(&dir.join("config.toml"), &["--pretend-missing"]);
+        app.skins.shutdown();
+        // (A game found: the rail's PLAY is there, under the pages.)
+        use_fake_game(&mut app, &dir);
         app.config.gameplay.ui_scale = 2.0;
         app.config.gameplay.reduced_motion = true;
         app.page = Page::Settings;
         app.settings_view.open(ta_ui::settings::Category::Accessibility);
+        ctx.enable_accesskit();
         let mut frame = eframe::Frame::_new_kittest();
         for _ in 0..4 {
             let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(470.0, 300.0))), ..Default::default() };
@@ -3201,6 +3372,85 @@ mod tests {
         assert!(compact_layout(vec2(470.0, 300.0)));
         assert!(!compact_layout(vec2(1120.0, 720.0)));
         assert_eq!(app.settings_view.category(), ta_ui::settings::Category::Accessibility);
+        // Every page's item in the rail is in view and answers a click, the scale changed back on
+        // Settings among them: in the compact rail at 200% (the smallest window, 940 x 600 pixels,
+        // and a 1080p laptop's at 150% maximised), and in the full one where it gets short, PLAY
+        // under the pages (never over them: ABOUT under it launched the game), either side of the
+        // compact layout's threshold.
+        let mut run = |app: &mut LauncherApp, screen: Rect, events: Vec<egui::Event>| {
+            let raw = RawInput { screen_rect: Some(screen), events, ..Default::default() };
+            let mut output = ctx.run_ui(raw, |ui| {
+                app.logic(ui.ctx(), &mut frame);
+                app.ui(ui, &mut frame);
+            });
+            output.textures_delta.clear();
+            output
+        };
+        // (The page shown: its item in the rail, as the rail marks it for a pad, whole in view: what
+        // egui lets the pointer reach of it is all of it.)
+        let shown_whole = |ctx: &egui::Context| {
+            // (The rail's own item: the pad's first focus is the page's main action where it has
+            // one, PLAY on the Play page, which may be below the fold of a small window.)
+            let item = crate::pad::shown_page_item(ctx).and_then(|id| ctx.read_response(id)).expect("the rail's item of the page shown");
+            (item.interact_rect.height() >= item.rect.height() - 0.5 && item.rect.height() >= 19.5, item.rect)
+        };
+        for (scale, size) in [(2.0, vec2(470.0, 300.0)), (2.0, vec2(640.0, 333.0)), (1.0, vec2(1120.0, 639.0)),
+            (1.0, vec2(900.0, 640.0)), (1.0, vec2(1280.0, 650.0)), (1.0, vec2(1280.0, 667.0)), (1.0, vec2(1120.0, 680.0)), (1.0, vec2(1120.0, 720.0))]
+        {
+            app.config.gameplay.ui_scale = scale;
+            let screen = Rect::from_min_size(Pos2::ZERO, size);
+            for page in PAGES {
+                // (No work under way: the footer's chips take no row of their own; see below.)
+                app.skins.shutdown();
+                // (From another page: the rail's PLAY shows on any but Play's own.)
+                app.page = if page == Page::Settings { Page::Benchmark } else { Page::Settings };
+                let mut output = run(&mut app, screen, Vec::new());
+                for _ in 0..2 {
+                    output = run(&mut app, screen, Vec::new());
+                }
+                let nodes = output.platform_output.accesskit_update.map(|tree| tree.nodes).unwrap_or_default();
+                let bounds = |node: &egui::accesskit::Node| node.bounds().map(|b| Rect::from_min_max(pos2(b.x0 as f32, b.y0 as f32), pos2(b.x1 as f32, b.y1 as f32)));
+                let labels: Vec<&str> = PAGES.iter().map(|&p| page_label(p)).collect();
+                let items: Vec<(String, Rect)> = nodes.iter()
+                    .filter(|(_, node)| node.toggled().is_some() && node.label().is_some_and(|label| labels.contains(&label)))
+                    .filter_map(|(_, node)| Some((node.label()?.to_string(), bounds(node)?))).collect();
+                assert_eq!(items.len(), PAGES.len(), "{size:?} at {scale}: every page in the rail: {items:?}");
+                let (_, item) = items.iter().find(|(label, _)| label == page_label(page)).expect("the page's item");
+                assert!(item.height() >= 19.5 && screen.contains_rect(*item), "{page:?} at {size:?}, {scale}: whole and in the window: {item:?}");
+                for (_, other) in &items {
+                    assert!(other == item || !other.intersects(item.shrink(0.5)), "{page:?} at {size:?}: apart from the others");
+                }
+                // (The rail's PLAY, where it is, is apart from every page.)
+                if let Some(play) = nodes.iter().find(|(_, node)| node.label().is_some_and(|label| label.starts_with("Play · "))).and_then(|(_, node)| bounds(node)) {
+                    assert!(!play.intersects(item.shrink(0.5)), "{page:?} at {size:?}, {scale}: under PLAY: {item:?} {play:?}");
+                }
+                let at = item.center();
+                run(&mut app, screen, vec![egui::Event::PointerMoved(at)]);
+                run(&mut app, screen, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
+                run(&mut app, screen, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
+                assert_eq!(app.page, page, "a click on {page:?} at {size:?}, {scale} opens it");
+                assert!(!app.game.is_running() && !matches!(app.game, GameState::Failed(_)), "nothing launched");
+                let (whole, rect) = shown_whole(&ctx);
+                assert!(whole, "{page:?} at {size:?}, {scale}: its item in view, whole: {rect:?}");
+            }
+        }
+        // Shorter still (200% in the smallest window, the footer's chips on a row of their own as a
+        // mod downloads): the rail scrolls, the page shown brought into view whole.
+        app.config.gameplay.ui_scale = 2.0;
+        app.skins.shutdown();
+        app.installer.stages.insert("catalogue".into(), crate::getmods::Stage::Downloading { got: 40, total: 100, since: Instant::now() });
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(470.0, 300.0));
+        for page in PAGES.into_iter().rev().chain(PAGES) {
+            app.page = page;
+            // (The scroll glides there over a moment.)
+            for _ in 0..30 {
+                run(&mut app, screen, Vec::new());
+            }
+            let (whole, rect) = shown_whole(&ctx);
+            assert!(whole, "{page:?}: its item scrolled into view, whole: {rect:?}");
+        }
+        app.installer.stages.clear();
+        drop(app);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -3651,7 +3901,9 @@ mod tests {
         let mut step = |app: &mut LauncherApp, readings: &[Reading]| {
             time += 0.05;
             let focused = ctx.memory(|m| m.focused());
-            let f = pad.frame(readings, time, None, None, screen.size(), focused, ctx.text_edit_focused(), 0.18, 1.0);
+            // (As the input hook has it: the first move to the page's main action, but under a dialog.)
+            let first = if app.modal_open(&ctx) { None } else { crate::pad::first_focus(&ctx) };
+            let f = pad.frame(readings, time, None, None, screen.size(), focused, first, ctx.text_edit_focused(), 0.18, 1.0);
             app.pad_pages += f.pages;
             frame(&ctx, app, RawInput { events: f.events, screen_rect: Some(screen), ..Default::default() });
         };
@@ -3688,12 +3940,20 @@ mod tests {
             assert!(rect.top() >= -1.0 && rect.bottom() <= screen.bottom() + 1.0, "the control with the focus is in view: {rect:?}");
             Some((id, rect))
         };
-        // (From nothing to the header, down the rail, right to the settings' search: a text
-        // field, which the d-pad leaves with Tab, to the first category; right into its controls.)
-        for _ in 0..3 {
-            go(&mut app, Button::DPadDown);
+        // (From nothing to the page's item in the rail, never the header's link out; right into the
+        // page, up to the settings' search: a text field, which the d-pad leaves with Tab, to the
+        // first category; right into its controls.)
+        let anchor = crate::pad::first_focus(&ctx).expect("the rail marks the page shown");
+        let (first, at) = go(&mut app, Button::DPadDown).expect("the first move gives a control the focus");
+        assert_eq!(first, anchor, "the page's own item in the rail");
+        assert!(at.right() <= NAV_WIDTH && at.top() > 84.0, "in the rail, not the header: {at:?}");
+        go(&mut app, Button::DPadRight).expect("into the page");
+        for _ in 0..12 {
+            if ctx.text_edit_focused() {
+                break;
+            }
+            go(&mut app, Button::DPadUp);
         }
-        go(&mut app, Button::DPadRight);
         assert!(ctx.text_edit_focused(), "the settings' search");
         let (_, category) = go(&mut app, Button::DPadDown).expect("the first category");
         assert!(!ctx.text_edit_focused(), "the d-pad left the search");
@@ -3933,8 +4193,42 @@ name = \"{}\"
         let mut input = RawInput { time: Some(1.0), ..Default::default() };
         frame(&ctx, &mut app, input.clone());
         input.time = Some(1.0 + NOTICE_TIME * 3.0);
-        frame(&ctx, &mut app, input);
+        frame(&ctx, &mut app, input.clone());
         assert_eq!(app.notice.as_ref().map(|n| n.text.as_str()), Some("Trouble"), "an error stays until dismissed");
+        // A notice given after the error (PLAY pressed while a mod installs, under an install's
+        // failure) shows at once, over it, and goes after its time; the error stays.
+        app.notify(String::from("Later"), AMBER);
+        input.time = Some(2.0 + NOTICE_TIME * 3.0);
+        frame(&ctx, &mut app, input.clone());
+        assert!(app.notices.front().is_some_and(|n| n.text == "Later" && n.since == Some(2.0 + NOTICE_TIME * 3.0)), "not held back by the error");
+        input.time = Some(2.1 + NOTICE_TIME * 4.0);
+        frame(&ctx, &mut app, input);
+        assert!(app.notices.is_empty(), "it goes after its time");
+        assert_eq!(app.notice.as_ref().map(|n| n.text.as_str()), Some("Trouble"), "the error stays");
+        drop(app);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Notices are painted words: a screen reader is told each as it comes, an error as an alert,
+    /// the notice shown over it as a status.
+    #[test]
+    fn notices_are_told_to_screen_readers() {
+        use egui::accesskit::{Live, Role};
+        let dir = temp_dir("notices_spoken");
+        let (ctx, mut app) = launcher(&dir.join("config.toml"), &["--pretend-missing"]);
+        app.skins.shutdown();
+        ctx.enable_accesskit();
+        // (Words of no language: never sent for translation.)
+        app.notify(String::from("Trouble"), RED);
+        app.notify(String::from("Later"), AMBER);
+        let mut nodes = Vec::new();
+        for time in [1.0, 1.1] {
+            let output = frame(&ctx, &mut app, RawInput { time: Some(time), ..Default::default() });
+            nodes = output.platform_output.accesskit_update.map(|tree| tree.nodes).unwrap_or_default();
+        }
+        let told = |words: &str| nodes.iter().find(|(_, node)| node.label() == Some(words)).map(|(_, node)| (node.role(), node.live(), node.bounds().is_some()));
+        assert_eq!(told("Trouble"), Some((Role::Alert, Some(Live::Assertive), true)), "the error, as an alert");
+        assert_eq!(told("Later"), Some((Role::Status, Some(Live::Polite), true)), "the notice over it, as a status");
         drop(app);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -4333,6 +4627,176 @@ name = \"{}\"
         // (The lock stays held by this test's process until it ends: its folder is left.)
     }
 
+    /// A game the launcher follows by its lock (one running when it was opened, its own started
+    /// again with a battle's mods) that crashes is told as a crash of its own game is, with its
+    /// report and its log; one that ends cleanly is not, nor is a report from before it was seen.
+    #[test]
+    fn a_crash_of_a_game_followed_by_its_lock_is_told() {
+        let dir = temp_dir("game_elsewhere_crash");
+        let (ctx, mut app) = launcher(&dir.join("config.toml"), &["--pretend-missing"]);
+        app.skins.shutdown();
+        let logs = app.log_dir();
+        std::fs::create_dir_all(&logs).unwrap();
+        let crash = |words: &str| std::fs::write(logs.join("crash.txt"), format!("TA Reborn 1.0.6 (qa) crashed: panicked at apps\\ta_game\\src\\app.rs:1:1: {words}\nthread: main\n")).unwrap();
+        // (A report of a game before this one.)
+        crash("an older crash");
+        std::fs::File::options().write(true).open(logs.join("crash.txt")).unwrap().set_modified(SystemTime::now() - Duration::from_secs(600)).unwrap();
+        let lock = app.store.dir().join("game.lock");
+        let hold = || {
+            let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lock).unwrap();
+            file.lock().unwrap();
+            file
+        };
+        let follow = |app: &mut LauncherApp| {
+            app.elsewhere_checked = None;
+            app.follow_game_elsewhere(&ctx);
+        };
+        // A game runs, and ends cleanly: nothing to tell.
+        let game = hold();
+        follow(&mut app);
+        assert!(app.game_running());
+        drop(game);
+        follow(&mut app);
+        assert!(!app.game_running());
+        assert!(matches!(app.game, GameState::Idle), "the report from before it is not its crash: {:?}", app.game);
+        // Another, which crashes: told, its report and log offered.
+        let game = hold();
+        follow(&mut app);
+        std::fs::write(logs.join("game.log"), "INFO TA Reborn 1.0.6\n").unwrap();
+        crash("a crash for QA");
+        drop(game);
+        follow(&mut app);
+        match &app.game {
+            GameState::Exited { success: false, crash: Some(crash), log, .. } => {
+                assert!(crash.message.contains("a crash for QA"), "{}", crash.message);
+                assert_eq!(log.as_deref(), Some(logs.join("game.log").as_path()));
+            }
+            other => panic!("the crash is told: {other:?}"),
+        }
+        assert!(app.game.went_wrong() && !app.game_running());
+        // The launcher's own game started itself again, the new one crashing before it took the
+        // lock: told too.
+        app.game = GameState::Idle;
+        let restarted = Instant::now().checked_sub(Duration::from_secs(9)).expect("the computer up for longer than that");
+        app.elsewhere = Elsewhere::Restarting(restarted, SystemTime::now());
+        crash("a crash on the way up");
+        follow(&mut app);
+        assert!(matches!(&app.game, GameState::Exited { crash: Some(crash), .. } if crash.message.contains("on the way up")), "{:?}", app.game);
+        app.skins.shutdown();
+        drop(app);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `--show running`: the launcher as a game running shows it (one it follows by its lock),
+    /// for captures; it stays so.
+    #[test]
+    fn show_running_holds_the_running_state() {
+        let dir = temp_dir("show_running");
+        let (ctx, mut app) = launcher(&dir.join("config.toml"), &["--pretend-missing"]);
+        app.skins.shutdown();
+        app.show("running");
+        for _ in 0..3 {
+            app.elsewhere_checked = None;
+            app.follow_game_elsewhere(&ctx);
+        }
+        assert!(app.game_running() && matches!(app.game, GameState::Idle));
+        drop(app);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A film (`--film`) leaves its settings as it has them: never set up for the computer it is
+    /// made on (its graphics level, screen size), as a capture is not.
+    #[test]
+    fn a_film_does_not_set_its_settings_up_for_the_computer() {
+        let dir = temp_dir("film_first_start");
+        let path = dir.join("config.toml");
+        Config::default().save_to(&path).unwrap();
+        let film = dir.join("film.toml");
+        let (_ctx, mut app) = launcher(&path, &["--pretend-missing", "--film", film.to_str().unwrap()]);
+        app.skins.shutdown();
+        assert!(app.first_run.is_none());
+        assert!(app.config.first_start() && app.config.graphics == Config::default().graphics, "the graphics as the film has them");
+        drop(app);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The game started before the launcher ever was takes its version as seen (its first start
+    /// set the game up): the launcher opened then tells of no update. (The settings of a player
+    /// of an earlier version, which name none, still tell of this one.)
+    #[test]
+    fn the_launcher_opened_after_the_games_first_start_tells_of_no_update() {
+        let dir = temp_dir("game_first");
+        let path = dir.join("config.toml");
+        let mut game_first = Config::default();
+        game_first.graphics.preset = ta_config::Preset::Ultra;
+        game_first.graphics.set_up = true;
+        game_first.launcher.seen_version = env!("CARGO_PKG_VERSION").into();
+        game_first.save_to(&path).unwrap();
+        let (_ctx, mut app) = launcher(&path, &["--pretend-missing"]);
+        app.skins.shutdown();
+        assert!(app.news.is_none() && app.first_run.is_none(), "{:?}", app.news);
+        drop(app);
+        // (Without the version, as an earlier version's settings: what is new is told, where the
+        // changelog of this version is found.)
+        game_first.launcher.seen_version.clear();
+        game_first.save_to(&path).unwrap();
+        let (_ctx, mut app) = launcher(&path, &["--pretend-missing"]);
+        app.skins.shutdown();
+        let notes = launch::app_dir().and_then(|dir| crate::news::changelog(&dir)).and_then(|path| std::fs::read_to_string(path).ok()).and_then(|text| crate::news::newest(&text));
+        if notes.is_some_and(|release| release.version == env!("CARGO_PKG_VERSION")) {
+            assert!(app.news.is_some());
+        }
+        drop(app);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A saved game or replay of Your battles deleted (or moved) since the list was made is said
+    /// so when chosen, not handed to the game to fail with an exit code; the list is made again.
+    #[test]
+    fn a_battle_gone_since_it_was_listed_is_said_so() {
+        let dir = temp_dir("battle_gone");
+        let (_ctx, mut app) = launcher(&dir.join("config.toml"), &["--pretend-missing"]);
+        app.skins.shutdown();
+        let gone = crate::battles::Record { path: dir.join("saves").join("gone.tasav"), title: "Gone".into(), length: 60, when: SystemTime::now(), autosave: false, playable: true, mods: None };
+        app.open_battle(gone.clone(), "--load");
+        assert!(app.actions.is_empty(), "nothing handed to the game");
+        assert!(app.last_notice().is_some_and(|notice| notice.text.contains("saved game is no longer there") && notice.color == AMBER));
+        app.open_battle(crate::battles::Record { path: dir.join("replays").join("gone.tarep"), ..gone }, "--replay");
+        assert!(app.actions.is_empty());
+        assert!(app.last_notice().is_some_and(|notice| notice.text.contains("replay is no longer there")));
+        drop(app);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A saved game or replay dropped on the window with no original game found says so (the
+    /// drop's words promise the game opens it), on the Play page, which shows how to find it;
+    /// PLAY by any way then says why nothing starts.
+    #[test]
+    fn a_battle_dropped_with_no_install_found_says_so() {
+        let dir = temp_dir("drop_no_install");
+        let (ctx, mut app) = launcher(&dir.join("config.toml"), &["--pretend-missing"]);
+        app.skins.shutdown();
+        for name in ["battle.tasav", "battle.tarep"] {
+            app.page = Page::Mods;
+            app.notice = None;
+            app.notices.clear();
+            let file = dir.join(name);
+            std::fs::write(&file, b"").unwrap();
+            frame(&ctx, &mut app, dropped(&file));
+            frame(&ctx, &mut app, RawInput::default());
+            assert_eq!(app.page, Page::Play, "{name}");
+            assert!(matches!(app.game, GameState::Idle));
+            assert!(app.last_notice().is_some_and(|notice| notice.text.contains(name) && notice.color == AMBER), "{name}");
+        }
+        app.notice = None;
+        app.notices.clear();
+        app.apply(Action::PlayWith(vec!["--skip-intro".into()]), &eframe::Frame::_new_kittest());
+        assert!(matches!(app.game, GameState::Idle));
+        assert!(app.last_notice().is_some_and(|notice| notice.text.contains("Total Annihilation was not found")));
+        drop(app);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn every_launch_route_waits_for_queued_mod_publication() {
         let dir = temp_dir("launch_install_busy");
@@ -4701,7 +5165,7 @@ name = \"{}\"
         let (ctx, mut app) = launcher(&dir.join("config.toml"), &["--pretend-missing"]);
         app.skins.shutdown();
         let install = fake_game(&dir);
-        for dialog in 0..10 {
+        for dialog in 0..11 {
             match dialog {
                 0 => app.show_shortcuts = true,
                 1 => app.whats_new = Some(("test".into(), "notes".into())),
@@ -4712,6 +5176,8 @@ name = \"{}\"
                 6 => app.confirm_close = true,
                 7 => app.confirm_end_game = true,
                 8 => app.show_progress = true,
+                // (The Supreme Commander import's dialog: a modal of its own, not a popup.)
+                9 => app.supcom.open = true,
                 _ => app.profiles.edit(false),
             }
             for path in [&install, &dir.join("game.tasav"), &dir.join("units.zip"), &dir.join("skin.taskin")] {
@@ -4731,6 +5197,7 @@ name = \"{}\"
             app.confirm_close = false;
             app.confirm_end_game = false;
             app.show_progress = false;
+            app.supcom.open = false;
             app.settings_view = Default::default();
             egui::Popup::close_all(&ctx);
         }
@@ -4743,13 +5210,19 @@ name = \"{}\"
         let dir = temp_dir("modal_shortcuts");
         let (ctx, mut app) = launcher(&dir.join("config.toml"), &["--pretend-missing"]);
         app.skins.shutdown();
-        for dialog in 0..3 {
+        for dialog in 0..4 {
             app.confirm_close = dialog == 0;
             app.confirm_end_game = dialog == 1;
             app.show_progress = dialog == 2;
+            app.supcom.open = dialog == 3;
             app.page = Page::Settings;
             ctx.run_ui(key(egui::Key::Num2, egui::Modifiers::COMMAND), |ui| app.shortcuts(ui.ctx())).drop_without_applying_deltas();
             assert_eq!(app.page, Page::Settings);
+            // (Nor a pad's bumpers, nor F5.)
+            app.pad_pages = 1;
+            ctx.run_ui(key(egui::Key::F5, egui::Modifiers::NONE), |ui| app.shortcuts(ui.ctx())).drop_without_applying_deltas();
+            assert_eq!(app.page, Page::Settings, "dialog {dialog}");
+            assert!(app.actions.is_empty(), "dialog {dialog}");
             ctx.run_ui(key(egui::Key::F, egui::Modifiers::COMMAND), |ui| app.settings_page(ui)).drop_without_applying_deltas();
             assert!(!ctx.egui_wants_keyboard_input(), "a covered search must not steal the dialog's keys");
             ctx.run_ui(key(egui::Key::F1, egui::Modifiers::NONE), |ui| app.shortcuts(ui.ctx())).drop_without_applying_deltas();
@@ -4781,6 +5254,124 @@ name = \"{}\"
         let (ctx, mut app) = launcher(&dir.join("config.toml"), &[]);
         let output = frame(&ctx, &mut app, screen(false, vec2(1920.0, 1040.0)));
         assert!(resized(&output));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The footer's word that the settings were saved reads the clock once: past its time, it asks
+    /// for nothing more (read again after the check, the clock could have passed it, and the time
+    /// left gone below nothing: a panic).
+    #[test]
+    fn the_saved_timer_never_goes_below_nothing() {
+        if let Some(long_ago) = Instant::now().checked_sub(SAVED_SHOWN + Duration::from_millis(1)) {
+            assert_eq!(saved_left(long_ago), None);
+        }
+        if let Some(just_now) = Instant::now().checked_sub(SAVED_SHOWN - Duration::from_nanos(1)) {
+            assert!(saved_left(just_now).is_none_or(|left| left <= Duration::from_millis(1)), "at its end: nothing, or next to nothing");
+        }
+        assert!(saved_left(Instant::now()).is_some_and(|left| left <= SAVED_SHOWN));
+    }
+
+    /// The accessibility tree of the frame `output` ended, and where the control a screen reader
+    /// names `label` (or a name starting so) is: its centre.
+    fn spoken_centre(output: egui::FullOutput, label: &str) -> Option<Pos2> {
+        let nodes = output.platform_output.accesskit_update.map(|tree| tree.nodes).unwrap_or_default();
+        let b = nodes.iter().find(|(_, node)| node.label().is_some_and(|name| name.starts_with(label)))?.1.bounds()?;
+        Some(pos2(((b.x0 + b.x1) / 2.0) as f32, ((b.y0 + b.y1) / 2.0) as f32))
+    }
+
+    /// A click at `at`, as the mouse makes it (moved there, pressed, let go).
+    fn click(ctx: &egui::Context, app: &mut LauncherApp, at: Pos2) {
+        frame(ctx, app, RawInput { events: vec![egui::Event::PointerMoved(at)], ..Default::default() });
+        for pressed in [true, false] {
+            frame(ctx, app, RawInput { events: vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }], ..Default::default() });
+        }
+    }
+
+    /// An update downloaded and checked, waiting to install (here for a mod being installed: Setup
+    /// would close the launcher), can be put off: the download is kept, INSTALL NOW installs it
+    /// later, and nothing runs by itself once the mod is in.
+    #[test]
+    fn a_waiting_update_can_be_put_off_and_kept_for_later() {
+        let dir = temp_dir("update_put_off");
+        let (ctx, mut app) = launcher(&dir.join("config.toml"), &["--pretend-missing"]);
+        app.skins.shutdown();
+        ctx.enable_accesskit();
+        app.show("update");
+        app.download = Some(crate::update::Download::shown("2.2.0", Step::Ready(dir.join("setup.exe"))));
+        app.update_go = true;
+        app.installer.stages.insert("catalogue".into(), crate::getmods::Stage::Downloading { got: 40, total: 100, since: Instant::now() });
+        app.config.gameplay.reduced_motion = true;
+        app.push(Action::ShowUpdate);
+        let later = ta_ui::i18n::t("Not now: the download is kept, and INSTALL NOW installs it later");
+        let mut output = frame(&ctx, &mut app, RawInput::default());
+        // (The page brought to the update's card: the scroll glides there.)
+        for _ in 0..30 {
+            output = frame(&ctx, &mut app, RawInput::default());
+        }
+        let at = spoken_centre(output, later).expect("the way to put the update off");
+        click(&ctx, &mut app, at);
+        assert!(!app.update_go, "put off");
+        assert!(matches!(app.download.as_ref().map(|d| &d.step), Some(Step::Ready(_))), "the download kept for later");
+        assert!(app.update_error.is_none());
+        let output = frame(&ctx, &mut app, RawInput::default());
+        assert!(spoken_centre(output, "INSTALL NOW").is_some(), "INSTALL NOW installs it later");
+        app.installer.stages.clear();
+        frame(&ctx, &mut app, RawInput::default());
+        assert!(app.download.is_some() && !app.update_go && !app.close_confirmed, "nothing runs by itself");
+        app.download = None;
+        drop(app);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `--show update` pictures the update as one this copy installs (UPDATE NOW), offline as the
+    /// captures are; pressing it downloads nothing and opens nothing.
+    #[test]
+    fn a_pictured_update_offers_update_now_and_downloads_nothing() {
+        let dir = temp_dir("update_pictured");
+        let (ctx, mut app) = launcher(&dir.join("config.toml"), &["--pretend-missing"]);
+        app.skins.shutdown();
+        ctx.enable_accesskit();
+        app.show("update");
+        app.config.gameplay.reduced_motion = true;
+        app.push(Action::ShowUpdate);
+        let mut output = frame(&ctx, &mut app, RawInput::default());
+        for _ in 0..30 {
+            output = frame(&ctx, &mut app, RawInput::default());
+        }
+        let nodes = output.platform_output.accesskit_update.clone().map(|tree| tree.nodes).unwrap_or_default();
+        assert!(!nodes.iter().any(|(_, node)| node.label() == Some(ta_ui::i18n::t("GET THE UPDATE"))), "not the release's page");
+        let at = spoken_centre(output, "UPDATE NOW").expect("UPDATE NOW");
+        click(&ctx, &mut app, at);
+        assert!(app.download.is_none() && !app.update_go, "a picture downloads nothing");
+        drop(app);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An activity's chip in the footer opens its page as the rail does: the Mods page looks again
+    /// for mods (one dropped into the folder meanwhile is there), and no request to scroll to the
+    /// top is left behind for the next page that scrolls (the libraries scroll within).
+    #[test]
+    fn an_activitys_chip_opens_its_page_as_the_rail_does() {
+        let dir = temp_dir("activity_chip");
+        let (ctx, mut app) = launcher(&dir.join("config.toml"), &["--pretend-missing"]);
+        app.skins.shutdown();
+        ctx.enable_accesskit();
+        app.page = Page::Settings;
+        app.installer.stages.insert("catalogue".into(), crate::getmods::Stage::Downloading { got: 40, total: 100, since: Instant::now() });
+        std::fs::create_dir_all(dir.join("mods/dropped")).unwrap();
+        std::fs::write(dir.join("mods/dropped/mod.toml"), "id = 'dropped'\nname = 'Dropped'\n").unwrap();
+        assert!(app.mods.get("dropped").is_none());
+        let mut output = frame(&ctx, &mut app, RawInput::default());
+        for _ in 0..2 {
+            output = frame(&ctx, &mut app, RawInput::default());
+        }
+        let at = spoken_centre(output, "MODS · 1 active").expect("the mods' chip");
+        click(&ctx, &mut app, at);
+        assert_eq!(app.page, Page::Mods);
+        assert!(app.mods.get("dropped").is_some(), "the page looked again for mods, as the rail's opening does");
+        assert!(!app.reset_activity_scroll, "no scroll request left for the next page");
+        app.installer.stages.clear();
+        drop(app);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

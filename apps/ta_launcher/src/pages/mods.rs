@@ -847,7 +847,7 @@ impl LauncherApp {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
                     let mut toggled = on;
-                    if widgets::toggle_named(ui, &mut toggled, &manifest.name).hover_tip(t("Turn the mod on or off for the next game")).changed() {
+                    if widgets::toggle_named(ui, &mut toggled, crate::supcom::mod_name(manifest)).hover_tip(t("Turn the mod on or off for the next game")).changed() {
                         actions.push(if toggled { Action::EnableMod(item.id.clone()) } else { Action::DisableMod(item.id.clone()) });
                     }
                     ui.label(RichText::new(t(if on { "ON" } else { "OFF" })).font(strong(12.0)).color(if on { GREEN } else { STEEL }));

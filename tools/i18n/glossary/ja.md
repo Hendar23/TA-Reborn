@@ -547,3 +547,25 @@ The notes follow the presentation notes above (two sentences, 〜してくださ
 | need each other in a circle / nest more than 64 deep | 循環して互いを必要としている / 64段を超える深さ |
 | plates (the HUD's, panel_texture tiled on them; beside パネル, the panels' colour) / the side's own metal plates | プレート（プレートの画像） / 陣営本来の金属プレート |
 | TURN OFF {name} / STOP PREVIEW (beside ENABLE {name}, PLAY PREVIEW) | {name}を無効化 / プレビューを停止 |
+
+## The launcher's QA fixes: a damaged service record, unreadable profiles, skins, errors (`profile_page.rs`, `profiles.rs`, `play.rs`, `skins.rs`, `http.rs`, `widgets.rs`)
+
+Reasons inserted after 「…：{error}」 or {why} are polite clauses without 。 (サーバーに接続できませんでした);
+the network's question stays one (サーバーが見つかりませんでした。インターネットに接続されていますか？).
+Shortcut key names stay as keyboards print them (Alt, Ctrl, Shift, Cmd, Option, Enter, Esc, Tab, Home,
+End). Words only a screen reader says are natural spoken phrases ({content}を検出しました).
+
+| English | 日本語 |
+|---|---|
+| START A FRESH CAREER (the damaged service record set aside) / PUT IT RIGHT | 新しい戦績を始める / 修復する |
+| set aside (the damaged record kept in the profile folder) / career file (career.toml) | 別に保管 / 戦績ファイル |
+| unreadable profile, PROFILES THAT CANNOT BE READ / MOVE TO RECYCLE BIN | 読み込めないプロフィール / ごみ箱に移動 |
+| SERVICE RECORD UNREADABLE / CAREER NEEDS ATTENTION (the Play page's title) | 戦歴を読み込めません / 戦績に問題があります |
+| the Play / Profile / Maps page (in sentences) | 「プレイ」ページ / 「プロフィール」ページ / 「マップ」ページ |
+| YOURS AND ALLIES / ENEMY UNITS / YOUR SKINS (filter) / KEEP BOTH (an id already installed) | 自軍と味方 / 敵ユニット / 自分のスキン / 両方残す |
+| Hue / Saturation and brightness (the skin editor's colour picker) | 色相 / 彩度と明度 |
+| screen-reader marks OK / Not present / Error | 正常 / なし / エラー |
+| RUNNING (the PLAY button while the game runs) | 実行中 |
+| {seconds} s / SHOW {count} MORE / SHOW THE LATEST TEN | {seconds}秒 / 残り{count}件を表示 / 最新10件のみ表示 |
+| LEGAL / THE PROJECT (About page headings) / MUSIC OPTIONS | 法的情報 / プロジェクト / 音楽のオプション |
+| the launcher crashed / exception {code} | ランチャーがクラッシュしました / 例外{code} |

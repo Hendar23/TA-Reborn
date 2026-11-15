@@ -212,10 +212,11 @@ fn main() {
         log::error!("{report}");
         let _ = std::fs::write(&crash_path, &report);
         if !unattended {
+            // (In the language of the menus: the report itself stays in English.)
             rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Error)
                 .set_title("TA Reborn")
-                .set_description(format!("The launcher crashed: {info}\n\nThe details were saved to {}.", crash_path.display()))
+                .set_description(ta_ui::i18n::tf("The launcher crashed: {error}\n\nThe details were saved to {path}.", &[("error", &info), ("path", &crash_path.display())]))
                 .show();
         }
     }));
@@ -227,7 +228,16 @@ fn main() {
         let active = store.active().ok()??;
         store.config_path(&active.id).ok()
     }).unwrap_or_else(|| config_path.clone());
-    let kept = ta_config::Config::try_load_from(&active_path).map(|c| c.launcher).unwrap_or_default();
+    let saved = ta_config::Config::try_load_from(&active_path).ok();
+    // The menus' language, known now for what is said before the window opens, or in its place
+    // (the boxes below; English with no settings yet).
+    let language = std::env::var("TA_LANG").unwrap_or_else(|_| saved.as_ref().map(|c| c.gameplay.language.clone()).unwrap_or_default());
+    if let Some(root) = config_path.parent()
+        && let Err(e) = ta_ui::i18n::set_language(&language, &ta_ui::i18n::language_dirs(root))
+    {
+        log::warn!("{e}");
+    }
+    let kept = saved.map(|c| c.launcher).unwrap_or_default();
     let (least_w, least_h) = ta_config::limits::LAUNCHER_POINTS;
     let size = args.window_size.or(kept.window.filter(|size| !unattended && valid_size(*size))).map_or([1120.0, 720.0], |[w, h]| [w.max(least_w), h.max(least_h)]);
     let maximized = kept.maximized && args.window_size.is_none() && !unattended;
@@ -296,9 +306,10 @@ fn main() {
             rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Error)
                 .set_title("TA Reborn")
-                .set_description(format!(
-                    "The launcher window could not be created:\n\n{e}\n\nUpdating your graphics driver usually fixes this \
-                     (the launcher needs OpenGL 2.0 or newer). You can also start ta-reborn.exe directly."
+                .set_description(ta_ui::i18n::tf(
+                    "The launcher window could not be created:\n\n{error}\n\nUpdating your graphics driver usually fixes this \
+                     (the launcher needs OpenGL 2.0 or newer). You can also start ta-reborn.exe directly.",
+                    &[("error", &e)],
                 ))
                 .show();
         }

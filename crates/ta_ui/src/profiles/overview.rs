@@ -10,20 +10,38 @@ use crate::i18n::{grouped, n, t, tf};
 use crate::theme::*;
 use crate::widgets;
 
-/// The career's XP by source, worked out from its totals (each battle's own sums differ a
-/// little: shares, not amounts, are shown).
+/// The career's XP by source, of the XP the head counts ([`Career::total_xp`]): the battles' XP
+/// ([`Career::xp`], each battle at its own rate) shared out by what earned it, in proportion to the
+/// career's totals as every battle scores them (each battle's own split differs a little: shares,
+/// not amounts, are shown), and the achievements' rewards.
 pub fn xp_shares(career: &Career) -> Vec<(&'static str, Color32, u64)> {
     let built = career.units_built;
-    let parts = [
+    let sources = [
         (n("Kills"), RED, career.kills.saturating_mul(20)),
         (n("Construction"), AMBER, built.saturating_mul(10).saturating_add(career.buildings_built.min(built).saturating_mul(15))),
         (n("Captures"), SKY, career.units_captured.saturating_mul(30)),
         (n("Economy"), GREEN, career.metal_gathered / 100 + career.energy_gathered / 1000),
         (n("Time played"), STEEL, career.played_seconds / 30 * 5),
         (n("Result"), CREAM, career.matches_finished.saturating_mul(100).saturating_add(career.wins.saturating_mul(300))),
-        (n("Achievements"), AMBER_BRIGHT, career.achievement_xp()),
     ];
+    let battles = shared_out(career.xp, &sources.map(|(_, _, weight)| weight));
+    let mut parts: Vec<_> = sources.iter().zip(battles).map(|(&(label, color, _), xp)| (label, color, xp)).collect();
+    parts.push((n("Achievements"), AMBER_BRIGHT, career.achievement_xp()));
     parts.into_iter().filter(|(_, _, xp)| *xp > 0).collect()
+}
+
+/// `total` shared out in proportion to `weights`, in whole numbers that add up to it (the largest
+/// remainders rounded up); nothing when the weights are nothing.
+fn shared_out<const N: usize>(total: u64, weights: &[u64; N]) -> [u64; N] {
+    let sum: u128 = weights.iter().map(|w| u128::from(*w)).sum();
+    if sum == 0 { return [0; N]; }
+    let exact = weights.map(|w| u128::from(total) * u128::from(w));
+    let mut out = exact.map(|x| (x / sum) as u64);
+    let short = total.saturating_sub(out.iter().sum());
+    let mut order: Vec<usize> = (0..N).collect();
+    order.sort_by(|a, b| (exact[*b] % sum).cmp(&(exact[*a] % sum)).then(a.cmp(b)));
+    for i in order.into_iter().take(short as usize) { out[i] += 1; }
+    out
 }
 
 pub fn overview(ui: &mut Ui, data: &CareerData) {
@@ -254,8 +272,31 @@ mod tests {
 
     #[test]
     fn xp_shares_leave_out_what_earned_nothing() {
-        let career = Career { kills: 10, played_seconds: 600, matches_finished: 1, ..Default::default() };
+        // (Battles at the current rate: three quarters of what each source scored at first.)
+        let career = Career { xp: 300, kills: 10, played_seconds: 600, matches_finished: 1, ..Default::default() };
         let shares = xp_shares(&career);
-        assert_eq!(shares.iter().map(|(l, _, xp)| (*l, *xp)).collect::<Vec<_>>(), [("Kills", 200), ("Time played", 100), ("Result", 100)]);
+        assert_eq!(shares.iter().map(|(l, _, xp)| (*l, *xp)).collect::<Vec<_>>(), [("Kills", 150), ("Time played", 75), ("Result", 75)]);
+    }
+
+    /// The shares are of the XP the head counts: the battles' XP as the career has it (whatever
+    /// the rates its battles were scored at), and the achievements' rewards whole.
+    #[test]
+    fn xp_shares_add_up_to_the_career_xp_the_head_shows() {
+        let mut career = Career { xp: 11_882, kills: 300, units_built: 420, buildings_built: 90, units_captured: 2,
+            metal_gathered: 60_000, energy_gathered: 700_000, played_seconds: 9_000, matches_finished: 9, wins: 5, ..Default::default() };
+        for id in ["career_kills_1", "career_kills_100", "career_built_1", "career_buildings_1", "career_captures_1", "rank_2", "rank_10"] {
+            assert!(achievements::find(id).is_some(), "{id}");
+            career.achievements.insert(id.into(), 1);
+        }
+        let shares = xp_shares(&career);
+        let total: u64 = shares.iter().map(|(_, _, xp)| *xp).sum();
+        assert_eq!(total, career.total_xp());
+        let battles: u64 = shares.iter().filter(|(l, _, _)| *l != "Achievements").map(|(_, _, xp)| *xp).sum();
+        assert_eq!(battles, career.xp, "the battles' XP as recorded, not recounted at the first rate");
+        let earned = shares.iter().find(|(l, _, _)| *l == "Achievements").unwrap().2;
+        assert_eq!(earned, career.achievement_xp());
+        assert_eq!(shared_out(10, &[1, 1, 1]), [4, 3, 3]);
+        assert_eq!(shared_out(7, &[0, 0]), [0, 0]);
+        assert_eq!(shared_out(u64::MAX / 2, &[u64::MAX, 1]).iter().map(|x| u128::from(*x)).sum::<u128>(), u128::from(u64::MAX / 2));
     }
 }

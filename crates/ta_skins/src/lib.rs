@@ -31,6 +31,10 @@ const MAX_PNG: u64 = 8 * 1024 * 1024;
 const MAX_PACKAGE: u64 = 272 * 1024 * 1024;
 const MAX_MAPPINGS: usize = 16_384;
 const MANIFEST_FILE: &str = "skin.toml";
+/// The longest a skin's name may be, in characters.
+pub const MAX_NAME: usize = 80;
+/// How many skin folders [`list`] reads.
+const MAX_FOLDERS: usize = 256;
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct Manifest {
@@ -121,31 +125,74 @@ pub struct Entry {
     pub livery: Option<Livery>,
     pub texture_count: usize,
     pub unit_count: usize,
+    /// Which edition of its files it is: another whenever its `skin.toml` or an image it maps
+    /// changes on disk (0 for a built-in). Pictures made of a skin are made again for another.
+    pub version: u64,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Catalog {
     pub entries: Vec<Entry>,
-    pub errors: Vec<String>,
+    pub errors: Vec<Problem>,
+}
+
+/// Something [`list`] could not read, for an interface to say in words of its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Problem {
+    /// The skins folder itself could not be read: why.
+    Root(String),
+    /// More skin folders than are read: how many are.
+    TooMany(usize),
+    /// A skin folder that could not be read: its name, and why ([`Error::detail`]).
+    Folder { folder: String, detail: String },
+}
+
+impl std::fmt::Display for Problem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Root(detail) => write!(f, "the skins folder could not be read: {detail}"),
+            Self::TooMany(count) => write!(f, "only the first {count} skin folders are listed"),
+            Self::Folder { folder, detail } => write!(f, "{folder}: {detail}"),
+        }
+    }
 }
 
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("invalid skin pack: {0}")]
     Invalid(String),
-    #[error("a skin with id '{0}' is already installed; choose another id in skin.toml")]
+    #[error("a skin with id '{0}' is already installed")]
     AlreadyInstalled(String),
-    #[error("destination already exists: {0}")]
-    Exists(String),
-    #[error("{path}: {source}")]
-    Io { path: String, source: std::io::Error },
+    #[error("destination already exists: {}", .0.display())]
+    Exists(PathBuf),
+    #[error("{}: {source}", path.display())]
+    Io { path: PathBuf, source: std::io::Error },
+}
+
+impl Error {
+    /// What went wrong, without the words round it and without a folder's full path (a file's
+    /// name only): for an interface to put in words of its own. (`Display` is the whole message,
+    /// in English, for logs.)
+    pub fn detail(&self) -> String {
+        match self {
+            Self::Invalid(message) => message.clone(),
+            Self::AlreadyInstalled(id) => id.clone(),
+            Self::Exists(path) => shown(path),
+            Self::Io { path, source } => format!("{}: {source}", shown(path)),
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 fn invalid(message: impl Into<String>) -> Error { Error::Invalid(message.into()) }
 fn io(path: &Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
-    move |source| Error::Io { path: path.display().to_string(), source }
+    move |source| Error::Io { path: path.to_path_buf(), source }
+}
+
+/// A file's or a folder's name, as a message shows it (never the folders it is in).
+pub fn shown(path: &Path) -> String {
+    path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned())
 }
 
 struct Builtin {
@@ -198,8 +245,25 @@ pub fn builtin_ids() -> impl Iterator<Item = &'static str> { BUILTINS.iter().map
 pub fn builtin_livery(id: &str) -> Option<Livery> { builtin(id).and_then(|b| livery::builtin(b.id)) }
 
 fn entry(manifest: &Manifest, path: Option<PathBuf>) -> Entry {
+    let version = path.as_deref().map_or(0, |folder| version(folder, manifest));
     Entry { id: manifest.id.clone(), name: manifest.name.clone(), author: manifest.author.clone(), description: manifest.description.clone(), builtin: path.is_none(), path,
-        livery: manifest.livery.clone(), texture_count: manifest.image_names().len(), unit_count: manifest.units.len() }
+        livery: manifest.livery.clone(), texture_count: manifest.image_names().len(), unit_count: manifest.units.len(), version }
+}
+
+/// Which edition of a skin folder's files these are: its `skin.toml` and the images it maps, by
+/// their names, sizes and when each was last written (read from the folder; nothing decoded).
+fn version(folder: &Path, manifest: &Manifest) -> u64 {
+    let fnv = |hash: u64, bytes: &[u8]| bytes.iter().fold(hash, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3));
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for name in std::iter::once(MANIFEST_FILE).chain(manifest.image_names()) {
+        hash = fnv(hash, name.as_bytes());
+        if let Ok(meta) = std::fs::symlink_metadata(folder.join(name)) {
+            hash = fnv(hash, &meta.len().to_le_bytes());
+            let written = meta.modified().ok().and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |since| since.as_nanos());
+            hash = fnv(hash, &written.to_le_bytes());
+        }
+    }
+    hash
 }
 
 /// A lightweight catalog: validates manifests, but decodes images only when a pack is
@@ -208,17 +272,17 @@ pub fn list(root: &Path) -> Catalog {
     // The catalog reads metadata only: opening the library never renders/decodes paint.
     let mut out = Catalog { entries: BUILTINS.iter().map(|b| entry(&b.manifest(), None)).collect(), errors: Vec::new() };
     if !root.exists() { return out; }
-    if let Err(e) = ordinary_dir(root) { out.errors.push(e.to_string()); return out; }
-    let read = match std::fs::read_dir(root) { Ok(r) => r, Err(e) => { out.errors.push(io(root)(e).to_string()); return out; } };
+    if let Err(e) = ordinary_dir(root) { out.errors.push(Problem::Root(e.detail())); return out; }
+    let read = match std::fs::read_dir(root) { Ok(r) => r, Err(e) => { out.errors.push(Problem::Root(io(root)(e).detail())); return out; } };
     let mut paths = Vec::new();
     for child in read {
         match child {
             Ok(c) => {
                 if c.file_name().to_string_lossy().starts_with('.') { continue; }
-                if paths.len() >= 256 { out.errors.push("Only the first 256 skin folders are listed.".into()); break; }
+                if paths.len() >= MAX_FOLDERS { out.errors.push(Problem::TooMany(MAX_FOLDERS)); break; }
                 paths.push(c.path());
             }
-            Err(e) => out.errors.push(io(root)(e).to_string()),
+            Err(e) => out.errors.push(Problem::Root(io(root)(e).detail())),
         }
     }
     paths.sort();
@@ -231,9 +295,36 @@ pub fn list(root: &Path) -> Catalog {
             }
             Ok(entry(&manifest, Some(path.clone())))
         })();
-        match result { Ok(e) => out.entries.push(e), Err(e) => out.errors.push(format!("{}: {e}", path.display())) }
+        match result { Ok(e) => out.entries.push(e), Err(e) => out.errors.push(Problem::Folder { folder: shown(&path), detail: e.detail() }) }
     }
     out
+}
+
+/// Every file in the installed skin `id`'s folder (its images, mapped or not, the artist's own
+/// files, `skin.toml`), as paths from the folder with `/` between their parts: the names a new
+/// image of the skin must not take. Links are passed over, and the search keeps to a few levels
+/// and a few thousand files.
+pub fn folder_files(root: &Path, id: &str) -> Result<BTreeSet<String>> {
+    validate_id(id)?;
+    ordinary_dir(root)?;
+    let folder = root.join(id);
+    ordinary_dir(&folder)?;
+    let mut files = BTreeSet::new();
+    let mut waiting = vec![(folder, String::new(), 0usize)];
+    while let Some((dir, prefix, depth)) = waiting.pop() {
+        for child in std::fs::read_dir(&dir).map_err(io(&dir))?.flatten() {
+            if files.len() >= 4096 { return Ok(files); }
+            let Ok(meta) = std::fs::symlink_metadata(child.path()) else { continue };
+            let name = format!("{prefix}{}", child.file_name().to_string_lossy());
+            if is_link(&meta) { continue; }
+            if meta.is_dir() {
+                if depth < 8 { waiting.push((child.path(), format!("{name}/"), depth + 1)); }
+            } else {
+                files.insert(name);
+            }
+        }
+    }
+    Ok(files)
 }
 
 /// Loads a built-in or installed skin. No gameplay VFS files are involved.
@@ -311,7 +402,7 @@ fn validate_manifest(manifest: &mut Manifest) -> Result<()> {
     validate_id(&manifest.id)?;
     if let Some(livery) = &manifest.livery { livery.check().map_err(invalid)?; }
     if builtin(&manifest.id).is_some() { return Err(invalid(format!("{} is a reserved built-in skin id", manifest.id))); }
-    text_field(&manifest.name, "name", 80, false, false)?;
+    text_field(&manifest.name, "name", MAX_NAME, false, false)?;
     text_field(&manifest.author, "author", 120, true, false)?;
     text_field(&manifest.description, "description", 2000, true, true)?;
     if manifest.units.len() > 4096 { return Err(invalid("more than 4096 unit overrides")); }
@@ -472,27 +563,61 @@ fn number(data: &mut &[u8]) -> Result<u32> {
 /// Installs a validated share file without replacing any installed pack.
 pub fn import_file(file: &Path, root: &Path) -> Result<Entry> { install(&read_file(file)?, root) }
 
+/// Installs `pack` in place of the installed skin of its id. The skin there is moved aside first
+/// (into a hidden folder beside it, which [`list`] passes over) and that folder returned, for the
+/// caller to put in the Recycle Bin: nothing of it (an artist's working files) is deleted here.
+/// Should the new skin not go in, the old one is put back.
+pub fn replace(pack: &Pack, root: &Path) -> Result<(Entry, PathBuf)> {
+    // (Checked whole before anything moves.)
+    let verified = read_bytes(&encode(pack)?)?;
+    ensure_root(root)?;
+    let target = root.join(&verified.manifest.id);
+    ordinary_dir(&target)?;
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let aside = (0..100).map(|_| root.join(format!(".skin-replaced-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed))))
+        .find(|path| std::fs::symlink_metadata(path).is_err())
+        .ok_or_else(|| invalid("unable to reserve a folder for the skin replaced"))?;
+    std::fs::rename(&target, &aside).map_err(io(&target))?;
+    match install(&verified, root) {
+        Ok(entry) => Ok((entry, aside)),
+        Err(error) => {
+            let _ = std::fs::rename(&aside, &target);
+            Err(error)
+        }
+    }
+}
+
 /// Exports only manifest + referenced paint. Built-ins become editable copies with a
 /// non-reserved id, and never include any art from the player's original game install.
 pub fn export(id: &str, root: &Path, to: &Path) -> Result<()> {
-    write_new(to, &share_bytes(id, root)?)
+    write_new(to, &share_bytes(id, root, None)?)
 }
 
 /// [`export`] over a file already at `to`, one a save dialog asked the player to replace:
-/// written beside it and moved over it (a link there is replaced, never written through).
-pub fn export_replacing(id: &str, root: &Path, to: &Path) -> Result<()> {
-    replace_file(to, &share_bytes(id, root)?)
+/// written beside it and moved over it (a link there is replaced, never written through). A
+/// built-in's copy is called `name` (an interface's words for it in the player's language),
+/// else its own name and " copy".
+pub fn export_replacing(id: &str, root: &Path, to: &Path, name: Option<&str>) -> Result<()> {
+    replace_file(to, &share_bytes(id, root, name)?)
 }
 
-/// The share file of the skin `id`.
-fn share_bytes(id: &str, root: &Path) -> Result<Vec<u8>> {
+/// The id a built-in's export is installed under (`desert-copy`): [`free_id`] keeps new skins
+/// off it, so one's own copy of a built-in and another player's export of it never share an id.
+fn export_id(builtin: &str) -> String {
+    format!("{}-copy", builtin.strip_prefix("builtin:").unwrap_or(builtin))
+}
+
+/// The share file of the skin `id` (a built-in's copy called `name`).
+fn share_bytes(id: &str, root: &Path, name: Option<&str>) -> Result<Vec<u8>> {
     let mut pack = load(id, root)?;
     if builtin(id).is_some() {
         // The built-in-only namespace cannot collide with any author folder. Exports
         // leave that namespace before manifest validation or filesystem operations.
-        let name = id.strip_prefix("builtin:").unwrap_or(id);
-        pack.manifest.id = format!("{name}-copy");
-        pack.manifest.name.push_str(" copy");
+        pack.manifest.id = export_id(id);
+        match name {
+            Some(name) => pack.manifest.name = name.chars().take(MAX_NAME).collect(),
+            None => pack.manifest.name.push_str(" copy"),
+        }
     }
     encode(&pack)
 }
@@ -515,7 +640,8 @@ pub fn create(root: &Path, name: &str, author: &str, livery: Option<Livery>) -> 
 }
 
 /// The id a skin named `name` is installed under: its letters and digits in lower case, other
-/// runs as hyphens (`-custom` after a built-in's).
+/// runs as hyphens (`-custom` after a built-in's, `-skin` after a name Windows keeps for a
+/// device: `con-skin`).
 pub fn id_for(name: &str) -> String {
     let mut id = String::new();
     for c in name.chars() {
@@ -531,14 +657,17 @@ pub fn id_for(name: &str) -> String {
         id = format!("custom-{hash:016x}");
     }
     if builtin(&id).is_some() { id.push_str("-custom"); }
+    // (CON, PRN, AUX, NUL, COM1-9, LPT1-9: no folder can be called so on Windows.)
+    if !valid_id(&id) { id.push_str("-skin"); }
     id
 }
 
 /// An id for a new skin named `name` that no skin in `root` has yet (`-2`, `-3`... after a
-/// taken one).
+/// taken one), nor an export of a built-in would ([`export_id`]: `desert-copy`), and that is a
+/// valid id ([`valid_id`]).
 pub fn free_id(root: &Path, name: &str) -> String {
     let id = id_for(name);
-    let taken = |id: &str| std::fs::symlink_metadata(root.join(id)).is_ok();
+    let taken = |id: &str| !valid_id(id) || std::fs::symlink_metadata(root.join(id)).is_ok() || BUILTINS.iter().any(|b| export_id(b.id) == id);
     if !taken(&id) { return id; }
     (2..).map(|n| {
         let suffix = format!("-{n}");
@@ -549,46 +678,106 @@ pub fn free_id(root: &Path, name: &str) -> String {
 /// Installs `pack` as a new skin in `root` (its id must be free), checked as an import is.
 pub fn add(pack: &Pack, root: &Path) -> Result<Entry> { install(pack, root) }
 
+/// What [`update`] did: the skin as saved, its manifest as written, the added images it wrote
+/// under other names than they were given (a file of the folder had the name: an image of the
+/// folder is never written over) and the images it took away.
+#[derive(Debug)]
+pub struct Saved {
+    pub entry: Entry,
+    pub manifest: Manifest,
+    /// Each added image written under another name: the name it was given, the name it has.
+    pub renamed: BTreeMap<String, String>,
+    /// The images of `stale` taken out of the folder.
+    pub removed: BTreeSet<String>,
+}
+
+/// `name` with `-n` before its extension (`textures/armour-2.png`).
+fn numbered(name: &str, n: u32) -> String {
+    match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.ends_with('/') && !stem.is_empty() => format!("{stem}-{n}.{extension}"),
+        _ => format!("{name}-{n}"),
+    }
+}
+
 /// Saves an installed skin as edited: `manifest` over its `skin.toml`, and `added` (the images
-/// it maps that are not in its folder yet) beside the others. Nothing else in the folder
-/// changes, an artist's working files included. The manifest goes in last, and the skin is read
+/// it maps that are not in its folder yet) beside the others: an added image whose name a file
+/// of the folder has already is written under a free name (`-2`, `-3`...), and the manifest maps
+/// it there. Nothing else in the folder changes, an artist's working files included, but for
+/// `stale`: images the caller wrote there itself that the skin no longer maps, taken away once
+/// the save stands (one it maps again is kept). The manifest goes in last, and the skin is read
 /// back before it stands: should it not load, the manifest before is put back and the added
 /// images taken away again.
-pub fn update(root: &Path, manifest: &Manifest, added: &BTreeMap<String, RgbaImage>) -> Result<Entry> {
+pub fn update(root: &Path, manifest: &Manifest, added: &BTreeMap<String, RgbaImage>, stale: &BTreeSet<String>) -> Result<Saved> {
     let mut manifest = manifest.clone();
     validate_manifest(&mut manifest)?;
     ordinary_dir(root)?;
     let folder = root.join(&manifest.id);
     ordinary_dir(&folder)?;
     let before = read_limited(&child_file(&folder, MANIFEST_FILE)?, MAX_MANIFEST)?;
-    let names = manifest.image_names();
+    let names: BTreeSet<String> = manifest.image_names().into_iter().map(str::to_string).collect();
     let mut written: Vec<PathBuf> = Vec::new();
+    let mut renamed = BTreeMap::new();
     let result = (|| {
         for (name, image) in added.iter().filter(|(name, _)| names.contains(name.as_str())) {
             if !safe_image_path(name) { return Err(invalid(format!("unsafe PNG path '{name}'"))); }
-            let path = folder.join(name);
-            if let Some(parent) = path.parent() {
-                if !parent.exists() { std::fs::create_dir_all(parent).map_err(io(parent))?; }
-                ordinary_dir(parent)?;
-            }
             let (width, height) = image.dimensions();
             if width != height || !(64..=MAX_IMAGE_SIDE).contains(&width) || !width.is_power_of_two() {
                 return Err(invalid(format!("{name} must be a square power-of-two PNG from 64 to 1024 pixels")));
             }
             if image.pixels().any(|p| p[3] != 255) { return Err(invalid(format!("{name} contains transparency; unit skins must be fully opaque"))); }
-            write_new(&path, &png_bytes(image)?)?;
+            let bytes = png_bytes(image)?;
+            // Its own name, else the first free one: never another image's of the skin, never
+            // a file the folder has (`create_new` refuses those, whoever made them meanwhile).
+            let mut placed = None;
+            for n in 1..=1000 {
+                let candidate = if n == 1 { name.clone() } else { numbered(name, n) };
+                if n > 1 && (!safe_image_path(&candidate) || names.iter().chain(renamed.values()).any(|taken: &String| taken.eq_ignore_ascii_case(&candidate))) { continue; }
+                let path = folder.join(&candidate);
+                if let Some(parent) = path.parent() {
+                    if !parent.exists() { std::fs::create_dir_all(parent).map_err(io(parent))?; }
+                    ordinary_dir(parent)?;
+                }
+                match write_new(&path, &bytes) {
+                    Ok(()) => { placed = Some((candidate, path)); break; }
+                    Err(Error::Exists(_)) => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+            let Some((candidate, path)) = placed else { return Err(Error::Exists(folder.join(name))) };
             written.push(path);
+            if candidate != *name { renamed.insert(name.clone(), candidate); }
+        }
+        if !renamed.is_empty() {
+            let rename = |textures: &mut BTreeMap<String, String>| for path in textures.values_mut() {
+                if let Some(to) = renamed.get(path) { *path = to.clone(); }
+            };
+            rename(&mut manifest.textures);
+            manifest.units.values_mut().for_each(|unit| rename(&mut unit.textures));
+            validate_manifest(&mut manifest)?;
         }
         replace_file(&folder.join(MANIFEST_FILE), &with_header(manifest_bytes(&manifest)?))?;
         let pack = load_folder(&folder)?;
         if pack.manifest.id != manifest.id { return Err(invalid("folder name must match the skin id")); }
-        Ok(entry(&pack.manifest, Some(folder.clone())))
+        Ok(pack.manifest)
     })();
-    if result.is_err() {
-        let _ = replace_file(&folder.join(MANIFEST_FILE), &before);
-        for path in written { let _ = std::fs::remove_file(path); }
+    let saved = match result {
+        Ok(saved) => saved,
+        Err(error) => {
+            let _ = replace_file(&folder.join(MANIFEST_FILE), &before);
+            for path in written { let _ = std::fs::remove_file(path); }
+            return Err(error);
+        }
+    };
+    // The save stands: the caller's own images it no longer maps go (a link, or anything not an
+    // ordinary file, stays).
+    let kept = saved.image_names();
+    let mut removed = BTreeSet::new();
+    for name in stale.iter().filter(|name| !kept.iter().any(|mapped| mapped.eq_ignore_ascii_case(name)) && safe_image_path(name)) {
+        if let Ok(path) = child_file(&folder, name) && std::fs::remove_file(&path).is_ok() {
+            removed.insert(name.clone());
+        }
     }
-    result
+    Ok(Saved { entry: entry(&saved, Some(folder)), manifest: saved, renamed, removed })
 }
 
 /// `image` made fit to be a skin's: square, a power of two from 64 to 1024 pixels a side (the
@@ -740,7 +929,7 @@ fn is_link(meta: &std::fs::Metadata) -> bool {
 
 fn ordinary_dir(path: &Path) -> Result<()> {
     let meta = std::fs::symlink_metadata(path).map_err(io(path))?;
-    if is_link(&meta) || !meta.is_dir() { return Err(invalid(format!("{} is not an ordinary directory", path.display()))); }
+    if is_link(&meta) || !meta.is_dir() { return Err(invalid(format!("{} is not an ordinary directory", shown(path)))); }
     Ok(())
 }
 
@@ -752,7 +941,7 @@ fn child_file(root: &Path, name: &str) -> Result<PathBuf> {
         path.push(part);
         let meta = std::fs::symlink_metadata(&path).map_err(io(&path))?;
         if is_link(&meta) || if index + 1 == pieces.len() { !meta.is_file() } else { !meta.is_dir() } {
-            return Err(invalid(format!("{} is linked or not an ordinary file/directory", path.display())));
+            return Err(invalid(format!("{} is linked or not an ordinary file/directory", pieces[..=index].join("/"))));
         }
     }
     Ok(path)
@@ -760,7 +949,7 @@ fn child_file(root: &Path, name: &str) -> Result<PathBuf> {
 
 fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let meta = std::fs::symlink_metadata(path).map_err(io(path))?;
-    if is_link(&meta) || !meta.is_file() || meta.len() > limit { return Err(invalid(format!("{} is linked, not a file or exceeds its byte limit", path.display()))); }
+    if is_link(&meta) || !meta.is_file() || meta.len() > limit { return Err(invalid(format!("{} is linked, not a file or exceeds its byte limit", shown(path)))); }
     let mut bytes = Vec::new();
     std::fs::File::open(path).map_err(io(path))?.take(limit + 1).read_to_end(&mut bytes).map_err(io(path))?;
     if bytes.len() as u64 > limit { return Err(invalid("file grew beyond its byte limit while reading")); }
@@ -771,7 +960,7 @@ fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>> {
 /// symlink/hardlink). On write failure the incomplete file is removed by its owner.
 fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(path)
-        .map_err(|e| if e.kind() == std::io::ErrorKind::AlreadyExists { Error::Exists(path.display().to_string()) } else { io(path)(e) })?;
+        .map_err(|e| if e.kind() == std::io::ErrorKind::AlreadyExists { Error::Exists(path.to_path_buf()) } else { io(path)(e) })?;
     let mut owned = Temp { path: path.to_path_buf(), directory: false, keep: false };
     file.write_all(bytes).map_err(io(path))?;
     file.sync_all().map_err(io(path))?;
@@ -1062,7 +1251,7 @@ mod tests {
         assert_eq!(std::fs::read(&outside).unwrap(), original);
         // Replacing (the save dialog asked): the link is replaced, the file it led to is not
         // written through.
-        export_replacing("reborn", &root, &hardlink).unwrap();
+        export_replacing("reborn", &root, &hardlink, None).unwrap();
         assert_eq!(std::fs::read(&outside).unwrap(), original);
         assert!(import_file(&hardlink, &tmp.path.join("imported")).is_ok(), "a whole share file in its place");
     }
@@ -1150,8 +1339,9 @@ mod tests {
         manifest.livery = builtin_livery("builtin:tiger");
         manifest.textures.insert("armmetal".into(), "textures/armmetal.png".into());
         let added = BTreeMap::from([("textures/armmetal.png".to_string(), solid(128))]);
-        let entry = update(&root, &manifest, &added).unwrap();
-        assert_eq!(entry.livery, builtin_livery("builtin:tiger"));
+        let saved = update(&root, &manifest, &added, &BTreeSet::new()).unwrap();
+        assert_eq!(saved.entry.livery, builtin_livery("builtin:tiger"));
+        assert!(saved.renamed.is_empty() && saved.removed.is_empty());
         let pack = load("paint", &root).unwrap();
         assert_eq!(pack.manifest.texture_for("corak", "ArmMetal"), Some("textures/armmetal.png"));
         assert_eq!(pack.images["textures/armmetal.png"], solid(128));
@@ -1163,17 +1353,137 @@ mod tests {
         broken.textures.insert("cormetal".into(), "textures/missing.png".into());
         let added = BTreeMap::from([("textures/extra.png".to_string(), solid(64))]);
         broken.textures.insert("corplate".into(), "textures/extra.png".into());
-        assert!(update(&root, &broken, &added).is_err());
+        assert!(update(&root, &broken, &added, &BTreeSet::new()).is_err());
         assert_eq!(std::fs::read(folder.join(MANIFEST_FILE)).unwrap(), before);
         assert!(!folder.join("textures/extra.png").exists(), "the images a failed save added go again");
         assert!(load("paint", &root).is_ok());
-        // An image of the folder is never written over, nor a skin that is not installed saved.
+        // An image of the folder is never written over (the new one takes a free name, the
+        // manifest mapping it there), nor a skin that is not installed saved.
+        let original = std::fs::read(folder.join("textures/armmetal.png")).unwrap();
         let added = BTreeMap::from([("textures/armmetal.png".to_string(), solid(64))]);
-        assert!(matches!(update(&root, &manifest, &added), Err(Error::Exists(_))));
+        let saved = update(&root, &manifest, &added, &BTreeSet::new()).unwrap();
+        assert_eq!(saved.renamed, BTreeMap::from([("textures/armmetal.png".to_string(), "textures/armmetal-2.png".to_string())]));
+        assert_eq!(saved.manifest.texture_for("corak", "armmetal"), Some("textures/armmetal-2.png"));
+        assert_eq!(std::fs::read(folder.join("textures/armmetal.png")).unwrap(), original, "the folder's own file stays as it was");
+        assert_eq!(load("paint", &root).unwrap().images["textures/armmetal-2.png"], solid(64));
         let mut other = manifest.clone();
         other.id = "not-installed".into();
-        assert!(update(&root, &other, &BTreeMap::new()).is_err());
+        assert!(update(&root, &other, &BTreeMap::new(), &BTreeSet::new()).is_err());
         assert_eq!(list(&root).entries.iter().filter(|e| !e.builtin).count(), 1);
+    }
+
+    /// The images a save no longer maps that the editor wrote itself go once the save stands;
+    /// those it maps still, and every other file of the folder, stay.
+    #[test]
+    fn a_save_takes_away_only_the_stale_images_it_is_given() {
+        let tmp = sandbox();
+        let root = tmp.path.join("skins");
+        let folder = create(&root, "Paint", "Artist", None).unwrap().path.unwrap();
+        let mut manifest = load("paint", &root).unwrap().manifest;
+        manifest.textures.insert("*".into(), "textures/armour.png".into());
+        update(&root, &manifest, &BTreeMap::from([("textures/armour.png".to_string(), solid(64))]), &BTreeSet::new()).unwrap();
+        // Replaced by another picture: the first, the editor's own, is stale.
+        manifest.textures.insert("*".into(), "textures/armour-2.png".into());
+        let stale = BTreeSet::from(["textures/armour.png".to_string(), "textures/paint.png".to_string()]);
+        std::fs::write(folder.join("textures/notes.png"), "the artist's").unwrap();
+        let saved = update(&root, &manifest, &BTreeMap::from([("textures/armour-2.png".to_string(), solid(128))]), &stale).unwrap();
+        assert_eq!(saved.removed, BTreeSet::from(["textures/armour.png".to_string()]), "paint.png is still mapped (the Commander's)");
+        assert!(!folder.join("textures/armour.png").exists());
+        assert!(folder.join("textures/paint.png").is_file() && folder.join("textures/notes.png").is_file());
+        assert!(load("paint", &root).is_ok());
+        // (A failed save takes nothing away.)
+        let mut broken = manifest.clone();
+        broken.textures.insert("cormetal".into(), "textures/missing.png".into());
+        assert!(update(&root, &broken, &BTreeMap::new(), &BTreeSet::from(["textures/armour-2.png".to_string()])).is_err());
+        assert!(folder.join("textures/armour-2.png").is_file());
+    }
+
+    /// Every file of a skin's folder is named, from the folder, links passed over.
+    #[test]
+    fn a_skins_folder_files_are_listed_by_their_paths() {
+        let tmp = sandbox();
+        let root = tmp.path.join("skins");
+        let folder = create(&root, "Paint", "Artist", None).unwrap().path.unwrap();
+        std::fs::write(folder.join("textures/armour.png"), "left over").unwrap();
+        std::fs::create_dir_all(folder.join("work/old")).unwrap();
+        std::fs::write(folder.join("work/old/sketch.psd"), "the artist's").unwrap();
+        let files = folder_files(&root, "paint").unwrap();
+        for name in ["skin.toml", "CREATOR-GUIDE.md", "textures/paint.png", "textures/armour.png", "work/old/sketch.psd"] {
+            assert!(files.contains(name), "{name}: {files:?}");
+        }
+        assert!(folder_files(&root, "builtin:desert").is_err() && folder_files(&root, "absent").is_err());
+    }
+
+    /// A skin installed again from a share file: in place of the one of its id (that one moved
+    /// aside whole, for the Recycle Bin), or beside it under a free id.
+    #[test]
+    fn an_installed_skin_is_replaced_or_kept_beside_the_new_one() {
+        let tmp = sandbox();
+        let root = tmp.path.join("skins");
+        let mut first = one_image();
+        first.manifest.livery = builtin_livery("builtin:navy");
+        add(&first, &root).unwrap();
+        std::fs::write(root.join("test-paint/working.psd"), "the artist's").unwrap();
+        let mut second = one_image();
+        second.manifest.livery = builtin_livery("builtin:tiger");
+        assert!(matches!(add(&second, &root), Err(Error::AlreadyInstalled(id)) if id == "test-paint"));
+        // Kept both: the new one under the first free id.
+        let mut both = second.clone();
+        both.manifest.id = free_id(&root, &both.manifest.id);
+        assert_eq!(add(&both, &root).unwrap().id, "test-paint-2");
+        // Replaced: the old folder aside, hidden from the library, whole.
+        let (entry, aside) = replace(&second, &root).unwrap();
+        assert_eq!(entry.id, "test-paint");
+        assert_eq!(load("test-paint", &root).unwrap().manifest.livery, builtin_livery("builtin:tiger"));
+        assert!(aside.join("working.psd").is_file() && aside.join("skin.toml").is_file());
+        assert!(!root.join("test-paint/working.psd").exists());
+        let catalog = list(&root);
+        assert!(catalog.errors.is_empty(), "{:?}", catalog.errors);
+        assert_eq!(catalog.entries.iter().filter(|e| !e.builtin).count(), 2);
+        // Nothing to replace: refused, nothing moved.
+        let mut absent = one_image();
+        absent.manifest.id = "absent".into();
+        assert!(replace(&absent, &root).is_err());
+        assert!(!root.join("absent").exists());
+    }
+
+    /// What the library could not read is told without the player's folders' full paths, and an
+    /// error's detail names a file, not where it is.
+    #[test]
+    fn problems_and_details_name_files_not_their_folders() {
+        let tmp = sandbox();
+        let root = tmp.path.join("skins");
+        create(&root, "Paint", "Artist", None).unwrap();
+        std::fs::create_dir_all(root.join("broken")).unwrap();
+        std::fs::write(root.join("broken/skin.toml"), "format = 2\nid = 'broken'\nname = \n").unwrap();
+        let catalog = list(&root);
+        assert_eq!(catalog.errors.len(), 1);
+        let Problem::Folder { folder, detail } = &catalog.errors[0] else { panic!("{:?}", catalog.errors) };
+        assert_eq!(folder, "broken");
+        assert!(detail.starts_with("skin.toml"), "{detail}");
+        let root_text = root.display().to_string();
+        assert!(!detail.contains(&root_text) && !catalog.errors[0].to_string().contains(&root_text));
+        let missing = load_folder(&root.join("absent")).unwrap_err();
+        assert!(missing.to_string().contains(&root_text), "the whole message keeps the path, for the log");
+        assert_eq!(missing.detail().split(':').next(), Some("absent"));
+        assert_eq!(Error::Exists(root.join("paint/textures/paint.png")).detail(), "paint.png");
+    }
+
+    /// A skin's version changes with its manifest or an image it maps, and with nothing else.
+    #[test]
+    fn a_skins_version_follows_its_files() {
+        let tmp = sandbox();
+        let root = tmp.path.join("skins");
+        let folder = create(&root, "Paint", "Artist", None).unwrap().path.unwrap();
+        let version = |root: &Path| list(root).entries.iter().find(|e| e.id == "paint").unwrap().version;
+        let first = version(&root);
+        assert_eq!(first, version(&root), "the same files, the same version");
+        assert!(list(&root).entries.iter().filter(|e| e.builtin).all(|e| e.version == 0));
+        std::fs::write(folder.join("notes.txt"), "the artist's").unwrap();
+        assert_eq!(first, version(&root), "a file it does not map is not part of it");
+        let paint = folder.join("textures/paint.png");
+        std::fs::write(&paint, png_bytes(&solid(128)).unwrap()).unwrap();
+        assert_ne!(first, version(&root), "a mapped image painted again");
     }
 
     #[test]
@@ -1191,6 +1501,20 @@ mod tests {
         assert!(matches!(add(&Pack { manifest, images: BTreeMap::new() }, &root), Err(Error::AlreadyInstalled(_))));
         let long = "x".repeat(80);
         assert!(valid_id(&free_id(&root, &long)));
+        // Names Windows keeps for its devices are no folder's: such a skin still saves.
+        for name in ["Con", "aux", "PRN", "Nul", "COM1", "lpt9", "Com 1"] {
+            let id = free_id(&root, name);
+            assert!(valid_id(&id), "{name}: {id}");
+            let mut manifest = super::tests::manifest();
+            (manifest.id, manifest.name) = (id.clone(), name.into());
+            assert_eq!(add(&Pack { manifest, images: BTreeMap::new() }, &root).unwrap().id, id, "{name}");
+            assert!(valid_id(&id_for(name)));
+        }
+        assert_eq!(id_for("Con"), "con-skin");
+        assert!(create(&root, "Lpt1", "Artist", None).is_ok());
+        // One's own copy of a built-in never takes the id another player's export of it has.
+        assert_eq!(free_id(&root, "Desert copy"), "desert-copy-2");
+        assert_eq!(free_id(&root, "Christmas copy"), "christmas-copy-2");
     }
 
     #[test]

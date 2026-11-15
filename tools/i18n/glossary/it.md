@@ -590,3 +590,27 @@ dovrebbe essere {expected}": noun phrases with their article. Straight apostroph
 | plates (the HUD's, a theme's picture behind them) / the side's own metal plates | piastre / le piastre metalliche proprie della fazione |
 | line spacing / one frame in {stride} (a preview played with fewer frames) / choppier | interlinea / uno ogni {stride} / più a scatti |
 | TURN OFF {name} (a mod, beside ENABLE {name}) / STOP PREVIEW (beside PLAY PREVIEW) | DISATTIVA {name} / FERMA ANTEPRIMA (as STOP: FERMA) |
+
+## Stato di servizio danneggiato, profili illeggibili e tasti del launcher (`app/profile_page.rs`, `app/profiles.rs`, `pages/play.rs`, `app/polish.rs`)
+
+The launcher's KEYBOARD SHORTCUTS name the keys as Italian keyboards print them (Ctrl+1, Maiusc+Tab,
+Alt+Home), for `polish.rs` only; Cmd and Option stay. The shared notices "{name} è stata rimossa (è nel
+Cestino)" and "{name} è stata eliminata definitivamente" are feminine (mods, skins), so the unreadable
+profile's {name} is a feminine noun phrase. Page names in sentences in capitals, as the rail: la pagina
+AVVIA, la pagina PROFILO, la pagina MAPPE. Counts of maps made and not: "Mappe importate: {n}; non
+create: {failed}.", "Non è stato possibile creare nessuna delle mappe scelte ({n})."
+
+| English | Italiano |
+|---|---|
+| key labels Shift / Enter / End (launcher shortcuts) | Maiusc / Invio / Fine (Alt, Ctrl, Esc, Tab, Home, Cmd, Option kept) |
+| unreadable (a profile, the service record, a map) | illeggibile (ILLEGGIBILE, PROFILI ILLEGGIBILI, STATO DI SERVIZIO ILLEGGIBILE) |
+| The unreadable profile (the {name} of the delete notices) | La cartella del profilo illeggibile |
+| career file / set aside / put back (the damaged career.toml) | file della carriera / mettere da parte / rimettere al suo posto |
+| START A FRESH CAREER(…) / START A FRESH CAREER? | INIZIA UNA NUOVA CARRIERA(…) / INIZIARE UNA NUOVA CARRIERA? |
+| PUT IT RIGHT / CAREER NEEDS ATTENTION (the Play page's title) | RISOLVI / CARRIERA DA VERIFICARE |
+| MOVE TO RECYCLE BIN (button) | SPOSTA NEL CESTINO |
+| YOURS AND ALLIES / ENEMY UNITS (the armies' skins) / YOUR SKINS (filter) | TU E I TUOI ALLEATI / NEMICI / LE TUE SKIN |
+| KEEP BOTH / id (a skin's) | TIENILE ENTRAMBE / ID (l’ID) |
+| hue / saturation / brightness (colour picker) | Tonalità / Saturazione / Luminosità |
+| screen-reader marks OK / Not present / Error; {content}: found / not found | OK / Assente / Errore; presente / assente (no gender to agree) |
+| LEGAL / THE PROJECT (About page headings) | NOTE LEGALI / IL PROGETTO |

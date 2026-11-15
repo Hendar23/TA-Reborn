@@ -121,7 +121,7 @@ impl LauncherApp {
         if !one_row {
             ui.horizontal_wrapped(|ui| save_as = self.skin_editor_buttons(ui, idle, dirty, saved_once, can_undo, can_redo, false));
         }
-        if save_as { self.skins.ask = Some(Ask::SaveAs(tf("{name} copy", &[("name", &name)]))); }
+        if save_as { self.skins.ask = Some(Ask::SaveAs(crate::skin_editor::copy_name(&name))); }
         let escape = idle && self.search_shortcuts_allowed(ui) && ui.memory(|memory| memory.focused().is_none())
             && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         if back || escape { self.leave_skin_editor(); }
@@ -152,10 +152,11 @@ impl LauncherApp {
         save_as
     }
 
-    /// Leaves the editor, asking first when there are changes not saved.
+    /// Leaves the editor, asking first when leaving would lose changes (as closing the launcher
+    /// does: a copy left as it was opened loses nothing).
     pub(crate) fn leave_skin_editor(&mut self) {
         match self.skins.editor.as_ref() {
-            Some(editor) if editor.dirty() => self.skins.ask = Some(Ask::Leave),
+            Some(editor) if editor.changed() => self.skins.ask = Some(Ask::Leave),
             Some(editor) => {
                 if let Some(id) = editor.id.clone() { self.skins.browser.inspecting = id.clone(); self.skins.browser.reveal = Some(id); }
                 self.skins.editor = None;
@@ -184,7 +185,7 @@ impl LauncherApp {
         let revision = self.skins.preview_revision;
         let Some(editor) = self.skins.editor.as_mut() else { return };
         let serial = editor.serial;
-        let paint = crate::skins::preview::Paint::Editing { pack: editor.preview_pack(), serial, revision: editor.textures, livery: editor.manifest.livery.clone() };
+        let paint = crate::skins::preview::Paint::Editing { pack: editor.preview_pack(), serial, revision: editor.textures, livery: editor.manifest.livery.clone(), name: editor.manifest.name.clone() };
         let units = editor.units.clone();
         widgets::card(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
@@ -273,13 +274,14 @@ impl LauncherApp {
                 super::wrapped(ui, t("The units keep TA Reborn's own paint. Texture slots below still paint over it."), STEEL);
                 return;
             };
-            // The pattern: a tile for each, in this livery's colours.
+            // The pattern: a tile for each, in this livery's colours (drawn on a worker: those
+            // before stay on show meanwhile).
             ui.label(widgets::caption("PATTERN"));
-            let tiles = pattern_tiles(&ctx, &mut self.skins.editor_tiles, &livery);
+            let tiles = self.skins.editor_tiles.get(&ctx, &livery, [(TILE.x * 2.0) as usize, (TILE.y * 2.0) as usize]).map(<[TextureHandle]>::to_vec).unwrap_or_default();
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-                for (pattern, texture) in Pattern::ALL.into_iter().zip(&tiles) {
-                    if pattern_tile(ui, texture, pattern, livery.pattern == pattern).clicked() {
+                for (at, pattern) in Pattern::ALL.into_iter().enumerate() {
+                    if pattern_tile(ui, tiles.get(at), pattern, livery.pattern == pattern).clicked() {
                         editor.livery("pattern", now, |livery| livery.pattern = pattern);
                     }
                 }
@@ -300,8 +302,13 @@ impl LauncherApp {
                     let next = PALETTES[0].1.get(livery.colours.len()).copied().unwrap_or(0x808080);
                     editor.livery("add colour", now, |livery| livery.colours.push(Colour::rgb(next)));
                 }
-                if livery.colours.len() > 1 && widgets::icon_button(ui, widgets::Glyph::Close, true).hover_tip(t("Take the last colour away")).clicked() {
-                    editor.livery("remove colour", now, |livery| { livery.colours.pop(); });
+                if livery.colours.len() > 1 {
+                    // (Named for what it does: its glyph alone said "Close".)
+                    let remove = widgets::icon_button(ui, widgets::Glyph::Close, true);
+                    ui.ctx().accesskit_node_builder(remove.id, |node| node.set_label(t("Take the last colour away")));
+                    if remove.hover_tip(t("Take the last colour away")).clicked() {
+                        editor.livery("remove colour", now, |livery| { livery.colours.pop(); });
+                    }
                 }
                 ui.add_space(space::M);
                 let mut trimmed = livery.trim.is_some();
@@ -362,6 +369,8 @@ impl LauncherApp {
                     ui.add(egui::Label::new(widgets::caption("UNITS")).truncate()).hover_tip(tip)
                 }).inner;
                 let response = widgets::segmented_fill(ui, &mut original, &[(false, n("TA REBORN'S")), (true, n("TA'S ORIGINALS"))]).labelled_by(words.id);
+                // (Its name where it becomes a list.)
+                ui.ctx().accesskit_node_builder(response.id, |node| node.set_label(t("UNITS")));
                 response.hover_tip(tip);
             });
             if original != livery.original {
@@ -444,10 +453,17 @@ impl LauncherApp {
                         ui.add(egui::Label::new(RichText::new(state).size(11.5).color(if mapped.is_some() { AMBER } else { STEEL })).truncate());
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if mapped.is_some() && ui.add(ActionButton::secondary("CLEAR").height(26.0)).hover_tip(t("Take the picture away")).clicked() {
-                            editor.clear(scope.as_deref(), &texture, now);
+                        // (Each button named with its slot: a few dozen alike said nothing of which.)
+                        if mapped.is_some() {
+                            let clear = ui.add(ActionButton::secondary("CLEAR").height(26.0));
+                            ui.ctx().accesskit_node_builder(clear.id, |node| node.set_label(tf("CLEAR ({slot})", &[("slot", &label)])));
+                            if clear.hover_tip(t("Take the picture away")).clicked() {
+                                editor.clear(scope.as_deref(), &texture, now);
+                            }
                         }
-                        if ui.add_enabled(idle, ActionButton::secondary("ASSIGN IMAGE…").height(26.0)).hover_tip(t("A PNG or JPEG of your own: it is made square and opaque to fit")).clicked() {
+                        let choose = ui.add_enabled(idle, ActionButton::secondary("ASSIGN IMAGE…").height(26.0));
+                        ui.ctx().accesskit_node_builder(choose.id, |node| node.set_label(tf("ASSIGN IMAGE… ({slot})", &[("slot", &label)])));
+                        if choose.hover_tip(t("A PNG or JPEG of your own: it is made square and opaque to fit")).clicked() {
                             assign = Some((scope.clone(), texture.clone()));
                         }
                     });
@@ -489,8 +505,9 @@ fn slider_row(ui: &mut Ui, label: &str, tip: &str, value: &mut f32, kind: Kind) 
     }).inner
 }
 
-/// A pattern's tile: its picture in the livery's colours over its name; the chosen one framed.
-fn pattern_tile(ui: &mut Ui, texture: &TextureHandle, pattern: Pattern, chosen: bool) -> egui::Response {
+/// A pattern's tile: its picture in the livery's colours (once drawn) over its name; the chosen
+/// one framed.
+fn pattern_tile(ui: &mut Ui, texture: Option<&TextureHandle>, pattern: Pattern, chosen: bool) -> egui::Response {
     let label = t(super::skins::pattern_label(pattern));
     let (rect, response) = ui.allocate_exact_size(TILE + vec2(0.0, 18.0), Sense::click());
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, chosen, label));
@@ -499,7 +516,9 @@ fn pattern_tile(ui: &mut Ui, texture: &TextureHandle, pattern: Pattern, chosen: 
         let picture = Rect::from_min_size(rect.min, TILE);
         let painter = ui.painter();
         painter.add(ta_ui::metal::well(picture, Color32::from_rgb(9, 10, 8)));
-        painter.image(texture.id(), picture.shrink(2.0), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        if let Some(texture) = texture {
+            painter.image(texture.id(), picture.shrink(2.0), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        }
         let colour = if chosen { AMBER_BRIGHT } else if response.hovered() { TEXT_BRIGHT } else { TEXT };
         painter.text(pos2(rect.center().x, picture.bottom() + 9.0), egui::Align2::CENTER_CENTER, label, body(11.5), colour);
         if chosen {
@@ -511,19 +530,6 @@ fn pattern_tile(ui: &mut Ui, texture: &TextureHandle, pattern: Pattern, chosen: 
     }
     if response.clicked() && !chosen { ta_ui::sound::play(ui.ctx(), ta_ui::sound::UiSound::Toggle); }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
-}
-
-/// The pattern tiles in this livery's colours, drawn again only when what they show changes.
-fn pattern_tiles(ctx: &egui::Context, cache: &mut Option<(String, Vec<TextureHandle>)>, livery: &Livery) -> Vec<TextureHandle> {
-    let key = format!("{:?}|{}|{}|{}|{}", livery.colours, livery.scale, livery.sharpness, livery.seed, livery.colours.len());
-    if let Some((made, textures)) = cache.as_ref() && *made == key { return textures.clone(); }
-    let (width, height) = ((TILE.x * 2.0) as usize, (TILE.y * 2.0) as usize);
-    let textures: Vec<TextureHandle> = Pattern::ALL.into_iter().map(|pattern| {
-        let tile = crate::skin_patterns::tile(livery, pattern, width, height);
-        ctx.load_texture(format!("skin pattern {pattern:?}"), tile, egui::TextureOptions::LINEAR)
-    }).collect();
-    *cache = Some((key, textures.clone()));
-    textures
 }
 
 /// A picture assigned to a slot, as a small texture (made once per image of this opening of
@@ -539,8 +545,8 @@ fn slot_picture(ctx: &egui::Context, cache: &mut std::collections::HashMap<(u64,
     Some(texture)
 }
 
-/// A colour's swatch: its colour over its name; a click opens its picker, its hex and the
-/// palettes' colours. True when the colour changed.
+/// A colour's swatch: its colour over its name; a click opens its picker (pointer or keys), its
+/// hex to type and the palettes' colours. True when the colour changed.
 fn colour_swatch(ui: &mut Ui, swatch: Swatch, label: &str, colour: &mut Colour) -> bool {
     let id = ui.id().with(("skin_swatch", match swatch { Swatch::Colour(at) => at, Swatch::Trim => 9 }));
     let (rect, response) = ui.allocate_exact_size(vec2(64.0, 46.0), Sense::click());
@@ -559,19 +565,10 @@ fn colour_swatch(ui: &mut Ui, swatch: Swatch, label: &str, colour: &mut Colour) 
     let mut changed = false;
     egui::Popup::menu(&response).id(id).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         ui.set_width(250.0);
-        let mut picked = Color32::from_rgb(r, g, b);
-        if egui::widgets::color_picker::color_picker_color32(ui, &mut picked, egui::widgets::color_picker::Alpha::Opaque) {
-            *colour = Colour([picked.r(), picked.g(), picked.b()]);
-            changed = true;
-        }
+        changed |= colour_picker(ui, id.with("picker"), colour);
         ui.horizontal(|ui| {
             ui.label(widgets::caption("HEX"));
-            let mut hex = colour.hex();
-            let field = ui.add(egui::TextEdit::singleline(&mut hex).desired_width(90.0).font(mono(13.0)));
-            if field.changed() && let Some(parsed) = Colour::parse(&hex) {
-                *colour = parsed;
-                changed = true;
-            }
+            changed |= hex_field(ui, id.with("hex"), colour);
         });
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
@@ -583,14 +580,143 @@ fn colour_swatch(ui: &mut Ui, swatch: Swatch, label: &str, colour: &mut Colour) 
                     let shade = Colour::rgb(rgb);
                     let [r, g, b] = shade.0;
                     let (chip, click) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+                    // (Named by its colour, for the keys and a screen reader.)
+                    click.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, shade.hex()));
+                    widgets::reveal_focus(ui, &click);
                     ui.painter().rect_filled(chip, 2.0, Color32::from_rgb(r, g, b));
                     ui.painter().rect_stroke(chip, 2.0, Stroke::new(1.0, if click.hovered() { AMBER } else { Color32::from_black_alpha(160) }), StrokeKind::Inside);
+                    widgets::focus_ring(ui, &click, chip);
                     if click.on_hover_text(shade.hex()).clicked() { *colour = shade; changed = true; }
                 }
             }
         });
     });
     changed
+}
+
+/// A colour's hex to type: the text stays as typed while the field has the keys (half a code, a
+/// slip), and the colour follows once it reads as one (`#rrggbb`); leaving the field shows the
+/// colour's own again. True when the colour changed.
+fn hex_field(ui: &mut Ui, id: egui::Id, colour: &mut Colour) -> bool {
+    let typing = ui.memory(|memory| memory.has_focus(id));
+    let mut text = if typing { ui.data(|data| data.get_temp::<String>(id)).unwrap_or_else(|| colour.hex()) } else { colour.hex() };
+    let field = ui.add(egui::TextEdit::singleline(&mut text).id(id).char_limit(7).desired_width(90.0).font(mono(13.0)));
+    ui.ctx().accesskit_node_builder(field.id, |node| node.set_label(t("HEX")));
+    let mut changed = false;
+    if field.changed() && let Some(parsed) = Colour::parse(&text) && parsed != *colour {
+        *colour = parsed;
+        changed = true;
+    }
+    if field.has_focus() { ui.data_mut(|data| data.insert_temp(id, text)); } else { ui.data_mut(|data| data.remove::<String>(id)); }
+    changed
+}
+
+/// A colour's hue, saturation and brightness to choose, by pointer or by the keys: a field of
+/// saturation (across) and brightness (up), and a band of hues under it. Tab to either, then the
+/// arrows (with Shift, ten steps at a time). True when the colour changed.
+fn colour_picker(ui: &mut Ui, id: egui::Id, colour: &mut Colour) -> bool {
+    use egui::ecolor::HsvaGamma;
+    let [r, g, b] = colour.0;
+    let current = Color32::from_rgb(r, g, b);
+    // (Its hue is kept while the colour is a grey, whose own says nothing of it.)
+    let mut hsv = match ui.data(|data| data.get_temp::<(Color32, [f32; 3])>(id)) {
+        Some((shown, hsv)) if shown == current => hsv,
+        _ => { let HsvaGamma { h, s, v, .. } = HsvaGamma::from(current); [h, s, v] }
+    };
+    let mut moved = false;
+    let width = ui.available_width().max(1.0);
+    // (Each press its own step: a hundredth, a tenth with Shift.)
+    let steps = |input: &egui::InputState, less: egui::Key, more: egui::Key| -> f32 {
+        input.events.iter().map(|event| match event {
+            egui::Event::Key { key, pressed: true, modifiers, .. } if *key == more || *key == less => {
+                let step = if modifiers.shift { 0.1 } else { 0.01 };
+                if *key == more { step } else { -step }
+            }
+            _ => 0.0,
+        }).sum()
+    };
+    // The field: saturation across, brightness up.
+    let (area, _) = ui.allocate_exact_size(vec2(width, (width * 0.6).round()), Sense::hover());
+    let field = ui.interact(area, id.with("field"), Sense::click_and_drag());
+    if let Some(at) = field.interact_pointer_pos() {
+        hsv[1] = ((at.x - area.left()) / area.width()).clamp(0.0, 1.0);
+        hsv[2] = ((area.bottom() - at.y) / area.height()).clamp(0.0, 1.0);
+        moved = true;
+    }
+    if field.has_focus() {
+        ui.memory_mut(|memory| memory.set_focus_lock_filter(field.id, egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, ..Default::default() }));
+        let (across, up) = ui.input(|input| (steps(input, egui::Key::ArrowLeft, egui::Key::ArrowRight), steps(input, egui::Key::ArrowDown, egui::Key::ArrowUp)));
+        if across != 0.0 || up != 0.0 {
+            hsv[1] = (hsv[1] + across).clamp(0.0, 1.0);
+            hsv[2] = (hsv[2] + up).clamp(0.0, 1.0);
+            moved = true;
+        }
+    }
+    let percent = |share: f32| (share * 100.0).round();
+    let value = tf("saturation {s}%, brightness {v}%", &[("s", &percent(hsv[1])), ("v", &percent(hsv[2]))]);
+    field.widget_info(|| {
+        let mut info = egui::WidgetInfo::labeled(egui::WidgetType::Slider, true, t("Saturation and brightness"));
+        info.current_text_value = Some(value.clone());
+        info
+    });
+    widgets::reveal_focus(ui, &field);
+    // The band of hues (round: past red at one end, red again at the other).
+    let (band, _) = ui.allocate_exact_size(vec2(width, 18.0), Sense::hover());
+    let hue = ui.interact(band, id.with("hue"), Sense::click_and_drag());
+    if let Some(at) = hue.interact_pointer_pos() {
+        hsv[0] = ((at.x - band.left()) / band.width()).clamp(0.0, 1.0);
+        moved = true;
+    }
+    if hue.has_focus() {
+        ui.memory_mut(|memory| memory.set_focus_lock_filter(hue.id, egui::EventFilter { horizontal_arrows: true, ..Default::default() }));
+        let along = ui.input(|input| steps(input, egui::Key::ArrowLeft, egui::Key::ArrowRight));
+        if along != 0.0 {
+            hsv[0] = (hsv[0] + along).rem_euclid(1.0);
+            moved = true;
+        }
+    }
+    hue.widget_info(|| egui::WidgetInfo::slider(true, f64::from((hsv[0] * 360.0).round()), t("Hue")));
+    widgets::reveal_focus(ui, &hue);
+    let at = |h: f32, s: f32, v: f32| Color32::from(HsvaGamma { h, s, v, a: 1.0 });
+    if ui.is_rect_visible(area) {
+        gradient(ui.painter(), area, |x, y| at(hsv[0], x, y));
+        let spot = pos2(area.left() + hsv[1] * area.width(), area.bottom() - hsv[2] * area.height());
+        let shown = at(hsv[0], hsv[1], hsv[2]);
+        let ring = if hsv[2] > 0.6 && hsv[1] < 0.5 { Color32::BLACK } else { Color32::WHITE };
+        ui.painter().circle(spot, 5.0, shown, Stroke::new(1.5, ring));
+        ui.painter().rect_stroke(area, 2.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Inside);
+        widgets::focus_ring(ui, &field, area);
+    }
+    if ui.is_rect_visible(band) {
+        gradient(ui.painter(), band, |x, _| at(x, 1.0, 1.0));
+        let x = band.left() + hsv[0] * band.width();
+        ui.painter().rect_stroke(Rect::from_center_size(pos2(x, band.center().y), vec2(5.0, band.height() + 2.0)), 1.0, Stroke::new(1.5, Color32::WHITE), StrokeKind::Middle);
+        ui.painter().rect_stroke(band, 2.0, Stroke::new(1.0, Color32::from_black_alpha(160)), StrokeKind::Inside);
+        widgets::focus_ring(ui, &hue, band);
+    }
+    let picked = if moved { at(hsv[0], hsv[1], hsv[2]) } else { current };
+    ui.data_mut(|data| data.insert_temp(id, (picked, hsv)));
+    if picked == current { return false; }
+    *colour = Colour([picked.r(), picked.g(), picked.b()]);
+    true
+}
+
+/// `rect` filled with `colour_at(x, y)` at its shares across and up, as a mesh's colours blend.
+fn gradient(painter: &egui::Painter, rect: Rect, colour_at: impl Fn(f32, f32) -> Color32) {
+    const STEPS: u32 = 24;
+    let mut mesh = egui::Mesh::default();
+    for yi in 0..=STEPS {
+        for xi in 0..=STEPS {
+            let (x, y) = (xi as f32 / STEPS as f32, yi as f32 / STEPS as f32);
+            mesh.colored_vertex(pos2(rect.left() + x * rect.width(), rect.bottom() - y * rect.height()), colour_at(x, y));
+            if xi < STEPS && yi < STEPS {
+                let (corner, row) = (yi * (STEPS + 1) + xi, STEPS + 1);
+                mesh.add_triangle(corner, corner + 1, corner + row);
+                mesh.add_triangle(corner + 1, corner + row, corner + row + 1);
+            }
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 /// A palette's chip: its colours side by side, its name under them.
@@ -669,6 +795,146 @@ mod tests {
         assert!(!changed, "opening the picker changes nothing");
         // (Its palette's colours, a click each.)
         assert!(egui::Popup::is_any_open(&ctx));
+    }
+
+    fn labels(output: &egui::FullOutput) -> Vec<String> {
+        output.platform_output.accesskit_update.as_ref().expect("accesskit is on").nodes.iter().filter_map(|(_, node)| node.label().map(str::to_string)).collect()
+    }
+
+    /// The hex field keeps what is typed while it has the keys (half a code), and the colour
+    /// follows once it reads as one: rebuilt from the colour every frame, nothing could be typed.
+    #[test]
+    fn the_hex_field_keeps_what_is_typed_until_it_reads_as_a_colour() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let id = egui::Id::new("hex under test");
+        let mut colour = Colour::rgb(0x4f5d34);
+        let frame = |events: Vec<egui::Event>, colour: &mut Colour| {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 200.0))), events, ..Default::default() };
+            let mut changed = false;
+            let mut output = ctx.run_ui(input, |ui| changed = hex_field(ui, id, colour));
+            output.textures_delta.clear();
+            changed
+        };
+        frame(Vec::new(), &mut colour);
+        ctx.memory_mut(|memory| memory.request_focus(id));
+        frame(Vec::new(), &mut colour);
+        assert!(!frame(vec![key(egui::Key::A, egui::Modifiers::COMMAND), egui::Event::Text("#12".into())], &mut colour));
+        frame(Vec::new(), &mut colour);
+        assert_eq!(ctx.data(|data| data.get_temp::<String>(id)).as_deref(), Some("#12"), "half a code stays as typed");
+        assert_eq!(colour, Colour::rgb(0x4f5d34), "and changes nothing yet");
+        assert!(frame(vec![egui::Event::Text("ab56".into())], &mut colour));
+        assert_eq!(colour, Colour::rgb(0x12ab56));
+        // (Left, the field shows the colour's own code again.)
+        ctx.memory_mut(|memory| memory.surrender_focus(id));
+        frame(Vec::new(), &mut colour);
+        assert_eq!(ctx.data(|data| data.get_temp::<String>(id)), None);
+    }
+
+    /// The picker's hue band and its field answer the arrow keys (with Shift, ten steps).
+    #[test]
+    fn the_colour_picker_moves_by_the_keys() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let id = egui::Id::new("picker under test");
+        let start = Colour::rgb(0x6b705c);
+        let mut colour = start;
+        let frame = |events: Vec<egui::Event>, colour: &mut Colour| {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(250.0, 400.0))), events, ..Default::default() };
+            let mut changed = false;
+            let mut output = ctx.run_ui(input, |ui| changed = colour_picker(ui, id, colour));
+            output.textures_delta.clear();
+            changed
+        };
+        assert!(!frame(Vec::new(), &mut colour) && !frame(Vec::new(), &mut colour), "shown, it changes nothing");
+        assert_eq!(colour, start);
+        ctx.memory_mut(|memory| memory.request_focus(id.with("hue")));
+        frame(Vec::new(), &mut colour);
+        assert!(frame(vec![key(egui::Key::ArrowRight, egui::Modifiers::NONE)], &mut colour), "the hue moved");
+        let hued = colour;
+        assert_ne!(hued, start);
+        assert_eq!(ctx.memory(|memory| memory.focused()), Some(id.with("hue")), "the arrows stay with the band");
+        ctx.memory_mut(|memory| memory.request_focus(id.with("field")));
+        frame(Vec::new(), &mut colour);
+        assert!(frame(vec![key(egui::Key::ArrowUp, egui::Modifiers::SHIFT)], &mut colour));
+        let lighter = egui::ecolor::HsvaGamma::from(Color32::from_rgb(colour.0[0], colour.0[1], colour.0[2]));
+        let before = egui::ecolor::HsvaGamma::from(Color32::from_rgb(hued.0[0], hued.0[1], hued.0[2]));
+        assert!(lighter.v > before.v + 0.05, "brighter: {} from {}", lighter.v, before.v);
+        assert!(frame(vec![key(egui::Key::ArrowLeft, egui::Modifiers::NONE)], &mut colour), "less saturated");
+    }
+
+    /// Leaving an untouched copy (CUSTOMIZE, nothing changed) loses nothing: no question, as
+    /// closing the launcher asks none for it.
+    #[test]
+    fn an_untouched_copy_leaves_without_asking() {
+        let folder = std::env::temp_dir().join(format!("ta_skin_editor_untouched_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        let ctx = egui::Context::default();
+        let args = crate::Args::parse_from(["ta-launcher", "--offline", "--pretend-missing", "--config", folder.join("config.toml").to_str().unwrap()]);
+        let mut app = LauncherApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()), args);
+        app.skins.shutdown();
+        app.skins.editor = Some(crate::skin_editor::Editor::open(ta_skins::load("builtin:desert", &folder).unwrap(), None));
+        assert!(app.skins.editor.as_ref().unwrap().dirty() && app.work_at_risk().is_empty());
+        render(&ctx, &mut app, 1400.0, 900.0, Vec::new());
+        render(&ctx, &mut app, 1400.0, 900.0, vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
+        assert_eq!(app.skins.ask, None, "nothing to lose, nothing asked");
+        assert!(app.skins.editor.is_none());
+        drop(app);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    /// Each slot's buttons are named with their slot, the button taking a colour away for what it
+    /// does, and the palettes' colours by their codes.
+    #[test]
+    fn the_editors_buttons_and_colours_are_named() {
+        let folder = std::env::temp_dir().join(format!("ta_skin_editor_names_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        let ctx = egui::Context::default();
+        let args = crate::Args::parse_from(["ta-launcher", "--offline", "--pretend-missing", "--config", folder.join("config.toml").to_str().unwrap()]);
+        let mut app = LauncherApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()), args);
+        app.skins.shutdown();
+        app.skins.editor = Some(crate::skin_editor::Editor::open(ta_skins::load("builtin:desert", &folder).unwrap(), None));
+        ctx.enable_accesskit();
+        let frame = |app: &mut LauncherApp| {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 2400.0))), ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| app.skins_page(ui));
+            output.textures_delta.clear();
+            labels(&output)
+        };
+        frame(&mut app);
+        let named = frame(&mut app);
+        for name in ["ASSIGN IMAGE… (Every armour surface)", "ASSIGN IMAGE… (Plain-coloured armour)", "Take the last colour away", "UNITS"] {
+            assert!(named.iter().any(|label| label == name), "{name}: {named:?}");
+        }
+        assert!(!named.iter().any(|label| label == "ASSIGN IMAGE…"), "none named alike");
+        // The swatch's picker: the palettes' colours by their codes, the picker's parts by theirs.
+        let ground = egui::Id::new("picker colours");
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 600.0))), ..Default::default() };
+        let mut colour = Colour::rgb(0x4f5d34);
+        let mut output = ctx.run_ui(input.clone(), |ui| { colour_picker(ui, ground, &mut colour); });
+        output.textures_delta.clear();
+        let named = labels(&output);
+        assert!(named.iter().any(|label| label == "Hue") && named.iter().any(|label| label == "Saturation and brightness"), "{named:?}");
+        let mut output = ctx.run_ui(input, |ui| { colour_swatch(ui, Swatch::Colour(0), "Ground", &mut colour); });
+        output.textures_delta.clear();
+        let at = egui::pos2(20.0, 12.0);
+        let click = vec![
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+            egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE },
+        ];
+        let input = |events| egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 600.0))), events, ..Default::default() };
+        ctx.run_ui(input(click), |ui| { colour_swatch(ui, Swatch::Colour(0), "Ground", &mut colour); }).textures_delta.clear();
+        let mut output = ctx.run_ui(input(Vec::new()), |ui| { colour_swatch(ui, Swatch::Colour(0), "Ground", &mut colour); });
+        output.textures_delta.clear();
+        let named = labels(&output);
+        for code in ["#6b705c", "#c4a676", "#ffce00"] {
+            assert!(named.iter().any(|label| label == code), "{code}: {named:?}");
+        }
+        drop(app);
+        std::fs::remove_dir_all(folder).unwrap();
     }
 
     #[test]

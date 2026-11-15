@@ -75,7 +75,8 @@ impl LauncherApp {
                         Some(why) => button.disabled_tip(why),
                         None => button.hover_tip(t("Downloads it, checks it and installs it: the launcher closes and comes back on the new version")),
                     };
-                    if button.clicked() {
+                    // (A picture of an update, `--show update`, downloads nothing.)
+                    if button.clicked() && !self.pretend_installed {
                         self.push(Action::Update);
                     }
                 } else if !release.url.is_empty()
@@ -100,10 +101,19 @@ impl LauncherApp {
                 }
             }
             Some(Step::Checking) => progress(ui, width, None, t("CHECKING THE DOWNLOAD…")),
-            // (Asked for, it starts by itself once nothing holds it back.)
+            // (Asked for, it starts by itself once nothing holds it back. While something does,
+            // it can be put off: the checked download is kept, and INSTALL NOW installs it later.)
             Some(Step::Ready(_)) if self.update_go => {
-                let label = self.update_waits_for().map_or(t("STARTING THE UPDATE…"), UpdateWait::queued);
-                progress(ui, width, Some(1.0), label);
+                let waits_for = self.update_waits_for();
+                progress(ui, width, Some(1.0), waits_for.map_or(t("STARTING THE UPDATE…"), UpdateWait::queued));
+                if waits_for.is_some() {
+                    let later = t("Not now: the download is kept, and INSTALL NOW installs it later");
+                    let button = widgets::icon_button(ui, Glyph::Close, true);
+                    ui.ctx().accesskit_node_builder(button.id, |node| node.set_label(later));
+                    if button.hover_tip(later).clicked() {
+                        self.update_go = false;
+                    }
+                }
             }
             Some(Step::Ready(_)) => {
                 let button = ui.add_enabled(wait.is_none(), ActionButton::primary("INSTALL NOW").min_width(170.0).height(34.0));
@@ -125,8 +135,9 @@ impl LauncherApp {
     }
 
     /// Whether this launcher can install `release` itself: Setup installed it, and the release
-    /// has a setup.
+    /// has a setup. (A picture of an update, `--show update`, is shown as one it could install,
+    /// offline as captures are.)
     fn can_install(&self, release: &Release) -> bool {
-        release.setup.is_some() && release.sums.is_some() && (!self.offline || release.available_offline()) && (self.pretend_installed || crate::update::installed())
+        release.setup.is_some() && release.sums.is_some() && (!self.offline || release.available_offline() || self.pretend_installed) && (self.pretend_installed || crate::update::installed())
     }
 }

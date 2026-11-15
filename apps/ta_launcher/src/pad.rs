@@ -7,6 +7,10 @@
 //! opens the chosen card's menu (Shift+F10), Y the page's search (Ctrl+F) and View the list of
 //! keys and buttons (F1).
 //!
+//! Nothing having the focus, the pad's first move or A puts it on the page's main action (PLAY on
+//! the Play page), or else on the page's own item in the rail: never on what Tab reaches first, the
+//! header's link to the website ([`first_focus`]).
+//!
 //! A thread reads the pads (gilrs, waiting for them) and wakes the window as one is used: an idle
 //! launcher draws nothing until something happens.
 
@@ -83,6 +87,51 @@ pub struct Frame {
     pub busy: bool,
 }
 
+/// Where the page's main action and the rail's item of the page shown are kept, from one frame to
+/// the pad's input for the next ([`main_action`], [`page_anchor`]).
+const MAIN_ACTION: &str = "launcher_pad_main_action";
+const PAGE_ANCHOR: &str = "launcher_pad_page_anchor";
+
+/// Marks the control `id` as the page's main action this frame (PLAY on the Play page): where the
+/// pad's first move or A puts the focus. The page marks it as it draws it, after the rail.
+// (The Play page's PLAY, `pages/play.rs`, as it draws it; till then, its item in the rail.)
+pub fn main_action(ctx: &egui::Context, id: Id) {
+    ctx.data_mut(|d| d.insert_temp(Id::new(MAIN_ACTION), id));
+}
+
+/// Marks the rail's item of the page shown (`id`): where the pad's first move or A puts the focus
+/// when the page marks no main action. The rail draws first, each frame: the page's mark of the
+/// frame before goes with it.
+pub fn page_anchor(ctx: &egui::Context, id: Id) {
+    ctx.data_mut(|d| {
+        d.insert_temp(Id::new(PAGE_ANCHOR), id);
+        d.remove::<Id>(Id::new(MAIN_ACTION));
+    });
+}
+
+/// Where the pad's first move or A puts the focus, nothing having it: the page's main action, or
+/// else its item in the rail, as last drawn.
+pub fn first_focus(ctx: &egui::Context) -> Option<Id> {
+    ctx.data(|d| d.get_temp::<Id>(Id::new(MAIN_ACTION)).or_else(|| d.get_temp::<Id>(Id::new(PAGE_ANCHOR))))
+}
+
+/// The rail's item of the page shown, as the rail marked it this frame ([`page_anchor`]).
+#[cfg(test)]
+pub fn shown_page_item(ctx: &egui::Context) -> Option<Id> {
+    ctx.data(|d| d.get_temp::<Id>(Id::new(PAGE_ANCHOR)))
+}
+
+/// The focus asked for `id`, as a screen reader asks for it (egui gives it as the control is laid
+/// out).
+fn focus_on(id: Id) -> Event {
+    Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+        action: egui::accesskit::Action::Focus,
+        target_tree: egui::accesskit::TreeId::ROOT,
+        target_node: id.accesskit_id(),
+        data: None,
+    })
+}
+
 /// What the input of a frame already has from the mouse: where it moved last.
 pub fn mouse_moved(events: &[Event]) -> Option<Pos2> {
     events.iter().rev().find_map(|e| match e {
@@ -103,9 +152,11 @@ impl State {
     /// A frame at `time` (seconds) with the pad's `readings` since the last: `mouse` is where the
     /// pointer is (points; `moved`, where the mouse itself moved it this frame), `screen` the
     /// window's size (points), `focused` the control with the keyboard's focus (`typing`: a text
-    /// field, left with Tab: `ta_ui::pad::nav_events`).
+    /// field, left with Tab: `ta_ui::pad::nav_events`), `first` where the first move or A puts the
+    /// focus when nothing has it ([`first_focus`]; None under a dialog, where Tab finds its first
+    /// control).
     #[allow(clippy::too_many_arguments)]
-    pub fn frame(&mut self, readings: &[Reading], time: f64, mouse: Option<Pos2>, moved: Option<Pos2>, screen: Vec2, focused: Option<Id>, typing: bool, deadzone: f32, sensitivity: f32) -> Frame {
+    pub fn frame(&mut self, readings: &[Reading], time: f64, mouse: Option<Pos2>, moved: Option<Pos2>, screen: Vec2, focused: Option<Id>, first: Option<Id>, typing: bool, deadzone: f32, sensitivity: f32) -> Frame {
         let dt = self.last.map_or(0.0, |last| (time - last).clamp(0.0, 0.1)) as f32;
         self.last = Some(time);
         // The mouse moved the pointer (not to where the stick put it): it is the mouse's again.
@@ -131,7 +182,8 @@ impl State {
                     match button {
                         // A: a click where the right stick put the pointer, when it moved since
                         // the d-pad last moved the focus (or nothing has the focus); else what has
-                        // the focus; else the focus goes to the first control.
+                        // the focus; else the focus goes to the page's main action (`first`), or to
+                        // the first control.
                         Button::South => match self.pointer.filter(|_| self.pointing || focused.is_none()) {
                             Some(pos) => {
                                 self.clicking = true;
@@ -222,6 +274,18 @@ impl State {
         let scroll = self.triggers[1] - self.triggers[0];
         if scroll.abs() > 0.05 {
             f.events.push(Event::MouseWheel { unit: MouseWheelUnit::Point, delta: Vec2::new(0.0, -scroll * SCROLL_SPEED * dt), phase: TouchPhase::Move, modifiers: Modifiers::NONE });
+        }
+        // Nothing has the focus: the first move (or A) puts it on the page's main action, not where
+        // Tab would (the header's link to the website, which the next A would open); moves after it
+        // in the same frame wait for the next.
+        if focused.is_none()
+            && let Some(first) = first
+            && nav.iter().any(|n| n.moves())
+        {
+            nav.retain(|n| !n.moves());
+            f.events.push(focus_on(first));
+            f.events.push(ta_ui::pad::scroll_into_view(first));
+            self.pointing = false;
         }
         let (events, following) = self.follow.events(&nav, focused, typing);
         f.events.extend(events);
@@ -357,9 +421,55 @@ mod tests {
         events.iter().filter_map(|e| match e { Event::Key { key, pressed, modifiers, .. } => Some((*key, *pressed, *modifiers)), _ => None }).collect()
     }
 
-    /// A frame with nothing focused at `time`.
+    /// A frame at `time`, `focused` having the focus (no main action marked).
     fn frame(state: &mut State, readings: &[Reading], time: f64, focused: Option<Id>) -> Frame {
-        state.frame(readings, time, Some(Pos2::new(500.0, 300.0)), None, SCREEN, focused, false, 0.18, 1.0)
+        state.frame(readings, time, Some(Pos2::new(500.0, 300.0)), None, SCREEN, focused, None, false, 0.18, 1.0)
+    }
+
+    /// The focus asked for, if any.
+    fn focus_asked(events: &[Event]) -> Option<egui::accesskit::NodeId> {
+        events.iter().find_map(|e| match e {
+            Event::AccessKitActionRequest(request) if request.action == egui::accesskit::Action::Focus => Some(request.target_node),
+            _ => None,
+        })
+    }
+
+    /// Nothing having the focus, A and the d-pad put it on the page's main action (as the page
+    /// marked it), not on what Tab reaches first (the header's link to the website); with the focus
+    /// somewhere, they work as before.
+    #[test]
+    fn the_first_press_goes_to_the_pages_main_action_not_tab() {
+        let play = Id::new("play");
+        let first = |state: &mut State, button| state.frame(&[Reading::Pressed(button), Reading::Released(button)], 0.0, Some(Pos2::new(500.0, 300.0)), None, SCREEN, None, Some(play), false, 0.18, 1.0);
+        for button in [Button::South, Button::DPadDown, Button::DPadRight] {
+            let f = first(&mut State::default(), button);
+            assert_eq!(focus_asked(&f.events), Some(play.accesskit_id()), "{button:?}");
+            assert!(keys(&f.events).is_empty(), "{button:?}: no Tab, no arrow, no Enter: {:?}", f.events);
+            assert!(f.events.iter().any(|e| matches!(e, Event::AccessKitActionRequest(r) if r.action == egui::accesskit::Action::ScrollIntoView)), "scrolled into view");
+        }
+        // With the focus on a control, A works it.
+        let mut state = State::default();
+        let f = state.frame(&[Reading::Pressed(Button::South)], 0.0, None, None, SCREEN, Some(play), Some(play), false, 0.18, 1.0);
+        assert_eq!(keys(&f.events), [(Key::Enter, true, Modifiers::NONE), (Key::Enter, false, Modifiers::NONE)]);
+        assert_eq!(focus_asked(&f.events), None);
+        // B with nothing focused is still Escape (it moves nothing).
+        let f = first(&mut State::default(), Button::East);
+        assert_eq!(keys(&f.events)[0].0, Key::Escape);
+        assert_eq!(focus_asked(&f.events), None);
+    }
+
+    /// The page's main action marked as it is drawn is the first focus, else the rail's item of the
+    /// page shown; the rail, drawn first each frame, forgets the page's mark of the frame before.
+    #[test]
+    fn the_first_focus_is_the_pages_main_action_else_its_rail_item() {
+        let ctx = egui::Context::default();
+        assert_eq!(first_focus(&ctx), None);
+        page_anchor(&ctx, Id::new("rail settings"));
+        assert_eq!(first_focus(&ctx), Some(Id::new("rail settings")));
+        main_action(&ctx, Id::new("play"));
+        assert_eq!(first_focus(&ctx), Some(Id::new("play")));
+        page_anchor(&ctx, Id::new("rail mods"));
+        assert_eq!(first_focus(&ctx), Some(Id::new("rail mods")), "a page that marks none: its rail item");
     }
 
     #[test]
@@ -428,7 +538,7 @@ mod tests {
         let f = frame(&mut state, &[Reading::Released(Button::South)], 0.15, None);
         assert!(f.events.iter().any(|e| matches!(e, Event::PointerButton { pressed: false, .. })));
         // The mouse moves: A no longer clicks where the stick left the pointer.
-        state.frame(&[], 0.2, Some(Pos2::new(10.0, 10.0)), Some(Pos2::new(10.0, 10.0)), SCREEN, None, false, 0.18, 1.0);
+        state.frame(&[], 0.2, Some(Pos2::new(10.0, 10.0)), Some(Pos2::new(10.0, 10.0)), SCREEN, None, None, false, 0.18, 1.0);
         let f = frame(&mut state, &[Reading::Pressed(Button::South)], 0.25, None);
         assert!(!f.events.iter().any(|e| matches!(e, Event::PointerButton { .. })));
         // A pad gone lets go of a click held.

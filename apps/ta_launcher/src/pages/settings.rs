@@ -54,6 +54,9 @@ impl LauncherApp {
             height: (!compact).then_some(height),
         };
         let enabled = !self.dialog_open();
+        // (A name another commander has is said at once by the name's setting: the profile would
+        // not take it.)
+        self.settings_view.set_taken_names(self.profile_names_taken());
         widgets::card(ui, |ui| {
             ui.add_enabled_ui(enabled, |ui| self.settings_view.show(ui, &mut self.config, &host));
         });

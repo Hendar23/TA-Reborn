@@ -2,7 +2,10 @@
 //! version compared with this build's. A release with a setup is downloaded into the cache,
 //! checked against the release's own list of SHA-256 sums and run ([`Download`], [`run_setup`]:
 //! with `/UPDATE` only its progress shows, and it starts the launcher again), and the launcher
-//! closes for it; a copy Setup did not install is shown the release's page instead.
+//! closes for it; a copy Setup did not install is shown the release's page instead. The setup is
+//! checked through a hold on it that lets nothing write, rename or delete it until it has run
+//! ([`Download::checked_setup`]): the cache is the player's to write, and the file run is the one
+//! checked.
 //!
 //! The source is a GitHub "latest release" API address ([`DEFAULT_SOURCE`]: this project's) or a
 //! small TOML file (`version = "0.4.0"`, `url = "…"`, optional `title` and `notes`, and `setup`
@@ -163,7 +166,7 @@ fn fetch(source: &str, local_files: bool) -> Result<Option<String>, String> {
     let policy = crate::http::Policy::Update { local_files };
     let source = crate::http::address(source, policy)?;
     let mut command = crate::http::curl(policy);
-    command.args(["--max-time", "15", "--url"]).arg(source);
+    command.args(["--max-time", "15", "--url"]).arg(&source);
     let out = crate::http::text_output(command)?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
@@ -171,7 +174,7 @@ fn fetch(source: &str, local_files: bool) -> Result<Option<String>, String> {
         if not_found(err) {
             return Ok(None);
         }
-        return Err(if err.is_empty() { tf("curl failed ({status})", &[("status", &out.status)]) } else { err.to_string() });
+        return Err(crate::http::failure(out.status.code(), err, &source));
     }
     String::from_utf8(out.stdout).map(Some).map_err(|_| t("the answer is not text").into())
 }
@@ -394,7 +397,8 @@ impl Download {
             });
         });
         if let Err(e) = spawned {
-            download.step = Step::Failed(e.to_string());
+            log::warn!("the update's download could not start: {e}");
+            download.step = Step::Failed(tf("The download could not be started: {error}", &[("error", &e)]));
             download.steps = None;
         }
         download
@@ -403,6 +407,14 @@ impl Download {
     /// A download shown as it would be, with no thread behind it (captures, tests).
     pub fn shown(version: &str, step: Step) -> Download {
         Download { version: version.to_string(), step, steps: None, stop: Arc::default(), current: Arc::default(), workspace: Arc::default() }
+    }
+
+    /// The setup to run: the one this download checked, while it is held unchanged since (a
+    /// download only shown, or one whose hold is gone, has none: nothing else is run).
+    pub fn checked_setup(&self) -> Option<PathBuf> {
+        let Step::Ready(path) = &self.step else { return None };
+        let workspace = self.workspace.lock().unwrap_or_else(|e| e.into_inner());
+        workspace.as_ref().filter(|workspace| workspace.held.is_some() && path.parent() == Some(workspace.path.as_path())).map(|_| path.clone())
     }
 
     /// Called only after Setup starts successfully, so it can still read its executable
@@ -471,7 +483,7 @@ fn fetch_setup(setup: &Asset, sums: &Asset, page: &str, dir: &Path, tx: &Sender<
     // Keep the verified result private too, not just the partial download. Another
     // launcher or feed may offer different bytes under the same setup filename;
     // it must never replace a Ready request's checked executable before it runs.
-    let workspace = SetupWorkspace::create(dir).map_err(|e| e.to_string())?;
+    let workspace = SetupWorkspace::create(dir).map_err(|e| tf("Could not create {path}: {error}", &[("path", &dir.display()), ("error", &e)]))?;
     let path = workspace.path.join(&setup.name);
     let part = workspace.path.join("download.part");
     let result = (|| {
@@ -493,29 +505,57 @@ fn fetch_setup(setup: &Asset, sums: &Asset, page: &str, dir: &Path, tx: &Sender<
             std::thread::sleep(Duration::from_millis(150));
         }
         let _ = tx.send(Step::Checking);
-        let size = std::fs::metadata(&part).map_err(|e| e.to_string())?.len();
+        // Published only within this request's private directory, under its own name, then held
+        // (nothing may write, rename or delete it until Setup has started) and checked through the
+        // hold: the bytes checked are the bytes run.
+        std::fs::rename(&part, &path).map_err(|e| tf("Could not move the download to {path}: {error}", &[("path", &path.display()), ("error", &e)]))?;
+        let unreadable = |e: std::io::Error| tf("Could not read {file}: {error}", &[("file", &path.display()), ("error", &e)]);
+        let mut held = hold(&path).map_err(unreadable)?;
+        let size = held.metadata().map_err(unreadable)?.len();
         if setup.size > 0 && size != setup.size {
             return Err(tf("the download is {got} bytes, not the release's {size}", &[("got", &size), ("size", &setup.size)]));
         }
-        let actual = sha256_checked(&part, &|| stop.load(Ordering::SeqCst)).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::Interrupted { t("cancelled").to_string() } else { e.to_string() }
+        let actual = sha256_read(&mut held, &|| stop.load(Ordering::SeqCst)).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::Interrupted { t("cancelled").to_string() } else { unreadable(e) }
         })?;
         if actual != expected {
             return Err(t("the download does not match the release's SHA-256").into());
         }
         check_cancelled()?;
-        // Publish only within this request's private directory.
-        std::fs::rename(&part, &path).map_err(|e| e.to_string())?;
-        Ok(path.clone())
+        Ok((path.clone(), held))
     })();
     if let Ok(mut c) = current.lock() {
         *c = None;
     }
-    result.map(|path| (path, workspace))
+    result.map(|(path, held)| {
+        let mut workspace = workspace;
+        workspace.held = Some(held);
+        (path, workspace)
+    })
+}
+
+/// The checked setup, opened so that while it is open nothing else can write, rename or delete
+/// it (on Windows: others, Setup among them, may read and run it, no more).
+fn hold(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_SHARE_READ alone: neither FILE_SHARE_WRITE nor FILE_SHARE_DELETE.
+        options.share_mode(0x1);
+    }
+    options.open(path)
 }
 
 #[derive(Debug)]
-struct SetupWorkspace { path: PathBuf, keep: bool }
+struct SetupWorkspace {
+    path: PathBuf,
+    keep: bool,
+    /// The checked setup, held from its check until the launcher lets go of the download (Setup
+    /// started, or the update dropped).
+    held: Option<std::fs::File>,
+}
 
 impl SetupWorkspace {
     fn create(parent: &Path) -> std::io::Result<Self> {
@@ -525,7 +565,7 @@ impl SetupWorkspace {
         for _ in 0..100 {
             let path = parent.join(format!("setup-{}-{}", std::process::id(), SERIAL.fetch_add(1, Ordering::Relaxed)));
             match std::fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path, keep: false }),
+                Ok(()) => return Ok(Self { path, keep: false, held: None }),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {},
                 Err(e) => return Err(e),
             }
@@ -536,6 +576,8 @@ impl SetupWorkspace {
 
 impl Drop for SetupWorkspace {
     fn drop(&mut self) {
+        // (The hold let go first: it keeps the file from being deleted.)
+        drop(self.held.take());
         if !self.keep { let _ = std::fs::remove_dir_all(&self.path); }
     }
 }
@@ -555,16 +597,23 @@ fn sha256_of(path: &Path) -> std::io::Result<String> {
     sha256_checked(path, &|| false)
 }
 
+#[cfg(test)]
 fn sha256_checked(path: &Path, cancelled: &dyn Fn() -> bool) -> std::io::Result<String> {
+    sha256_read(&mut std::fs::File::open(path)?, cancelled)
+}
+
+/// What `file` holds, from its start: its SHA-256, in lower-case hex.
+fn sha256_read(file: &mut std::fs::File, cancelled: &dyn Fn() -> bool) -> std::io::Result<String> {
     use sha2::{Digest, Sha256};
+    use std::io::Seek;
     let mut hasher = Sha256::new();
-    let mut file = std::fs::File::open(path)?;
+    file.seek(std::io::SeekFrom::Start(0))?;
     let mut buf = vec![0u8; 1 << 20];
     loop {
         if cancelled() {
             return Err(std::io::ErrorKind::Interrupted.into());
         }
-        let n = std::io::Read::read(&mut file, &mut buf)?;
+        let n = std::io::Read::read(file, &mut buf)?;
         if n == 0 {
             break;
         }
@@ -972,6 +1021,57 @@ mod tests {
         assert!(!workspace.exists(), "an unread Ready result still owns its cleanup lease");
         assert!(dir.join("release/setup.exe").is_file());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The setup checked is held until it runs: nothing can write it, rename it or delete it from
+    /// the player's cache meanwhile (Setup can still read it), and only it is offered to run.
+    #[cfg(windows)]
+    #[test]
+    fn a_checked_setup_cannot_be_changed_before_it_runs() {
+        let dir = temp_dir("held_setup");
+        let release = local_setup_release(&dir.join("release"), 7);
+        let mut download = Download::start(&release, &dir.join("cache"));
+        let Step::Ready(path) = wait(&mut download) else { panic!("{:?}", download.step) };
+        wait_for_download_worker(&download);
+        assert_eq!(download.checked_setup().as_deref(), Some(path.as_path()));
+        assert!(std::fs::OpenOptions::new().write(true).open(&path).is_err(), "not written");
+        assert!(std::fs::remove_file(&path).is_err(), "not deleted");
+        assert!(std::fs::rename(&path, path.with_extension("old")).is_err(), "not renamed");
+        let folder = path.parent().unwrap();
+        assert!(std::fs::rename(folder, folder.with_extension("moved")).is_err(), "nor its folder, with another put in its place");
+        assert_eq!(std::fs::read(&path).unwrap(), vec![7u8; 4096], "read, as Setup reads itself");
+        // A download only shown names a file it never checked: nothing to run.
+        assert_eq!(Download::shown("9.9.9", Step::Ready(path.clone())).checked_setup(), None);
+        drop(download);
+        assert!(!path.exists(), "let go of and cleaned up");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The hold lets the program it holds start (as Setup is started, through it): a copy of the
+    /// system's command processor, held, runs and exits.
+    #[cfg(windows)]
+    #[test]
+    fn a_held_program_still_starts() {
+        let dir = temp_dir("held_program");
+        let system = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+        let program = dir.join("held.exe");
+        std::fs::copy(system.join("System32").join("cmd.exe"), &program).unwrap();
+        let held = hold(&program).unwrap();
+        let status = std::process::Command::new(&program).args(["/c", "exit", "0"]).status().expect("started while held");
+        assert!(status.success());
+        assert!(std::fs::OpenOptions::new().write(true).open(&program).is_err(), "still held");
+        drop(held);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// curl's failures are told in the launcher's own words, translated; what curl said goes to
+    /// the log.
+    #[test]
+    fn failed_requests_are_told_in_words_of_our_own() {
+        let dir = temp_dir("missing_source");
+        let error = fetch(&file_url(&dir.join("missing.toml")), true).unwrap_err();
+        assert_eq!(error, t("the file could not be read"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

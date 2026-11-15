@@ -2,6 +2,9 @@
 //! on the units (the same noise, hashes and thresholds), for the skin editor's pattern tiles: a
 //! flat cut through a pattern in a livery's colours, so each choice shows what it makes.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+
 use glam::{IVec3, Vec2, Vec3};
 use ta_skins::{Livery, Pattern};
 
@@ -228,6 +231,128 @@ fn sample(livery: &Livery, pattern: Pattern, colours: &Colours, p: Vec3, aa: f32
     }
 }
 
+/// The editor's pattern tiles (one for each pattern, in a livery's colours), drawn on a thread of
+/// their own: all ten take tens of milliseconds, too long for a frame while a slider or the
+/// colour picker is dragged. The tiles last drawn stay on show until those of the newest livery
+/// asked for come; the liveries asked for between are passed over.
+#[derive(Default)]
+pub struct Tiles {
+    shared: Option<Arc<TileShared>>,
+    worker: Option<std::thread::JoinHandle<()>>,
+    /// What the textures show, and the textures (a pattern each, in [`Pattern::ALL`]'s order).
+    shown: Option<(String, Vec<egui::TextureHandle>)>,
+    /// What was asked for last.
+    asked: Option<String>,
+}
+
+#[derive(Default)]
+struct TileShared {
+    /// The newest livery to draw (a newer one replaces it), with its tiles' size.
+    request: Mutex<Option<TileRequest>>,
+    /// The tiles last drawn, not yet taken.
+    drawn: Mutex<Option<(String, Vec<egui::ColorImage>)>>,
+    ready: Condvar,
+    stop: AtomicBool,
+}
+
+struct TileRequest { key: String, livery: Livery, size: [usize; 2], ctx: egui::Context }
+
+/// What a livery's tiles show: its colours, scale, sharpness and layout (its own pattern
+/// aside: each tile is one), at a size.
+fn tile_key(livery: &Livery, size: [usize; 2]) -> String {
+    format!("{:?}|{}|{}|{}|{size:?}", livery.colours, livery.scale, livery.sharpness, livery.seed)
+}
+
+impl Tiles {
+    /// The tiles of `livery`, `size` pixels each, as drawn last (those of an earlier livery while
+    /// its own are drawn; none before the first come). Asks for `livery`'s when they are not
+    /// those.
+    pub fn get(&mut self, ctx: &egui::Context, livery: &Livery, size: [usize; 2]) -> Option<&[egui::TextureHandle]> {
+        self.take(ctx);
+        let key = tile_key(livery, size);
+        if self.shown.as_ref().is_none_or(|(shown, _)| *shown != key) && self.asked.as_ref() != Some(&key) {
+            self.ask(TileRequest { key, livery: livery.clone(), size, ctx: ctx.clone() });
+        }
+        self.shown.as_ref().map(|(_, textures)| textures.as_slice())
+    }
+
+    /// The tiles on show are those last asked for (or none was).
+    pub fn ready(&self) -> bool {
+        self.asked.is_none() || self.shown.as_ref().map(|(key, _)| key) == self.asked.as_ref()
+    }
+
+    fn ask(&mut self, request: TileRequest) {
+        if self.shared.is_none() {
+            let shared = Arc::new(TileShared::default());
+            let worker = shared.clone();
+            match std::thread::Builder::new().name("skin pattern tiles".into()).spawn(move || draw_tiles(&worker)) {
+                Ok(handle) => { self.shared = Some(shared); self.worker = Some(handle); }
+                Err(error) => {
+                    // (No thread: drawn here, as before, rather than not at all.)
+                    log::warn!("skin pattern tiles drawn on the interface's thread: {error}");
+                    let images = Pattern::ALL.into_iter().map(|pattern| tile(&request.livery, pattern, request.size[0], request.size[1])).collect();
+                    self.asked = Some(request.key.clone());
+                    self.show(&request.ctx, request.key, images);
+                    return;
+                }
+            }
+        }
+        let shared = self.shared.as_ref().expect("started above");
+        self.asked = Some(request.key.clone());
+        *shared.request.lock().unwrap_or_else(|e| e.into_inner()) = Some(request);
+        shared.ready.notify_one();
+    }
+
+    /// Takes the tiles drawn since, into the textures on show.
+    fn take(&mut self, ctx: &egui::Context) {
+        let drawn = self.shared.as_ref().and_then(|shared| shared.drawn.lock().unwrap_or_else(|e| e.into_inner()).take());
+        if let Some((key, images)) = drawn { self.show(ctx, key, images); }
+    }
+
+    fn show(&mut self, ctx: &egui::Context, key: String, images: Vec<egui::ColorImage>) {
+        match &mut self.shown {
+            // (The same textures painted again: nothing allocated for each change.)
+            Some((shown, textures)) if textures.len() == images.len() => {
+                for (texture, image) in textures.iter_mut().zip(images) { texture.set(image, egui::TextureOptions::LINEAR); }
+                *shown = key;
+            }
+            _ => {
+                let textures = Pattern::ALL.into_iter().zip(images).map(|(pattern, image)| ctx.load_texture(format!("skin pattern {pattern:?}"), image, egui::TextureOptions::LINEAR)).collect();
+                self.shown = Some((key, textures));
+            }
+        }
+    }
+}
+
+impl Drop for Tiles {
+    fn drop(&mut self) {
+        if let Some(shared) = &self.shared {
+            let _pending = shared.request.lock().unwrap_or_else(|e| e.into_inner());
+            shared.stop.store(true, Ordering::Relaxed);
+            shared.ready.notify_one();
+        }
+        if let Some(worker) = self.worker.take() { let _ = worker.join(); }
+    }
+}
+
+/// The tiles' thread: the newest livery asked for, drawn; then the next.
+fn draw_tiles(shared: &TileShared) {
+    loop {
+        let request = {
+            let mut pending = shared.request.lock().unwrap_or_else(|e| e.into_inner());
+            while pending.is_none() && !shared.stop.load(Ordering::Relaxed) {
+                pending = shared.ready.wait(pending).unwrap_or_else(|e| e.into_inner());
+            }
+            if shared.stop.load(Ordering::Relaxed) { return; }
+            pending.take()
+        };
+        let Some(request) = request else { continue };
+        let images = Pattern::ALL.into_iter().map(|pattern| tile(&request.livery, pattern, request.size[0], request.size[1])).collect();
+        *shared.drawn.lock().unwrap_or_else(|e| e.into_inner()) = Some((request.key, images));
+        request.ctx.request_repaint();
+    }
+}
+
 /// A tile `width` × `height` pixels of `pattern` in `livery`'s colours (its own pattern aside),
 /// lit a little from the top left as a painted plate is.
 pub fn tile(livery: &Livery, pattern: Pattern, width: usize, height: usize) -> egui::ColorImage {
@@ -271,6 +396,42 @@ mod tests {
                 assert!(distinct.len() > 40, "{pattern:?} draws a pattern");
             }
         }
+    }
+
+    /// The tiles are drawn off the interface's thread: asking for them returns at once, the tiles
+    /// before stay on show until the new ones come, and only the newest livery asked for is
+    /// drawn.
+    #[test]
+    fn tiles_are_drawn_on_their_own_thread_and_the_last_stay_meanwhile() {
+        let ctx = egui::Context::default();
+        let mut tiles = Tiles::default();
+        let livery = Livery::new(Pattern::Blotch, &[ta_skins::Colour::rgb(0xc4a676), ta_skins::Colour::rgb(0x5e4630)]);
+        let size = [176, 112];
+        let wait = |tiles: &mut Tiles, livery: &Livery| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while !tiles.ready() {
+                tiles.get(&ctx, livery, size);
+                assert!(std::time::Instant::now() < deadline, "the tiles were not drawn");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        assert!(tiles.get(&ctx, &livery, size).is_none(), "nothing yet: asking draws none here");
+        assert!(!tiles.ready());
+        wait(&mut tiles, &livery);
+        let first: Vec<egui::TextureId> = tiles.get(&ctx, &livery, size).unwrap().iter().map(|t| t.id()).collect();
+        assert_eq!(first.len(), Pattern::ALL.len());
+        // A slider dragged: each step asks; the tiles before stay on show, the same textures.
+        for step in 1..=5 {
+            let dragged = Livery { scale: 1.0 + step as f32 * 0.1, ..livery.clone() };
+            let shown: Vec<egui::TextureId> = tiles.get(&ctx, &dragged, size).expect("the last tiles stay").iter().map(|t| t.id()).collect();
+            assert_eq!(shown, first);
+        }
+        let last = Livery { scale: 1.5, ..livery.clone() };
+        wait(&mut tiles, &last);
+        assert_eq!(tiles.shown.as_ref().unwrap().0, tile_key(&last, size), "the newest livery's");
+        let again: Vec<egui::TextureId> = tiles.get(&ctx, &last, size).unwrap().iter().map(|t| t.id()).collect();
+        assert_eq!(again, first, "painted again into the same textures");
+        drop(tiles);
     }
 
     #[test]

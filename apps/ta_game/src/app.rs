@@ -1514,6 +1514,16 @@ fn attract_setup(assets: &Assets, seed: u64) -> GameSetup {
     GameSetup { map, players, local_player: None, seed, mission: None, rules: Default::default(), conquest: None, scenario: None }
 }
 
+/// The very first start, the launcher never run: the game set up for this computer
+/// (`Config::set_up_for`), and this version taken as the one the player has seen, as the
+/// launcher's own first start takes it (opened later, it would else tell of an update).
+fn set_up_first_start(config: &mut ta_config::Config, hw: &ta_config::hardware::Hardware) {
+    config.set_up_for(hw);
+    if config.launcher.seen_version.is_empty() {
+        config.launcher.seen_version = env!("CARGO_PKG_VERSION").to_string();
+    }
+}
+
 impl State {
     fn begin(event_loop: &ActiveEventLoop, args: &Args, config: &ta_config::Config) -> Result<(Arc<Window>, ta_render::Gpu, ta_config::Config)> {
         // The very first start (the launcher never ran): set up for this computer, its
@@ -1523,7 +1533,7 @@ impl State {
         if first.graphics.preset == ta_config::Preset::Auto && args.screenshot.is_none() {
             let hw = ta_config::hardware::Hardware::detect();
             if first.first_start() {
-                first.set_up_for(&hw);
+                set_up_first_start(&mut first, &hw);
                 log::info!("first start on {}: {} graphics", hw.summary(), first.graphics.preset.label());
                 // The menus in the computer's own language, when there is a translation of it.
                 let dirs = ta_ui::i18n::language_dirs(&ta_config::config_dir());
@@ -5842,6 +5852,9 @@ impl State {
         let seeking = game.catch_up_progress();
         let film = &mut self.film;
         let mut film_action = None;
+        // (The Options' and the profile editor's file dialogs stand over the game's window, never
+        // behind it: in full screen one behind would leave the game looking frozen.)
+        ta_ui::settings::set_dialog_parent(&self.egui.ctx, rfd::FileDialog::new().set_parent(&*self.window));
         let output = self.egui.ctx.run_ui(raw, |ui| {
             // A replay being made into a film: how it goes, nothing else.
             if let Some(film) = film.as_mut() {
@@ -9532,6 +9545,23 @@ mod tests {
         assert_eq!(ui_zoom_for(scale, (1280, 800), 1.0, true), 1.25, "the options and Conquest");
         assert_eq!(ui_zoom_for(1.5, (1280, 800), 1.0, false), 1.25);
         assert_eq!(ui_zoom_for(scale, (1280, 800), 1.25, false) * 1.25, 1.25);
+    }
+
+    /// The game started before the launcher ever was: its first start takes this version as the
+    /// one the player has seen, so the launcher opened next tells of no update (it does after a
+    /// real one); a version the launcher saw already is kept.
+    #[test]
+    fn the_games_first_start_takes_this_version_as_seen() {
+        let hw = ta_config::hardware::Hardware { os: "windows", threads: 8, ram_mb: 16_000, ..Default::default() };
+        let mut config = ta_config::Config::default();
+        assert!(config.first_start() && config.launcher.seen_version.is_empty());
+        set_up_first_start(&mut config, &hw);
+        assert!(!config.first_start(), "set up");
+        assert_eq!(config.launcher.seen_version, env!("CARGO_PKG_VERSION"));
+        let mut seen = ta_config::Config::default();
+        seen.launcher.seen_version = "0.9.0".into();
+        set_up_first_start(&mut seen, &hw);
+        assert_eq!(seen.launcher.seen_version, "0.9.0", "the launcher's own word is left as it is");
     }
 }
 

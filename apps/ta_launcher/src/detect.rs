@@ -38,6 +38,21 @@ pub fn detect(configured: Option<&Path>, pretend_missing: bool) -> Detection {
     }
 }
 
+/// What RESCAN says it found, and in what colour: the game; a valid install found by itself
+/// while the folder in the settings still is not one (the page offers it: USE DETECTED INSTALL);
+/// or nothing.
+pub fn rescan_notice(detection: &Detection) -> (String, egui::Color32) {
+    use crate::theme::{AMBER, GREEN, RED};
+    match (&detection.result, &detection.suggestion) {
+        (Ok(install), _) => (ta_ui::i18n::tf("Found Total Annihilation in {path}", &[("path", &install.root.display())]), GREEN),
+        (Err(_), Some(found)) => (
+            ta_ui::i18n::tf("The folder in your settings still has no Total Annihilation, but there is a copy in {path}: USE DETECTED INSTALL switches to it.", &[("path", &found.root.display())]),
+            AMBER,
+        ),
+        (Err(_), None) => (ta_ui::i18n::t("Still no Total Annihilation install found").to_string(), RED),
+    }
+}
+
 /// The candidate folders auto-detection looks at, without duplicates.
 fn searched_locations() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
@@ -172,6 +187,22 @@ mod tests {
             other => panic!("expected invalid, got {other:?}"),
         }
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// RESCAN's notice says what the page shows: the folder in the settings still not one, but a
+    /// valid install found by itself, is not "still no install found" (the page offers it).
+    #[test]
+    fn rescan_tells_of_an_install_found_besides_a_folder_that_is_not_one() {
+        let found = TaInstall { root: PathBuf::from(r"C:\GOG Games\Total Annihilation"), source: InstallSource::GogRegistry, content: Content::default(), store: install::Store::Gog, build: None };
+        let invalid = || Err(InstallError::Invalid { path: PathBuf::from(r"D:\Old\TA"), missing: vec!["totala1.hpi".into()] });
+        let (text, color) = rescan_notice(&Detection { result: invalid(), suggestion: Some(found.clone()) });
+        assert_eq!(color, crate::theme::AMBER);
+        assert!(text.contains("USE DETECTED INSTALL") && text.contains(r"C:\GOG Games\Total Annihilation") && !text.contains("Still no"), "{text}");
+        let (text, color) = rescan_notice(&Detection { result: invalid(), suggestion: None });
+        assert_eq!((text.as_str(), color), ("Still no Total Annihilation install found", crate::theme::RED));
+        let (text, color) = rescan_notice(&Detection { result: Ok(found), suggestion: None });
+        assert_eq!(color, crate::theme::GREEN);
+        assert!(text.starts_with("Found Total Annihilation in"), "{text}");
     }
 
     #[test]

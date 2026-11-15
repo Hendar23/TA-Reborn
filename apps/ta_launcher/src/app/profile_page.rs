@@ -4,19 +4,28 @@
 //! What it shows is read off the interface's thread when the page is shown.
 
 use egui::{Align, Layout, Rect, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, pos2, vec2};
-use ta_config::profiles::{Career, Profile};
+use ta_config::profiles::{Career, Profile, Unreadable};
 use ta_ui::i18n::{grouped, n, t, tf};
 use ta_ui::panel::{Exit, Panel};
 use ta_ui::tooltip::TooltipExt as _;
 use ta_ui::profiles::{CareerAction, CareerData, CareerTab, HeroSize};
 
 use super::LauncherApp;
-use super::profiles::{Details, ProfileTab};
+use super::profiles::{CareerFile, Details, DetailsFailed, ProfileTab};
 use crate::theme::*;
 use crate::widgets::{self, ActionButton};
 
 /// What a commander's row in the Commanders tab asks for.
 enum RowAction { Switch, Edit, Delete }
+
+/// What a row of a profile that cannot be read asks for.
+#[derive(Clone, Copy)]
+enum UnreadableAction { Open, Remove }
+
+/// A commander's rank as their row shows it: their career's, or that it is not read yet, or that
+/// it cannot be.
+#[derive(Clone, Copy)]
+enum Rank<'a> { Of(&'a Career), Unknown, Unreadable }
 
 impl LauncherApp {
     /// Why profiles cannot be switched, edited or deleted now, if they cannot.
@@ -41,8 +50,13 @@ impl LauncherApp {
         };
         self.load_profile_details(ui.ctx());
         self.poll_profile_details();
-        let short = ui.available_height() < 600.0;
-        let roomy = ui.available_height() >= 640.0 && ui.available_width() >= 720.0;
+        // (In a page that scrolls whole, a short window or a large interface, the tabs are laid out
+        // at their own height, without scrolls of their own; where it is shortest, the head is at
+        // its most compact.)
+        let natural = self.profiles.natural;
+        let short = natural || ui.available_height() < 600.0;
+        let roomy = !natural && ui.available_height() >= 640.0 && ui.available_width() >= 720.0;
+        let compact = ui.available_height() < 500.0;
         // The heading, and what can be done with the profile.
         let blocked = self.profile_blocked();
         crate::pages::library_header(ui, n("PROFILE"), n("Your service record, your achievements and the commanders who play on this device."), short,
@@ -58,22 +72,26 @@ impl LauncherApp {
         // The head: the commander, or why they are not there yet.
         let mut open = None;
         let mut retry = false;
-        match (&self.profiles.details, &self.profiles.details_error) {
-            (Some(details), _) => {
-                let size = if roomy { HeroSize::Large } else { HeroSize::Normal };
-                widgets::card(ui, |ui| open = ta_ui::profiles::hero(ui, &profile, &details.record, size));
-            }
-            (None, Some(error)) => {
-                widgets::card(ui, |ui| {
-                    ui.add(egui::Label::new(RichText::new(tf("Could not load profile: {error}", &[("error", error)])).color(RED)).wrap());
-                    retry = ui.add(ActionButton::secondary("TRY AGAIN")).clicked();
-                });
-            }
-            (None, None) => {
-                widgets::card(ui, |ui| {
-                    ui.label(RichText::new(t("Loading service record…")).color(STEEL));
-                    ta_ui::panel::busy_bar(ui);
-                });
+        if let CareerFile::Damaged(error) = self.profiles.career_file.clone() {
+            self.career_problem(ui, &error);
+        } else {
+            match (&self.profiles.details, &self.profiles.details_error) {
+                (Some(details), _) => {
+                    let size = if compact { HeroSize::Compact } else if roomy { HeroSize::Large } else { HeroSize::Normal };
+                    widgets::card(ui, |ui| open = ta_ui::profiles::hero(ui, &profile, &details.record, size));
+                }
+                (None, Some(error)) => {
+                    widgets::card(ui, |ui| {
+                        ui.add(egui::Label::new(RichText::new(tf("Could not load profile: {error}", &[("error", &ta_ui::profiles::first_line(error))])).color(RED)).wrap());
+                        retry = ui.add(ActionButton::secondary("TRY AGAIN")).clicked();
+                    });
+                }
+                (None, None) => {
+                    widgets::card(ui, |ui| {
+                        ui.label(RichText::new(t("Loading service record…")).color(STEEL));
+                        ta_ui::panel::busy_bar(ui);
+                    });
+                }
             }
         }
         if retry { self.profiles.details_error = None; }
@@ -96,8 +114,39 @@ impl LauncherApp {
             ProfileTab::History => CareerTab::History,
             _ => CareerTab::Overview,
         };
+        self.profiles.view.natural = natural;
         let Some(details) = &self.profiles.details else { return };
         if let Some(CareerAction::Showcase(list)) = self.profiles.view.body(ui, &profile, &details.record) { self.set_showcase(&list); }
+    }
+
+    /// The commander's service record cannot be read: what that means, the file's own words, and
+    /// the ways out (a fresh career, the damaged one kept; the folder, to repair it; reading it
+    /// again).
+    fn career_problem(&mut self, ui: &mut Ui, error: &str) {
+        let blocked = self.profile_blocked();
+        let folder = self.profiles.store.as_ref().zip(self.profiles.active.as_ref()).and_then(|(s, p)| s.data_dir(&p.id).ok());
+        let (mut fresh, mut retry, mut open) = (false, false, false);
+        widgets::card_accent(ui, Some(RED), |ui| {
+            ui.horizontal(|ui| {
+                widgets::status_mark(ui, widgets::Mark::Error);
+                ui.label(RichText::new(t("YOUR SERVICE RECORD COULD NOT BE READ")).font(strong(13.0)).color(RED).extra_letter_spacing(ta_ui::i18n::tracking(1.4)));
+            });
+            ui.add(egui::Label::new(RichText::new(t("Your career file (career.toml) is damaged: your rank, XP, achievements and match history cannot be shown, and battles cannot start, as they could not be recorded. Start a fresh career (the damaged file is kept in your profile folder), or repair the file or put back a copy of it, and try again."))
+                .color(TEXT)).wrap());
+            ui.add(egui::Label::new(RichText::new(ta_ui::profiles::first_line(error)).font(mono(11.5)).color(STEEL)).wrap())
+                .hover_tip(error);
+            ui.add_space(2.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let start = ui.add_enabled(blocked.is_none(), ActionButton::primary("START A FRESH CAREER…"));
+                fresh = match blocked { Some(why) => start.disabled_tip(why), None => start.hover_tip(t("Asked first: the damaged file is kept")) }.clicked();
+                open = folder.is_some() && ui.add(ActionButton::secondary("OPEN PROFILE FOLDER")).clicked();
+                retry = ui.add(ActionButton::secondary("TRY AGAIN")).hover_tip(t("Read your service record again, if you have repaired it")).clicked();
+            });
+        });
+        if fresh { self.profiles.confirm_fresh = true; }
+        if open && let Some(dir) = folder { self.push(super::Action::OpenFolder(dir)); }
+        if retry { self.profiles.reread_career(); }
     }
 
     /// No profile chosen: an invitation to make one, and what a commander's record holds (the
@@ -107,6 +156,9 @@ impl LauncherApp {
             ui.add(egui::Label::new(RichText::new(t("Create your commander profile")).font(strong(20.0)).color(TEXT_BRIGHT)).wrap());
             ui.add(egui::Label::new(RichText::new(t("Your profile keeps your settings, saves and career separate from other players on this device."))
                 .color(STEEL)).wrap());
+            if let Some(error) = &self.profiles.error {
+                ui.add(egui::Label::new(RichText::new(tf("Could not load profile: {error}", &[("error", &ta_ui::profiles::first_line(error))])).color(AMBER)).wrap());
+            }
             ui.add_space(4.0);
             let create = ui.add_enabled(self.profile_blocked().is_none(), ActionButton::primary("CREATE PROFILE").height(36.0));
             let create = match self.profile_blocked() { Some(why) => create.disabled_tip(why), None => create };
@@ -115,6 +167,12 @@ impl LauncherApp {
             }
         });
         ui.add_space(8.0);
+        // (Profiles of this device that cannot be read: what can be done with them.)
+        if !self.profiles.unreadable.is_empty() {
+            let picked = unreadable_profiles(ui, &self.profiles.unreadable, self.profile_blocked());
+            self.unreadable_picked(picked);
+            ui.add_space(8.0);
+        }
         let ranks = ta_config::profiles::RANKS.len();
         let achievements = ta_config::achievements::ALL.len();
         let columns = if ui.available_width() >= 760.0 { 3 } else { 1 };
@@ -186,8 +244,11 @@ impl LauncherApp {
         let (send, receive) = std::sync::mpsc::channel();
         let context = ctx.clone();
         std::thread::spawn(move || {
-            let result = (|| -> Result<Details, String> {
-                let mut record = CareerData::load(&store, &id).map_err(|e| e.to_string())?;
+            let result = (|| -> Result<Details, DetailsFailed> {
+                // (The career first, read once: it is the commander's too, and one that cannot be
+                // read is told apart from their other files.)
+                let (career, history) = store.career_with_history(&id).map_err(|e| DetailsFailed { career: true, error: e.to_string() })?;
+                let mut record = CareerData::around(&store, &id, career, history).map_err(|e| DetailsFailed { career: false, error: e.to_string() })?;
                 if let Some(install) = install {
                     let game = ta_vfs::mods::mount_enabled(Some(&install), ta_vfs::builtin_dir().as_deref(), &enabled, &available);
                     let vfs = game.vfs;
@@ -198,8 +259,17 @@ impl LauncherApp {
                         Err(error) => record.warning = Some(error),
                     }
                 }
-                let careers = others.iter().filter_map(|other| store.career(other).ok().map(|c| (other.clone(), c))).collect();
-                Ok(Details { record, careers })
+                // (The other commanders' ranks; the active one's career is the record's.)
+                let mut careers = std::collections::BTreeMap::new();
+                let mut unreadable = std::collections::BTreeSet::new();
+                for other in others.iter().filter(|other| **other != id) {
+                    match store.career(other) {
+                        Ok(career) => { careers.insert(other.clone(), career); }
+                        Err(_) => { unreadable.insert(other.clone()); }
+                    }
+                }
+                careers.insert(id.clone(), record.career.clone());
+                Ok(Details { record, careers, unreadable })
             })();
             let _ = send.send(result);
             context.request_repaint();
@@ -211,11 +281,15 @@ impl LauncherApp {
         let Some(receiver) = &self.profiles.details_pending else { return };
         match receiver.try_recv() {
             Ok(Ok(details)) => {
-                self.profiles.career = details.record.career.clone();
+                self.profiles.career_from_record(Ok(&details.record.career));
                 self.profiles.details = Some(details);
                 self.profiles.details_pending = None;
             }
-            Ok(Err(error)) => { self.profiles.details_error = Some(error); self.profiles.details_pending = None; }
+            Ok(Err(failed)) => {
+                if failed.career { self.profiles.career_from_record(Err(&failed.error)); }
+                self.profiles.details_error = Some(failed.error);
+                self.profiles.details_pending = None;
+            }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => { self.profiles.details_error = Some(t("Could not load profile.").to_string()); self.profiles.details_pending = None; }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
@@ -226,7 +300,7 @@ impl LauncherApp {
         let (Some(store), Some(id)) = (self.profiles.store.clone(), self.profiles.active.as_ref().map(|p| p.id.clone())) else { return };
         match store.set_showcase(&id, list) {
             Ok(profile) => self.profiles.active = Some(profile),
-            Err(error) => self.notify(tf("Could not update profile: {error}", &[("error", &error)]), RED),
+            Err(error) => self.notify(tf("Could not update profile: {error}", &[("error", &ta_ui::profiles::error_text(&error))]), RED),
         }
     }
 
@@ -243,30 +317,65 @@ impl LauncherApp {
         });
         if let Some(why) = blocked { ui.add(egui::Label::new(RichText::new(why).color(STEEL).size(12.0)).wrap()); }
         if let Some(error) = &self.profiles.list_error {
-            ui.add(egui::Label::new(RichText::new(tf("Could not load profile: {error}", &[("error", error)])).color(AMBER).size(12.0)).wrap());
+            ui.add(egui::Label::new(RichText::new(tf("The profiles' folder could not be read: {error}", &[("error", &ta_ui::profiles::first_line(error))])).color(AMBER).size(12.0)).wrap());
         }
         let active = self.profiles.active.as_ref().map(|p| p.id.clone());
         let list = self.profiles.list.clone();
-        let only = list.len() <= 1;
+        // (The last readable commander stays: another, readable, takes over first.)
+        let only = match (list.len() <= 1, self.profiles.unreadable.is_empty()) {
+            (false, _) => None,
+            (true, true) => Some(t("The only profile cannot be deleted: create another first.")),
+            (true, false) => Some(t("Create another profile first: the other profiles on this device cannot be read, so none can take over.")),
+        };
         let mut chosen = None;
-        let area = egui::ScrollArea::vertical().id_salt("profile_commanders").max_height(ui.available_height().max(96.0)).auto_shrink([false, false]);
-        ta_ui::scroll::show(ui, area, ta_ui::scroll::Behind::Plate, |ui| {
+        let mut rows = |ui: &mut Ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
             for entry in &list {
                 let is_active = active.as_deref() == Some(entry.id.as_str());
-                let career = self.profiles.details.as_ref().and_then(|d| d.careers.get(&entry.id)).cloned()
-                    .or_else(|| is_active.then(|| self.profiles.career.clone())).unwrap_or_default();
+                let details = self.profiles.details.as_ref();
+                let career = details.and_then(|d| d.careers.get(&entry.id)).cloned()
+                    .or_else(|| (is_active && self.profiles.career_file == CareerFile::Read).then(|| self.profiles.career.clone()));
+                let unreadable = details.is_some_and(|d| d.unreadable.contains(&entry.id))
+                    || (is_active && matches!(self.profiles.career_file, CareerFile::Damaged(_)));
                 let texture = self.profiles.store.as_ref().filter(|_| entry.has_avatar)
                     .and_then(|s| s.avatar_path(&entry.id).ok()).and_then(|path| ta_ui::portrait::texture_at(ui.ctx(), &path));
-                if let Some(action) = commander_row(ui, entry, &career, texture.as_ref(), is_active, blocked, only) {
+                let rank = if unreadable { Rank::Unreadable } else { career.as_ref().map_or(Rank::Unknown, Rank::Of) };
+                if let Some(action) = commander_row(ui, entry, rank, texture.as_ref(), is_active, blocked, only) {
                     chosen = Some((entry.id.clone(), action));
                 }
             }
-        });
+        };
+        // (Those that cannot be read after them; in a page that scrolls whole, all run on in it.)
+        let unreadable = &self.profiles.unreadable;
+        let mut picked = None;
+        let mut all = |ui: &mut Ui| {
+            rows(ui);
+            if !unreadable.is_empty() {
+                ui.add_space(6.0);
+                picked = unreadable_profiles(ui, unreadable, blocked);
+            }
+        };
+        if self.profiles.natural {
+            all(ui);
+        } else {
+            let area = egui::ScrollArea::vertical().id_salt("profile_commanders").max_height(ui.available_height().max(96.0)).auto_shrink([false, false]);
+            ta_ui::scroll::show(ui, area, ta_ui::scroll::Behind::Plate, all);
+        }
         match chosen {
             Some((id, RowAction::Switch)) => { self.switch_profile(&id); }
             Some((_, RowAction::Edit)) => self.profiles.edit(true),
             Some((id, RowAction::Delete)) => self.profiles.confirm_delete = Some(id),
+            None => {}
+        }
+        self.unreadable_picked(picked);
+    }
+
+    /// What was asked of a profile that cannot be read: its folder opened, or it removed (asked
+    /// first).
+    fn unreadable_picked(&mut self, picked: Option<(String, std::path::PathBuf, UnreadableAction)>) {
+        match picked {
+            Some((_, folder, UnreadableAction::Open)) => self.push(super::Action::OpenFolder(folder)),
+            Some((id, _, UnreadableAction::Remove)) => self.profiles.confirm_delete = Some(id),
             None => {}
         }
     }
@@ -274,11 +383,17 @@ impl LauncherApp {
     /// Asks before a profile goes to the Recycle Bin.
     pub(super) fn delete_profile_dialog(&mut self, ctx: &egui::Context) {
         let Some(id) = self.profiles.confirm_delete.clone() else { return };
-        let Some(entry) = self.profiles.list.iter().find(|p| p.id == id).cloned() else { self.profiles.confirm_delete = None; return };
+        // (A commander, or a profile that cannot be read: its folder is all there is of it.)
+        let (name, title, folder) = if let Some(entry) = self.profiles.list.iter().find(|p| p.id == id) {
+            (entry.name.clone(), tf("DELETE {name}?", &[("name", &ta_ui::i18n::upper(&entry.name))]), self.profiles.store.as_ref().and_then(|s| s.data_dir(&entry.id).ok()))
+        } else if let Some(entry) = self.profiles.unreadable.iter().find(|p| p.id == id) {
+            (t("The unreadable profile").to_string(), t("DELETE THE UNREADABLE PROFILE?").to_string(), Some(entry.folder.clone()))
+        } else {
+            self.profiles.confirm_delete = None;
+            return;
+        };
         let width = (ctx.content_rect().width() - 80.0).clamp(1.0, 520.0);
         let max_height = (ctx.content_rect().height() - 24.0).max(1.0);
-        let title = tf("DELETE {name}?", &[("name", &ta_ui::i18n::upper(&entry.name))]);
-        let folder = self.profiles.store.as_ref().and_then(|s| s.data_dir(&entry.id).ok());
         let blocked = self.profile_blocked();
         let mut delete = false;
         let response = ta_ui::panel::modal(ctx, "launcher_profile_delete", Panel::new(&title).exit(Exit::Close).width(width).max_height(max_height).accent(RED), true, |ui| {
@@ -295,25 +410,27 @@ impl LauncherApp {
         });
         if delete {
             self.profiles.confirm_delete = None;
-            self.delete_profile(&entry.id, &entry.name);
+            self.delete_profile(&id, &name);
         } else if response.exit {
             self.profiles.confirm_delete = None;
         }
     }
 
-    /// Moves a profile to the Recycle Bin; the active one hands over to another commander first.
-    /// (The last one stays: the launcher's settings are a commander's.)
+    /// Moves a profile to the Recycle Bin (one that cannot be read too); the active one hands over
+    /// to another commander first. (The last one stays: the launcher's settings are a commander's.)
     pub(super) fn delete_profile(&mut self, id: &str, name: &str) {
         use ta_ui::recycle::Outcome;
         if let Some(why) = self.profile_blocked() { self.notify(why.to_string(), AMBER); return; }
         let Some(store) = self.profiles.store.clone() else { return };
-        let Some(next) = self.profiles.list.iter().find(|p| p.id != id).map(|p| p.id.clone()) else { return };
-        if self.profiles.active.as_ref().is_some_and(|p| p.id == id) && !self.switch_profile(&next) { return; }
+        if self.profiles.active.as_ref().is_some_and(|p| p.id == id) {
+            let Some(next) = self.profiles.list.iter().find(|p| p.id != id).map(|p| p.id.clone()) else { return };
+            if !self.switch_profile(&next) { return; }
+        }
         let remove = |dir: std::path::PathBuf| if cfg!(test) {
             // (Tests leave this computer's Recycle Bin alone.)
             std::fs::remove_dir_all(&dir).map(|()| Outcome::Deleted).map_err(|e| e.to_string())
         } else { ta_ui::recycle::recycle(&dir) };
-        match store.release(id).map_err(|e| e.to_string()).and_then(remove) {
+        match store.release(id).map_err(|e| ta_ui::profiles::error_text(&e)).and_then(remove) {
             Ok(Outcome::Kept) => self.notify(tf("{name} is left where it is", &[("name", &name)]), AMBER),
             Ok(outcome) => {
                 log::info!("removed profile {id} ({outcome:?})");
@@ -334,12 +451,16 @@ impl LauncherApp {
 
 /// One commander of this device: their picture, name, motto and rank; their insignia, and
 /// switching to them (or, the active one, editing), and deleting them.
-fn commander_row(ui: &mut Ui, entry: &Profile, career: &Career, texture: Option<&egui::TextureHandle>, active: bool,
-    blocked: Option<&'static str>, only: bool) -> Option<RowAction> {
+fn commander_row(ui: &mut Ui, entry: &Profile, career: Rank, texture: Option<&egui::TextureHandle>, active: bool,
+    blocked: Option<&'static str>, only: Option<&'static str>) -> Option<RowAction> {
     let height = 68.0;
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
-    let rank = ta_ui::profiles::rank_text(career);
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("{}, {rank}", entry.name)));
+    let (rank, rank_color) = match career {
+        Rank::Of(career) => (ta_ui::profiles::rank_text(career), AMBER),
+        Rank::Unknown => (String::new(), AMBER),
+        Rank::Unreadable => (t("Service record unreadable").to_string(), RED),
+    };
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, if rank.is_empty() { entry.name.clone() } else { format!("{}, {rank}", entry.name) }));
     if !ui.is_rect_visible(rect) { return None; }
     ui.painter().rect_filled(rect, 4.0, if active { AMBER_DEEP } else { BG_DEEP });
     ui.painter().rect_stroke(rect, 4.0, Stroke::new(1.0, if active { AMBER_DIM } else { LINE }), StrokeKind::Inside);
@@ -347,11 +468,10 @@ fn commander_row(ui: &mut Ui, entry: &Profile, career: &Career, texture: Option<
     let mut action = None;
     let mut right = ui.new_child(UiBuilder::new().max_rect(rect.shrink2(vec2(12.0, 0.0))).layout(Layout::right_to_left(Align::Center)));
     right.spacing_mut().item_spacing.x = 8.0;
-    let delete = right.add_enabled(blocked.is_none() && !only, ActionButton::secondary("DELETE").height(30.0));
-    let delete = match blocked {
-        Some(why) => delete.disabled_tip(why),
-        None if only => delete.disabled_tip(t("The only profile cannot be deleted: create another first.")),
-        None => delete.hover_tip(t("Move this profile to the Recycle Bin")),
+    let delete = right.add_enabled(blocked.is_none() && only.is_none(), ActionButton::secondary("DELETE").height(30.0));
+    let delete = match (blocked, only) {
+        (Some(why), _) | (None, Some(why)) => delete.disabled_tip(why),
+        (None, None) => delete.hover_tip(t("Move this profile to the Recycle Bin")),
     };
     if delete.clicked() { action = Some(RowAction::Delete); }
     if active {
@@ -364,7 +484,9 @@ fn commander_row(ui: &mut Ui, entry: &Profile, career: &Career, texture: Option<
         if switch.clicked() { action = Some(RowAction::Switch); }
     }
     right.add_space(6.0);
-    ta_ui::badges::insignia(&mut right, career.rank().grade, 44.0);
+    if let Rank::Of(career) = career {
+        ta_ui::badges::insignia(&mut right, career.rank().grade, 44.0);
+    }
     let text_right = right.min_rect().min.x - 12.0;
     let avatar = Rect::from_min_size(pos2(rect.min.x + 10.0, rect.center().y - 25.0), vec2(50.0, 50.0));
     let mut picture = ui.new_child(UiBuilder::new().max_rect(avatar));
@@ -384,9 +506,15 @@ fn commander_row(ui: &mut Ui, entry: &Profile, career: &Career, texture: Option<
     let motto = (!entry.motto.is_empty()).then(|| line(format!("\u{201c}{}\u{201d}", entry.motto), body(12.5), CREAM, true));
     let facts = {
         let mut job = egui::text::LayoutJob::default();
-        job.append(&rank, 0.0, egui::TextFormat { font_id: strong(12.5), color: AMBER, ..Default::default() });
-        job.append(&format!(" \u{b7} {} \u{b7} {}", tf("{faction} allegiance", &[("faction", &entry.allegiance.label())]),
-            tf("{xp} career XP", &[("xp", &grouped(career.total_xp()))])), 0.0, egui::TextFormat { font_id: body(12.0), color: STEEL, ..Default::default() });
+        let allegiance = tf("{faction} allegiance", &[("faction", &entry.allegiance.label())]);
+        // (The rank and the XP once the career is read; that it cannot be, when it cannot.)
+        let rest = match career {
+            Rank::Of(career) => format!(" \u{b7} {allegiance} \u{b7} {}", tf("{xp} career XP", &[("xp", &grouped(career.total_xp()))])),
+            Rank::Unreadable => format!(" \u{b7} {allegiance}"),
+            Rank::Unknown => allegiance,
+        };
+        job.append(&rank, 0.0, egui::TextFormat { font_id: strong(12.5), color: rank_color, ..Default::default() });
+        job.append(&rest, 0.0, egui::TextFormat { font_id: body(12.0), color: STEEL, ..Default::default() });
         job.wrap.max_width = width;
         job.wrap.max_rows = 1;
         job.wrap.break_anywhere = true;
@@ -415,5 +543,75 @@ fn commander_row(ui: &mut Ui, entry: &Profile, career: &Career, texture: Option<
         y += h + gap;
     }
     ui.painter().galley(pos2(left, y), facts, AMBER);
+    action
+}
+
+/// This device's profiles that cannot be read: what they are, a row each with its folder, and
+/// what can be done with them. Returns the one asked about, its folder, and what was asked.
+fn unreadable_profiles(ui: &mut Ui, list: &[Unreadable], blocked: Option<&'static str>) -> Option<(String, std::path::PathBuf, UnreadableAction)> {
+    ui.label(widgets::caption("PROFILES THAT CANNOT BE READ"));
+    ui.add(egui::Label::new(RichText::new(t("Their files are damaged, or from a newer version of TA Reborn. They are left as they are: repair them in their folders, or move them to the Recycle Bin."))
+        .color(STEEL).size(12.0)).wrap());
+    let mut picked = None;
+    ui.spacing_mut().item_spacing.y = 6.0;
+    for entry in list {
+        if let Some(action) = unreadable_row(ui, entry, blocked) {
+            picked = Some((entry.id.clone(), entry.folder.clone(), action));
+        }
+    }
+    picked
+}
+
+/// A profile that cannot be read: the emblem, what it is, its folder and why (on hover); opening
+/// the folder, and moving it to the Recycle Bin.
+fn unreadable_row(ui: &mut Ui, entry: &Unreadable, blocked: Option<&'static str>) -> Option<UnreadableAction> {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 68.0), Sense::hover());
+    let folder = entry.folder.display().to_string();
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("{}, {folder}", t("A profile that cannot be read"))));
+    if !ui.is_rect_visible(rect) { return None; }
+    ui.painter().rect_filled(rect, 4.0, BG_DEEP);
+    ui.painter().rect_stroke(rect, 4.0, Stroke::new(1.0, RED.gamma_multiply(0.5)), StrokeKind::Inside);
+    let mut action = None;
+    let mut right = ui.new_child(UiBuilder::new().max_rect(rect.shrink2(vec2(12.0, 0.0))).layout(Layout::right_to_left(Align::Center)));
+    right.spacing_mut().item_spacing.x = 8.0;
+    let remove = right.add_enabled(blocked.is_none(), ActionButton::secondary("MOVE TO RECYCLE BIN").height(30.0));
+    let remove = match blocked { Some(why) => remove.disabled_tip(why), None => remove.hover_tip(t("Move this profile to the Recycle Bin")) };
+    if remove.clicked() { action = Some(UnreadableAction::Remove); }
+    if right.add(ActionButton::secondary("OPEN FOLDER").height(30.0)).hover_tip(t("Its folder: repair its files there, or take what is in it")).clicked() {
+        action = Some(UnreadableAction::Open);
+    }
+    let text_right = right.min_rect().min.x - 12.0;
+    let avatar = Rect::from_min_size(pos2(rect.min.x + 10.0, rect.center().y - 25.0), vec2(50.0, 50.0));
+    let mut picture = ui.new_child(UiBuilder::new().max_rect(avatar));
+    ta_ui::profiles::avatar_picture(&mut picture, None, None, 50.0);
+    let left = avatar.max.x + 12.0;
+    let width = (text_right - left).max(40.0);
+    let line = |text: String, font: egui::FontId, color: egui::Color32| {
+        let mut job = egui::text::LayoutJob::single_section(text, egui::TextFormat { font_id: font, color, ..Default::default() });
+        job.wrap.max_width = width;
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        job.wrap.overflow_character = Some('\u{2026}');
+        ui.painter().layout_job(job)
+    };
+    let title = line(t("A profile that cannot be read").to_string(), strong(15.0), TEXT_BRIGHT);
+    // (Its folder whole where it fits, else its end: where it is, the folder's own name.)
+    let mut path = line(folder.clone(), mono(11.5), STEEL);
+    if path.size().x >= width - 1.0 {
+        let end: Vec<_> = entry.folder.components().rev().take(2).collect();
+        let end: std::path::PathBuf = end.into_iter().rev().collect();
+        path = line(format!("\u{2026}{}{}", std::path::MAIN_SEPARATOR, end.display()), mono(11.5), STEEL);
+    }
+    let reason = line(ta_ui::profiles::first_line(&entry.error), body(12.0), STEEL_DIM);
+    let gap = 3.0;
+    let mut y = rect.center().y - (title.size().y + path.size().y + reason.size().y + 2.0 * gap) / 2.0;
+    for (galley, color) in [(title, TEXT_BRIGHT), (path, STEEL), (reason, STEEL_DIM)] {
+        let h = galley.size().y;
+        ui.painter().galley(pos2(left, y), galley, color);
+        y += h + gap;
+    }
+    // (Where it is and the whole of why, on hover of the row.)
+    let _ = ui.interact(Rect::from_min_max(rect.min, pos2(text_right, rect.max.y)), ui.id().with(("unreadable_profile", &entry.id)), Sense::hover())
+        .hover_tip(format!("{folder}\n{}", entry.error));
     action
 }

@@ -705,10 +705,11 @@ pub fn embossed(painter: &Painter, pos: Pos2, galley: Arc<Galley>, color: Color3
     painter.galley_with_override_text_color(pos, galley, color);
 }
 
-/// [`embossed`] text as a label.
+/// [`embossed`] text as a label (a heading's, a card's title: a screen reader reads its words).
 pub fn embossed_label(ui: &mut Ui, text: RichText, color: Color32) -> Response {
     let galley = crate::widgets::galley(ui, text);
     let (rect, response) = ui.allocate_exact_size(galley.size() + vec2(2.0, 2.0), Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), galley.text()));
     embossed(ui.painter(), rect.min + vec2(1.0, 0.0), galley, color);
     response
 }

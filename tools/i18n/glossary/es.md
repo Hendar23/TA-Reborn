@@ -631,3 +631,25 @@ la pasa por alto), como «La entrada {key} de mod.toml». `{found}` y `{expected
 | plates (the HUD's, a theme's picture behind them) / the side's own metal plates | placas / las placas metálicas propias del bando |
 | line spacing / one frame in {stride} (a preview played with fewer frames) / choppier | interlineado / uno de cada {stride} / más entrecortada |
 | TURN OFF {name} (un mod, junto a ENABLE {name}) / STOP PREVIEW (junto a PLAY PREVIEW) | DESACTIVAR {name} / PARAR VISTA PREVIA (como STOP: PARAR) |
+
+## Hoja de servicio dañada, perfiles ilegibles y teclas del lanzador (`app/profile_page.rs`, `app/profiles.rs`, `pages/play.rs`, `app/polish.rs`)
+
+Los atajos de teclado del lanzador nombran las teclas como las rotulan los teclados españoles
+(Ctrl+1, Mayús+Tab, Alt+Inicio): una excepción a la regla de las teclas, solo en `polish.rs`; Cmd y
+Option se quedan como están. Las páginas, en mayúsculas como en la barra: la página JUGAR, la página
+PERFIL, la página MAPAS. Recuentos de mapas creados y no creados válidos para cualquier número:
+"Mapas importados: {n}; sin crear: {failed}.", "No se ha podido crear ninguno de los mapas elegidos ({n})."
+
+| English | Español |
+|---|---|
+| key labels Shift / Enter / Home / End (atajos del lanzador) | Mayús / Intro / Inicio / Fin (Alt, Ctrl, Esc, Tab, Cmd, Option sin cambios) |
+| unreadable (un perfil, la hoja de servicio, un mapa) | ilegible (ILEGIBLE, PERFILES ILEGIBLES, HOJA DE SERVICIO ILEGIBLE) |
+| career file / set aside / put back (el career.toml dañado) | archivo de carrera / apartar / restaurar |
+| START A FRESH CAREER(…) / START A FRESH CAREER? | EMPEZAR UNA CARRERA NUEVA(…) / ¿EMPEZAR UNA CARRERA NUEVA? |
+| PUT IT RIGHT / CAREER NEEDS ATTENTION (título de la página Jugar) | SOLUCIONARLO / CARRERA CON PROBLEMAS |
+| MOVE TO RECYCLE BIN (botón) | MOVER A LA PAPELERA |
+| YOURS AND ALLIES / ENEMY UNITS (aspectos de los ejércitos) / YOUR SKINS (filtro) | TÚ Y TUS ALIADOS / ENEMIGOS / TUS ASPECTOS |
+| KEEP BOTH / id (de un aspecto) | CONSERVAR AMBOS / identificador |
+| hue / saturation / brightness (selector de color) | Tono / Saturación / Brillo |
+| marcas del lector OK / Not present / Error; {content}: found / not found | Correcto / Ausente / Error; presente / ausente (sin concordancia de género) |
+| LEGAL / THE PROJECT (página Acerca de) | AVISO LEGAL / EL PROYECTO |

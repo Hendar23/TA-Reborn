@@ -642,3 +642,27 @@ no-break spaces; the launcher's own lines (`modlist.rs`, `mods.rs`) keep straigh
 | line spacing / its letters show at {percent}% of their size | hauteur de ligne, interligne / ses lettres s’affichent à {percent} % de leur taille |
 | one frame in {stride} (a preview played with fewer of its frames) / choppier | une sur {stride} / plus saccadé |
 | TURN OFF {name} (a mod, beside ENABLE {name}) / STOP PREVIEW (beside PLAY PREVIEW) | DÉSACTIVER {name} / ARRÊTER L'APERÇU |
+
+## États de service endommagés, profils illisibles et touches du lanceur (`app/profile_page.rs`, `app/profiles.rs`, `pages/play.rs`, `app/polish.rs`)
+
+The launcher's KEYBOARD SHORTCUTS name the keys as French keyboards print them (Ctrl+1, Maj+Tab,
+Alt+Origine): an exception to the key-name rule above, for `polish.rs` only; Cmd and Option stay.
+États de service is masculine plural (ils sont mis de côté, illisibles). Screen-reader words agree by
+ear: "{content} : trouvé" sounds right whatever the gender and number of {content}. Sizes keep the
+French units (16 Mo, 1 Mio), as the rest of this file. Page names in sentences in capitals, as the
+rail shows them: la page JOUER, la page PROFIL, la page CARTES. Counts of maps made and not: "Cartes
+importées : {n} ; non créées : {failed}.", "Aucune des cartes choisies n'a pu être créée ({n})."
+
+| English | Français |
+|---|---|
+| key labels Shift / Enter / Esc / Home / End (launcher shortcuts) | Maj / Entrée / Échap / Origine / Fin (Alt, Ctrl, Tab, Cmd, Option kept) |
+| unreadable (a profile, service record, map) | illisible (ILLISIBLE, PROFILS ILLISIBLES, ÉTATS DE SERVICE ILLISIBLES) |
+| career file / set aside / put back (the damaged career.toml) | fichier de carrière / mettre de côté / remettre en place |
+| START A FRESH CAREER… (buttons) / START A FRESH CAREER? (title) | NOUVELLE CARRIÈRE… / COMMENCER UNE NOUVELLE CARRIÈRE ? |
+| PUT IT RIGHT / CAREER NEEDS ATTENTION (the Play page's title) | CORRIGER / CARRIÈRE À VÉRIFIER (as the "à vérifier" of needs attention) |
+| MOVE TO RECYCLE BIN (button) | METTRE À LA CORBEILLE |
+| YOURS AND ALLIES / ENEMY UNITS (the armies' skins) / YOUR SKINS (filter) | VOUS ET VOS ALLIÉS / ENNEMIS / VOS APPARENCES |
+| {name} IS INSTALLED ALREADY (a skin) / KEEP BOTH / id | L’APPARENCE {name} EST DÉJÀ INSTALLÉE (the noun carries the agreement) / GARDER LES DEUX / identifiant |
+| hue / saturation / brightness (colour picker) | Teinte / Saturation / Luminosité |
+| screen-reader marks OK / Not present / Error; {content}: found / not found | OK / Absent / Erreur; trouvé / introuvable |
+| LEGAL / THE PROJECT (About page headings) | MENTIONS LÉGALES / LE PROJET |

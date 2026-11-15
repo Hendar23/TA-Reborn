@@ -22,6 +22,27 @@ use ta_vfs::mods::ModManifest;
 
 /// The map pack the maps go in (a map pack: the library offers to remove it as one).
 pub const PACK_ID: &str = "map-pack-supreme-commander";
+/// The pack's name and words as its manifest keeps them, in English (a mod's own words): the
+/// interface shows them translated ([`pack_name`]; the Mods page translates a description).
+const PACK_NAME: &str = n("Supreme Commander maps");
+const PACK_DESCRIPTION: &str = n("Maps of Supreme Commander: Forged Alliance, made into TA maps from your own copy of the game.");
+/// A map's picture in the list is made at most this many pixels a side (the game's are 256,
+/// shown 56 points across).
+const PREVIEW_SIDE: u32 = 128;
+/// The largest picture of a map read for the list, a side: a player's map may hold one of any
+/// size, and one larger is left out (no picture), never decoded.
+const PREVIEW_LARGEST: u32 = 2048;
+
+/// The pack's name as the interface shows it, in the language in use.
+pub fn pack_name() -> &'static str {
+    t(PACK_NAME)
+}
+
+/// A mod's name as the interface shows it: this pack's in the language in use (its manifest keeps
+/// it in English), any other's as its manifest has it.
+pub fn mod_name(manifest: &ModManifest) -> &str {
+    if manifest.id == PACK_ID { pack_name() } else { &manifest.name }
+}
 
 /// A map that can be imported.
 #[derive(Clone)]
@@ -30,10 +51,11 @@ pub struct Entry {
     /// One of the player's own (downloaded, Forged Alliance Forever's), not the game's.
     pub players_own: bool,
     pub scenario: Scenario,
-    /// The game's own picture of it (RGBA, its size).
-    pub preview: Option<(u32, u32, Vec<u8>)>,
     pub state: State,
 }
+
+/// The game's pictures of the maps a look found, made small (RGBA), by map folder.
+pub type Previews = BTreeMap<PathBuf, egui::ColorImage>;
 
 /// Whether a map is in the pack already.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,8 +86,11 @@ pub struct Found {
     /// The folders of the player's own maps there are.
     pub own_folders: Vec<PathBuf>,
     pub maps: Vec<Entry>,
-    /// Why the game's maps could not be listed (its archives would not open).
+    /// Why the game's maps could not be listed (its maps folder would not open).
     pub error: Option<String>,
+    /// What could not be read and is not listed: a folder of the player's own maps, a map whose
+    /// scenario file would not read (translated, a line each).
+    pub skipped: Vec<String>,
 }
 
 /// How an import is going.
@@ -91,6 +116,69 @@ pub struct Outcome {
     pub error: Option<String>,
 }
 
+/// How an import went, as it is told.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Went {
+    /// Every map made.
+    Well,
+    /// Some made, some not.
+    Partly,
+    /// Nothing installed: the import failed, or none of the maps could be made.
+    Badly,
+    /// Stopped before a map was made.
+    Nothing,
+}
+
+impl Went {
+    pub fn colour(self) -> egui::Color32 {
+        match self {
+            Went::Well => crate::theme::GREEN,
+            Went::Partly => crate::theme::AMBER,
+            Went::Badly => crate::theme::RED,
+            Went::Nothing => crate::theme::STEEL,
+        }
+    }
+}
+
+impl Outcome {
+    pub fn went(&self) -> Went {
+        if self.error.is_some() || (self.imported.is_empty() && !self.failed.is_empty()) {
+            Went::Badly
+        } else if self.imported.is_empty() {
+            Went::Nothing
+        } else if self.failed.is_empty() {
+            Went::Well
+        } else {
+            Went::Partly
+        }
+    }
+
+    /// What it came to, as the dialog says it.
+    pub fn summary(&self) -> String {
+        let (made, failed) = (self.imported.len(), self.failed.len());
+        match (&self.error, self.went()) {
+            (Some(why), _) => tf("The maps could not be imported: {why}", &[("why", why)]),
+            (None, Went::Badly) => tf("None of the {n} maps could be made.", &[("n", &failed)]),
+            (None, Went::Nothing) => t("Nothing was imported.").to_string(),
+            (None, Went::Well) => tf("Imported {n} maps: they are in the map library, and in skirmish.", &[("n", &made)]),
+            (None, Went::Partly) => tf("Imported {n} maps, but {failed} could not be made: those made are in the map library, and in skirmish.", &[("n", &made), ("failed", &failed)]),
+        }
+    }
+
+    /// What a notice says of it with the dialog closed, failures and all (nothing for a stop
+    /// before any map was made).
+    pub fn notice(&self) -> Option<String> {
+        let (made, failed) = (self.imported.len(), self.failed.len());
+        Some(match (&self.error, self.went()) {
+            (Some(why), _) => tf("The Supreme Commander maps could not be imported: {why}", &[("why", why)]),
+            (None, Went::Badly) => tf("None of the {n} Supreme Commander maps could be made: SUPREME COMMANDER… on the Maps page says why.", &[("n", &failed)]),
+            (None, Went::Nothing) => return None,
+            (None, Went::Well) => tf("Imported {n} Supreme Commander maps: they are in the map library, and in skirmish.", &[("n", &made)]),
+            (None, Went::Partly) => tf("Imported {n} Supreme Commander maps, but {failed} could not be made: SUPREME COMMANDER… on the Maps page says why.", &[("n", &made), ("failed", &failed)]),
+        })
+    }
+}
+
 struct Job {
     handle: JoinHandle<Outcome>,
     ending: Arc<Ending>,
@@ -109,15 +197,20 @@ pub struct Import {
     pub open: bool,
     /// The game's folder as the player chose it (else the copy found).
     pub picked: Option<PathBuf>,
-    scan: Option<mpsc::Receiver<Found>>,
-    pub found: Option<Found>,
-    /// The maps chosen (their folders).
-    pub chosen: BTreeSet<PathBuf>,
+    scan: Option<mpsc::Receiver<(Found, Previews)>>,
+    /// What the last look found, shared: the dialog draws from it every frame.
+    pub found: Option<Arc<Found>>,
+    /// The maps chosen (their folders). None until the game's maps are first listed, when the
+    /// game's own not imported yet are chosen for the player ([`first_choice`]); after that what
+    /// the player chose, none at all if so.
+    pub chosen: Option<BTreeSet<PathBuf>>,
     job: Option<Job>,
     pub progress: Arc<Mutex<Progress>>,
     pub outcome: Option<Outcome>,
-    /// The pictures, as textures, by map folder.
-    pub textures: BTreeMap<PathBuf, egui::TextureHandle>,
+    /// The maps' pictures not shown yet (their pixels, let go of once on the GPU), and those
+    /// shown, as textures, by map folder: all let go of when the dialog closes.
+    previews: Previews,
+    textures: BTreeMap<PathBuf, egui::TextureHandle>,
     /// Maps to choose and import as soon as the game's maps are listed (their folders' names, in
     /// lower case): a capture's (`--show supcom:<folder>,<folder>`).
     pub auto_start: Option<Vec<String>>,
@@ -132,10 +225,11 @@ impl Import {
         self.job.is_some()
     }
 
-    /// Opens the dialog and looks for the game (again).
+    /// Opens the dialog and looks for the game (again): the maps' pictures were let go of when it
+    /// closed. (An import under way goes on meanwhile.)
     pub fn show(&mut self, mods_dir: &Path) {
         self.open = true;
-        if !self.importing() {
+        if !self.scanning() {
             self.rescan(mods_dir);
         }
     }
@@ -144,11 +238,50 @@ impl Import {
     pub fn rescan(&mut self, mods_dir: &Path) {
         let (send, receive) = mpsc::channel();
         let picked = self.picked.clone();
-        let pack = mods_dir.join(PACK_ID);
+        let mods_dir = mods_dir.to_path_buf();
         std::thread::Builder::new().name("supcom scan".into()).spawn(move || {
-            let _ = send.send(find(picked.as_deref(), &pack));
+            let _ = send.send(find(picked.as_deref(), pack_dir(&mods_dir).as_deref()));
         }).ok();
         self.scan = Some(receive);
+    }
+
+    /// Whether the map in `folder` is chosen.
+    pub fn is_chosen(&self, folder: &Path) -> bool {
+        self.chosen.as_ref().is_some_and(|chosen| chosen.contains(folder))
+    }
+
+    /// Chooses the map in `folder` (`on`), or not.
+    pub fn choose(&mut self, folder: &Path, on: bool) {
+        let chosen = self.chosen.get_or_insert_with(BTreeSet::new);
+        if on {
+            chosen.insert(folder.to_path_buf());
+        } else {
+            chosen.remove(folder);
+        }
+    }
+
+    /// Chooses every map listed (`on`), or none.
+    pub fn choose_all(&mut self, on: bool) {
+        let all = || self.found.iter().flat_map(|found| found.maps.iter().map(|e| e.folder.clone())).collect();
+        self.chosen = Some(if on { all() } else { BTreeSet::new() });
+    }
+
+    /// The picture of the map in `folder` as a texture, made from its pixels the first time it is
+    /// shown (they are let go of then).
+    pub fn texture(&mut self, ctx: &egui::Context, folder: &Path) -> Option<egui::TextureHandle> {
+        if let Some(texture) = self.textures.get(folder) {
+            return Some(texture.clone());
+        }
+        let image = self.previews.remove(folder)?;
+        let texture = ctx.load_texture(format!("supcom:{}", folder.display()), image, egui::TextureOptions::LINEAR);
+        self.textures.insert(folder.to_path_buf(), texture.clone());
+        Some(texture)
+    }
+
+    /// How many pictures are held as pixels, and as textures.
+    #[cfg(test)]
+    pub fn pictures_held(&self) -> (usize, usize) {
+        (self.previews.len(), self.textures.len())
     }
 
     /// Uses the game in folder `picked` (or one level down in it); false when it is not there.
@@ -165,12 +298,12 @@ impl Import {
 
     /// Starts making the chosen maps into TA maps, the original game at `ta_root`.
     pub fn start(&mut self, ta_root: PathBuf, store_dir: PathBuf) {
-        let Some(found) = &self.found else { return };
+        let Some(found) = self.found.clone() else { return };
         let Some(game) = found.install.clone() else { return };
         if self.importing() {
             return;
         }
-        let maps: Vec<(PathBuf, bool, String)> = found.maps.iter().filter(|e| self.chosen.contains(&e.folder)).map(|e| (e.folder.clone(), e.players_own, e.scenario.name.clone())).collect();
+        let maps: Vec<(PathBuf, bool, String)> = found.maps.iter().filter(|e| self.is_chosen(&e.folder)).map(|e| (e.folder.clone(), e.players_own, e.scenario.name.clone())).collect();
         if maps.is_empty() {
             return;
         }
@@ -196,9 +329,11 @@ impl Import {
             return false;
         }
         let (Some(names), Some(found)) = (&self.auto_start, &self.found) else { return false };
-        self.chosen = found.maps.iter().filter(|e| e.folder.file_name().is_some_and(|f| names.iter().any(|n| f.to_string_lossy().eq_ignore_ascii_case(n)))).map(|e| e.folder.clone()).collect();
+        let chosen: BTreeSet<PathBuf> = found.maps.iter().filter(|e| e.folder.file_name().is_some_and(|f| names.iter().any(|n| f.to_string_lossy().eq_ignore_ascii_case(n)))).map(|e| e.folder.clone()).collect();
+        let any = !chosen.is_empty();
+        self.chosen = Some(chosen);
         self.auto_start = None;
-        !self.chosen.is_empty()
+        any
     }
 
     /// Whether a capture may take its picture: the game looked for, a capture's maps imported
@@ -229,28 +364,39 @@ impl Import {
     pub fn poll(&mut self, ctx: &egui::Context) -> Option<Outcome> {
         if let Some(scan) = &self.scan {
             match scan.try_recv() {
-                Ok(found) => {
-                    // (Every map not yet imported is chosen at first; then what the player chose.)
-                    if self.chosen.is_empty() || self.found.as_ref().is_none_or(|f| f.install != found.install) {
-                        self.chosen = found.maps.iter().filter(|e| e.state != State::Imported).map(|e| e.folder.clone()).collect();
-                    } else {
-                        self.chosen.retain(|c| found.maps.iter().any(|e| &e.folder == c));
+                Ok((found, previews)) => {
+                    let same_copy = self.found.as_ref().is_some_and(|f| f.install == found.install);
+                    match &mut self.chosen {
+                        // (What the player chose, less the maps no longer there: none if so.)
+                        Some(chosen) if same_copy => chosen.retain(|c| found.maps.iter().any(|e| &e.folder == c)),
+                        // (The game's maps listed for the first time, or another copy's.)
+                        _ => self.chosen = Some(first_choice(&found)),
                     }
                     self.textures.clear();
-                    self.found = Some(found);
+                    // (The pictures are kept only for a dialog open to show them.)
+                    self.previews = if self.open { previews } else { Previews::new() };
+                    self.found = Some(Arc::new(found));
                     self.scan = None;
                 }
                 Err(mpsc::TryRecvError::Disconnected) => self.scan = None,
                 Err(mpsc::TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
             }
         }
+        // Closed, the dialog lets go of the maps' pictures, on the GPU and off it.
+        if !self.open && (!self.previews.is_empty() || !self.textures.is_empty()) {
+            self.previews.clear();
+            self.textures.clear();
+        }
         if self.job.as_ref().is_some_and(|j| j.handle.is_finished()) {
             let job = self.job.take().unwrap();
             let outcome = job.handle.join().unwrap_or_else(|_| Outcome { error: Some(t("The import stopped unexpectedly.").to_string()), ..Default::default() });
-            // (The maps made are chosen no more: what is left chosen is what was not made.)
-            if outcome.error.is_none() {
+            // (The maps made are chosen no more: what is left chosen is what was not made, those
+            // that could not be among them.)
+            if outcome.error.is_none()
+                && let Some(chosen) = &mut self.chosen
+            {
                 let made: BTreeSet<&str> = outcome.made.iter().map(|f| f.as_str()).collect();
-                self.chosen.retain(|f| !made.contains(m_source(f).as_str()));
+                chosen.retain(|f| !made.contains(m_source(f).as_str()));
             }
             self.outcome = Some(outcome.clone());
             return Some(outcome);
@@ -285,19 +431,51 @@ impl Import {
         });
         self.job = Some(Job { handle, ending });
     }
+
+    /// An import under way that comes to `outcome` at once: for tests.
+    #[cfg(test)]
+    pub fn pretend_import_ending(&mut self, outcome: Outcome) {
+        let handle = std::thread::spawn(move || outcome);
+        self.job = Some(Job { handle, ending: Arc::new(Ending::default()) });
+    }
+
+    /// A look that found `found` and the pictures `previews`, taken in at the next
+    /// [`Import::poll`] as a look's are: for tests.
+    #[cfg(test)]
+    pub fn pretend_found(&mut self, found: Found, previews: Previews) {
+        let (send, receive) = mpsc::channel();
+        send.send((found, previews)).unwrap();
+        self.scan = Some(receive);
+    }
+}
+
+/// The maps chosen for the player when the game's maps are first listed: the game's own not
+/// imported yet (or made by an older converter). The player's own maps are theirs to choose: a
+/// vault holds hundreds, gigabytes once made.
+fn first_choice(found: &Found) -> BTreeSet<PathBuf> {
+    found.maps.iter().filter(|e| !e.players_own && e.state != State::Imported).map(|e| e.folder.clone()).collect()
+}
+
+/// The folder the pack is installed in, found by its id (where its name was taken the installer
+/// named it `<id>-2`...), if it is.
+fn pack_dir(mods_dir: &Path) -> Option<PathBuf> {
+    ta_vfs::mods::scan(mods_dir).0.into_iter().find(|m| m.manifest.id == PACK_ID && m.kind == ta_vfs::mods::ModKind::Directory).map(|m| m.path)
 }
 
 /// The game, the player's own map folders and every map that can be imported, with which are in
-/// the pack (`pack`, its folder) already.
-fn find(picked: Option<&Path>, pack: &Path) -> Found {
+/// the pack (`pack`, its folder) already; and the game's pictures of them.
+fn find(picked: Option<&Path>, pack: Option<&Path>) -> (Found, Previews) {
     let copies = install::discover();
     let install = in_use(&copies, picked);
     let own_folders = install::user_map_folders();
     let mut found = Found { install: install.clone(), copies, own_folders: own_folders.clone(), ..Default::default() };
-    let Some(game) = install else { return found };
+    let mut previews = Previews::new();
+    let Some(game) = install else { return (found, previews) };
     // What the pack holds: each map's source folder and the converter that made it.
     let mut made: BTreeMap<String, u32> = BTreeMap::new();
-    if let Ok(entries) = std::fs::read_dir(pack.join("maps")) {
+    if let Some(pack) = pack
+        && let Ok(entries) = std::fs::read_dir(pack.join("maps"))
+    {
         for e in entries.flatten() {
             if e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("ota"))
                 && let Ok(bytes) = std::fs::read(e.path())
@@ -315,27 +493,86 @@ fn find(picked: Option<&Path>, pack: &Path) -> Found {
     dirs.push((game.maps(), false));
     let mut seen = BTreeSet::new();
     for (dir, players_own) in dirs {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                let why = tf("{folder} could not be read: {why}", &[("folder", &dir.display()), ("why", &e)]);
+                if players_own {
+                    found.skipped.push(why);
+                } else {
+                    found.error = Some(why);
+                }
+                continue;
+            }
+        };
         let mut folders: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
         folders.sort();
         for folder in folders {
-            let Ok(scenario) = map::read_scenario(&folder) else { continue };
+            let scenario = match map::read_scenario(&folder) {
+                Ok(scenario) => scenario,
+                // (A folder without a scenario is no map.)
+                Err(ta_supcom::Error::Missing(_)) => continue,
+                Err(e) => {
+                    let name = folder.file_name().map_or_else(|| folder.display().to_string(), |n| n.to_string_lossy().into_owned());
+                    found.skipped.push(tf("{map}: its scenario file could not be read: {why}", &[("map", &name), ("why", &e)]));
+                    continue;
+                }
+            };
             if !scenario.skirmish() || !seen.insert(scenario.folder.to_ascii_lowercase()) {
                 continue;
             }
-            let preview = scmap_of(&folder).and_then(|p| ta_supcom::scmap::ScMap::read_preview(&p).ok()).and_then(|(_, _, dds)| ta_supcom::dds::decode(&dds, 0).ok()).map(|i| {
-                (i.width, i.height, i.rgba.iter().flat_map(|c| [c[0], c[1], c[2], 255]).collect())
-            });
+            if let Some(preview) = preview_of(&folder) {
+                previews.insert(folder.clone(), preview);
+            }
             let state = match made.get(&scenario.folder.to_ascii_lowercase()) {
                 Some(&v) if v >= convert::VERSION => State::Imported,
                 Some(_) => State::Outdated,
                 None => State::New,
             };
-            found.maps.push(Entry { folder, players_own, scenario, preview, state });
+            found.maps.push(Entry { folder, players_own, scenario, state });
         }
     }
     found.maps.sort_by(|a, b| a.scenario.name.to_lowercase().cmp(&b.scenario.name.to_lowercase()).then(a.folder.cmp(&b.folder)));
-    found
+    (found, previews)
+}
+
+/// The game's picture of the map in `folder`, made small for the list: none where it has none, or
+/// one too large to read (a player's map may hold any size: it is not decoded).
+fn preview_of(folder: &Path) -> Option<egui::ColorImage> {
+    let (_, _, dds) = ta_supcom::scmap::ScMap::read_preview(&scmap_of(folder)?).ok()?;
+    let header = ta_supcom::dds::Header::parse(&dds).ok()?;
+    // (Its first level bounded: a smaller one missing, that is the one decoded.)
+    if header.width.max(header.height) > PREVIEW_LARGEST {
+        return None;
+    }
+    let image = ta_supcom::dds::decode(&dds, header.level_for(PREVIEW_SIDE)).ok()?;
+    (image.rgba.len() == image.width as usize * image.height as usize).then(|| shrink(&image, PREVIEW_SIDE))
+}
+
+/// `image` made at most `side` pixels along its longer side (each pixel the mean of those it
+/// covers), opaque: the game's pictures leave their alpha unset.
+fn shrink(image: &ta_supcom::dds::Image, side: u32) -> egui::ColorImage {
+    let (w, h) = (image.width.max(1) as usize, image.height.max(1) as usize);
+    let (longer, side) = (w.max(h), side.max(1) as usize);
+    let (to_w, to_h) = if longer <= side { (w, h) } else { ((w * side).div_ceil(longer).max(1), (h * side).div_ceil(longer).max(1)) };
+    let mut pixels = Vec::with_capacity(to_w * to_h);
+    for y in 0..to_h {
+        let (top, bottom) = (y * h / to_h, ((y + 1) * h / to_h).max(y * h / to_h + 1));
+        for x in 0..to_w {
+            let (left, right) = (x * w / to_w, ((x + 1) * w / to_w).max(x * w / to_w + 1));
+            let mut sum = [0u32; 3];
+            for row in top..bottom {
+                for texel in &image.rgba[row * w + left..row * w + right] {
+                    for (s, v) in sum.iter_mut().zip(texel) {
+                        *s += u32::from(*v);
+                    }
+                }
+            }
+            let count = ((bottom - top) * (right - left)) as u32;
+            pixels.push(egui::Color32::from_rgb((sum[0] / count) as u8, (sum[1] / count) as u8, (sum[2] / count) as u8));
+        }
+    }
+    egui::ColorImage::new([to_w, to_h], pixels)
 }
 
 /// The copy of the game in use: the folder picked (named by its store when it is one of the
@@ -369,7 +606,9 @@ fn import(game: &Install, own: &[PathBuf], maps: &[(PathBuf, bool, String)], ta_
     let maps_out = payload.join("maps");
     std::fs::create_dir_all(&maps_out)?;
     // The maps the pack has, kept (those made again are written over).
-    if let Ok(entries) = std::fs::read_dir(mods_dir.join(PACK_ID).join("maps")) {
+    if let Some(pack) = pack_dir(&mods_dir)
+        && let Ok(entries) = std::fs::read_dir(pack.join("maps"))
+    {
         for e in entries.flatten() {
             if e.path().is_file() {
                 std::fs::copy(e.path(), maps_out.join(e.file_name()))?;
@@ -410,7 +649,8 @@ fn import(game: &Install, own: &[PathBuf], maps: &[(PathBuf, bool, String)], ta_
                 outcome.imported.push(c.title);
                 outcome.made.push(m_source(folder));
             }
-            Err(e) => outcome.failed.push((name.clone(), format!("{e:#}"))),
+            // (The converter's own words, about the map's files, in ours.)
+            Err(e) => outcome.failed.push((name.clone(), tf("It could not be made into a TA map: {why}", &[("why", &format!("{e:#}"))]))),
         }
     }
     progress.lock().unwrap().done = outcome.imported.len() + outcome.failed.len();
@@ -419,9 +659,9 @@ fn import(game: &Install, own: &[PathBuf], maps: &[(PathBuf, bool, String)], ta_
     }
     let manifest = ModManifest {
         id: PACK_ID.into(),
-        name: "Supreme Commander maps".into(),
+        name: PACK_NAME.into(),
         version: convert::VERSION.to_string(),
-        description: "Maps of Supreme Commander: Forged Alliance, made into TA maps from your own copy of the game.".into(),
+        description: PACK_DESCRIPTION.into(),
         authors: Vec::new(),
         depends: Vec::new(),
         load_after: Vec::new(),
@@ -550,19 +790,178 @@ mod tests {
         scenario("SCMP_001", "Zulu Ridge", "skirmish");
         scenario("SCMP_003", "Beta Fork", "skirmish");
         scenario("X1CA_001", "X1CA_001", "campaign");
-        let pack = dir.join("mods").join(PACK_ID);
+        // (A scenario that does not read is said, not passed over in silence; a folder with none
+        // is no map.)
+        std::fs::create_dir_all(game.join("maps/BROKEN")).unwrap();
+        std::fs::write(game.join("maps/BROKEN/BROKEN_scenario.lua"), "ScenarioInfo = {{{").unwrap();
+        std::fs::create_dir_all(game.join("maps/notes")).unwrap();
+        // The pack where the installer put it, its first name taken: found by its id.
+        let mods = dir.join("mods");
+        std::fs::create_dir_all(mods.join(PACK_ID)).unwrap();
+        std::fs::write(mods.join(PACK_ID).join("mod.toml"), "id = \"someone-elses\"\nname = \"Not ours\"\n").unwrap();
+        let pack = mods.join(format!("{PACK_ID}-2"));
         std::fs::create_dir_all(pack.join("maps")).unwrap();
+        std::fs::write(pack.join("mod.toml"), format!("id = \"{PACK_ID}\"\nname = \"Supreme Commander maps\"\n")).unwrap();
         std::fs::write(pack.join("maps/Open Palms (SC).ota"), format!("[GlobalHeader]{{supcommap=SCMP_002;supcomversion={};}}", convert::VERSION)).unwrap();
         std::fs::write(pack.join("maps/Beta Fork (SC).ota"), "[GlobalHeader]{supcommap=scmp_003;supcomversion=0;}").unwrap();
-        let found = find(Some(&game), &pack);
+        assert_eq!(pack_dir(&mods), Some(pack.clone()));
+        let (found, previews) = find(Some(&game), pack_dir(&mods).as_deref());
         let listed: Vec<(&str, State)> = found.maps.iter().map(|e| (e.scenario.name.as_str(), e.state)).collect();
         assert_eq!(listed, [("Beta Fork", State::Outdated), ("Open Palms", State::Imported), ("Zulu Ridge", State::New)]);
         assert_eq!(found.install.as_ref().map(|i| i.root.clone()), Some(game.clone()));
         assert!(found.maps.iter().all(|e| !e.players_own && e.scenario.armies.len() == 2));
+        assert!(previews.is_empty(), "no map file, no picture");
+        assert_eq!(found.skipped.len(), 1, "{:?}", found.skipped);
+        assert!(found.skipped[0].starts_with("BROKEN: "), "{:?}", found.skipped);
+        assert!(found.error.is_none());
         // No game there: nothing to list, and said so.
-        let none = find(Some(&dir.join("elsewhere")), &pack);
+        let (none, _) = find(Some(&dir.join("elsewhere")), Some(&pack));
         assert!(none.maps.is_empty());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A map of the list, for the tests.
+    fn entry(folder: &str, players_own: bool, state: State) -> Entry {
+        let name = Path::new(folder).file_name().unwrap().to_string_lossy().into_owned();
+        Entry { folder: PathBuf::from(folder), players_own, scenario: Scenario { folder: name.clone(), name, ..Default::default() }, state }
+    }
+
+    fn chosen(import: &Import) -> Vec<String> {
+        import.chosen.iter().flatten().map(|f| f.to_string_lossy().replace('\\', "/")).collect()
+    }
+
+    /// At first the game's own maps not imported yet are chosen (not the player's own, perhaps
+    /// hundreds); after an import only what was not made stays chosen, and the look that follows
+    /// keeps the player's choice, even none at all; another copy of the game chooses afresh.
+    #[test]
+    fn the_first_choice_is_the_games_maps_and_an_import_leaves_what_was_not_made() {
+        use ta_supcom::install::Store;
+        let ctx = egui::Context::default();
+        let gog = Install { root: PathBuf::from("C:/Game"), store: Store::Gog };
+        let found = |install: &Install, states: [State; 3]| Found {
+            install: Some(install.clone()),
+            maps: vec![entry("C:/Game/maps/SCMP_001", false, states[0]), entry("C:/Game/maps/SCMP_002", false, states[1]), entry("C:/Game/maps/SCMP_003", false, states[2]),
+                entry("D:/Own/maps/mine.v0001", true, State::New)],
+            ..Default::default()
+        };
+        let mut import = Import { open: true, ..Default::default() };
+        import.pretend_found(found(&gog, [State::New, State::Imported, State::Outdated]), Previews::new());
+        import.poll(&ctx);
+        assert_eq!(chosen(&import), ["C:/Game/maps/SCMP_001", "C:/Game/maps/SCMP_003"]);
+        // The player adds their own map; it and SCMP_001 are made, SCMP_003 is not.
+        import.choose(Path::new("D:/Own/maps/mine.v0001"), true);
+        import.pretend_importing(&["scmp_001", "mine.v0001"]);
+        import.stop();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while import.poll(&ctx).is_none() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(chosen(&import), ["C:/Game/maps/SCMP_003"], "only what was not made stays chosen");
+        // The look after the import does not choose every map not imported again.
+        import.pretend_found(found(&gog, [State::Imported, State::Imported, State::Outdated]), Previews::new());
+        import.poll(&ctx);
+        assert_eq!(chosen(&import), ["C:/Game/maps/SCMP_003"]);
+        import.choose_all(false);
+        import.pretend_found(found(&gog, [State::New, State::New, State::New]), Previews::new());
+        import.poll(&ctx);
+        assert!(chosen(&import).is_empty(), "none chosen is the player's choice too");
+        import.choose_all(true);
+        assert_eq!(chosen(&import).len(), 4);
+        // Another copy of the game: its own maps not imported yet.
+        let steam = Install { root: PathBuf::from("C:/Steam/Game"), store: Store::Steam };
+        import.pretend_found(found(&steam, [State::Imported, State::New, State::Imported]), Previews::new());
+        import.poll(&ctx);
+        assert_eq!(chosen(&import), ["C:/Game/maps/SCMP_002"]);
+    }
+
+    /// The game's pictures are made small for the list, a player's map's picture too large to
+    /// read left out undecoded; each is uploaded once (its pixels let go of then), and all of them
+    /// are let go of when the dialog closes, a look that comes in meanwhile keeping none.
+    #[test]
+    fn map_pictures_are_bounded_made_small_and_let_go_of_with_the_dialog() {
+        let dir = std::env::temp_dir().join(format!("ta-supcom-pictures-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        // A map file holding a picture: an uncompressed DDS (BGRA, 32 bits) or a DXT1 one.
+        let map_file = |folder: &str, width: u32, height: u32, dxt1: bool| {
+            let mut dds = vec![0u8; 128];
+            let put = |dds: &mut Vec<u8>, at: usize, v: u32| dds[at..at + 4].copy_from_slice(&v.to_le_bytes());
+            dds[..4].copy_from_slice(b"DDS ");
+            put(&mut dds, 4, 124);
+            put(&mut dds, 12, height);
+            put(&mut dds, 16, width);
+            put(&mut dds, 28, 1);
+            put(&mut dds, 76, 32);
+            if dxt1 {
+                put(&mut dds, 80, 0x4);
+                dds[84..88].copy_from_slice(b"DXT1");
+                dds.resize(128 + (width as usize / 4) * (height as usize / 4) * 8, 0x55);
+            } else {
+                put(&mut dds, 80, 0x41);
+                for (at, mask) in [(88, 32), (92, 0x00ff_0000), (96, 0x0000_ff00), (100, 0x0000_00ff), (104, 0xff00_0000)] {
+                    put(&mut dds, at, mask);
+                }
+                // (Left half white, right half black; the alpha unset, as the game leaves it.)
+                for _y in 0..height {
+                    for x in 0..width {
+                        dds.extend_from_slice(if x < width / 2 { &[255, 255, 255, 0] } else { &[0, 0, 0, 0] });
+                    }
+                }
+            }
+            let f = dir.join(folder);
+            std::fs::create_dir_all(&f).unwrap();
+            let mut file = b"Map\x1a".to_vec();
+            file.extend_from_slice(&[0; 26]);
+            file.extend_from_slice(&(dds.len() as i32).to_le_bytes());
+            file.extend_from_slice(&dds);
+            for v in [60i32, 512, 512, 0] {
+                file.extend_from_slice(&v.to_le_bytes());
+            }
+            std::fs::write(f.join(format!("{folder}.scmap")), file).unwrap();
+            f
+        };
+        let game = map_file("SCMP_001", 256, 256, false);
+        let preview = preview_of(&game).expect("the game's picture");
+        assert_eq!(preview.size, [128, 128]);
+        assert_eq!((preview.pixels[0], preview.pixels[127]), (egui::Color32::WHITE, egui::Color32::BLACK), "opaque, halves kept");
+        let wide = map_file("wide.v0001", 64, 16, false);
+        assert_eq!(preview_of(&wide).unwrap().size, [64, 16], "a small picture is not made larger");
+        let huge = map_file("huge.v0001", 4096, 2048, true);
+        assert!(preview_of(&huge).is_none(), "a picture far larger than the list's is not decoded");
+        // Uploaded once, and its pixels let go of; all let go of when the dialog closes.
+        let ctx = egui::Context::default();
+        let mut import = Import { open: true, ..Default::default() };
+        let previews: Previews = [(game.clone(), preview.clone()), (wide.clone(), preview.clone())].into();
+        import.pretend_found(Found { maps: vec![entry("SCMP_001", false, State::New)], ..Default::default() }, previews.clone());
+        import.poll(&ctx);
+        assert_eq!(import.pictures_held(), (2, 0));
+        let texture = import.texture(&ctx, &game).expect("its texture");
+        assert_eq!(import.texture(&ctx, &game).map(|t| t.id()), Some(texture.id()), "made once");
+        assert_eq!(import.pictures_held(), (1, 1));
+        import.open = false;
+        import.poll(&ctx);
+        assert_eq!(import.pictures_held(), (0, 0), "closed, the dialog holds no picture");
+        import.pretend_found(Found::default(), previews);
+        import.poll(&ctx);
+        assert_eq!(import.pictures_held(), (0, 0), "nor from a look that came in meanwhile");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// An import is told as it went: every map made, some not (amber, not green), none made or
+    /// the import failed (red), a stop before any map was made (no notice).
+    #[test]
+    fn an_import_is_told_as_it_went() {
+        let failed = || vec![("Seton's Clutch".to_string(), "It could not be made into a TA map: bad".to_string())];
+        let well = Outcome { imported: vec!["Open Palms".into()], ..Default::default() };
+        let partly = Outcome { imported: vec!["Open Palms".into()], failed: failed(), ..Default::default() };
+        let badly = Outcome { failed: failed(), ..Default::default() };
+        let broken = Outcome { error: Some("disk full".into()), ..Default::default() };
+        let nothing = Outcome { stopped: true, ..Default::default() };
+        assert_eq!([&well, &partly, &badly, &broken, &nothing].map(Outcome::went), [Went::Well, Went::Partly, Went::Badly, Went::Badly, Went::Nothing]);
+        assert_eq!(partly.went().colour(), crate::theme::AMBER);
+        assert!(partly.notice().unwrap().contains("but 1 could not be made"));
+        assert!(badly.notice().unwrap().starts_with("None of the 1 Supreme Commander maps"));
+        assert!(broken.notice().unwrap().ends_with("disk full") && broken.summary().ends_with("disk full"));
+        assert!(nothing.notice().is_none());
+        assert!(well.notice().unwrap().starts_with("Imported 1 Supreme Commander maps"));
     }
 
     /// With GOG's and Steam's copies both found: the first in use unless one is picked, a copy
@@ -584,7 +983,7 @@ mod tests {
     fn sizes_are_told_as_the_game_tells_them() {
         let s = Scenario { size: (1024, 1024), ..Default::default() };
         assert_eq!(km(&s), "20 km");
-        let e = Entry { folder: PathBuf::new(), players_own: false, scenario: s, preview: None, state: State::New };
+        let e = Entry { folder: PathBuf::new(), players_own: false, scenario: s, state: State::New };
         assert_eq!(size_estimate(&[&e, &e]), 54_000_000);
     }
 }

@@ -66,6 +66,73 @@ pub struct Profile {
 pub const MAX_MOTTO_CHARS: usize = 60;
 pub const MAX_SHOWCASE: usize = 5;
 
+/// What a change to a profile was refused for, for the interface to tell the player in their
+/// language: [`Problem::of`] finds it in the error returned. Its English ([`Problem::message`]) is
+/// the error's own words, for the log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Problem {
+    /// Another commander on this device has that name (whatever its capitals).
+    NameTaken,
+    /// The name is empty, longer than 24 characters, or has characters that cannot be shown.
+    BadName,
+    /// The motto is longer than [`MAX_MOTTO_CHARS`] or has characters that cannot be shown.
+    BadMotto,
+    /// The device keeps as many profiles as it can.
+    TooManyProfiles,
+    /// More than [`MAX_SHOWCASE`] achievements to show, an unknown one, or one twice.
+    BadShowcase,
+    /// The picture is not a PNG or a JPEG.
+    PictureFormat,
+    /// The picture's file is empty or larger than 16 MiB.
+    PictureSize,
+    /// The picture could not be decoded: damaged, or too many pixels.
+    PictureDamaged,
+}
+
+impl Problem {
+    /// Its words in English: the error's own, for the log (the interface says it by kind).
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::NameTaken => "a profile with this name already exists",
+            Self::BadName => "profile name must contain 1 to 24 visible characters",
+            Self::BadMotto => "a motto has at most 60 visible characters",
+            Self::TooManyProfiles => "profile limit reached",
+            Self::BadShowcase => "a profile shows up to five different achievements",
+            Self::PictureFormat => "profile picture must be a PNG or JPEG",
+            Self::PictureSize => "profile picture exceeds the 16 MiB limit",
+            Self::PictureDamaged => "profile picture could not be decoded",
+        }
+    }
+
+    /// What `error` was refused for, when it is one of these.
+    pub fn of(error: &io::Error) -> Option<Problem> {
+        error.get_ref()?.downcast_ref::<Refused>().map(|refused| refused.0)
+    }
+}
+
+/// A [`Problem`] as an error.
+#[derive(Debug)]
+struct Refused(Problem);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.0.message()) }
+}
+
+impl std::error::Error for Refused {}
+
+fn refuse(problem: Problem) -> io::Error { io::Error::new(io::ErrorKind::InvalidData, Refused(problem)) }
+
+/// A profile's folder whose profile cannot be read (its file damaged, or of a newer version):
+/// kept as it is, and listed apart, for the player to put right or remove.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unreadable {
+    pub id: String,
+    /// The commander's folder: their settings, saved games, replays and career are in it.
+    pub folder: PathBuf,
+    /// Why it cannot be read: the file's or the system's own words.
+    pub error: String,
+}
+
 /// A recorded activity's actual mode. Unknown preserves pre-career history without
 /// guessing that a legacy battle was a skirmish or multiplayer game.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -846,20 +913,21 @@ impl ProfileStore {
     }
 
     /// A chooser can still offer healthy identities when an unrelated profile is
-    /// damaged. Writers use the strict list above so unread names cannot bypass
-    /// uniqueness checks. Warnings identify skipped profiles without modifying them.
-    pub fn list_available(&self) -> io::Result<(Vec<Profile>, Vec<String>)> {
+    /// damaged: those that cannot be read come apart, with their folders, unmodified.
+    /// (Writers compare names with the readable ones: a damaged profile keeps no name
+    /// from a new or renamed commander, and never blocks them.)
+    pub fn list_available(&self) -> io::Result<(Vec<Profile>, Vec<Unreadable>)> {
         self.scan_profiles(true)
     }
 
-    fn scan_profiles(&self, skip_invalid: bool) -> io::Result<(Vec<Profile>, Vec<String>)> {
+    fn scan_profiles(&self, skip_invalid: bool) -> io::Result<(Vec<Profile>, Vec<Unreadable>)> {
         let entries = match fs::read_dir(self.profiles_dir()?) {
             Ok(entries) => entries,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok((Vec::new(), Vec::new())),
             Err(e) => return Err(e),
         };
         let mut profiles = Vec::new();
-        let mut warnings = Vec::new();
+        let mut unreadable = Vec::new();
         for (n, entry) in entries.enumerate() {
             if n >= MAX_PROFILES * 4 { return Err(invalid("too many profile folders")); }
             let entry = entry?;
@@ -872,13 +940,14 @@ impl ProfileStore {
             match result {
                 Ok(Some(profile)) => profiles.push(profile),
                 Ok(None) => continue,
-                Err(error) if skip_invalid => warnings.push(format!("{}: {error}", entry.path().display())),
+                Err(error) if skip_invalid => unreadable.push(Unreadable { id, folder: entry.path(), error: error.to_string() }),
                 Err(error) => return Err(error),
             }
             if profiles.len() > MAX_PROFILES { return Err(invalid("too many profiles")); }
         }
         profiles.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.name.cmp(&b.name)).then_with(|| a.id.cmp(&b.id)));
-        Ok((profiles, warnings))
+        unreadable.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok((profiles, unreadable))
     }
 
     pub fn active(&self) -> io::Result<Option<Profile>> {
@@ -973,9 +1042,11 @@ impl ProfileStore {
         // written, never a source path or unchecked original image.
         let avatar = avatar.map(normalize_avatar).transpose()?;
         let _lock = self.lock()?;
-        let profiles = self.list()?;
-        if profiles.len() >= MAX_PROFILES { return Err(invalid("profile limit reached")); }
-        if profiles.iter().any(|p| same_name(&p.name, &name)) { return Err(invalid("a profile with this name already exists")); }
+        // (Names are compared with the readable profiles: another's damaged file never blocks a
+        // new commander. Its folder still counts toward the device's profiles.)
+        let (profiles, unreadable) = self.scan_profiles(true)?;
+        if profiles.len() + unreadable.len() >= MAX_PROFILES { return Err(refuse(Problem::TooManyProfiles)); }
+        if profiles.iter().any(|p| same_name(&p.name, &name)) { return Err(refuse(Problem::NameTaken)); }
         // Never reset an unreadable active selection while creating another profile.
         self.selection()?;
         fs::create_dir_all(self.profiles_dir()?)?;
@@ -988,10 +1059,9 @@ impl ProfileStore {
                 Err(e) => return Err(e),
             }
         };
-        let mut config = seed.clone();
-        config.gameplay.player_name = name.clone();
-        config.save_to(&dir.join(crate::CONFIG_FILE))?;
-        let inherited_avatar = if profiles.is_empty() { copy_legacy(&self.root, &dir)? } else { false };
+        new_commander_settings(seed, &name).save_to(&dir.join(crate::CONFIG_FILE))?;
+        // (Legacy files go to the device's first profile only: one that cannot be read was it.)
+        let inherited_avatar = if profiles.is_empty() && unreadable.is_empty() { copy_legacy(&self.root, &dir)? } else { false };
         if let Some(bytes) = &avatar { write_bytes(&dir.join("portrait.png"), bytes)?; }
         let profile = Profile { id, name, allegiance, has_avatar: avatar.is_some() || inherited_avatar, created_at: unix_time(), ..Default::default() };
         // Publish metadata last. Before this point, list() ignores incomplete folders.
@@ -1004,11 +1074,18 @@ impl ProfileStore {
         let name = clean_name(name)?;
         let _lock = self.lock()?;
         let mut profile = self.get(id)?;
-        if self.list()?.iter().any(|p| p.id != id && same_name(&p.name, &name)) { return Err(invalid("a profile with this name already exists")); }
+        // (Only a new name is compared with the others', and with the readable ones: a motto, a
+        // picture or an allegiance never waits on another commander's files.)
+        if !same_name(&profile.name, &name)
+            && self.scan_profiles(true)?.0.iter().any(|p| p.id != id && same_name(&p.name, &name)) {
+            return Err(refuse(Problem::NameTaken));
+        }
         let path = self.config_path(id)?;
         let mut config = Config::try_load_from(&path).map_err(|e| io::Error::other(e.to_string()))?;
-        config.gameplay.player_name = name.clone();
-        config.save_keeping_launcher(&path)?;
+        if config.gameplay.player_name != name {
+            config.gameplay.player_name = name.clone();
+            config.save_keeping_launcher(&path)?;
+        }
         profile.name = name;
         profile.allegiance = allegiance;
         write_toml(&self.unchecked_dir(id)?.join(PROFILE_FILE), &profile)?;
@@ -1029,7 +1106,7 @@ impl ProfileStore {
 
     /// Sets the achievements shown on the profile, in order (known ones, at most [`MAX_SHOWCASE`]).
     pub fn set_showcase(&self, id: &str, showcase: &[String]) -> io::Result<Profile> {
-        if !valid_showcase(showcase) { return Err(invalid("a profile shows up to five different achievements")); }
+        if !valid_showcase(showcase) { return Err(refuse(Problem::BadShowcase)); }
         let _lock = self.lock()?;
         let mut profile = self.get(id)?;
         profile.showcase = showcase.to_vec();
@@ -1038,10 +1115,13 @@ impl ProfileStore {
     }
 
     /// Lets go of a profile about to be removed: it is no longer the one chosen. Returns its
-    /// folder, for the caller to move to the Recycle Bin (none of it is deleted here).
+    /// folder, for the caller to move to the Recycle Bin (none of it is deleted here). One that
+    /// cannot be read ([`ProfileStore::list_available`]) can be let go too: its folder is checked
+    /// as any other's (a profile's own, no link).
     pub fn release(&self, id: &str) -> io::Result<PathBuf> {
         let _lock = self.lock()?;
-        let dir = self.data_dir(id)?;
+        let dir = self.unchecked_dir(id)?;
+        if !dir.is_dir() { return Err(io::Error::new(io::ErrorKind::NotFound, "no such profile")); }
         if self.selection()?.active.as_deref() == Some(id) {
             write_toml(&self.root.join("profiles.toml"), &Selection { version: VERSION, active: None })?;
         }
@@ -1104,6 +1184,42 @@ impl ProfileStore {
     pub fn career_with_history(&self, id: &str) -> io::Result<(Career, Vec<MatchRecord>)> {
         let ledger = self.ledger(id)?;
         Ok((ledger.career, match_history(ledger.matches)))
+    }
+
+    /// The career, once what it has met is unlocked ([`ProfileStore::refresh_achievements`]):
+    /// both from one read of the file. Returns the career and the achievements unlocked now.
+    pub fn career_refreshed(&self, id: &str) -> io::Result<(Career, Vec<String>)> {
+        let _lock = self.lock()?;
+        let mut ledger = self.ledger(id)?;
+        if ledger.career.pending().is_empty() { return Ok((ledger.career, Vec::new())); }
+        let (unlocked, _) = ledger.career.unlock_all_met(None, None);
+        write_toml_limited(&self.data_dir(id)?.join(CAREER_FILE), &ledger, MAX_CAREER_FILE)?;
+        Ok((ledger.career, unlocked))
+    }
+
+    /// A career that cannot be read put aside, for a fresh one to begin: `career.toml` renamed
+    /// `career.damaged-<when>.toml` in the profile's folder, and the pictures of its achievements'
+    /// moments with it (`achievements.damaged-<when>`), so that the new career's are its own.
+    /// Nothing is deleted. Returns the file's new name; None, and nothing done, when the career
+    /// reads after all (put right meanwhile) or there is none.
+    pub fn set_aside_career(&self, id: &str) -> io::Result<Option<String>> {
+        let _lock = self.lock()?;
+        let dir = self.data_dir(id)?;
+        let path = dir.join(CAREER_FILE);
+        let pictures = dir.join(ACHIEVEMENT_PICTURES);
+        reject_link(&path)?;
+        reject_link(&pictures)?;
+        if !path.exists() || self.ledger(id).is_ok() { return Ok(None); }
+        let stamp = unix_time();
+        let (file, folder) = (0..1000).map(|n| if n == 0 { stamp.to_string() } else { format!("{stamp}-{n}") })
+            .map(|when| (format!("career.damaged-{when}.toml"), format!("{ACHIEVEMENT_PICTURES}.damaged-{when}")))
+            .find(|(file, folder)| !dir.join(file).exists() && !dir.join(folder).exists())
+            .ok_or_else(|| invalid("too many careers set aside"))?;
+        fs::rename(&path, dir.join(&file))?;
+        if pictures.is_dir() && let Err(error) = fs::rename(&pictures, dir.join(&folder)) {
+            log::warn!("the damaged career's achievement pictures stay where they are: {error}");
+        }
+        Ok(Some(file))
     }
 
     /// Insert historical counters without awarding them. Existing entries are untouched.
@@ -1279,12 +1395,7 @@ impl ProfileStore {
     /// Unlocks what the career has already met: after an update brought achievements that
     /// earlier play earns (the launcher and the game ask on opening a profile). Returns them.
     pub fn refresh_achievements(&self, id: &str) -> io::Result<Vec<String>> {
-        let _lock = self.lock()?;
-        let mut ledger = self.ledger(id)?;
-        if ledger.career.pending().is_empty() { return Ok(Vec::new()); }
-        let (unlocked, _) = ledger.career.unlock_all_met(None, None);
-        write_toml_limited(&self.data_dir(id)?.join(CAREER_FILE), &ledger, MAX_CAREER_FILE)?;
-        Ok(unlocked)
+        self.career_refreshed(id).map(|(_, unlocked)| unlocked)
     }
 
     /// Where the picture of an achievement's moment is kept (a JPEG): `achievements/<id>.jpg`
@@ -1401,7 +1512,6 @@ pub fn new_id() -> String {
 fn unix_time() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs().min(i64::MAX as u64) }
 fn valid_id(id: &str) -> bool { id.len() == 32 && id.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) }
 fn valid_match_id(id: &str) -> bool { !id.is_empty() && id.len() <= 96 && id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') }
-fn same_name(a: &str, b: &str) -> bool { a.to_lowercase() == b.to_lowercase() }
 fn invalid(message: &str) -> io::Error { io::Error::new(io::ErrorKind::InvalidData, message) }
 
 /// Normalizes a display name; paths always use an unrelated generated identity.
@@ -1409,9 +1519,29 @@ pub fn clean_name(name: &str) -> io::Result<String> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > MAX_NAME_CHARS || name.len() > 128
         || name.chars().any(|c| c.is_control() || ('\u{202a}'..='\u{202e}').contains(&c) || ('\u{2066}'..='\u{2069}').contains(&c)) {
-        return Err(invalid("profile name must contain 1 to 24 visible characters"));
+        return Err(refuse(Problem::BadName));
     }
     Ok(name.to_owned())
+}
+
+/// Whether two names are one to the profiles (whatever their capitals): a name another
+/// commander has cannot be taken.
+pub fn same_name(a: &str, b: &str) -> bool { a.to_lowercase() == b.to_lowercase() }
+
+/// A new commander's settings: the device's as `seed` has them (the graphics, the sound, the
+/// keys, the game folder, the mods), under their own `name`, and none of the commander's own
+/// whose they were: the multiplayer games joined lately and the address typed last, the battle
+/// name hosted under, the coach's advice put away.
+fn new_commander_settings(seed: &Config, name: &str) -> Config {
+    let fresh = crate::Gameplay::default();
+    let mut config = seed.clone();
+    let p = &mut config.gameplay;
+    p.player_name = name.to_owned();
+    p.recent_games = fresh.recent_games;
+    p.join_address = fresh.join_address;
+    p.host_title = fresh.host_title;
+    p.coach_muted = fresh.coach_muted;
+    config
 }
 
 /// A motto as kept: trimmed, at most [`MAX_MOTTO_CHARS`], no control or direction characters.
@@ -1419,7 +1549,7 @@ pub fn clean_motto(motto: &str) -> io::Result<String> {
     let motto = motto.trim();
     if motto.chars().count() > MAX_MOTTO_CHARS || motto.len() > 4 * MAX_MOTTO_CHARS
         || motto.chars().any(|c| c.is_control() || ('\u{202a}'..='\u{202e}').contains(&c) || ('\u{2066}'..='\u{2069}').contains(&c)) {
-        return Err(invalid("a motto has at most 60 visible characters"));
+        return Err(refuse(Problem::BadMotto));
     }
     Ok(motto.to_owned())
 }
@@ -1440,15 +1570,18 @@ fn valid_showcase(showcase: &[String]) -> bool {
 
 /// Bounded PNG/JPEG import, cropped to a square and stored as a 256-pixel PNG.
 pub fn normalize_avatar(bytes: &[u8]) -> io::Result<Vec<u8>> {
-    if bytes.is_empty() || bytes.len() > MAX_AVATAR_INPUT { return Err(invalid("profile picture exceeds the 16 MiB limit")); }
+    if bytes.is_empty() || bytes.len() > MAX_AVATAR_INPUT { return Err(refuse(Problem::PictureSize)); }
     let mut reader = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format().map_err(io::Error::other)?;
-    if !matches!(reader.format(), Some(image::ImageFormat::Png | image::ImageFormat::Jpeg)) { return Err(invalid("profile picture must be a PNG or JPEG")); }
+    if !matches!(reader.format(), Some(image::ImageFormat::Png | image::ImageFormat::Jpeg)) { return Err(refuse(Problem::PictureFormat)); }
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(8192);
     limits.max_image_height = Some(8192);
     limits.max_alloc = Some(128 * 1024 * 1024);
     reader.limits(limits);
-    let image = reader.decode().map_err(io::Error::other)?;
+    let image = reader.decode().map_err(|error| {
+        log::warn!("profile picture: {error}");
+        refuse(Problem::PictureDamaged)
+    })?;
     let avatar = image.resize_to_fill(256, 256, image::imageops::FilterType::Lanczos3).to_rgba8();
     let mut output = Cursor::new(Vec::new());
     image::DynamicImage::ImageRgba8(avatar).write_to(&mut output, image::ImageFormat::Png).map_err(io::Error::other)?;
@@ -1625,8 +1758,10 @@ mod tests {
         assert_eq!(reopened.career(&a.id).unwrap().xp, 30);
     }
 
+    /// A commander whose profile.toml is damaged is listed apart, with their folder, and blocks no
+    /// other: editing, renaming and making profiles compare names with the readable ones.
     #[test]
-    fn chooser_isolates_invalid_profiles_without_relaxing_writer_validation() {
+    fn a_damaged_profile_is_listed_apart_and_blocks_no_other_commander() {
         let root = TestRoot::new();
         let store = root.store();
         let healthy = create(&store, "Healthy");
@@ -1636,20 +1771,116 @@ mod tests {
         let original = fs::read(&path).unwrap();
         fs::write(&path, "name = [broken metadata").unwrap();
 
-        let (available, warnings) = store.list_available().unwrap();
+        let (available, unreadable) = store.list_available().unwrap();
         assert_eq!(available, [healthy.clone()]);
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains(&damaged.id));
+        assert_eq!(unreadable.len(), 1);
+        assert_eq!((unreadable[0].id.as_str(), unreadable[0].folder.as_path()), (damaged.id.as_str(), path.parent().unwrap()));
+        assert!(unreadable[0].error.contains("TOML"), "{}", unreadable[0].error);
         assert_eq!(store.active().unwrap(), Some(healthy.clone()));
-        assert!(store.list().is_err(), "writers still need every identity for uniqueness checks");
-        assert!(store.create("New", Allegiance::Arm, None, &Config::default()).is_err());
-        assert!(store.update(&healthy.id, "Renamed", Allegiance::Arm).is_err());
-        assert_eq!(fs::read_to_string(&path).unwrap(), "name = [broken metadata");
+        assert!(store.list().is_err(), "the strict list still reads every identity");
+        let edited = store.update(&healthy.id, "Healthy", Allegiance::Core).unwrap();
+        assert_eq!((edited.name.as_str(), edited.allegiance), ("Healthy", Allegiance::Core), "an edit keeping the name");
+        assert_eq!(store.update(&healthy.id, "Renamed", Allegiance::Core).unwrap().name, "Renamed");
+        let new = store.create("New", Allegiance::Arm, None, &Config::default()).unwrap();
+        assert!(!store.data_dir(&new.id).unwrap().join("progress.toml").exists());
+        assert_eq!(Problem::of(&store.create("renamed", Allegiance::Arm, None, &Config::default()).unwrap_err()), Some(Problem::NameTaken));
+        assert_eq!(Problem::of(&store.update(&new.id, "RENAMED", Allegiance::Arm).unwrap_err()), Some(Problem::NameTaken));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "name = [broken metadata", "the damaged file is left as it is");
 
         fs::write(&path, original).unwrap();
-        let (available, warnings) = store.list_available().unwrap();
-        assert_eq!(available.len(), 2);
-        assert!(warnings.is_empty(), "a repaired identity returns to the chooser");
+        let (available, unreadable) = store.list_available().unwrap();
+        assert_eq!(available.len(), 3);
+        assert!(unreadable.is_empty(), "a repaired identity returns to the chooser");
+    }
+
+    #[test]
+    fn refusals_say_what_they_were_for() {
+        let root = TestRoot::new();
+        let store = root.store();
+        let p = create(&store, "Player");
+        let problem = |result: io::Result<Profile>| Problem::of(&result.unwrap_err());
+        assert_eq!(problem(store.create(" ", Allegiance::Arm, None, &Config::default())), Some(Problem::BadName));
+        assert_eq!(problem(store.create("PLAYER", Allegiance::Arm, None, &Config::default())), Some(Problem::NameTaken));
+        assert_eq!(problem(store.set_motto(&p.id, &"x".repeat(61))), Some(Problem::BadMotto));
+        assert_eq!(problem(store.set_showcase(&p.id, &["rank_2".to_string(), "rank_2".to_string()])), Some(Problem::BadShowcase));
+        assert_eq!(problem(store.set_avatar(&p.id, b"")), Some(Problem::PictureSize));
+        assert_eq!(problem(store.set_avatar(&p.id, b"GIF89a not a picture of ours")), Some(Problem::PictureFormat));
+        assert_eq!(problem(store.set_avatar(&p.id, &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0])), Some(Problem::PictureDamaged));
+        let error = store.create("", Allegiance::Arm, None, &Config::default()).unwrap_err();
+        assert_eq!(error.to_string(), Problem::BadName.message(), "the log keeps the English");
+        assert_eq!(Problem::of(&io::Error::other("anything else")), None);
+        // (The device's other profiles, written as the store writes them; the last one damaged:
+        // it counts too.)
+        for n in 1..MAX_PROFILES {
+            let id = new_id();
+            let dir = root.0.join("profiles").join(&id);
+            fs::create_dir_all(&dir).unwrap();
+            let text = if n + 1 == MAX_PROFILES { "damaged = [".to_string() }
+                else { format!("id = \"{id}\"\nname = \"Player {n}\"\nallegiance = \"ARM\"\nhas_avatar = false\ncreated_at = {n}\n") };
+            fs::write(dir.join(PROFILE_FILE), text).unwrap();
+        }
+        assert_eq!(problem(store.create("One too many", Allegiance::Arm, None, &Config::default())), Some(Problem::TooManyProfiles));
+    }
+
+    /// A new commander takes the device's settings, not the other commander's own: the games
+    /// joined lately, the address typed last, the battle hosted, the advice put away.
+    #[test]
+    fn a_new_commander_starts_with_the_settings_but_not_the_last_ones_history() {
+        let root = TestRoot::new();
+        let store = root.store();
+        let mut seed = Config::default();
+        seed.audio.music = 0.3;
+        seed.gameplay.host_port = 7000;
+        seed.gameplay.recent_games = vec![crate::RecentGame { address: "10.0.0.2:7777".into(), title: "Friday".into() }];
+        seed.gameplay.join_address = "10.0.0.2:7777".into();
+        seed.gameplay.host_title = "Alex's battle".into();
+        seed.gameplay.coach_muted = vec!["metal_dry".into()];
+        let p = store.create("Sam", Allegiance::Core, None, &seed).unwrap();
+        let config = Config::try_load_from(&store.config_path(&p.id).unwrap()).unwrap();
+        assert_eq!((config.audio.music, config.gameplay.host_port, config.gameplay.player_name.as_str()), (0.3, 7000, "Sam"));
+        assert!(config.gameplay.recent_games.is_empty() && config.gameplay.join_address.is_empty());
+        assert!(config.gameplay.host_title.is_empty() && config.gameplay.coach_muted.is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_profile_can_be_let_go_and_nothing_else() {
+        let root = TestRoot::new();
+        let store = root.store();
+        let healthy = create(&store, "Healthy");
+        let damaged = create(&store, "Damaged");
+        let folder = store.data_dir(&damaged.id).unwrap();
+        store.select(&healthy.id).unwrap();
+        fs::write(folder.join(PROFILE_FILE), "name = [broken metadata").unwrap();
+        assert_eq!(store.release(&damaged.id).unwrap(), folder);
+        assert!(folder.exists(), "nothing is deleted here");
+        assert!(store.release(&new_id()).is_err(), "no such folder");
+        assert!(store.release("../outside").is_err());
+        assert_eq!(store.active().unwrap().unwrap().id, healthy.id, "another commander stays chosen");
+    }
+
+    #[test]
+    fn a_damaged_career_is_set_aside_whole_and_a_fresh_one_begins() {
+        let root = TestRoot::new();
+        let store = root.store();
+        let p = create(&store, "Veteran");
+        store.award(&p.id, "match", &MatchCounters { kills: 2, ..Default::default() }).unwrap();
+        assert_eq!(store.set_aside_career(&p.id).unwrap(), None, "a career that reads is left as it is");
+        assert_eq!(store.career(&p.id).unwrap().kills, 2);
+        store.save_achievement_picture(&p.id, &["career_kills_1".into()], &[0xff, 0xd8, 1]).unwrap();
+        let dir = store.data_dir(&p.id).unwrap();
+        fs::write(dir.join(CAREER_FILE), "version = [broken").unwrap();
+        assert!(store.career(&p.id).is_err());
+        let file = store.set_aside_career(&p.id).unwrap().unwrap();
+        assert!(file.starts_with("career.damaged-") && file.ends_with(".toml"), "{file}");
+        assert_eq!(fs::read_to_string(dir.join(&file)).unwrap(), "version = [broken", "kept as it was");
+        assert_eq!(store.career(&p.id).unwrap(), Career::default(), "a fresh career begins");
+        assert!(store.achievement_pictures(&p.id).unwrap().is_empty(), "the old career's pictures went with it");
+        let when = file.trim_start_matches("career.damaged-").trim_end_matches(".toml");
+        assert!(dir.join(format!("achievements.damaged-{when}")).join("career_kills_1.jpg").exists());
+        fs::write(dir.join(CAREER_FILE), "broken = [again").unwrap();
+        let second = store.set_aside_career(&p.id).unwrap().unwrap();
+        assert_ne!(second, file, "an earlier one set aside is never replaced");
+        assert!(dir.join(&file).exists() && dir.join(&second).exists());
     }
 
     #[test]
@@ -2263,8 +2494,9 @@ mod tests {
         assert_eq!(career.achievements.keys().map(String::as_str).collect::<Vec<_>>(), ["career_kills_1", "career_kills_100"]);
         assert_eq!(career.achievements["career_kills_1"], 100, "a kept achievement keeps its date");
         // 1,200 kills earned the new list's 1,000 already: it comes from the service record.
-        assert_eq!(store.refresh_achievements(&p.id).unwrap(), ["career_kills_1000", "career_built_1", "rank_2"]);
-        let career = store.career(&p.id).unwrap();
+        let (career, unlocked) = store.career_refreshed(&p.id).unwrap();
+        assert_eq!(unlocked, ["career_kills_1000", "career_built_1", "rank_2"]);
+        assert_eq!(career, store.career(&p.id).unwrap(), "the career returned is the one written");
         assert!(career.unlocks["career_kills_1000"].earlier);
         assert!(fs::read_to_string(&path).unwrap().starts_with(&format!("version = {CAREER_VERSION}")));
         assert!(store.refresh_achievements(&p.id).unwrap().is_empty(), "nothing is unlocked twice");
