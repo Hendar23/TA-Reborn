@@ -157,6 +157,48 @@ fn idle_turrets_retarget_after_an_enemy_leaves_firing_range() {
     }
 }
 
+/// A lone enemy that steps just past a turret's reach and comes back is fired on as it comes back
+/// into reach: the turret keeps it while it looks round for another (it found none), not passed
+/// over for the two seconds (`BLOCKED_TICKS`) a target it cannot hit is.
+#[test]
+fn a_lone_enemy_back_in_reach_is_fired_on_at_once() {
+    let mut sim = game_of(&[
+        ("GUN", "Weapon1=LASER;"),
+        ("TARGET", "CanMove=1; MaxVelocity=3; Acceleration=3; BrakeRate=3; TurnRate=30000; Category=TARGET;"),
+    ]);
+    sim.los_enabled = false;
+    let gun = spawn(&mut sim, "GUN", 0, 200, 300);
+    let enemy = spawn(&mut sim, "TARGET", 1, 520, 300);
+    sim.unit_mut(enemy).unwrap().fire_state = 0;
+    let fired = |sim: &mut Sim| sim.take_events().iter().any(|e| matches!(e, SimEvent::WeaponFired { unit, .. } if *unit == gun));
+    let mut shots = 0;
+    for _ in 0..30 {
+        sim.step(&[]);
+        shots += u32::from(fired(&mut sim));
+    }
+    assert!(shots > 0, "fired on in reach");
+    // Past its reach (the laser's 400 and the target's size), within what it keeps a target to.
+    let order = |x: i64| crate::Command::Order { player: 1, units: vec![enemy], order: Order::Move(FxVec3::from_ints(x, 0, 300)), queue: false };
+    sim.step(&[order(630)]);
+    for _ in 0..90 {
+        if sim.unit(enemy).unwrap().pos.x > Fx::from_int(625) { break; }
+        sim.step(&[]);
+        fired(&mut sim);
+    }
+    assert!(sim.unit(enemy).unwrap().pos.x > Fx::from_int(625), "past reach");
+    for _ in 0..10 {
+        sim.step(&[]);
+        assert!(!fired(&mut sim), "never fired on past its reach");
+    }
+    assert_eq!(sim.unit(gun).unwrap().weapons[0].target, Some(Target::Unit(enemy)), "kept, there being no other");
+    sim.step(&[order(520)]);
+    let back = (0..60).position(|_| {
+        sim.step(&[]);
+        fired(&mut sim)
+    });
+    assert!(back.is_some_and(|ticks| ticks <= 15), "fired on as it came back, not {back:?} ticks after");
+}
+
 #[test]
 fn attack_move_closes_on_a_retained_target_outside_firing_range() {
     let mut sim = game_of(&[

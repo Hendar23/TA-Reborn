@@ -560,12 +560,24 @@ impl Sim {
                 Some(Target::Unit(tid)) if forced != target => self.unit(tid).is_some_and(|tu| self.bad_target(t.id, slot, tu)) && !self.players.get(owner as usize).is_some_and(|p| p.shoot_all),
                 _ => false,
             };
-            if available[slot] && (target.is_none() || on_bad) && (!w.command_fire || roving_bombs) && fire_state >= 2 && (self.tick + id.slot as u64).is_multiple_of(RETARGET_TICKS) {
+            // An automatic target kept past what the weapon can fire on (it is kept a little past
+            // the weapon's range, `Sim::target_valid`, as it moves about): a look round too, for
+            // one in reach, which it turns to, bad or not. With none it is kept, and fired on the
+            // moment it comes back into reach. (An ordered target is the order's; a roving
+            // bomber's runs keep theirs.)
+            let past_reach = match target {
+                Some(tg) if forced != Some(tg) && !roving_bombs => self.weapon_target_point(w, tg).is_none_or(|tp| {
+                    let from = self.aim_from_point(id, slot);
+                    from.distance_xz(tp) > w.range + self.target_radius(tg) || self.launch_pitch(w, tp - from).is_none()
+                }),
+                _ => false,
+            };
+            if available[slot] && (target.is_none() || on_bad || past_reach) && (!w.command_fire || roving_bombs) && fire_state >= 2 && (self.tick + id.slot as u64).is_multiple_of(RETARGET_TICKS) {
                 let tick = self.tick;
                 let skip = self.unit(id).and_then(|u| u.weapons[slot].blocked).filter(|&(_, until)| tick < until).map(|(t, _)| t);
                 let reach = if roving_bombs { self.bomber_lookout(t).min(w.range) } else { w.range };
                 let found = self.find_target(id, slot, w, owner, skip, reach);
-                if target.is_none() || matches!(found, Some(Target::Unit(tid)) if self.unit(tid).is_some_and(|tu| !self.bad_target(t.id, slot, tu))) {
+                if target.is_none() || past_reach && found.is_some() || matches!(found, Some(Target::Unit(tid)) if self.unit(tid).is_some_and(|tu| !self.bad_target(t.id, slot, tu))) {
                     target = found;
                 }
             }
@@ -588,7 +600,7 @@ impl Sim {
             let from = self.aim_from_point(id, slot);
             let dist = from.distance_xz(tp);
             let reach = w.range + self.target_radius(target);
-            if forced == Some(target) && dist > reach + Fx::from_int(16) {
+            if dist > reach + Fx::from_int(16) {
                 continue;
             }
             // Heading relative to the body; pitch from a ballistic solution when needed.
@@ -597,7 +609,7 @@ impl Sim {
             // Under the water only torpedoes and depth charges reach (an ordered target is
             // left to the order: the unit has nothing to hit it with).
             let under = matches!(target, Target::Unit(tid) if !w.water && self.unit(tid).is_some_and(|tu| self.submerged(tu)));
-            let pitch = if under || forced != Some(target) && dist > reach { None } else { self.launch_pitch(w, to) };
+            let pitch = if under { None } else { self.launch_pitch(w, to) };
             let Some(pitch) = pitch else {
                 // Out of the shells' reach (or under the water): an automatic target is passed
                 // over for a while, for one it can hit.
