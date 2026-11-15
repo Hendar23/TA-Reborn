@@ -7718,6 +7718,9 @@ impl State {
         }
         let battle = self.screen == Screen::Playing;
         let key = self.game.keys.text("companion").to_string();
+        // (Its HUD a HUD of its own: the theme's pictures behind its plates too, or none, as the
+        // main one's are this frame.)
+        companion.hud.theme_textures = self.theme_applied.textures.clone();
         let (game, camera, vfs) = (&mut self.game, &mut self.camera, &self.assets.vfs);
         companion.snapshot = snapshot;
         let waiting = (!battle).then_some(key.as_str());

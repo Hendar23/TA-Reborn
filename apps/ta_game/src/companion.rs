@@ -135,6 +135,8 @@ impl Companion {
         let native = (self.window.scale_factor() as f32).max(0.5);
         let zoom = (size.width as f32 / native / 1024.0).min(size.height as f32 / native / 600.0).clamp(0.6, 4.0);
         crate::theme::set_zoom(&self.ctx, zoom);
+        // (In the battle's palette, a mod's theme's where it has one, as the main window is.)
+        ta_ui::theme::follow_palette(&self.ctx);
         let raw = self.input.take_egui_input(&self.window);
         let (hud, minimap) = (&mut self.hud, &mut self.minimap);
         let output = self.ctx.run_ui(raw, |ui| page(ui, hud, minimap));

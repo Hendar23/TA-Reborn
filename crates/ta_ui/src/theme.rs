@@ -235,6 +235,18 @@ pub fn set_palette(ctx: &egui::Context, palette: Palette) {
     }
 }
 
+/// Puts the battle's palette into `ctx`'s own colours when they are not it yet: a window of the
+/// game's beside the main one (the companion screen) drawn as the battle is ([`set_palette`] sets
+/// the main window's as it changes).
+pub fn follow_palette(ctx: &egui::Context) {
+    let id = egui::Id::new("ta-palette");
+    let now = pal();
+    if ctx.data(|d| d.get_temp::<Palette>(id)) != Some(now) {
+        ctx.data_mut(|d| d.insert_temp(id, now));
+        ctx.style_mut_of(Theme::Dark, |style| style.visuals = visuals());
+    }
+}
+
 /// A colour as a theme writes it: `#rgb`, `#rrggbb` or `#rrggbbaa` (the `#` may be left out).
 pub fn parse_colour(text: &str) -> Option<Color32> {
     let hex = text.trim().trim_start_matches('#');
