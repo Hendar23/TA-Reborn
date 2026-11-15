@@ -540,3 +540,25 @@ feminine (una GIF animata).
 | … at best (the size to aim for) / Give it more pixels | l'ideale è … / Usa più pixel (no gender to agree) |
 | still picture / picture editor | immagine fissa / programma di grafica |
 | link / web address | link (il link) / indirizzo web |
+
+## Il tema dell'interfaccia di una mod (`pages/mods.rs`, `settings.rs`, `presentation.rs`)
+
+A mod's `[theme]` draws its battles' HUD in colours, pictures and a font of its own; the mod's page
+previews it under TEMA INTERFACCIA, the game's opzioni Interfaccia turn it off. HUD stays: l'HUD. A
+font is il font (carattere, the credits' TYPEFACE, would read as a letter beside a file name); the
+keywords carry both. The HUD's own metal (its side's tiles, where a picture would go) is il proprio
+fondo metallico, drawn invece: "metallo" alone reads as the resource. Straight apostrophes.
+
+| English | Italiano |
+|---|---|
+| interface theme / INTERFACE THEME (a mod page's caption) | tema dell'interfaccia / TEMA INTERFACCIA (as SCALA INTERFACCIA) |
+| MODS' INTERFACE THEMES (the switch) / in the game's Interface options | TEMI INTERFACCIA DELLE MOD / nelle opzioni Interfaccia del gioco |
+| HUD / panels | l'HUD / pannelli |
+| accent (a theme's colour) | colore d'accento |
+| font / font file | font (il font) / file di font |
+| the HUD draws its own metal there | l'HUD disegna invece il proprio fondo metallico |
+| the HUD keeps TA Reborn's own (colour, font) | lì l'HUD mantiene il colore di TA Reborn / mantiene quello di TA Reborn |
+| a tile (a picture repeated across the panels) | tessera |
+| a contrast of {ratio}:1 / {least}:1 reads well | un contrasto di {ratio}:1 / Con {least}:1 si legge bene |
+| the theme's {key} (a manifest key) / a colour key | la voce {key} del tema / il colore {key} |
+| side ([theme.sides.arm]) | fazione |

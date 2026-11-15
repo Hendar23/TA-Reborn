@@ -12,7 +12,7 @@ use egui::{Align2, Color32, Rect, Shape, Stroke, StrokeKind, pos2, vec2};
 use ta_ui::i18n::{n, t};
 use ta_vfs::Vfs;
 
-use super::{Clearance, ENERGY, Hud, METAL, UnitPic};
+use super::{Clearance, Hud, UnitPic};
 use crate::game::{Game, KillNote};
 use crate::theme::*;
 
@@ -184,7 +184,7 @@ impl Hud {
             }
         }
         let pic = |key: (usize, u8)| pics.iter().find(|(p, _)| *p == key).and_then(|(_, pic)| *pic);
-        let colour = |player: u8| game.sim.players.get(player as usize).map_or(STEEL, |p| readable(crate::palette::team_color(p.color)));
+        let colour = |player: u8| game.sim.players.get(player as usize).map_or(pal().steel, |p| readable(crate::palette::team_color(p.color)));
         let screen = ctx.content_rect();
         let width = 240.0f32.min(screen.width() * 0.3);
         let board = ctx.memory(|m| m.area_rect(egui::Id::new("cast_scoreboard")));
@@ -202,23 +202,23 @@ impl Hud {
                 let commander = game.sim.types.get(k.victim).def.is_commander;
                 p.rect_filled(rect, 3.0, Color32::from_black_alpha((170.0 * fade) as u8));
                 if commander {
-                    p.rect_stroke(rect, 3.0, Stroke::new(1.5, AMBER_BRIGHT.gamma_multiply(fade)), StrokeKind::Inside);
+                    p.rect_stroke(rect, 3.0, Stroke::new(1.5, pal().accent_bright.gamma_multiply(fade)), StrokeKind::Inside);
                 }
                 let tile = |p: &egui::Painter, r: Rect, key: Option<(usize, u8)>| {
                     match key.and_then(pic) {
                         Some(pic) => pic.paint(p, r, Color32::WHITE.gamma_multiply(fade)),
                         None => {
-                            p.rect_filled(r, 2.0, INSET.gamma_multiply(fade));
+                            p.rect_filled(r, 2.0, pal().inset.gamma_multiply(fade));
                         }
                     }
-                    let edge = key.map_or(STEEL_DIM, |(_, owner)| colour(owner));
+                    let edge = key.map_or(pal().steel_dim, |(_, owner)| colour(owner));
                     p.rect_stroke(r, 2.0, Stroke::new(1.5, edge.gamma_multiply(fade)), StrokeKind::Outside);
                 };
                 // Killer, a mark, killed; the killed one's name in its colour.
                 let left = Rect::from_min_size(rect.min + vec2(4.0, 3.0), vec2(26.0, 26.0));
                 tile(p, left, k.killer);
                 let mark = pos2(left.right() + 10.0, rect.center().y);
-                p.add(Shape::convex_polygon(vec![mark + vec2(-4.0, -5.0), mark + vec2(4.0, 0.0), mark + vec2(-4.0, 5.0)], STEEL.gamma_multiply(fade), Stroke::NONE));
+                p.add(Shape::convex_polygon(vec![mark + vec2(-4.0, -5.0), mark + vec2(4.0, 0.0), mark + vec2(-4.0, 5.0)], pal().steel.gamma_multiply(fade), Stroke::NONE));
                 let right = Rect::from_min_size(pos2(mark.x + 10.0, left.top()), vec2(26.0, 26.0));
                 tile(p, right, Some((k.victim, k.victim_owner)));
                 let name = crate::chat::unit_label(&game.sim, k.victim);
@@ -236,8 +236,8 @@ fn head_to_head(ui: &mut egui::Ui, width: f32, a: &Standing, b: &Standing, clock
     let (rect, _) = ui.allocate_exact_size(vec2(width, 80.0), egui::Sense::hover());
     let p = ui.painter();
     p.add(Shape::rect_filled(rect.translate(vec2(0.0, 3.0)).expand(2.0), 6.0, Color32::from_black_alpha(90)));
-    p.add(ta_ui::metal::plate(ui.ctx(), rect, PANEL));
-    p.rect_stroke(rect, 4.0, Stroke::new(1.0, LINE), StrokeKind::Inside);
+    p.add(ta_ui::metal::plate(ui.ctx(), rect, pal().panel));
+    p.rect_stroke(rect, 4.0, Stroke::new(1.0, pal().line), StrokeKind::Inside);
     let pad = 12.0;
     // The players' colours down the ends.
     for (s, x) in [(a, rect.left()), (b, rect.right() - 5.0)] {
@@ -246,35 +246,35 @@ fn head_to_head(ui: &mut egui::Ui, width: f32, a: &Standing, b: &Standing, clock
     // Names and sides, the clock between.
     let name_row = rect.top() + 18.0;
     for (s, left) in [(a, true), (b, false)] {
-        let name = p.layout_no_wrap(s.name.clone(), strong(16.0), if s.defeated { STEEL_DIM } else { readable(s.colour) });
-        let side = p.layout_no_wrap(s.side.clone(), strong(11.0), STEEL);
+        let name = p.layout_no_wrap(s.name.clone(), strong(16.0), if s.defeated { pal().steel_dim } else { readable(s.colour) });
+        let side = p.layout_no_wrap(s.side.clone(), strong(11.0), pal().steel);
         let (nx, sx) = if left { (rect.left() + pad + 6.0, rect.left() + pad + 12.0 + name.size().x) } else { (rect.right() - pad - 6.0 - name.size().x, rect.right() - pad - 12.0 - name.size().x - side.size().x) };
         p.galley(pos2(nx, name_row - name.size().y / 2.0), name, Color32::WHITE);
         p.galley(pos2(sx, name_row - side.size().y / 2.0 + 1.0), side, Color32::WHITE);
     }
-    p.text(pos2(rect.center().x, name_row), Align2::CENTER_CENTER, clock, display(17.0), TEXT_BRIGHT);
+    p.text(pos2(rect.center().x, name_row), Align2::CENTER_CENTER, clock, display(17.0), pal().text_bright);
     // The tug of war: each army's share of the two, its worth at its end.
     let bar = Rect::from_min_max(pos2(rect.left() + pad + 6.0, rect.top() + 33.0), pos2(rect.right() - pad - 6.0, rect.top() + 48.0));
     let total = (a.army + b.army).max(1.0);
     let share = if a.army + b.army <= 0.0 { 0.5 } else { a.army / total };
-    p.add(ta_ui::metal::well(bar, INSET));
+    p.add(ta_ui::metal::well(bar, pal().inset));
     let inner = bar.shrink(2.0);
     let split = inner.left() + inner.width() * share;
     p.add(ta_ui::metal::vgrad(Rect::from_min_max(inner.min, pos2(split, inner.max.y)), a.colour.lerp_to_gamma(Color32::WHITE, 0.15), a.colour.lerp_to_gamma(Color32::BLACK, 0.35)));
     p.add(ta_ui::metal::vgrad(Rect::from_min_max(pos2(split, inner.min.y), inner.max), b.colour.lerp_to_gamma(Color32::WHITE, 0.15), b.colour.lerp_to_gamma(Color32::BLACK, 0.35)));
     p.vline(split, inner.y_range().expand(2.0), Stroke::new(2.0, Color32::WHITE.gamma_multiply(0.85)));
     let army = t(n("ARMY"));
-    p.text(pos2(inner.left() + 6.0, inner.center().y), Align2::LEFT_CENTER, grouped(a.army), strong(12.0), TEXT_BRIGHT);
-    p.text(pos2(inner.right() - 6.0, inner.center().y), Align2::RIGHT_CENTER, grouped(b.army), strong(12.0), TEXT_BRIGHT);
+    p.text(pos2(inner.left() + 6.0, inner.center().y), Align2::LEFT_CENTER, grouped(a.army), strong(12.0), pal().text_bright);
+    p.text(pos2(inner.right() - 6.0, inner.center().y), Align2::RIGHT_CENTER, grouped(b.army), strong(12.0), pal().text_bright);
     p.text(pos2(bar.center().x, bar.center().y), Align2::CENTER_CENTER, army, strong(10.5), Color32::from_white_alpha(200));
     // Income, units, kills at either end; what they build in from the middle.
     let stats_row = rect.top() + 64.0;
     for (s, left) in [(a, true), (b, false)] {
         let pieces = [
-            (format!("+{:.1}", s.metal), METAL),
-            (format!("+{:.0}", s.energy), ENERGY),
-            (format!("{} {}", s.units, t(n("UNITS"))), TEXT),
-            (format!("{} {}", s.kills, t(n("KILLS"))), TEXT),
+            (format!("+{:.1}", s.metal), pal().metal_bar),
+            (format!("+{:.0}", s.energy), pal().energy_bar),
+            (format!("{} {}", s.units, t(n("UNITS"))), pal().text),
+            (format!("{} {}", s.kills, t(n("KILLS"))), pal().text),
         ];
         let mut x = if left { rect.left() + pad + 6.0 } else { rect.right() - pad - 6.0 };
         for (text, colour) in pieces {
@@ -291,11 +291,11 @@ fn head_to_head(ui: &mut egui::Ui, width: f32, a: &Standing, b: &Standing, clock
             match pic(kind, s.player) {
                 Some(pic) => pic.paint(p, r, Color32::WHITE),
                 None => {
-                    p.rect_filled(r, 2.0, INSET);
+                    p.rect_filled(r, 2.0, pal().inset);
                 }
             }
             p.rect_stroke(r, 1.0, Stroke::new(1.0, s.colour), StrokeKind::Outside);
-            p.rect_filled(Rect::from_min_size(pos2(r.left(), r.bottom() - 3.0), vec2(r.width() * done, 3.0)), 0.0, GREEN);
+            p.rect_filled(Rect::from_min_size(pos2(r.left(), r.bottom() - 3.0), vec2(r.width() * done, 3.0)), 0.0, pal().good);
             px = if left { px - 26.0 } else { px + 26.0 };
         }
     }
@@ -310,15 +310,15 @@ fn table(ui: &mut egui::Ui, width: f32, players: &[&Standing], clock: &str, pic:
     let (rect, _) = ui.allocate_exact_size(vec2(width, head + row_h * players.len() as f32 + 8.0), egui::Sense::hover());
     let p = ui.painter();
     p.add(Shape::rect_filled(rect.translate(vec2(0.0, 3.0)).expand(2.0), 6.0, Color32::from_black_alpha(90)));
-    p.add(ta_ui::metal::plate(ui.ctx(), rect, PANEL));
-    p.rect_stroke(rect, 4.0, Stroke::new(1.0, LINE), StrokeKind::Inside);
+    p.add(ta_ui::metal::plate(ui.ctx(), rect, pal().panel));
+    p.rect_stroke(rect, 4.0, Stroke::new(1.0, pal().line), StrokeKind::Inside);
     // The columns, as shares of the width.
     let at = |share: f32| rect.left() + width * share;
     let (bar_from, bar_to, worth, metal, energy, units, kills) = (at(0.33), at(0.50), at(0.51), at(0.60), at(0.685), at(0.775), at(0.855));
     let heading = rect.top() + head / 2.0 + 2.0;
-    p.text(pos2(rect.left() + 20.0, heading), Align2::LEFT_CENTER, clock, display(16.0), TEXT_BRIGHT);
+    p.text(pos2(rect.left() + 20.0, heading), Align2::LEFT_CENTER, clock, display(16.0), pal().text_bright);
     for (x, align, word) in [((bar_from + bar_to) / 2.0, Align2::CENTER_CENTER, n("ARMY")), (metal, Align2::LEFT_CENTER, n("METAL")), (energy, Align2::LEFT_CENTER, n("ENERGY")), (units, Align2::LEFT_CENTER, n("UNITS")), (kills, Align2::LEFT_CENTER, n("KILLS"))] {
-        p.text(pos2(x, heading), align, t(word), strong(10.0), STEEL);
+        p.text(pos2(x, heading), align, t(word), strong(10.0), pal().steel);
     }
     let most = players.iter().map(|s| s.army).fold(1.0f32, f32::max);
     for (i, s) in players.iter().enumerate() {
@@ -327,17 +327,17 @@ fn table(ui: &mut egui::Ui, width: f32, players: &[&Standing], clock: &str, pic:
         p.add(ta_ui::metal::seam(rect.x_range().shrink(10.0), top.round()));
         p.rect_filled(Rect::from_min_size(pos2(rect.left() + 8.0, top + 5.0), vec2(5.0, row_h - 10.0)), 1.5, s.colour);
         let name_room = width * 0.20;
-        let name = p.layout_no_wrap(s.name.clone(), strong(14.0), if s.defeated { STEEL_DIM } else { readable(s.colour) });
+        let name = p.layout_no_wrap(s.name.clone(), strong(14.0), if s.defeated { pal().steel_dim } else { readable(s.colour) });
         let name = if name.size().x > name_room { p.layout(s.name.clone(), strong(12.0), readable(s.colour), name_room) } else { name };
         p.galley(pos2(rect.left() + 20.0, mid - name.size().y / 2.0), name, Color32::WHITE);
-        p.text(pos2(rect.left() + 20.0 + name_room + 6.0, mid), Align2::LEFT_CENTER, &s.side, strong(10.5), STEEL);
+        p.text(pos2(rect.left() + 20.0 + name_room + 6.0, mid), Align2::LEFT_CENTER, &s.side, strong(10.5), pal().steel);
         // The army against the largest.
         let bar = Rect::from_min_max(pos2(bar_from, mid - 6.0), pos2(bar_to, mid + 6.0));
-        p.add(ta_ui::metal::well(bar, INSET));
+        p.add(ta_ui::metal::well(bar, pal().inset));
         let fill = bar.shrink(2.0);
         p.rect_filled(Rect::from_min_size(fill.min, vec2(fill.width() * (s.army / most).clamp(0.0, 1.0), fill.height())), 1.0, s.colour);
-        p.text(pos2(worth, mid), Align2::LEFT_CENTER, grouped(s.army), strong(11.5), TEXT_BRIGHT);
-        for (x, text, colour) in [(metal, format!("+{:.1}", s.metal), METAL), (energy, format!("+{:.0}", s.energy), ENERGY), (units, format!("{}", s.units), TEXT), (kills, format!("{}", s.kills), AMBER)] {
+        p.text(pos2(worth, mid), Align2::LEFT_CENTER, grouped(s.army), strong(11.5), pal().text_bright);
+        for (x, text, colour) in [(metal, format!("+{:.1}", s.metal), pal().metal_bar), (energy, format!("+{:.0}", s.energy), pal().energy_bar), (units, format!("{}", s.units), pal().text), (kills, format!("{}", s.kills), pal().accent)] {
             p.text(pos2(x, mid), Align2::LEFT_CENTER, text, strong(12.0), colour);
         }
         let mut px = rect.right() - 10.0 - 20.0;
@@ -346,10 +346,10 @@ fn table(ui: &mut egui::Ui, width: f32, players: &[&Standing], clock: &str, pic:
             match pic(kind, s.player) {
                 Some(pic) => pic.paint(p, r, Color32::WHITE),
                 None => {
-                    p.rect_filled(r, 2.0, INSET);
+                    p.rect_filled(r, 2.0, pal().inset);
                 }
             }
-            p.rect_filled(Rect::from_min_size(pos2(r.left(), r.bottom() - 3.0), vec2(r.width() * done, 3.0)), 0.0, GREEN);
+            p.rect_filled(Rect::from_min_size(pos2(r.left(), r.bottom() - 3.0), vec2(r.width() * done, 3.0)), 0.0, pal().good);
             px -= 24.0;
         }
     }

@@ -590,3 +590,25 @@ désigne {path}".
 | … at best (the size to aim for) | … idéalement (au mieux would read as a grudging limit) |
 | still picture / picture editor | image fixe / éditeur d’images |
 | link / web address | lien / adresse web |
+
+## A mod's interface theme (`pages/mods.rs`, `settings.rs`, `presentation.rs`)
+
+A mod's `[theme]` draws its battles' HUD in colours, pictures and a font of its own; the mod's page
+previews it under THÈME D'INTERFACE, the game's options Interface turn it off. HUD stays le HUD. The
+mods page's and the settings' strings keep straight apostrophes, the notes curly ’; all put a
+no-break space before the colon. The HUD's own metal (its side's tiles, where a picture would go)
+is son propre fond métallique, shown à la place: "métal" alone reads as the resource.
+
+| English | Français |
+|---|---|
+| interface theme / INTERFACE THEME (a mod page's caption) | thème d'interface / THÈME D'INTERFACE |
+| MODS' INTERFACE THEMES (the switch) / in the game's Interface options | THÈMES D'INTERFACE DES MODS / dans les options Interface du jeu |
+| HUD / panels | le HUD / panneaux |
+| accent (a theme's colour) | couleur d’accentuation (Windows' own) |
+| font / font file | police (as POLICE) / fichier de police |
+| the HUD draws its own metal there | le HUD affiche à la place son propre fond métallique |
+| the HUD keeps TA Reborn's own (colour, font) | le HUD utilise à la place la couleur de TA Reborn / garde la police de TA Reborn |
+| a tile (a picture repeated across the panels) | tuile |
+| a contrast of {ratio}:1 / {least}:1 reads well | un contraste de {ratio}:1 / Dès {least}:1, elle se lit bien |
+| the theme's {key} (a manifest key) / a colour key | l’entrée {key} du thème / la couleur {key} |
+| side ([theme.sides.arm]) | camp |

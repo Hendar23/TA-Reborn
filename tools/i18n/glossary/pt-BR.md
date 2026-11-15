@@ -532,3 +532,25 @@ mod.toml indica").
 | blurred / sharp | borrado / nítido ("fica borrado", "fica nítido") |
 | at best (the ideal size) | o ideal é ("o ideal é 1280 × 640") |
 | a still picture / an animated GIF | imagem estática / GIF animado |
+
+## A mod's interface theme (`pages/mods.rs`, `settings.rs`, `ta_data/src/presentation.rs`)
+
+A mod's `[theme]`: the battle's HUD in colours, pictures and a font of its own, previewed on the
+mod's page and checked under APRESENTAÇÃO. HUD stays HUD (o HUD, as Brazilian games write it).
+Manifest keys ({key}: `accent`, `text`, `panel_texture`, `font`...) stay as written, anchored by a
+noun: "A chave {key} do tema", "A cor {key} do tema". The fragments filling {extras} follow "com"
+and are joined by a comma ("com fonte própria, imagens de fundo nos painéis").
+
+| English | pt-BR |
+|---|---|
+| theme / INTERFACE THEME (the caption over the preview) | tema / TEMA DA INTERFACE |
+| MODS' INTERFACE THEMES (the game's Interface option) | TEMAS DE INTERFACE DOS MODS ("no jogo: ..., em Opções, Interface", as "em Opções, Jogabilidade") |
+| accent (the theme's main colour) | cor de destaque (as Windows' pt-BR) |
+| font / its own font | fonte / fonte própria |
+| pictures behind its panels (the panels' tiled picture) | imagens de fundo nos painéis |
+| its own metal (the panels' metal, drawn where a picture fails) | a textura metálica padrão ("o HUD desenha no lugar dela a textura metálica padrão"; not "metal": the resource) |
+| a tile (of a picture, repeated across the panels) | tile ("basta um tile de algumas centenas de pixels") |
+| hexadecimal digits | dígitos hexadecimais |
+| contrast of {ratio}:1 / reads well | contraste de {ratio}:1 / a leitura fica boa |
+| a side (in [theme.sides.arm]) | lado ("o lado {side}", "Lados do jogo: {sides}") |
+| TA Reborn's own (colour, font, HUD) | a cor / a fonte / o HUD do próprio TA Reborn |

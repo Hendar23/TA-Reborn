@@ -501,9 +501,9 @@ pub fn plan(unpacked: &Path) -> Result<Plan, PackageError> {
     let has_manifest = crate::mods::manifest_path(&root).is_file();
     let mut plan = Plan { root: root.clone(), rename: own.rename.clone(), authored: has_manifest.then(|| own.clone()), ..Default::default() };
     let rel = |p: &Path| p.strip_prefix(unpacked).unwrap_or(p).to_string_lossy().replace('\\', "/");
-    // The pictures its manifest names beside the content, wherever they are there (those in a
-    // folder kept whole come with it).
-    let named: std::collections::BTreeSet<PathBuf> = own.media.files().filter_map(|file| crate::mods::media_path(&root, file))
+    // The pictures (and its theme's font) its manifest names beside the content, wherever they
+    // are there (those in a folder kept whole come with it).
+    let named: std::collections::BTreeSet<PathBuf> = own.media.files().chain(own.theme.files()).filter_map(|file| crate::mods::media_path(&root, file))
         .filter(|path| path.file_name().is_some_and(|name| is_media(&name.to_string_lossy()))).collect();
     let mut media_folders = Vec::new();
     plan.archives = archives.iter().filter(|(p, _)| p.parent() == Some(root.as_path())).map(|(p, _)| p.clone()).collect();

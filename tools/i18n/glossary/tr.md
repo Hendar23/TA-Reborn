@@ -521,3 +521,28 @@ icon, screenshots): "mod.toml dosyasındaki {key} anahtarı".
 | animated GIF / still picture / picture editor | hareketli GIF / hareketsiz resim / resim düzenleyici |
 | {width} × {height} (a picture's size) / at best | {width} × {height} boyutunda / en iyisi (en iyisi 1280 × 640) |
 | blurred / sharp / cut off (a picture) / Give it more pixels | bulanık görünür / net görünür / kırpılır / Çözünürlüğü artır |
+
+## A mod's interface theme (`pages/mods.rs`, `settings.rs`, `ta_data/src/presentation.rs`)
+
+HUD stays HUD (as the search words had it) and the sentences keep it suffix-free, a nominative
+subject ("HUD bu renklerle gösterilir", "HUD orada ... çizer"); where a suffix cannot be avoided it
+is read as a word: HUD'u, HUD'un. {key} is the manifest's key ("Temanın {key} anahtarı", a colour
+key "{key} rengi"). {extras} (its own font, pictures behind its panels, joined by ", " in the code)
+follows a colon, so its items stay nominative noun phrases: "ayrıca şunlar kullanılır: {extras}".
+
+| English | Türkçe |
+|---|---|
+| interface theme / INTERFACE THEME (the mod page's caption) | arayüz teması / ARAYÜZ TEMASI |
+| MODS' INTERFACE THEMES (the switch in Ayarlar, Arayüz) | MOD ARAYÜZ TEMALARI ("oyunun Ayarlar, Arayüz bölümündeki MOD ARAYÜZ TEMALARI seçeneğiyle") |
+| accent (the theme's colour) / text | vurgu rengi (as Windows' own) / metin |
+| font / its own font | yazı tipi / kendi yazı tipi |
+| pictures behind its panels | panellerde arka plan resimleri |
+| the HUD draws its own metal there (the side's panel tiles in place of a picture) | HUD orada kendi metal dokusunu çizer |
+| the HUD keeps TA Reborn's own | HUD orada TA Reborn'un kendi rengini korur / HUD, TA Reborn'un kendi yazı tipini korur |
+| the HUD does without it | HUD bu dosya olmadan çizilir |
+| a contrast of {ratio}:1 / {least}:1 reads well | kontrastı {ratio}:1 / {least}:1 ve üzeri bir kontrastla rahat okunur |
+| darker / lighter (colours) | koyulaştır / açıklaştır |
+| # and six hexadecimal digits | # ve ardından altı onaltılık basamak |
+| more than {most} (a size limit) | {most} sınırını aşıyor |
+| side (a theme's, named as sidedata.tdf names it) | taraf ("{side} tarafına", "Oyunun tarafları: {sides}") |
+| Off: TA Reborn's own always | Kapalıysa her zaman TA Reborn'un kendi görünümü kullanılır |

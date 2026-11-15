@@ -339,7 +339,7 @@ fn validate_mod(path: &Path, json: bool, fail_on: &str, inherited: bool) -> Resu
     }
     // (How it presents itself in the launcher, its pictures and links: notes, as the launcher's.)
     if path.is_dir() {
-        report.issues.extend(ta_data::presentation::check(path, &module.manifest, &layer));
+        report.issues.extend(ta_data::presentation::check(path, &module.manifest, &layer, Some(&ta_data::side_names(&vfs))));
     }
     if !inherited { report.issues.retain(|i| i.affects_status); }
     if json { println!("{}", serde_json::to_string_pretty(&report)?); } else { print!("{}", report.to_text()); }

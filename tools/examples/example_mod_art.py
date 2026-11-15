@@ -1,5 +1,6 @@
 """Draws the example mod's pictures (docs/examples/example-mod/media): its banner, icon, gameplay
-preview and screenshots, original vector art lettered in the bundled Sofia Sans.
+preview and screenshots, original vector art lettered in the bundled Sofia Sans, and its interface
+theme's panel and bar pictures (media/hud).
 
     python tools/examples/example_mod_art.py [--out docs/examples/example-mod/media]
 
@@ -177,6 +178,20 @@ def roster_screenshot():
 </svg>'''
 
 
+def hud_textures(out):
+    """The example theme's pictures: brushed blue steel, seamless, behind the HUD's plates (192 x
+    192) and its top bar (256 x 40, a sheen down it)."""
+    hud = os.path.join(out, "hud")
+    os.makedirs(hud, exist_ok=True)
+    subprocess.run(["magick", "-size", "192x192", "xc:gray", "+noise", "Random", "-colorspace", "gray", "-virtual-pixel", "tile",
+                    "-motion-blur", "0x24+0", "-blur", "0x0.7", "-auto-level", "-level", "25%,75%", "+level-colors", "#121922,#253242",
+                    "-colors", "48", os.path.join(hud, "panel.png")], check=True)
+    subprocess.run(["magick", "-size", "256x40", "xc:gray", "+noise", "Random", "-colorspace", "gray", "-virtual-pixel", "tile",
+                    "-motion-blur", "0x30+0", "-auto-level", "-level", "30%,70%", "+level-colors", "#0f151d,#1f2a37",
+                    "(", "-size", "256x40", "gradient:#ffffff22-#00000055", ")", "-compose", "softlight", "-composite",
+                    "-colors", "48", os.path.join(hud, "bar.png")], check=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default=os.path.join(ROOT, "docs", "examples", "example-mod", "media"))
@@ -189,14 +204,17 @@ def main():
     render(icon(), os.path.join(args.out, "icon.png"), 256, 256)
     render(map_screenshot(), os.path.join(args.out, "campaign-map.png"), 1280, 720)
     render(roster_screenshot(), os.path.join(args.out, "new-units.png"), 1280, 720)
+    hud_textures(args.out)
     frames = 36
     with tempfile.TemporaryDirectory() as work:
         for n in range(frames):
             render(radar(n, frames), os.path.join(work, f"f{n:03d}.png"), 480, 270)
         subprocess.run(["magick", "-delay", "6", "-loop", "0", os.path.join(work, "f*.png"), "+dither", "-colors", "32", "-layers", "Optimize",
                         os.path.join(args.out, "gameplay.gif")], check=True)
-    for name in sorted(os.listdir(args.out)):
-        print(f"{name}: {os.path.getsize(os.path.join(args.out, name)):,} bytes")
+    for folder, _, names in os.walk(args.out):
+        for name in sorted(names):
+            path = os.path.join(folder, name)
+            print(f"{os.path.relpath(path, args.out)}: {os.path.getsize(path):,} bytes")
 
 
 if __name__ == "__main__":

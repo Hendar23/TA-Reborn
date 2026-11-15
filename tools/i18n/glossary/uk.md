@@ -554,3 +554,28 @@ No "виглядає" (the language file never uses it): "стає розмит�
 | blurred / sharp | розмитий / чіткий |
 | give it more pixels / at best | збільште роздільність / найкраще |
 | frames and seconds from placeholders | "кадрів: {frames}, {seconds} с"; a count of screenshots: "Знімків екрана в mod.toml: {count}" |
+
+## A mod's interface theme (`pages/mods.rs`, `settings.rs`, `ta_data/src/presentation.rs`)
+
+A mod's `[theme]`: the battle's HUD in colours, pictures and a font of its own, previewed on the
+mod's page and checked under ОФОРМЛЕННЯ. HUD stays HUD, masculine, in the nominative ("HUD
+відображається", "власний HUD TA Reborn"). Manifest keys ({key}: `accent`, `text`,
+`panel_texture`, `font`...) stay as written, anchored by a noun: "Ключ {key} теми", "Значення ключа
+{key}", "Колір {key} теми". The fragments filling {extras} are instrumentals after "HUD
+відображається в цих кольорах, із …" (із: both fragments start with a consonant), joined by a comma
+("власним шрифтом, фоновими зображеннями панелей").
+
+| English | Українська |
+|---|---|
+| theme / INTERFACE THEME (the caption over the preview) | тема (as СЕЗОННА ТЕМА) / ТЕМА ІНТЕРФЕЙСУ |
+| MODS' INTERFACE THEMES (the game's Interface option) | ТЕМИ ІНТЕРФЕЙСУ МОДІВ ("у параметрах гри, категорія «Інтерфейс»", as «Гра») |
+| accent (the theme's main colour) | акцентний колір |
+| font / its own font | шрифт / власним шрифтом |
+| pictures behind its panels (the panels' tiled picture) | фонові зображення панелей |
+| its own metal (the panels' metal, drawn where a picture fails) | власна металева текстура ("HUD малює замість нього власну металеву текстуру"; not "метал": the resource) |
+| a tile (of a picture, repeated across the panels) | плитка ("досить плитки в кілька сотень пікселів") |
+| hexadecimal digits | шістнадцяткові цифри ("по дві на червоний, зелений і синій") |
+| contrast of {ratio}:1 / reads well | контраст {ratio}:1 / добре читається контраст від {least}:1 |
+| a side (in [theme.sides.arm]) | сторона ("стороні {side}", "Сторони гри: {sides}") |
+| TA Reborn's own (colour, font, HUD) | власний колір / шрифт / HUD TA Reborn |
+| search keywords | both колір and кольори (the search matches substrings, and колір is not in кольори) |

@@ -219,7 +219,12 @@ original game's).
   or an icon too small (`presentation.small`) or of the wrong shape (`presentation.shape`), a
   gameplay preview that does not move (`presentation.still`) or runs long
   (`presentation.long`), more screenshots than are shown (`presentation.many`), a link that is no
-  web address (`presentation.link`). Editing a picture checks the mod again.
+  web address (`presentation.link`). Editing a picture checks the mod again. And of its
+  interface theme (`theme.*`): a colour that is none (`theme.colour`), a picture or a font not
+  there (`theme.missing`), of another kind (`theme.format`), too large (`theme.too_large`) or
+  unreadable (`theme.unreadable`), a font that does not read as the game reads fonts
+  (`theme.font`), text or an accent hard to read on its panels (`theme.contrast`, under 4.5:1 and
+  3:1), a side the game has not (`theme.side`).
 - **Limits:** footprints (a footprint of none is an upgrade module's, which takes no ground: kept), texture frames and layers (the textures the models in `objects3d`
   paint with, as the game loads them: an entry no model names takes no room, and the rest fit
   two arrays of the reference card's 2,048 layers), the sprite atlas's room for explosions.

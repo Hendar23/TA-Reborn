@@ -74,6 +74,183 @@ pub const SKY: Color32 = Color32::from_rgb(104, 184, 232);
 /// TA's button lettering: pale cream (its in-game buttons' stencil caps).
 pub const CREAM: Color32 = Color32::from_rgb(226, 222, 182);
 
+// ---- The battle's palette -----------------------------------------------------------------
+
+/// The colours the game draws its HUD with: the palette above ([`Palette::REBORN`]), unless a
+/// mod's interface theme gives a battle colours of its own ([`set_palette`]; the game's
+/// `mod_theme`). The launcher and the menus never change it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Palette {
+    pub bg_deep: Color32,
+    pub bg: Color32,
+    pub panel: Color32,
+    pub panel_hi: Color32,
+    pub inset: Color32,
+    pub line: Color32,
+    pub line_hi: Color32,
+    /// Secondary text and labels ([`STEEL`]), and its dimmer kind.
+    pub steel: Color32,
+    pub steel_dim: Color32,
+    pub text: Color32,
+    pub text_bright: Color32,
+    /// The accent ([`AMBER`]'s brass): titles, selection, the main action, focus.
+    pub accent: Color32,
+    pub accent_bright: Color32,
+    pub accent_dim: Color32,
+    pub accent_deep: Color32,
+    pub on_accent: Color32,
+    /// Health, success, lamps lit ([`GREEN`]); damage, errors ([`RED`]); radar and allies ([`SKY`]).
+    pub good: Color32,
+    pub good_deep: Color32,
+    pub bad: Color32,
+    pub bad_deep: Color32,
+    pub info: Color32,
+    /// Buttons' stencil lettering ([`CREAM`]).
+    pub button_text: Color32,
+    /// The resource bar's metal and energy.
+    pub metal_bar: Color32,
+    pub energy_bar: Color32,
+    /// egui's own shades: a faint background, a widget's fill and its fill hovered, a selection's.
+    pub faint_bg: Color32,
+    pub widget: Color32,
+    pub widget_hover: Color32,
+    pub selection: Color32,
+    /// The classic HUD's own lettering (its art is TA's or a mod's): text, its buttons', dimmed,
+    /// and a button's held down.
+    pub classic_text: Color32,
+    pub classic_button: Color32,
+    pub classic_dim: Color32,
+    pub classic_pressed: Color32,
+}
+
+impl Palette {
+    /// TA Reborn's own: the constants above.
+    pub const REBORN: Palette = Palette {
+        bg_deep: BG_DEEP, bg: BG, panel: PANEL, panel_hi: PANEL_HI, inset: INSET, line: LINE, line_hi: LINE_HI,
+        steel: STEEL, steel_dim: STEEL_DIM, text: TEXT, text_bright: TEXT_BRIGHT,
+        accent: AMBER, accent_bright: AMBER_BRIGHT, accent_dim: AMBER_DIM, accent_deep: AMBER_DEEP, on_accent: ON_AMBER,
+        good: GREEN, good_deep: GREEN_DEEP, bad: RED, bad_deep: RED_DEEP, info: SKY, button_text: CREAM,
+        metal_bar: Color32::from_rgb(170, 184, 196), energy_bar: Color32::from_rgb(242, 212, 60),
+        faint_bg: Color32::from_rgb(26, 25, 21), widget: Color32::from_rgb(40, 39, 34), widget_hover: Color32::from_rgb(54, 52, 45), selection: Color32::from_rgb(96, 78, 32),
+        classic_text: Color32::from_rgb(236, 236, 236), classic_button: Color32::from_rgb(223, 223, 183), classic_dim: Color32::from_rgb(170, 170, 160), classic_pressed: Color32::from_rgb(255, 255, 215),
+    };
+
+    /// This palette with a theme's colours (`colour` gives each by its key, `None` where the
+    /// theme leaves it): the shades a theme does not give are made from those it does, as
+    /// [`Palette::REBORN`]'s are from its own (`accent` lights `accent_bright` and darkens to
+    /// `accent_dim`, `accent_deep`; `panel` darkens to `bg`, `bg_deep`...).
+    pub fn themed(self, colour: &dyn Fn(&str) -> Option<Color32>) -> Palette {
+        let mut p = self;
+        let toward = |c: Color32, to: Color32, t: f32| c.lerp_to_gamma(to, t);
+        let (black, white) = (Color32::BLACK, Color32::WHITE);
+        if let Some(accent) = colour("accent") {
+            p.accent = accent;
+            p.accent_bright = brighter(accent);
+            p.accent_dim = toward(accent, black, 0.36);
+            p.accent_deep = toward(accent, black, 0.74);
+            p.on_accent = toward(accent, black, 0.88);
+            p.selection = toward(accent, black, 0.56);
+        }
+        if let Some(text) = colour("text") {
+            p.text = text;
+            p.text_bright = toward(text, white, 0.66);
+        }
+        if let Some(dim) = colour("dim") {
+            p.steel = dim;
+            p.steel_dim = toward(dim, black, 0.22);
+        }
+        if let Some(panel) = colour("panel") {
+            p.panel = panel;
+            p.bg = toward(panel, black, 0.35);
+            p.bg_deep = toward(panel, black, 0.55);
+            p.panel_hi = toward(panel, white, 0.06);
+            p.faint_bg = toward(p.bg, panel, 0.55);
+            p.widget = toward(panel, white, 0.04);
+            p.widget_hover = toward(panel, white, 0.1);
+            p.inset = toward(panel, black, 0.58);
+            p.line = toward(panel, white, 0.13);
+            p.line_hi = toward(p.line, white, 0.17);
+        }
+        if let Some(inset) = colour("inset") { p.inset = inset; }
+        if let Some(line) = colour("line") {
+            p.line = line;
+            p.line_hi = toward(line, white, 0.17);
+        }
+        if let Some(good) = colour("good") {
+            p.good = good;
+            p.good_deep = toward(good, black, 0.8);
+        }
+        if let Some(bad) = colour("bad") {
+            p.bad = bad;
+            p.bad_deep = toward(bad, black, 0.76);
+        }
+        let set = |field: &mut Color32, key: &str| if let Some(c) = colour(key) { *field = c; };
+        set(&mut p.accent_bright, "accent_bright");
+        set(&mut p.text_bright, "text_bright");
+        set(&mut p.info, "info");
+        set(&mut p.button_text, "button_text");
+        set(&mut p.metal_bar, "metal");
+        set(&mut p.energy_bar, "energy");
+        set(&mut p.classic_text, "classic.text");
+        set(&mut p.classic_button, "classic.button_text");
+        set(&mut p.classic_dim, "classic.dim");
+        set(&mut p.classic_pressed, "classic.pressed");
+        p
+    }
+}
+
+/// A colour lit as [`AMBER_BRIGHT`] is [`AMBER`]: brighter (value up an eighth) and a little
+/// paler (saturation down a fifth), its hue kept.
+fn brighter(c: Color32) -> Color32 {
+    let [r, g, b, a] = c.to_srgba_unmultiplied().map(|v| v as f32 / 255.0);
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let (v, chroma) = (max, max - min);
+    let s = if max > 0.0 { chroma / max } else { 0.0 };
+    let h = if chroma == 0.0 { 0.0 } else if max == r { ((g - b) / chroma).rem_euclid(6.0) } else if max == g { (b - r) / chroma + 2.0 } else { (r - g) / chroma + 4.0 };
+    let (v, s) = ((v * 1.12).min(1.0), s * 0.82);
+    let c2 = v * s;
+    let x = c2 * (1.0 - ((h % 2.0) - 1.0).abs());
+    let (r1, g1, b1) = match h as u32 { 0 => (c2, x, 0.0), 1 => (x, c2, 0.0), 2 => (0.0, c2, x), 3 => (0.0, x, c2), 4 => (x, 0.0, c2), _ => (c2, 0.0, x) };
+    let m = v - c2;
+    let byte = |v: f32| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgba_unmultiplied(byte(r1), byte(g1), byte(b1), (a * 255.0).round() as u8)
+}
+
+thread_local! {
+    static PALETTE: std::cell::Cell<Palette> = const { std::cell::Cell::new(Palette::REBORN) };
+}
+
+/// The battle's palette now ([`Palette::REBORN`] unless a theme set another).
+pub fn pal() -> Palette {
+    PALETTE.with(std::cell::Cell::get)
+}
+
+/// Sets the battle's palette, egui's own colours with it (in `ctx`'s dark style; its spacing
+/// and text sizes as they are).
+pub fn set_palette(ctx: &egui::Context, palette: Palette) {
+    let was = pal();
+    PALETTE.with(|p| p.set(palette));
+    if was != palette {
+        ctx.style_mut_of(Theme::Dark, |style| style.visuals = visuals());
+    }
+}
+
+/// A colour as a theme writes it: `#rgb`, `#rrggbb` or `#rrggbbaa` (the `#` may be left out).
+pub fn parse_colour(text: &str) -> Option<Color32> {
+    let hex = text.trim().trim_start_matches('#');
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) { return None; }
+    let byte = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16).ok();
+    match hex.len() {
+        3 => {
+            let digit = |at: usize| u8::from_str_radix(&hex[at..at + 1], 16).ok().map(|d| d * 17);
+            Some(Color32::from_rgb(digit(0)?, digit(1)?, digit(2)?))
+        }
+        6 => Some(Color32::from_rgb(byte(0)?, byte(2)?, byte(4)?)),
+        8 => Some(Color32::from_rgba_unmultiplied(byte(0)?, byte(2)?, byte(4)?, byte(6)?)),
+        _ => None,
+    }
+}
+
 /// The spacing scale, in points: between the parts of one control (`XS`), related items
 /// (`S`), groups (`M`), a card's contents and its edge (`L`), cards (`XL`) and a page's
 /// regions (`XXL`).
@@ -189,6 +366,36 @@ fn install_fonts(ctx: &egui::Context) -> bool {
     bahnschrift.is_some()
 }
 
+/// The font of a mod's interface theme, for a battle's titles, numbers and buttons ([`strong`]
+/// and [`display`] text): first in those families, the interface's own faces after it for the
+/// letters it lacks. None outside a themed battle.
+static BATTLE_FONT: Mutex<Option<Arc<Vec<u8>>>> = Mutex::new(None);
+
+/// Whether a font file reads as egui reads it (it panics on one that does not): a face in it that
+/// `skrifa` opens, with the tables the interface sets it by.
+pub fn font_reads(bytes: &[u8]) -> bool {
+    has_face(bytes, 0) && skrifa::FontRef::from_index(bytes, 0).is_ok() && vmetrics(bytes, 0).is_some()
+}
+
+/// Sets the battle's font (see [`BATTLE_FONT`]; None for the interface's own), the fonts made
+/// again when it changes. A font that does not read ([`font_reads`]) is not set: false.
+pub fn set_battle_font(ctx: &egui::Context, font: Option<Arc<Vec<u8>>>) -> bool {
+    if font.as_ref().is_some_and(|bytes| !font_reads(bytes)) { return false; }
+    let mut current = BATTLE_FONT.lock().unwrap_or_else(|e| e.into_inner());
+    let same = match (&*current, &font) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a == b,
+        (None, None) => true,
+        _ => false,
+    };
+    if !same {
+        *current = font;
+        drop(current);
+        install_fonts(ctx);
+        ctx.request_repaint();
+    }
+    true
+}
+
 /// The fonts of the interface in `language`: Bahnschrift's faces (from its bytes, else Sofia
 /// Sans's), egui's own behind them for what they lack, then the system's Chinese, Japanese and
 /// Korean faces, the language's own first.
@@ -235,6 +442,13 @@ fn definitions(bahnschrift: Option<&'static [u8]>, language: &str) -> FontDefini
     }
     let mut strong = vec!["ui-strong".to_owned()];
     let mut display = vec!["ui-display".to_owned()];
+    // (A themed battle's font before them: they give what letters it lacks.)
+    if let Some(bytes) = BATTLE_FONT.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        let centring = vmetrics(&bytes, 0).map_or(0.0, |m| m.cap_centring());
+        fonts.font_data.insert("battle".into(), Arc::new(FontData::from_owned(bytes.as_ref().clone()).tweak(FontTweak { y_offset_factor: centring, ..Default::default() })));
+        strong.insert(0, "battle".into());
+        display.insert(0, "battle".into());
+    }
     strong.extend(fallbacks.iter().cloned());
     display.extend(fallbacks);
     // Chinese, Japanese and Korean after them: the interface language's faces first.
@@ -588,27 +802,29 @@ pub fn compact(style: &mut Style) {
 
 /// Custom dark visuals: brown-black metal, square-ish corners, brass focus.
 fn visuals() -> Visuals {
+    // (The battle's palette: TA Reborn's own, but where a mod's theme gave it others.)
+    let p = pal();
     let mut v = Visuals::dark();
-    v.weak_text_color = Some(STEEL);
-    v.hyperlink_color = AMBER_BRIGHT;
-    v.faint_bg_color = Color32::from_rgb(26, 25, 21);
-    v.extreme_bg_color = INSET;
-    v.text_edit_bg_color = Some(INSET);
-    v.code_bg_color = PANEL_HI;
-    v.warn_fg_color = AMBER;
-    v.error_fg_color = RED;
+    v.weak_text_color = Some(p.steel);
+    v.hyperlink_color = p.accent_bright;
+    v.faint_bg_color = p.faint_bg;
+    v.extreme_bg_color = p.inset;
+    v.text_edit_bg_color = Some(p.inset);
+    v.code_bg_color = p.panel_hi;
+    v.warn_fg_color = p.accent;
+    v.error_fg_color = p.bad;
 
     v.window_corner_radius = CornerRadius::same(3);
-    v.window_fill = PANEL;
-    v.window_stroke = Stroke::new(1.0, LINE_HI);
+    v.window_fill = p.panel;
+    v.window_stroke = Stroke::new(1.0, p.line_hi);
     v.window_shadow = Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(150) };
     v.menu_corner_radius = CornerRadius::same(2);
     v.popup_shadow = Shadow { offset: [0, 6], blur: 16, spread: 0, color: Color32::from_black_alpha(150) };
-    v.panel_fill = BG;
+    v.panel_fill = p.bg;
 
-    v.selection = Selection { bg_fill: Color32::from_rgb(96, 78, 32), stroke: Stroke::new(1.0, AMBER) };
+    v.selection = Selection { bg_fill: p.selection, stroke: Stroke::new(1.0, p.accent) };
     v.widgets = widgets();
-    v.text_cursor.stroke = Stroke::new(2.0, AMBER);
+    v.text_cursor.stroke = Stroke::new(2.0, p.accent);
     v.slider_trailing_fill = true;
     v.handle_shape = HandleShape::Rect { aspect_ratio: 0.55 };
     v.interact_cursor = Some(CursorIcon::PointingHand);
@@ -625,13 +841,14 @@ fn widgets() -> Widgets {
         fg_stroke: Stroke::new(text_width, text),
         expansion: 0.0,
     };
+    let p = pal();
     Widgets {
         // Labels, separators and frames.
-        noninteractive: visuals(PANEL, LINE, TEXT, 1.0),
-        inactive: visuals(Color32::from_rgb(40, 39, 34), LINE_HI, TEXT, 1.0),
-        hovered: visuals(Color32::from_rgb(54, 52, 45), AMBER_DIM, TEXT_BRIGHT, 1.5),
-        active: visuals(AMBER_DEEP, AMBER, AMBER_BRIGHT, 2.0),
-        open: visuals(PANEL_HI, AMBER_DIM, TEXT_BRIGHT, 1.0),
+        noninteractive: visuals(p.panel, p.line, p.text, 1.0),
+        inactive: visuals(p.widget, p.line_hi, p.text, 1.0),
+        hovered: visuals(p.widget_hover, p.accent_dim, p.text_bright, 1.5),
+        active: visuals(p.accent_deep, p.accent, p.accent_bright, 2.0),
+        open: visuals(p.panel_hi, p.accent_dim, p.text_bright, 1.0),
     }
 }
 

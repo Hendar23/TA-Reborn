@@ -542,10 +542,10 @@ impl Slab {
     /// The colour of text on it (`hot` 0 to 1 when pointed at).
     pub fn text(self, hot: f32) -> Color32 {
         match self {
-            Slab::Steel => CREAM.lerp_to_gamma(Color32::from_rgb(255, 250, 214), hot),
-            Slab::Brass => ON_AMBER,
+            Slab::Steel => pal().button_text.lerp_to_gamma(Color32::from_rgb(255, 250, 214), hot),
+            Slab::Brass => pal().on_accent,
             Slab::Rust => Color32::from_rgb(250, 226, 212),
-            Slab::Slot => TEXT.lerp_to_gamma(AMBER_BRIGHT, hot),
+            Slab::Slot => pal().text.lerp_to_gamma(pal().accent_bright, hot),
         }
     }
 
@@ -573,7 +573,7 @@ pub fn slab(ctx: &Context, rect: Rect, kind: Slab, hot: f32, down: bool) -> Shap
     if kind == Slab::Slot {
         // Recessed: shadow at the top, a steel rim, a lit lower lip.
         shapes.push(vgrad(Rect::from_min_size(body.min, vec2(body.width(), 6.0_f32.min(body.height()))), Color32::from_black_alpha(110), Color32::TRANSPARENT));
-        shapes.push(Shape::rect_stroke(body, r, Stroke::new(1.0, STEEL_SHADE.lerp_to_gamma(AMBER_DIM, hot)), StrokeKind::Inside));
+        shapes.push(Shape::rect_stroke(body, r, Stroke::new(1.0, STEEL_SHADE.lerp_to_gamma(pal().accent_dim, hot)), StrokeKind::Inside));
         shapes.push(Shape::hline((body.min.x + 2.0)..=(body.max.x - 2.0), body.max.y - 1.0, Stroke::new(1.0, Color32::from_white_alpha(16))));
         return Shape::Vec(shapes);
     }

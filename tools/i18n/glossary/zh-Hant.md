@@ -267,6 +267,24 @@ One rank every five levels, in ROC (Taiwan) rank names; every title distinct.
 | the launcher shows the mod without it | 啟動器顯示此模組時會略過它 |
 | picture editor | 圖片編輯軟體 |
 
+## A mod's interface theme (`pages/mods.rs`, the setting MODS' INTERFACE THEMES, the check's notes in `presentation.rs`)
+
+| English | 繁體中文 |
+|---|---|
+| HUD (the battle's interface) | HUD (kept: HUD 會以這些顏色顯示) |
+| interface theme / INTERFACE THEME (the mod page's caption) / MODS' INTERFACE THEMES (the switch) | 介面主題 / 介面主題 / 模組介面主題 |
+| the game's Interface options | 遊戲內的「選項 · 介面」 (as 「選項 · 遊戲」) |
+| Off: TA Reborn's own always / keeps TA Reborn's own (a colour, the font) | 關閉後：一律使用 TA Reborn 自己的外觀 / 沿用 TA Reborn 自己的顏色、字型 |
+| its own font / pictures behind its panels (the {extras}; the code joins them with ", ") | 專屬字型 / 面板背景圖片 |
+| accent (colour) / panel(s) / a contrast of {ratio}:1 | 強調色 / 面板 / 對比度為 {ratio}:1 |
+| font / font file (.ttf, .otf) / a font's makers | 字型 (as TYPEFACE) / 字型檔 / 字型製作者 |
+| (the HUD) draws its own metal there (the side's metal tiles in place of the picture) | （HUD 會）在此處改用自己的金屬底紋 |
+| a tile repeated across the panels | 重複鋪滿整個面板 |
+| # and six hexadecimal digits, red, green and blue | # 加上六位十六進位數字，依序代表紅、綠、藍 |
+| not a colour as a theme writes them | 不符合主題的顏色寫法 |
+| the HUD does without it | HUD 會略過它 (as the launcher's 略過) |
+| colours of its own (a side's) / Its sides: {sides} (the game's) | 專屬顏色 / 遊戲中的陣營：{sides} |
+
 ## Conquest (the galaxy campaign: briefing, galaxy map, side panel, debrief, in-battle strip)
 
 | English | 繁體中文 |

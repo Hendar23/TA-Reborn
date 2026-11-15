@@ -184,6 +184,10 @@ struct State {
     menu: Menu,
     minimap: Minimap,
     hud: Hud,
+    /// The battle's interface in its mod's theme, as drawn now (`mod_theme`), and the theme of
+    /// the mods in play (worked out again when they change: the editor's saved maps).
+    theme_applied: crate::mod_theme::Applied,
+    theme_of: Option<(usize, Option<crate::mod_theme::ModTheme>)>,
     dev: DevPanel,
     movie: Option<MoviePlayer>,
     /// Captures: `TA_ROOM_TUBE=<dir>` plays that folder's frames (`f_0.png`, `f_1.png`...) on the
@@ -2251,6 +2255,8 @@ impl State {
             menu,
             minimap: Minimap::default(),
             hud: Hud::new(args.classic_ui),
+            theme_applied: Default::default(),
+            theme_of: None,
             dev: DevPanel {
                 visible: args.dev_panel,
                 fps: 0.0,
@@ -5133,6 +5139,23 @@ impl State {
         }
     }
 
+    /// The battle's interface in the theme of the mods in play, for the side of the player whose
+    /// interface is shown: TA Reborn's own off the battlefield, with MODS' INTERFACE THEMES off,
+    /// or (captures) with `TA_MOD_THEME=0`.
+    fn apply_mod_theme(&mut self) {
+        let mods = self.assets.mods.mods();
+        let key = mods.as_ptr() as usize ^ mods.len();
+        if self.theme_of.as_ref().is_none_or(|(at, _)| *at != key) {
+            self.theme_of = Some((key, crate::mod_theme::of(mods)));
+        }
+        let allowed = self.settings.gameplay.mod_themes && std::env::var("TA_MOD_THEME").map_or(true, |v| v != "0");
+        let side = (allowed && self.screen == Screen::Playing)
+            .then(|| self.game.sim.players.get(self.game.hud_player() as usize).map(|p| p.side.clone())).flatten();
+        let theme = self.theme_of.as_ref().and_then(|(_, theme)| theme.as_ref());
+        self.theme_applied.apply(&self.egui.ctx, theme, side.as_deref());
+        self.hud.theme_textures = self.theme_applied.textures.clone();
+    }
+
     fn frame(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
         if self.backdrop_retry.is_some_and(|at| Instant::now() >= at) && self.pending.is_none() {
             self.backdrop_retry = None;
@@ -5143,6 +5166,7 @@ impl State {
         self.renderer.post.settings.reduced_flashes = self.settings.gameplay.reduced_flashes;
         ta_ui::motion::set_reduced(&self.egui.ctx, self.settings.gameplay.reduced_motion);
         ta_ui::motion::set_reduced_flashes(&self.egui.ctx, self.settings.gameplay.reduced_flashes);
+        self.apply_mod_theme();
         // (`TA_SOUND_LOG`: the sounds this frame starts are at its time on a capture's clock.)
         self.audio.set_frame(self.frames, self.capture_dt().is_some());
         self.audio.set_background(!self.focused() && self.screenshot_path.is_none());

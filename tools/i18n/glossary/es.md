@@ -581,3 +581,25 @@ screenshots) no se traducen: "La entrada {key} de mod.toml apunta a {path}".
 | … at best (el tamaño ideal) | lo ideal es … |
 | still picture / picture editor | imagen fija / editor de imágenes |
 | link / web address | enlace / dirección web |
+
+## El tema de interfaz de un mod (`pages/mods.rs`, `settings.rs`, `presentation.rs`)
+
+El `[theme]` de un mod dibuja el HUD de sus batallas con colores, imágenes y fuente propios; la
+página del mod lo muestra bajo TEMA DE INTERFAZ y las opciones de Interfaz del juego lo desactivan.
+HUD se queda como está: el HUD. El metal propio del HUD (las texturas de su bando, donde iría la
+imagen) es su propio fondo metálico, que muestra en su lugar: «metal» a secas se leería como el
+recurso. Delante de o-: «TrueType u OpenType», «.ttf u .otf».
+
+| English | Español |
+|---|---|
+| interface theme / INTERFACE THEME (rótulo de la página del mod) | tema de interfaz / TEMA DE INTERFAZ |
+| MODS' INTERFACE THEMES (el interruptor) / in the game's Interface options | TEMAS DE INTERFAZ DE MODS / en las opciones de Interfaz del juego |
+| HUD / panels | el HUD / paneles |
+| accent (un color del tema) | color de énfasis (el de Windows) |
+| font / font file | fuente (como «las fuentes de Windows») / archivo de fuente |
+| the HUD draws its own metal there | en su lugar, el HUD muestra su propio fondo metálico |
+| the HUD keeps TA Reborn's own (color, fuente) | el HUD mantiene ahí el color de TA Reborn / mantiene la de TA Reborn |
+| a tile (una imagen repetida por los paneles) | tesela |
+| a contrast of {ratio}:1 / {least}:1 reads well | un contraste de {ratio}:1 / Con {least}:1 se lee bien |
+| the theme's {key} (una clave del manifiesto) / una clave de color | la entrada {key} del tema / el color {key} |
+| side ([theme.sides.arm]) | bando |

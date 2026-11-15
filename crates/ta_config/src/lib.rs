@@ -1216,6 +1216,9 @@ pub struct Gameplay {
     /// The classic interface's art and lettering in TA's own square pixels, enlarged as they
     /// are (off: smoothed for the screen, sharp at any size).
     pub classic_pixels: bool,
+    /// A mod's interface theme in its battles: the HUD in the colours (and pictures and font) the
+    /// mod gives it (off: TA Reborn's own always).
+    pub mod_themes: bool,
     /// Player colours, health bars and map marks in colours that stay apart with colour
     /// blindness (units tinted to match).
     pub colour_blind: bool,
@@ -1295,6 +1298,7 @@ impl Default for Gameplay {
             ta_cursors: true,
             classic_interface: false,
             classic_pixels: false,
+            mod_themes: true,
             colour_blind: false,
             team_markers: false,
             keyboard_pointer: false,

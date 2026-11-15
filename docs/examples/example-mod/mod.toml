@@ -19,3 +19,26 @@ screenshots = ["media/campaign-map.png", "media/new-units.png"]
 # Buttons on the mod's page, by their words.
 [links]
 "Modding guide" = "https://github.com/Jared-woodruff/TA-Reborn/blob/main/docs/MODDING.md"
+
+# The interface its battles are drawn in: the HUD in these colours, its plates and top bar in
+# these pictures (docs/MODDING.md, "Theming the interface"). Players may turn mods' themes off.
+[theme]
+accent = "#5ab4ff"
+text = "#dfe7ef"
+dim = "#8d9aa8"
+panel = "#18202b"
+metal = "#a8c4dc"
+energy = "#ffd34d"
+good = "#6fd88a"
+bad = "#ff6b5a"
+panel_texture = "media/hud/panel.png"
+bar_texture = "media/hud/bar.png"
+
+# The classic HUD keeps TA's art (a mod's own interface files change it); its lettering is the
+# theme's.
+[theme.classic]
+text = "#e6eef6"
+
+# A side's own colours over the rest.
+[theme.sides.core]
+accent = "#ff7a4d"

@@ -36,6 +36,7 @@ release brought. Every check the launcher runs on a mod is in
 [Folder layout](#folder-layout) ·
 [The mod.toml manifest](#the-modtoml-manifest) ·
 [Presenting a mod in the launcher](#presenting-a-mod-in-the-launcher) ·
+[Theming the interface](#theming-the-interface) ·
 [Archives or loose folders](#archives-or-loose-folders) ·
 [How mods are mounted](#how-mods-are-mounted) ·
 [Replacing the original game's archives](#replacing-the-original-games-archives) ·
@@ -526,6 +527,7 @@ Discord = "https://discord.gg/example"
 | `tags` | list of strings | `[]` | Words the library finds the mod by, shown on its page as written. |
 | `media` | table | none | Its banner, gameplay preview, icon and screenshots: see [Presenting a mod in the launcher](#presenting-a-mod-in-the-launcher). |
 | `links` | table | none | Its web pages, `"Words on the button" = "https://…"`: links on its page, in the order of their words. Only `http://` and `https://` addresses are opened. |
+| `theme` | table | none | The colours, pictures and font its battles' HUD is drawn in: see [Theming the interface](#theming-the-interface). |
 
 The id must be usable as a folder's name on every system: not empty, not `.` or `..`, without
 control characters or any of `< > : " / \ | ? *`, not ending in a dot or a space, and not a name
@@ -544,7 +546,7 @@ are safest.
 - Installing a package that has a `mod.toml`, the launcher writes the installed copy's `mod.toml`
   itself, from these fields (comments are not kept), adding any renamed folders and placeholder
   archives it found. A mod installed from the catalogue is named by the catalogue, and keeps the
-  `media`, `links` and `tags` of its package's own `mod.toml`.
+  `media`, `links`, `tags` and `theme` of its package's own `mod.toml`.
 
 A mod without a manifest (a folder or an archive put in a mods folder by hand) is given one: its
 id is its folder's whole name, or its archive's name without the extension, in lower case
@@ -607,6 +609,66 @@ screenshots = ["media/harbour.jpg", "media/battle.jpg"]
 
 The repository's [example mod](examples/example-mod) has a banner, an icon, a preview and
 screenshots of its own, and a `mod.toml` naming them.
+
+### Theming the interface
+
+A mod's `[theme]` draws its battles' HUD in colours of its own, with pictures behind its plates
+and a font for its titles: the look of the mod in play as well as in its units. The theme is the
+last mod's in the load order that has one; a player may turn mods' themes off (**MODS' INTERFACE
+THEMES**, in the game's Interface options).
+
+```toml
+[theme]
+accent = "#5ab4ff"                      # titles, the chosen, the main action (TA Reborn's brass)
+text = "#dfe7ef"
+dim = "#8d9aa8"                         # labels and secondary text
+panel = "#18202b"                       # the panels' metal
+metal = "#a8c4dc"                       # the resource bar's metal
+energy = "#ffd34d"                      # and its energy
+good = "#6fd88a"                        # health, lamps lit
+bad = "#ff6b5a"                         # damage, warnings
+panel_texture = "media/hud/panel.png"   # tiled behind the command deck's and the minimap's plates
+bar_texture = "media/hud/bar.png"       # behind the top bar, stretched to its height
+font = "media/hud/MyFont.ttf"           # the HUD's titles, numbers and buttons
+
+[theme.classic]                         # the classic HUD's lettering
+text = "#e6eef6"
+
+[theme.sides.core]                      # one side's own, over the rest
+accent = "#ff7a4d"
+```
+
+| Key | What it colours | TA Reborn's own |
+| --- | --- | --- |
+| `accent` | Titles (the side's name on the top bar), the chosen, the main action, focus, the deck's tabs. Its brighter and darker shades are made from it, unless `accent_bright` gives the brighter. | `#d8b456` |
+| `text` | Text; `text_bright` the headings and values (else made from `text`). | `#d8d3c4` |
+| `dim` | Labels and secondary text. | `#9e998a` |
+| `panel` | The panels' metal, where the side has no tiles of its own and no `panel_texture`; the background, the raised and the hovered from it, and the wells and lines unless `inset` and `line` give them. | `#1f1e1a` |
+| `inset`, `line` | Wells sunk in the panels (bars, fields); hairlines and borders. | `#0d0e09`, `#3c3932` |
+| `metal`, `energy` | The resource bar's metal and energy. | `#aab8c4`, `#f2d43c` |
+| `good`, `bad`, `info` | Health and lamps lit; damage and warnings; radar and allies. | `#78d65c`, `#e05e4a`, `#68b8e8` |
+| `button_text` | The buttons' stencil lettering. | `#e2deb6` |
+| `panel_texture`, `bar_texture` | Pictures (PNG or JPEG, up to 2048 pixels a side) in place of the side's own metal, `bitmaps/<side>guisidetile.pcx` and `<side>guitoptile.pcx`. Made seamless, a few hundred pixels across. | the side's tiles |
+| `font` | A TrueType or OpenType font (up to 16 MB) for the HUD's titles, numbers and buttons; TA Reborn's own gives the letters it lacks. | Bahnschrift, else Sofia Sans |
+| `classic.text`, `classic.button_text`, `classic.dim`, `classic.pressed` | The classic HUD's lettering: its text, its buttons', dimmed, a button held down. | TA's |
+
+- Colours are written `#rrggbb` (or `#rgb`, `#rrggbbaa`). Anything left out keeps TA Reborn's
+  own, so a theme may be a single `accent`.
+- `[theme.sides.<side>]` takes the same keys as `[theme]`, for one side (named as
+  `gamedata/sidedata.tdf` names it, any case): a spectator following another player sees that
+  player's side's.
+- The classic HUD is TA's own art: a mod's interface files (`guis/`, `anims/<side>int.gaf`...)
+  change it as they did in TA; the theme gives its lettering.
+- Team colours, the units, the map and the cockpit's view are never themed.
+- The pictures and the font go in the mod's `media` folder, which the installer keeps; the game
+  reads them from the mod's folder (not from its archives).
+- The theme draws only in battle; the menus keep TA Reborn's look. The mod's page in the launcher
+  shows a preview of it.
+- **MOD INFO**'s check tells under **PRESENTATION** what the game would not draw as meant: a
+  colour that is none, a picture or a font that is not there or does not read, text or an accent
+  hard to read on the panels, a side the game has not.
+
+The [example mod](examples/example-mod) has a theme of its own, with its panel and bar pictures.
 
 ### Archives or loose folders
 
@@ -949,6 +1011,7 @@ names the mod's folder (an absolute path, with its `mod.toml`):
 | Units, weapons, features, sides, build menus | `crates/ta_data/src/lib.rs`, `crates/ta_data/src/unit.rs` |
 | The mod check | `crates/ta_data/src/validation.rs`, `apps/ta_launcher/src/validation.rs` |
 | A mod's presentation: its pictures, preview and links, and their check | `crates/ta_vfs/src/mods.rs` (`Media`), `apps/ta_launcher/src/mod_media.rs`, `crates/ta_data/src/presentation.rs` |
+| A mod's interface theme: the palette, applying it in battle, its check | `crates/ta_vfs/src/mods.rs` (`Theme`), `crates/ta_ui/src/theme.rs` (`Palette`), `apps/ta_game/src/mod_theme.rs`, `apps/ta_game/src/hud_skin.rs`, `crates/ta_data/src/presentation.rs` |
 | Script values | `crates/ta_sim/src/host.rs` |
 | The classic build pages, 768-pixel layouts, shared places | `apps/ta_game/src/hud_classic_art.rs` |
 | The catalogue, installs, the MODS page | `apps/ta_launcher/src/catalogue.rs`, `getmods.rs`, `modlist.rs`, `mod_library.rs`, `pages/mods.rs`, `pages/mod_order.rs`, `pages/mod_report.rs` |

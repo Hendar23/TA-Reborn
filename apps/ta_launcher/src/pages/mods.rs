@@ -949,6 +949,9 @@ impl LauncherApp {
                 }
             });
         }
+        if !manifest.theme.is_empty() {
+            self.mod_theme_preview(ui, &info);
+        }
         let count = crate::mod_media::ModMedia::screenshots(&info);
         if count == 0 { return; }
         ui.add_space(space::XS);
@@ -965,6 +968,70 @@ impl LauncherApp {
                 if response.clicked() { self.mod_lightbox = Some((item.id.clone(), index)); }
             }
         });
+    }
+
+    /// A mod's interface theme, as its battles' HUD shows it: its top bar (its picture, or its
+    /// panels' colour; the side's name in its accent, its metal and energy), its colours, the
+    /// sides of its own.
+    fn mod_theme_preview(&mut self, ui: &mut Ui, info: &ta_vfs::mods::ModInfo) {
+        let theme = &info.manifest.theme;
+        let p = ta_ui::theme::Palette::REBORN.themed(&|key| theme.colour("", key).and_then(ta_ui::theme::parse_colour));
+        ui.add_space(space::XS);
+        ui.label(widgets::caption("INTERFACE THEME"));
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width().min(460.0), 46.0), Sense::hover());
+        let painter = ui.painter_at(rect);
+        match self.mod_media.borrow_mut().theme_picture(info, "bar") {
+            Some(bar) => { painter.image(bar.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE); }
+            None => { painter.rect_filled(rect, CornerRadius::same(2), p.panel); }
+        }
+        painter.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, p.line_hi), StrokeKind::Inside);
+        // Its side's name, its metal and its energy, as the HUD's top bar has them.
+        let y = rect.center().y;
+        let mut x = rect.left() + 12.0;
+        let name = painter.layout_no_wrap("ARM".into(), display(20.0), p.accent);
+        let width = name.size().x;
+        painter.galley(pos2(x, y - name.size().y / 2.0), name, p.accent);
+        x += width + 16.0;
+        let bars = [(t("METAL"), p.metal_bar, 0.7f32), (t("ENERGY"), p.energy_bar, 0.45)].map(|(label, colour, fill)| (painter.layout_no_wrap(label.to_string(), strong(11.0), p.steel), colour, fill));
+        // (The two bars as wide as each other in what the words leave.)
+        let words: f32 = bars.iter().map(|(words, _, _)| words.size().x + 8.0).sum();
+        let width = ((rect.right() - 12.0 - x - words - 14.0) / 2.0).clamp(30.0, 140.0);
+        for (words, colour, fill) in bars {
+            let w = words.size().x;
+            painter.galley(pos2(x, y - words.size().y / 2.0), words, p.steel);
+            x += w + 8.0;
+            let bar = Rect::from_min_size(pos2(x, y - 6.0), vec2(width, 12.0));
+            if bar.right() > rect.right() - 8.0 { break; }
+            painter.rect_filled(bar, CornerRadius::same(2), p.inset);
+            painter.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * fill, bar.height())), CornerRadius::same(2), colour);
+            x = bar.right() + 14.0;
+        }
+        // Its colours, each named under the pointer.
+        let colours = [("accent", p.accent), ("text", p.text), ("dim", p.steel), ("panel", p.panel), ("metal", p.metal_bar), ("energy", p.energy_bar), ("good", p.good), ("bad", p.bad), ("info", p.info)];
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(5.0, 5.0);
+            for (key, colour) in colours {
+                let (chip, response) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+                ui.painter().rect(chip, CornerRadius::same(3), colour, Stroke::new(1.0, LINE_HI), StrokeKind::Inside);
+                response.hover_tip(&format!("{key} #{:02x}{:02x}{:02x}", colour.r(), colour.g(), colour.b()));
+            }
+            // (Sides with colours of their own: each in its accent.)
+            for (side, look) in &theme.sides {
+                let accent = look.colour("accent").and_then(ta_ui::theme::parse_colour).unwrap_or(p.accent);
+                ui.add_space(4.0);
+                ui.label(RichText::new(side.to_uppercase()).font(strong(11.5)).color(accent));
+            }
+        });
+        use ta_data::words::{Fill, Words};
+        let mut extras = Vec::new();
+        if !theme.font.trim().is_empty() { extras.push(Fill::Words(Words::text(n("its own font")))); }
+        if theme.texture("", "panel").is_some() { extras.push(Fill::Words(Words::text(n("pictures behind its panels")))); }
+        // (Listed as the language lists things: "A and B".)
+        let listed = Words { text: "{extras}".into(), fills: vec![("extras".into(), Fill::List(extras.clone()))], raw: true }.render(&|text| t(text).to_string());
+        let what = if extras.is_empty() { t("Battles played with this mod show the HUD in these colours.").to_string() }
+            else { tf("Battles played with this mod show the HUD in these colours, with {extras}.", &[("extras", &listed)]) };
+        ui.add(egui::Label::new(RichText::new(what).font(body(12.5)).color(STEEL)).wrap())
+            .hover_tip(t("A player may turn mods' themes off: MODS' INTERFACE THEMES, in the game's Interface options."));
     }
 
     /// A mod's screenshots on the whole window, while one is chosen: the arrows (and the keys)

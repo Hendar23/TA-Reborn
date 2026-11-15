@@ -9,12 +9,15 @@
 use egui::{Color32, Context, Rect, Shape, Stroke, TextureHandle, TextureOptions, TextureWrapMode, Vec2, pos2, vec2};
 use ta_formats::pcx::PcxImage;
 use ta_ui::metal;
+use crate::theme::pal;
 use ta_vfs::Vfs;
 
-/// A side's panel tiles, loaded when the side is first shown.
+/// A side's panel tiles, loaded when the side is first shown (a mod's interface theme's
+/// pictures in their place, where it gives them).
 #[derive(Default)]
 pub struct Skin {
     side: String,
+    theme: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     side_tile: Option<Tile>,
     top_tile: Option<Tile>,
 }
@@ -25,13 +28,16 @@ struct Tile {
 }
 
 impl Skin {
-    /// The tiles of `side` (read again when the side changes).
-    pub fn load(&mut self, ctx: &Context, vfs: &Vfs, side: &str) {
+    /// The tiles of `side` (read again when the side changes): `theme`'s pictures behind the
+    /// plates and the top bar where a mod's interface theme gives them (`mod_theme`), else the
+    /// side's own.
+    pub fn load(&mut self, ctx: &Context, vfs: &Vfs, side: &str, theme: &(Option<std::path::PathBuf>, Option<std::path::PathBuf>)) {
         let side = side.to_ascii_lowercase();
-        if self.side != side {
-            self.side_tile = tile(ctx, vfs, &format!("bitmaps/{side}guisidetile.pcx"), false);
-            self.top_tile = tile(ctx, vfs, &format!("bitmaps/{side}guitoptile.pcx"), true);
+        if self.side != side || self.theme != *theme {
+            self.side_tile = theme.0.as_deref().and_then(|path| picture_tile(ctx, path)).or_else(|| tile(ctx, vfs, &format!("bitmaps/{side}guisidetile.pcx"), false));
+            self.top_tile = theme.1.as_deref().and_then(|path| picture_tile(ctx, path)).or_else(|| tile(ctx, vfs, &format!("bitmaps/{side}guitoptile.pcx"), true));
             self.side = side;
+            self.theme = theme.clone();
         }
     }
 
@@ -78,8 +84,35 @@ fn tiled(ctx: &Context, tile: Option<&Tile>, rect: Rect, repeat_down: bool) -> S
             let uv = Rect::from_min_max(pos2(rect.min.x / t.size.x, v0), pos2(rect.max.x / t.size.x, v1));
             Shape::image(t.texture.id(), rect, uv, Color32::WHITE)
         }
-        None => metal::plate(ctx, rect, crate::theme::PANEL),
+        None => metal::plate(ctx, rect, pal().panel),
     }
+}
+
+/// A theme's picture as a tile (a PNG or a JPEG of at most 16 MB and 2048 pixels a side), as it
+/// is: none where it does not read.
+fn picture_tile(ctx: &Context, path: &std::path::Path) -> Option<Tile> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).ok()?;
+    if file.metadata().ok()?.len() > 16 << 20 { return None; }
+    let mut bytes = Vec::new();
+    file.take((16 << 20) + 1).read_to_end(&mut bytes).ok()?;
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(2048);
+    limits.max_image_height = Some(2048);
+    limits.max_alloc = Some(64 << 20);
+    reader.limits(limits);
+    let picture = match reader.decode() {
+        Ok(picture) => picture.to_rgba8(),
+        Err(error) => {
+            log::warn!("the interface theme's picture {}: {error}", path.display());
+            return None;
+        }
+    };
+    let (w, h) = (picture.width() as usize, picture.height() as usize);
+    let image = egui::ColorImage::from_rgba_unmultiplied([w, h], picture.as_raw());
+    let options = TextureOptions { wrap_mode: TextureWrapMode::Repeat, ..TextureOptions::LINEAR };
+    Some(Tile { texture: ctx.load_texture(format!("theme:{}", path.display()), image, options), size: vec2(w as f32, h as f32) })
 }
 
 /// The tile on one of TA's tile sheets: the pixels that are not the sheet's backdrop colour
@@ -178,7 +211,7 @@ pub fn bezel(rect: Rect, width: f32, rivets: bool) -> Shape {
 /// A recessed bar filled to `fraction` in `color` (lighter above, darker below), with a
 /// tick every `ticks`-th of it.
 pub fn gauge(rect: Rect, fraction: f32, color: Color32, ticks: u32) -> Shape {
-    let mut shapes = vec![metal::well(rect, crate::theme::INSET)];
+    let mut shapes = vec![metal::well(rect, pal().inset)];
     let fill = Rect::from_min_size(rect.min, vec2(rect.width() * fraction.clamp(0.0, 1.0), rect.height())).shrink(2.0);
     if fill.width() > 0.0 {
         shapes.push(metal::vgrad(fill, color.lerp_to_gamma(Color32::WHITE, 0.25), color.lerp_to_gamma(Color32::BLACK, 0.35)));
@@ -195,9 +228,9 @@ pub fn gauge(rect: Rect, fraction: f32, color: Color32, ticks: u32) -> Shape {
 pub fn health_color(fraction: f32) -> Color32 {
     let f = fraction.clamp(0.0, 1.0);
     if f > 0.5 {
-        Color32::from_rgb(214, 196, 60).lerp_to_gamma(crate::theme::GREEN, (f - 0.5) * 2.0)
+        Color32::from_rgb(214, 196, 60).lerp_to_gamma(pal().good, (f - 0.5) * 2.0)
     } else {
-        crate::theme::RED.lerp_to_gamma(Color32::from_rgb(214, 196, 60), f * 2.0)
+        pal().bad.lerp_to_gamma(Color32::from_rgb(214, 196, 60), f * 2.0)
     }
 }
 
@@ -241,8 +274,8 @@ mod tests {
 
     #[test]
     fn health_runs_green_to_red() {
-        assert_eq!(health_color(1.0), crate::theme::GREEN);
-        assert_eq!(health_color(0.0), crate::theme::RED);
+        assert_eq!(health_color(1.0), pal().good);
+        assert_eq!(health_color(0.0), pal().bad);
         let half = health_color(0.5);
         assert!(half.r() > 150 && half.g() > 150, "yellow halfway: {half:?}");
     }

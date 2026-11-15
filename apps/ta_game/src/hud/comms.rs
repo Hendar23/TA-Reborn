@@ -11,7 +11,7 @@ use egui::{Color32, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2 as EVec2, pos2, 
 use ta_ui::i18n::t;
 use ta_vfs::Vfs;
 
-use super::{ACCENT, Hud};
+use super::{Hud};
 use crate::chat::ChatLine;
 use crate::game::Game;
 use crate::theme::*;
@@ -125,7 +125,7 @@ impl Hud {
         let opacity = if still { enter.min(leave) } else { leave.min(0.35 + 0.65 * ease) };
         let at = pos2(free.left() + 14.0 - slide, top);
         let side = game.sim.players.get(shown.player as usize).map(|p| p.side.to_uppercase()).unwrap_or_default();
-        let colour = game.sim.players.get(shown.player as usize).map_or(ACCENT, |p| crate::palette::team_color(p.color));
+        let colour = game.sim.players.get(shown.player as usize).map_or(pal().accent, |p| crate::palette::team_color(p.color));
         egui::Area::new(egui::Id::new("transmission")).order(egui::Order::Middle).fixed_pos(at).interactable(false).show(ctx, |ui| {
             ui.set_width(width);
             ui.multiply_opacity(opacity);
@@ -143,22 +143,22 @@ fn card(ui: &mut egui::Ui, shown: &Shown, width: f32, now: f64, still: bool, pic
     let painter = ui.painter().clone();
     // The words in full lay out the card (it does not grow as they come); those up so far.
     let words = shown.words.clone().unwrap_or_default();
-    let full = painter.layout(if words.is_empty() { " ".to_string() } else { words.clone() }, body(14.0), CREAM, text_w);
+    let full = painter.layout(if words.is_empty() { " ".to_string() } else { words.clone() }, body(14.0), pal().button_text, text_w);
     let shown_chars = if still { usize::MAX } else { ((now - shown.speaks).max(0.0) * TYPING) as usize };
     let typing = shown.words.is_some() && !still && now >= shown.speaks && now < shown.typed();
     let linking = shown.words.is_none() || now < shown.speaks;
     let typed: String = words.chars().take(shown_chars).collect();
-    let header = painter.layout_no_wrap(t("INCOMING TRANSMISSION").to_string(), strong(10.5), AMBER);
+    let header = painter.layout_no_wrap(t("INCOMING TRANSMISSION").to_string(), strong(10.5), pal().accent);
     let name = painter.layout(shown.name.clone(), strong(19.0), readable, text_w);
     let title = if side.is_empty() { t(shown.title).to_string() } else { format!("{} · {side}", t(shown.title)) };
-    let title = painter.layout(title, strong(10.5), STEEL, text_w);
+    let title = painter.layout(title, strong(10.5), pal().steel, text_w);
     const TRACE: f32 = 12.0;
     let text_h = header.size().y + 3.0 + name.size().y + title.size().y + 6.0 + full.size().y + 6.0 + TRACE;
     let height = (SCREEN + 2.0 * PAD).max(text_h + 2.0 * PAD);
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), egui::Sense::hover());
     // The plate: its shadow, metal, the speaker's colour down its edge.
     painter.add(Shape::rect_filled(rect.translate(vec2(0.0, 4.0)).expand(2.0), 6.0, Color32::from_black_alpha(100)));
-    painter.add(ta_ui::metal::plate(ui.ctx(), rect, PANEL));
+    painter.add(ta_ui::metal::plate(ui.ctx(), rect, pal().panel));
     painter.rect_stroke(rect, 4.0, Stroke::new(1.0, colour.gamma_multiply(0.5)), StrokeKind::Inside);
     painter.rect_filled(Rect::from_min_size(rect.min + vec2(0.0, 6.0), vec2(4.0, rect.height() - 12.0)), 1.5, colour);
     let screen = Rect::from_min_size(rect.min + vec2(PAD + 4.0, PAD), vec2(SCREEN, SCREEN));
@@ -166,25 +166,25 @@ fn card(ui: &mut egui::Ui, shown: &Shown, width: f32, now: f64, still: bool, pic
     // The words' side.
     let x = rect.min.x + text_x;
     let mut y = rect.min.y + PAD;
-    painter.galley(pos2(x, y), header.clone(), AMBER);
+    painter.galley(pos2(x, y), header.clone(), pal().accent);
     // A lamp at the header's end: red while the link is made, green as they speak.
     let blink = still || (now * 2.0).fract() < 0.6;
     let lamp = pos2(rect.max.x - PAD - 4.0, y + header.size().y / 2.0);
-    painter.add(ta_ui::metal::lamp(lamp, 3.0, if linking { RED } else { GREEN }, if blink { 1.0 } else { 0.25 }));
+    painter.add(ta_ui::metal::lamp(lamp, 3.0, if linking { pal().bad } else { pal().good }, if blink { 1.0 } else { 0.25 }));
     y += header.size().y + 3.0;
     painter.galley(pos2(x, y), name.clone(), readable);
     y += name.size().y;
-    painter.galley(pos2(x, y), title.clone(), STEEL);
+    painter.galley(pos2(x, y), title.clone(), pal().steel);
     y += title.size().y + 6.0;
-    let typed_galley = painter.layout(typed.clone(), body(14.0), CREAM, text_w);
-    painter.galley(pos2(x, y), typed_galley.clone(), CREAM);
+    let typed_galley = painter.layout(typed.clone(), body(14.0), pal().button_text, text_w);
+    painter.galley(pos2(x, y), typed_galley.clone(), pal().button_text);
     // A cursor at the words' end while they come (and while the link is made).
     if (typing || linking) && (now * 3.0).fract() < 0.6 {
         let end = typed_galley.rect.max;
         let last_line = typed_galley.rows.last().map_or(Rect::from_min_size(Pos2::ZERO, vec2(0.0, 16.0)), |r| r.rect());
         let cx = x + if typed.is_empty() { 0.0 } else { last_line.max.x + 2.0 };
         let cy = y + if typed.is_empty() { 0.0 } else { end.y - last_line.height() };
-        painter.rect_filled(Rect::from_min_size(pos2(cx, cy + 2.0), vec2(7.0, last_line.height().max(14.0) - 4.0)), 1.0, CREAM.gamma_multiply(0.8));
+        painter.rect_filled(Rect::from_min_size(pos2(cx, cy + 2.0), vec2(7.0, last_line.height().max(14.0) - 4.0)), 1.0, pal().button_text.gamma_multiply(0.8));
     }
     // The voice's trace along the foot: alive while they speak.
     let trace = Rect::from_min_size(pos2(x, rect.max.y - PAD - TRACE), vec2(text_w, TRACE));
@@ -249,7 +249,7 @@ fn screen(painter: &egui::Painter, rect: Rect, now: f64, still: bool, pic: Optio
     }
     // A pulse at the foot while they speak.
     if typing && !still {
-        p.rect_filled(Rect::from_min_size(pos2(rect.min.x + 5.0, rect.max.y - 8.0), vec2(4.0, 4.0)), 1.0, GREEN.gamma_multiply(if (now * 4.0).fract() < 0.5 { 1.0 } else { 0.3 }));
+        p.rect_filled(Rect::from_min_size(pos2(rect.min.x + 5.0, rect.max.y - 8.0), vec2(4.0, 4.0)), 1.0, pal().good.gamma_multiply(if (now * 4.0).fract() < 0.5 { 1.0 } else { 0.3 }));
     }
     // Brackets at the corners, and the frame.
     let c = colour.lerp_to_gamma(Color32::WHITE, 0.25);

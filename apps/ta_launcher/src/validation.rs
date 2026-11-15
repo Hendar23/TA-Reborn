@@ -414,12 +414,12 @@ fn same_inventory(left: &[ModInfo], right: &[ModInfo]) -> bool {
         // cache/discovery decision instead of silently ignoring the new setting.
         // (Its tags, pictures and links are the library's: a mod whose presentation changed is
         // another to discovery, so that its page shows the new.)
-        let ta_vfs::mods::ModManifest { id, name, version, description, authors, depends, load_after, source, rename, replaces, tags, media, links } = &a.manifest;
+        let ta_vfs::mods::ModManifest { id, name, version, description, authors, depends, load_after, source, rename, replaces, tags, media, links, theme } = &a.manifest;
         a.path == b.path && a.kind == b.kind && id == &b.manifest.id && name == &b.manifest.name
             && version == &b.manifest.version && description == &b.manifest.description && authors == &b.manifest.authors
             && depends == &b.manifest.depends && load_after == &b.manifest.load_after && source == &b.manifest.source
             && rename == &b.manifest.rename && replaces == &b.manifest.replaces
-            && tags == &b.manifest.tags && media == &b.manifest.media && links == &b.manifest.links
+            && tags == &b.manifest.tags && media == &b.manifest.media && links == &b.manifest.links && theme == &b.manifest.theme
     }))
 }
 
@@ -625,6 +625,8 @@ fn mount(base: &Path, builtin: Option<&Path>, modules: &[&ModInfo], target: Opti
         }
         return Err(Mount::Failed("MOD_MOUNT", error.to_string()));
     }
+    // (The sides of the game with the mods: a theme names its own by them.)
+    let sides = ta_data::side_names(&mounted.vfs);
     for module in modules {
         let layer = mod_layer(&module.manifest.id);
         let replaced = ta_vfs::mods::replaced_archives(base, &[module]);
@@ -640,7 +642,7 @@ fn mount(base: &Path, builtin: Option<&Path>, modules: &[&ModInfo], target: Opti
         if Some(layer.as_str()) == target {
             issues.extend(replaced.iter().map(|archive| validation::replaced_archive(&layer, archive)));
             if module.kind == ModKind::Directory {
-                issues.extend(ta_data::presentation::check(&module.path, &module.manifest, &layer));
+                issues.extend(ta_data::presentation::check(&module.path, &module.manifest, &layer, Some(&sides)));
             }
         }
     }

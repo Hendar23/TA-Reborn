@@ -8,7 +8,7 @@ use ta_ui::i18n::{n, t, tf};
 use ta_ui::panel::{self, Exit, Panel};
 use ta_vfs::Vfs;
 
-use super::{Clearance, ENERGY, Hud, METAL, duration};
+use super::{Clearance, Hud, duration};
 use crate::game::Game;
 use crate::theme::*;
 
@@ -100,9 +100,9 @@ pub(crate) fn head(ui: &mut egui::Ui, game: &Game, ty: &UnitType, unit: Option<&
     let mut lines = Vec::new();
     let description = ty.def.description.trim();
     if !description.is_empty() && !description.eq_ignore_ascii_case(ty.def.display_name.trim()) {
-        lines.push(painter.layout(description.to_owned(), body(13.5), TEXT_BRIGHT, column));
+        lines.push(painter.layout(description.to_owned(), body(13.5), pal().text_bright, column));
     }
-    lines.push(painter.layout(moves(ty), body(12.5), TEXT, column));
+    lines.push(painter.layout(moves(ty), body(12.5), pal().text, column));
     // A unit in play: its health as a bar, how far it is built and its rank.
     let bar = unit.map(|u| {
         let max = ty.max_health.to_f32();
@@ -115,7 +115,7 @@ pub(crate) fn head(ui: &mut egui::Ui, game: &Game, ty: &UnitType, unit: Option<&
             let rank = [n("Recruit"), n("Veteran"), n("Hardened"), n("Elite")][usize::from(u.rank().min(3))];
             state.push(if u.kills == 1 { tf("{rank} · 1 kill", &[("rank", &t(rank))]) } else { tf("{rank} · {n} kills", &[("rank", &t(rank)), ("n", &u.kills)]) });
         }
-        let state = (!state.is_empty()).then(|| painter.layout(state.join("  ·  "), body(12.0), TEXT, column));
+        let state = (!state.is_empty()).then(|| painter.layout(state.join("  ·  "), body(12.0), pal().text, column));
         ((health / max.max(1.0)).clamp(0.0, 1.0), tf("Health {now} / {max}", &[("now", &figure(health)), ("max", &figure(max))]), state)
     });
     let figures = key_figures(game, ty, unit.is_none());
@@ -138,7 +138,7 @@ pub(crate) fn head(ui: &mut egui::Ui, game: &Game, ty: &UnitType, unit: Option<&
     match pic {
         Some(p) => {
             p.paint_framed(&painter, plate, square, Color32::WHITE);
-            painter.rect_stroke(plate.expand(1.0), 0.0, egui::Stroke::new(1.0, LINE_HI), egui::StrokeKind::Outside);
+            painter.rect_stroke(plate.expand(1.0), 0.0, egui::Stroke::new(1.0, pal().line_hi), egui::StrokeKind::Outside);
         }
         None => crate::encyclopaedia::no_picture(&painter, plate, &ty.def.display_name),
     }
@@ -150,7 +150,7 @@ pub(crate) fn head(ui: &mut egui::Ui, game: &Game, ty: &UnitType, unit: Option<&
             y += 3.0;
         }
         let height = l.size().y;
-        painter.galley(egui::pos2(left, y), l, TEXT);
+        painter.galley(egui::pos2(left, y), l, pal().text);
         y += height;
     }
     if let Some((frac, label, state)) = bar {
@@ -160,7 +160,7 @@ pub(crate) fn head(ui: &mut egui::Ui, game: &Game, ty: &UnitType, unit: Option<&
         if let Some(s) = state {
             y += 3.0;
             let height = s.size().y;
-            painter.galley(egui::pos2(left, y), s, TEXT);
+            painter.galley(egui::pos2(left, y), s, pal().text);
             y += height;
         }
     }
@@ -212,10 +212,10 @@ pub(crate) struct KeyFigure {
 /// in play shows its own as a bar) and how far it sees, by eye, radar and sonar.
 fn key_figures(game: &Game, ty: &UnitType, health: bool) -> Vec<KeyFigure> {
     let d = &ty.def;
-    let plain = |caption: &'static str, value: String| KeyFigure { caption, value, color: TEXT_BRIGHT, hover: None };
+    let plain = |caption: &'static str, value: String| KeyFigure { caption, value, color: pal().text_bright, hover: None };
     let mut out = vec![
-        KeyFigure { caption: n("METAL"), value: figure(ty.cost_metal.to_f32()), color: METAL, hover: None },
-        KeyFigure { caption: n("ENERGY"), value: figure(ty.cost_energy.to_f32()), color: ENERGY, hover: None },
+        KeyFigure { caption: n("METAL"), value: figure(ty.cost_metal.to_f32()), color: pal().metal_bar, hover: None },
+        KeyFigure { caption: n("ENERGY"), value: figure(ty.cost_energy.to_f32()), color: pal().energy_bar, hover: None },
     ];
     if let Some(builder) = usual_builder(&game.sim, ty) {
         let time = duration((ty.build_work as f64 / builder.work_rate.max(1) as f64 / 30.0) as f32);
@@ -239,7 +239,7 @@ fn key_figures(game: &Game, ty: &UnitType, health: bool) -> Vec<KeyFigure> {
 /// a second of its ordinary weapons together, their longest range), how fast it goes, how hard
 /// it builds; then what it costs and sees, as the head of the information page has them.
 pub(crate) fn summary_figures(game: &Game, ty: &UnitType) -> Vec<KeyFigure> {
-    let plain = |caption: &'static str, value: String| KeyFigure { caption, value, color: TEXT_BRIGHT, hover: None };
+    let plain = |caption: &'static str, value: String| KeyFigure { caption, value, color: pal().text_bright, hover: None };
     let mut out = Vec::new();
     let (mut dps, mut range) = (0.0f32, 0.0f32);
     for w in ty.weapons.iter().flatten().map(|&w| game.sim.weapon_types.get(w)) {
@@ -266,7 +266,7 @@ pub(crate) fn summary_figures(game: &Game, ty: &UnitType) -> Vec<KeyFigure> {
 fn figure_caption(painter: &egui::Painter, caption: &str) -> std::sync::Arc<egui::Galley> {
     let mut job = egui::text::LayoutJob::single_section(
         ta_ui::i18n::upper(t(caption)),
-        egui::TextFormat { font_id: strong(10.5), color: STEEL_DIM, extra_letter_spacing: ta_ui::i18n::tracking(1.1), ..Default::default() },
+        egui::TextFormat { font_id: strong(10.5), color: pal().steel_dim, extra_letter_spacing: ta_ui::i18n::tracking(1.1), ..Default::default() },
     );
     job.wrap.max_rows = 1;
     painter.layout_job(job)
@@ -306,7 +306,7 @@ pub(crate) fn paint_figures(ui: &egui::Ui, top_left: egui::Pos2, width: f32, fig
     for (r, row) in rows.iter().enumerate() {
         let y = top_left.y + r as f32 * FIGURE_ROW;
         if r > 0 {
-            painter.hline(top_left.x..=top_left.x + width, y.round() + 0.5, egui::Stroke::new(1.0, LINE.gamma_multiply(0.7)));
+            painter.hline(top_left.x..=top_left.x + width, y.round() + 0.5, egui::Stroke::new(1.0, pal().line.gamma_multiply(0.7)));
         }
         for (k, &i) in row.iter().enumerate() {
             let f = &figures[i];
@@ -319,7 +319,7 @@ pub(crate) fn paint_figures(ui: &egui::Ui, top_left: egui::Pos2, width: f32, fig
             // (Both lines of lettering centred on their capitals, in the middle of the row.)
             let middle = cell.center().y + 0.5;
             let (top, foot) = ta_ui::metal::cap_band(&caption);
-            painter.galley(egui::pos2(cell.min.x, (middle - (top + foot) / 2.0).round()), caption, STEEL_DIM);
+            painter.galley(egui::pos2(cell.min.x, (middle - (top + foot) / 2.0).round()), caption, pal().steel_dim);
             let (top, foot) = ta_ui::metal::cap_band(&value);
             painter.galley(egui::pos2(cell.max.x - value.size().x, (middle - (top + foot) / 2.0).round()), value, f.color);
             if let Some(hover) = &f.hover {
@@ -509,7 +509,7 @@ impl WeaponBlock {
     /// of them all (after the other figures where the line has room, else under them).
     fn show(&self, ui: &mut egui::Ui, count: usize) {
         let name = if count > 1 { tf("{name} x{n}", &[("name", &self.name), ("n", &count)]) } else { self.name.clone() };
-        ui.label(RichText::new(name).font(strong(12.0)).color(TEXT_BRIGHT));
+        ui.label(RichText::new(name).font(strong(12.0)).color(pal().text_bright));
         let figures = stats(&self.figures);
         match self.per_second {
             Some(rate) => {
@@ -525,7 +525,7 @@ impl WeaponBlock {
             None => line(ui, &figures),
         }
         if !self.special.is_empty() {
-            ui.label(RichText::new(self.special.join("  ·  ")).font(body(11.5)).color(STEEL));
+            ui.label(RichText::new(self.special.join("  ·  ")).font(body(11.5)).color(pal().steel));
         }
         ui.add_space(3.0);
     }
@@ -561,13 +561,13 @@ pub(crate) fn unbroken(name: &str) -> String {
 }
 
 fn line(ui: &mut egui::Ui, text: &str) {
-    ui.add(egui::Label::new(RichText::new(text).font(body(12.5)).color(TEXT)).wrap());
+    ui.add(egui::Label::new(RichText::new(text).font(body(12.5)).color(pal().text)).wrap());
 }
 
 /// A unit's health as a bar over `rect`, labelled: the label's capitals centred in it.
 fn health_bar(p: &egui::Painter, rect: egui::Rect, frac: f32, text: String) {
-    p.rect_filled(rect, 2.0, INSET);
-    let color = if frac > 0.6 { GREEN } else if frac > 0.3 { AMBER } else { RED };
+    p.rect_filled(rect, 2.0, pal().inset);
+    let color = if frac > 0.6 { pal().good } else if frac > 0.3 { pal().accent } else { pal().bad };
     let mut fill = rect.shrink(2.0);
     fill.set_width(fill.width() * frac);
     p.rect_filled(fill, 1.0, color.gamma_multiply(0.75));

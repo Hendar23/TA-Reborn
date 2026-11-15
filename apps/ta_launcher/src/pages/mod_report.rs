@@ -55,7 +55,7 @@ impl Group {
             return Group::Check;
         }
         if code.starts_with("packaging.") { return Group::Packaging; }
-        if code.starts_with("presentation.") { return Group::Presentation; }
+        if code.starts_with("presentation.") || code.starts_with("theme.") { return Group::Presentation; }
         if code == "ARCHIVE_UNREADABLE" { return Group::Files; }
         if code.starts_with("render.sprite") { return Group::Animations; }
         if code.starts_with("render.texture") { return Group::Models; }
