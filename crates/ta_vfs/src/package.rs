@@ -824,12 +824,16 @@ pub fn install_with_commit_guard<G>(
             return Err(PackageError::Unsafe(format!("multiple package entries install as {name}")));
         }
     }
-    // (The pictures' first folders, or the files themselves beside the manifest, are names of
-    // their own; several pictures share a folder.)
-    let media_tops: std::collections::BTreeSet<String> = plan.media.iter().map(|(_, to)| to.split('/').next().unwrap_or_default().to_lowercase()).collect();
-    for top in media_tops {
-        if !names.insert(top.clone()) {
-            return Err(PackageError::Unsafe(format!("multiple package entries install as {top}")));
+    // (Each picture a place of its own: no file there already, in the documents' folder too
+    // (pictures may share it, and their own folders, with each other and with the documents), a
+    // picture beside the manifest not named as an archive or a folder is, a picture's folder not
+    // an archive's name.)
+    let archive_names: std::collections::BTreeSet<String> = plan.archives.iter().map(|p| archive_name(p).to_lowercase()).collect();
+    for (_, to) in &plan.media {
+        let to = to.to_lowercase();
+        let top = to.split('/').next().unwrap_or_default();
+        if names.contains(&to) || (to.contains('/') && archive_names.contains(top)) || !names.insert(to.clone()) {
+            return Err(PackageError::Unsafe(format!("multiple package entries install as {to}")));
         }
     }
     std::fs::create_dir_all(mods_dir).map_err(io(mods_dir))?;
@@ -1746,6 +1750,32 @@ mod tests {
         assert_eq!(manifest.links.get("Discord").map(String::as_str), Some("https://discord.gg/example"));
         // (Named in another case than the disk's, each is found.)
         assert!(crate::mods::media_path(&dir, &manifest.media.icon).is_some_and(|path| path.is_file()));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A picture the manifest names in the documents' folder installs beside the documents: the
+    /// folder is shared, only one file of a name there.
+    #[test]
+    fn a_named_picture_shares_the_documents_folder() {
+        let base = std::env::temp_dir().join(format!("ta_package_docs_media_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let source = base.join("package");
+        std::fs::create_dir_all(source.join("units")).unwrap();
+        std::fs::create_dir_all(source.join("docs")).unwrap();
+        std::fs::write(source.join("units/NEW.FBI"), b"[UNITINFO]{UnitName=NEW;}").unwrap();
+        std::fs::write(source.join("mod.toml"), "id = \"docsmod\"
+name = \"Docs Mod\"
+
+[media]
+banner = \"docs/banner.png\"
+").unwrap();
+        std::fs::write(source.join("Readme.txt"), b"read me").unwrap();
+        std::fs::write(source.join("docs/banner.png"), b"png").unwrap();
+        let plan = plan(&source).unwrap();
+        assert_eq!(plan.media.iter().map(|(_, to)| to.as_str()).collect::<Vec<_>>(), ["docs/banner.png"]);
+        let own = plan.authored.clone().unwrap();
+        let dir = install(&plan, &own, &base.join("mods")).expect("pictures and documents share docs/");
+        assert!(dir.join("docs/banner.png").is_file() && dir.join("docs/Readme.txt").is_file());
         let _ = std::fs::remove_dir_all(&base);
     }
 

@@ -653,10 +653,15 @@ impl LauncherApp {
             None => (item.catalogue.and_then(|entry| self.media.pictures.get(entry.id)).cloned(), item.catalogue.is_some_and(|entry| entry.bundled_image().is_some())),
         };
         // Its gameplay preview: on the details unless motion is held (the player's preference
-        // holds it until they ask), on a card once the pointer has rested on it.
+        // holds it until they ask; the window in the background or idle, whatever they asked), on
+        // a card once the pointer has rested on it.
         let preview = own.filter(|info| media.has_preview(info));
         let asked = self.preview_asked.as_deref() == Some(item.id.as_str());
-        let playing = preview.is_some() && if badge { asked || !ta_ui::motion::still(&ctx) } else { !ta_ui::motion::reduced(&ctx) && media.resting(&ctx, &item.id, over) };
+        let playing = preview.is_some() && if badge {
+            if asked { !ta_ui::motion::held(&ctx) } else { !ta_ui::motion::still(&ctx) }
+        } else {
+            !ta_ui::motion::reduced(&ctx) && media.resting(&ctx, &item.id, over)
+        };
         let shown = if playing { preview.and_then(|info| media.preview(&ctx, info, true)) } else { None };
         drop(media);
         let showing = shown.is_some();

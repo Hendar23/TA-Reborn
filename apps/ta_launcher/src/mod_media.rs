@@ -13,7 +13,7 @@ use std::sync::{Arc, mpsc};
 
 use egui::{ColorImage, Context, TextureHandle, TextureOptions};
 use ta_data::presentation::{PICTURE_MAX_BYTES, PICTURE_MAX_SIDE, PREVIEW_MAX_BYTES, PREVIEW_MAX_FRAMES, frame_seconds};
-use ta_vfs::mods::{MAX_SCREENSHOTS, ModInfo, ModKind, media_path};
+use ta_vfs::mods::{ModInfo, ModKind, media_path};
 
 use crate::library::{Picture, Pictures};
 
@@ -65,10 +65,10 @@ struct Preview {
     ends: Vec<f32>,
     texture: Option<TextureHandle>,
     shown: usize,
-    /// When it began playing, and when it was last on show (a preview off the screen a moment
-    /// starts again from its beginning).
+    /// When it began playing, and the interface's pass it was last on show in (a preview not on
+    /// show in the pass before, off the screen a moment, starts again from its beginning).
     since: Option<f64>,
-    painted: f64,
+    painted: u64,
 }
 
 impl Preview {
@@ -119,10 +119,10 @@ impl ModMedia {
                     let mut end = 0.0;
                     let ends = delays.iter().map(|delay| { end += delay; end }).collect();
                     let frames = frames.into_iter().map(Arc::new).collect();
-                    self.previews.insert(key, Preview { frames, ends, texture: None, shown: 0, since: None, painted: self.now });
+                    self.previews.insert(key, Preview { frames, ends, texture: None, shown: 0, since: None, painted: ctx.cumulative_pass_nr() });
                     // (The least lately shown let go, beyond those kept.)
                     while self.previews.len() > PREVIEWS_KEPT {
-                        let Some(oldest) = self.previews.iter().min_by(|a, b| a.1.painted.total_cmp(&b.1.painted)).map(|(key, _)| key.clone()) else { break };
+                        let Some(oldest) = self.previews.iter().min_by_key(|(_, preview)| preview.painted).map(|(key, _)| key.clone()) else { break };
                         self.previews.remove(&oldest);
                     }
                 }
@@ -178,16 +178,17 @@ impl ModMedia {
         self.picture(info, &named, Use::Icon)
     }
 
-    /// The mod's `index`th screenshot, small for the details' row or `full` for the window.
+    /// The mod's `index`th screenshot of those shown (`Media::shots`), small for the details' row
+    /// or `full` for the window.
     pub fn screenshot(&mut self, info: &ModInfo, index: usize, full: bool) -> Option<TextureHandle> {
-        let named = info.manifest.media.screenshots.get(index)?.clone();
+        let named = info.manifest.media.shots().nth(index)?.to_string();
         self.picture(info, &named, if full { Use::Full } else { Use::Thumb })
     }
 
-    /// How many screenshots of the mod's are shown.
+    /// How many screenshots of the mod's are shown (`Media::shots`: those that name a file).
     pub fn screenshots(info: &ModInfo) -> usize {
         if info.kind != ModKind::Directory { return 0; }
-        info.manifest.media.screenshots.iter().take(MAX_SCREENSHOTS).filter(|named| !named.trim().is_empty()).count()
+        info.manifest.media.shots().count()
     }
 
     /// Whether the mod has a gameplay preview to play (its file there, not one that failed).
@@ -224,7 +225,7 @@ impl ModMedia {
         let named = info.manifest.media.preview.clone();
         let (path, stamp) = self.locate(&info.path, &named)?;
         if self.failed.contains(&stamp) { return None; }
-        let now = self.now;
+        let (now, pass) = (self.now, ctx.cumulative_pass_nr());
         let Some(preview) = self.previews.get_mut(&stamp) else {
             if self.reading.insert(stamp.clone()) {
                 let send = self.send.clone();
@@ -237,9 +238,10 @@ impl ModMedia {
             }
             return None;
         };
-        // (Off the screen a moment, or held, it starts again from its beginning.)
-        if !playing || now - preview.painted > 0.25 { preview.since = None; }
-        preview.painted = now;
+        // (Not on show in the pass before, off the screen a moment, or held: it starts again from
+        // its beginning. A frame shown for long has no passes between: it is still on show.)
+        if !playing || preview.painted + 1 < pass { preview.since = None; }
+        preview.painted = pass;
         let (index, next) = if playing {
             let since = *preview.since.get_or_insert(now);
             let (index, next) = preview.frame_at(now - since);
@@ -365,7 +367,7 @@ mod tests {
         assert_eq!(frames[0].size, [640, 360], "made no larger than a banner shows");
         assert!(delays.iter().all(|d| (d - 0.2).abs() < 1e-4), "{delays:?}");
         let mut end = 0.0;
-        let preview = Preview { frames: frames.into_iter().map(Arc::new).collect(), ends: delays.iter().map(|d| { end += d; end }).collect(), texture: None, shown: 0, since: None, painted: 0.0 };
+        let preview = Preview { frames: frames.into_iter().map(Arc::new).collect(), ends: delays.iter().map(|d| { end += d; end }).collect(), texture: None, shown: 0, since: None, painted: 0 };
         assert_eq!(preview.frame_at(0.0).0, 0);
         assert_eq!(preview.frame_at(0.25).0, 1);
         assert_eq!(preview.frame_at(1.19).0, 5);

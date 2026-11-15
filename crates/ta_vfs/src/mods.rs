@@ -104,10 +104,15 @@ impl Media {
         self.banner.is_empty() && self.preview.is_empty() && self.icon.is_empty() && self.screenshots.is_empty()
     }
 
+    /// Its screenshots that name a file, the first [`MAX_SCREENSHOTS`] of them: those shown, in
+    /// the order shown (as written).
+    pub fn shots(&self) -> impl Iterator<Item = &str> {
+        self.screenshots.iter().map(String::as_str).filter(|file| !file.trim().is_empty()).take(MAX_SCREENSHOTS)
+    }
+
     /// Every file it names, banner first (as written: see [`media_path`]).
     pub fn files(&self) -> impl Iterator<Item = &str> {
-        [&self.banner, &self.preview, &self.icon].into_iter().chain(self.screenshots.iter().take(MAX_SCREENSHOTS))
-            .map(String::as_str).filter(|file| !file.trim().is_empty())
+        [&self.banner, &self.preview, &self.icon].into_iter().map(String::as_str).filter(|file| !file.trim().is_empty()).chain(self.shots())
     }
 }
 
@@ -1036,6 +1041,17 @@ mod tests {
             assert_eq!(media_path(&dir, named), None, "{named}");
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The screenshots shown are those that name a file, the first 12, in order: an empty entry
+    /// takes no place (the page's row and the whole window count and step through the same).
+    #[test]
+    fn the_screenshots_shown_are_those_that_name_a_file() {
+        let mut media = Media { screenshots: vec!["".into(), "media/a.png".into(), "  ".into(), "media/b.png".into()], ..Default::default() };
+        assert_eq!(media.shots().collect::<Vec<_>>(), ["media/a.png", "media/b.png"]);
+        media.screenshots = (0..20).map(|n| format!("media/{n}.png")).collect();
+        assert_eq!(media.shots().count(), MAX_SCREENSHOTS);
+        assert_eq!(media.files().count(), MAX_SCREENSHOTS, "no banner, preview or icon");
     }
 
     /// Only http and https addresses are opened.

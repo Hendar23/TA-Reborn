@@ -39,8 +39,8 @@ pub fn check(dir: &Path, manifest: &ModManifest, layer: &str) -> Vec<Issue> {
     };
     let media = &manifest.media;
     let pictures = [("banner", &media.banner, Kind::Banner), ("preview", &media.preview, Kind::Preview), ("icon", &media.icon, Kind::Icon)];
-    let screenshots = media.screenshots.iter().take(MAX_SCREENSHOTS).map(|file| ("screenshots", file, Kind::Screenshot));
-    for (key, named, kind) in pictures.into_iter().chain(screenshots) {
+    let screenshots = media.shots().map(|file| ("screenshots", file, Kind::Screenshot));
+    for (key, named, kind) in pictures.into_iter().map(|(key, named, kind)| (key, named.as_str(), kind)).chain(screenshots) {
         if named.trim().is_empty() { continue; }
         let shown = named.trim().replace('\\', "/");
         let Some(path) = media_path(dir, named) else {
@@ -126,8 +126,9 @@ pub fn check(dir: &Path, manifest: &ModManifest, layer: &str) -> Vec<Issue> {
             }
         }
     }
-    if media.screenshots.len() > MAX_SCREENSHOTS {
-        note("presentation.many", "mod.toml", enf("mod.toml names {count} screenshots: the launcher shows the first {most}.", [("count", Fill::number(media.screenshots.len())), ("most", Fill::number(MAX_SCREENSHOTS))]),
+    let named = media.screenshots.iter().filter(|file| !file.trim().is_empty()).count();
+    if named > MAX_SCREENSHOTS {
+        note("presentation.many", "mod.toml", enf("mod.toml names {count} screenshots: the launcher shows the first {most}.", [("count", Fill::number(named)), ("most", Fill::number(MAX_SCREENSHOTS))]),
             en("Keep the best of them, in the order they are to be seen."));
     }
     let links = (!manifest.source.trim().is_empty()).then_some(("source", &manifest.source)).into_iter()
