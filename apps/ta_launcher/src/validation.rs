@@ -396,9 +396,10 @@ fn mod_stamp(module: &ModInfo) -> ModStamp {
     let stat = |path: &Path| std::fs::metadata(path).map_or((0, None), |m| (m.len(), m.modified().ok()));
     ModStamp(match module.kind {
         ModKind::Archive => vec![stat(&module.path)],
-        // (And its pictures', whose presentation is checked: a new banner is a change.)
+        // (And its pictures' and its theme's, which are checked: a new banner or theme picture
+        // is a change.)
         ModKind::Directory => [stat(&module.path), stat(&ta_vfs::mods::manifest_path(&module.path))].into_iter()
-            .chain(module.manifest.media.files().map(|named| ta_vfs::mods::media_path(&module.path, named).map_or((0, None), |path| stat(&path))))
+            .chain(module.manifest.media.files().chain(module.manifest.theme.files()).map(|named| ta_vfs::mods::media_path(&module.path, named).map_or((0, None), |path| stat(&path))))
             .collect(),
     })
 }
@@ -424,17 +425,25 @@ fn same_inventory(left: &[ModInfo], right: &[ModInfo]) -> bool {
     }))
 }
 
-fn dependency_order<'a>(id: &str, mods: &'a [ModInfo]) -> Result<Vec<&'a ModInfo>, Words> {
+/// Why a mod's check could not mount it with what it needs: its code, its words and what to do.
+#[derive(Debug)]
+struct Unmountable { code: &'static str, words: Words, suggestion: &'static str }
+
+fn dependency_order<'a>(id: &str, mods: &'a [ModInfo]) -> Result<Vec<&'a ModInfo>, Unmountable> {
     let by_id: BTreeMap<_, _> = mods.iter().map(|m| (m.manifest.id.as_str(), m)).collect();
     let mut required = BTreeSet::new();
     let mut pending = vec![id.to_string()];
+    let restore = n("Restore the required files or dependencies, then run validation again.");
     while let Some(id) = pending.pop() {
         if !required.insert(id.clone()) { continue; }
-        let Some(module) = by_id.get(id.as_str()) else { return Err(enf(n("Required mod '{id}' is not installed."), [("id", Fill::name(&id))])); };
-        if required.len() > 1000 { return Err(Words::text(n("The dependency set exceeds 1,000 mods."))); }
+        let Some(module) = by_id.get(id.as_str()) else { return Err(Unmountable { code: "DEPENDENCY", words: enf(n("Required mod '{id}' is not installed."), [("id", Fill::name(&id))]), suggestion: restore }); };
+        if required.len() > 1000 { return Err(Unmountable { code: "DEPENDENCY", words: Words::text(n("The dependency set exceeds 1,000 mods.")), suggestion: restore }); }
         pending.extend(module.manifest.depends.iter().cloned());
     }
-    ta_vfs::mods::resolve_load_order(&required.into_iter().collect::<Vec<_>>(), mods).map_err(|e| Words::raw(e.to_string()))
+    ta_vfs::mods::resolve_load_order(&required.into_iter().collect::<Vec<_>>(), mods).map_err(|error| {
+        let (code, words, suggestion) = validation::load_order_failure(&error);
+        Unmountable { code, words, suggestion }
+    })
 }
 
 /// Words the worker gives in English: shown translated where the languages' files have them
@@ -466,7 +475,7 @@ fn run(
     check_cancel(cancel)?;
     let order = match dependency_order(&request.id, mods) {
         Ok(order) => order,
-        Err(error) => { saved.scope.push(scope_label(target)); return Ok(failure(saved, "DEPENDENCY", error)); }
+        Err(error) => { saved.scope.push(scope_label(target)); return Ok(failure_because(saved, error.code, error.words, error.suggestion)); }
     };
     saved.scope.extend(order.iter().map(|m| scope_label(m)));
     for module in &order {
@@ -484,7 +493,7 @@ fn run(
         Ok(snapshot) => snapshot,
         Err(error) => { check_cancel(cancel)?; return Ok(failure(saved, "SOURCE_UNREADABLE", said(without_folders(&error, &folders)))); }
     };
-    saved.fingerprint = match fingerprint(&before, &order, memo, cancel, None) {
+    saved.fingerprint = match fingerprint(&before, &order, memo, cancel, None, Some(&request.id)) {
         Ok(hash) => hash,
         Err(error) => { check_cancel(cancel)?; return Ok(failure(saved, "SOURCE_UNREADABLE", said(without_folders(&error, &folders)))); }
     };
@@ -499,7 +508,7 @@ fn run(
     // The same content without the mod, checked once and kept: what is wrong there already
     // is not this mod's doing, what is wrong only with it is (validation::compare).
     let dependencies: Vec<&ModInfo> = order.iter().copied().filter(|m| m.manifest.id != request.id).collect();
-    let baseline_print = fingerprint(&before, &dependencies, memo, cancel, Some(&target_layer)).map_err(|e| without_folders(&e, &folders))?;
+    let baseline_print = fingerprint(&before, &dependencies, memo, cancel, Some(&target_layer), None).map_err(|e| without_folders(&e, &folders))?;
     let baseline_path = cache.join(format!("baseline-{}.json", &baseline_print[..16]));
     let baseline = match read_baseline(&baseline_path, &baseline_print) {
         Some(report) => report,
@@ -516,7 +525,9 @@ fn run(
                 !cancel.load(Ordering::Relaxed)
             });
             check_cancel(cancel)?;
-            if report.complete { write_baseline(&baseline_path, &baseline_print, &report); }
+            // (One past the check's limits too: checked again, it stops there again. What the
+            // mod changes is then not told apart, as now.)
+            if kept_whole(&report) { write_baseline(&baseline_path, &baseline_print, &report); }
             report
         }
     };
@@ -541,8 +552,10 @@ fn run(
     // (Told apart only from a whole check of the content without it: against part of one,
     // what the rest has would all look the mod's doing.)
     if baseline.complete { validation::compare(&mut saved.report, &baseline); }
-    // (A folder whose content is all in archives the game cannot open: those are its findings.)
+    // (A folder whose content is all in archives the game cannot open: those are its findings.
+    // One of its manifest alone, a theme or pictures: complete, nothing of the data to check.)
     validation::content_unreadable(&mut saved.report, &issues);
+    if target.kind == ModKind::Directory { validation::manifest_only(&mut saved.report, &target.manifest); }
     merge_issues(&mut saved.report, issues);
     check_cancel(cancel)?;
     if snapshot(&roots, cancel)? != before {
@@ -650,13 +663,18 @@ fn mount(base: &Path, builtin: Option<&Path>, modules: &[&ModInfo], target: Opti
     Ok(mounted.vfs)
 }
 
-fn failure(mut saved: SavedReport, code: &str, words: Words) -> SavedReport {
+fn failure(saved: SavedReport, code: &str, words: Words) -> SavedReport {
+    failure_because(saved, code, words, n("Restore the required files or dependencies, then run validation again."))
+}
+
+/// A check that could not run, and what to do about it.
+fn failure_because(mut saved: SavedReport, code: &str, words: Words, suggestion: &str) -> SavedReport {
     // Preflight problems prevented a full scan. Preserve the concrete error while
     // keeping both the badge and copied report explicit about incomplete coverage.
     saved.report.complete = false;
     saved.report.issues.push(Issue {
         severity: Severity::Error, code: code.into(), layer: mod_layer(&saved.mod_id), message: words.english(), words,
-        suggestion: n("Restore the required files or dependencies, then run validation again.").into(), affects_status: true,
+        suggestion: suggestion.into(), affects_status: true,
         ..Issue::default()
     });
     saved
@@ -664,11 +682,10 @@ fn failure(mut saved: SavedReport, code: &str, words: Words) -> SavedReport {
 
 fn merge_issues(report: &mut Report, issues: Vec<Issue>) {
     report.issues.extend(issues);
-    let severity = |severity| match severity { Severity::Error => 0, Severity::Warning => 1, Severity::Info => 2 };
     // Archive mount diagnostics are collected before parsing but appended afterward.
-    // Keep actionable errors on the first report page, ahead of inherited context.
-    report.issues.sort_by(|a, b| (!a.affects_status, severity(a.severity), a.origin, &a.path, a.line, &a.code, &a.message)
-        .cmp(&(!b.affects_status, severity(b.severity), b.origin, &b.path, b.line, &b.code, &b.message)));
+    // Keep actionable errors on the first report page, ahead of inherited context (in the order
+    // every report lists them, `ta-tools validate-mod`'s too).
+    report.sort();
 }
 
 /// Discovery runs before this worker. Do not use its old dependency/rename table if
@@ -804,22 +821,33 @@ fn is_link(metadata: &std::fs::Metadata) -> bool {
 
 /// The content's fingerprint: the checks' versions and TA Reborn's release (not the launcher's
 /// build: a rebuild that leaves the checks alone keeps every report; a release, whose file readers
-/// and mount rules may read the same files otherwise, checks again), the manifests of `order` and
-/// what they replace of the original game, and every file's digest, but those of the `without`
-/// layer.
-fn fingerprint(snapshot: &Snapshot, order: &[&ModInfo], memo: &DigestMemo, cancel: &AtomicBool, without: Option<&str>) -> Result<String, String> {
+/// and mount rules may read the same files otherwise, checks again), `order`'s mods and what they
+/// replace of the original game, and every file's digest of `snapshot`'s layers, but those of the
+/// `without` layer. The mod `checked` is fingerprinted whole (its manifest, read and as written,
+/// and its pictures' and its theme's files: its presentation and its manifest's keys are
+/// checked); the others by what decides what the game reads with them (their ids, their order,
+/// their renames and what they replace): their names, their pictures and their themes change no
+/// finding.
+fn fingerprint(snapshot: &Snapshot, order: &[&ModInfo], memo: &DigestMemo, cancel: &AtomicBool, without: Option<&str>, checked: Option<&str>) -> Result<String, String> {
     let mut hash = Sha256::new();
     hash.update(format!("{}:{}:{}", CACHE_VERSION, validation::SCHEMA_VERSION, env!("CARGO_PKG_VERSION")));
     for module in order {
-        hash.update(serde_json::to_vec(&module.manifest).map_err(|e| e.to_string())?);
+        let whole = checked == Some(module.manifest.id.as_str());
+        let manifest = &module.manifest;
+        let mounting = (&manifest.id, &manifest.depends, &manifest.load_after, &manifest.rename, &manifest.replaces);
+        hash.update(if whole { serde_json::to_vec(manifest) } else { serde_json::to_vec(&mounting) }.map_err(|e| e.to_string())?);
         // What it replaces of the original game, when it replaces any: a report made before the
         // install's archives of those names were left out is not this mod's as mounted now.
         let replaced = ta_vfs::mods::replaced_claims(module);
         if !replaced.is_empty() { hash.update(serde_json::to_vec(&replaced).map_err(|e| e.to_string())?); }
-        // Its pictures as they are now (their presentation is checked): one changed is another
-        // report.
-        if module.kind == ModKind::Directory {
-            for named in module.manifest.media.files() {
+        // Its manifest as written (what it holds that is read otherwise than written, a key
+        // misplaced and its line, is checked, and leaves it read the same), and its pictures and
+        // its theme's files as they are now (they are checked): one changed is another report.
+        if whole && module.kind == ModKind::Directory {
+            let text = std::fs::read(ta_vfs::mods::manifest_path(&module.path)).unwrap_or_default();
+            hash.update(format!("mod.toml:{}:", text.len()));
+            hash.update(&text);
+            for named in module.manifest.media.files().chain(module.manifest.theme.files()) {
                 let stamp = ta_vfs::mods::media_path(&module.path, named).and_then(|path| std::fs::metadata(path).ok())
                     .map(|meta| (meta.len(), meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |t| t.as_nanos())));
                 hash.update(format!("{named}:{stamp:?}"));
@@ -876,7 +904,14 @@ fn read_cache(path: &Path, expected: &SavedReport) -> Option<SavedReport> {
         && cached.mod_id == expected.mod_id && cached.version == expected.version && cached.name == expected.name
         && cached.fingerprint == expected.fingerprint
         && cached.scope == expected.scope && cached.report.target_layer == expected.report.target_layer
-        && !cached.fingerprint.is_empty() && cached.report.complete).then_some(cached)
+        && !cached.fingerprint.is_empty() && kept_whole(&cached.report)).then_some(cached)
+}
+
+/// Whether a report may be kept and used again for the same content: a complete one, or one its
+/// content stopped (past the check's limits, nothing of it to read), which a check again would
+/// stop the same way. Never one cancelled.
+fn kept_whole(report: &Report) -> bool {
+    report.complete || !report.issues.iter().any(|issue| issue.code == "validation.cancelled")
 }
 /// A baseline (the content without a mod) as kept: its fingerprint and report.
 #[derive(Serialize, Deserialize)]
@@ -888,7 +923,7 @@ fn read_baseline(path: &Path, fingerprint: &str) -> Option<Report> {
     let mut bytes = Vec::new();
     file.take(MAX_CACHE_BYTES + 1).read_to_end(&mut bytes).ok()?;
     let kept: Baseline = serde_json::from_slice(&bytes).ok()?;
-    (kept.fingerprint == fingerprint && kept.cache_version == CACHE_VERSION && kept.report.schema_version == validation::SCHEMA_VERSION && kept.report.complete).then_some(kept.report)
+    (kept.fingerprint == fingerprint && kept.cache_version == CACHE_VERSION && kept.report.schema_version == validation::SCHEMA_VERSION && kept_whole(&kept.report)).then_some(kept.report)
 }
 
 /// Keeps a baseline, and the `MAX_BASELINES` newest of them.
@@ -983,9 +1018,21 @@ mod tests {
         let mods = vec![a, module("b", Path::new("b"), &["c"]), module("c", Path::new("c"), &[]), module("unrelated", Path::new("u"), &[])];
         let ids: Vec<_> = dependency_order("a", &mods).unwrap().iter().map(|m| m.manifest.id.as_str()).collect();
         assert_eq!(ids, ["c", "b", "a"]);
-        assert!(dependency_order("a", &mods[..2]).unwrap_err().english().contains("'c'"));
+        assert!(dependency_order("a", &mods[..2]).unwrap_err().words.english().contains("'c'"));
+        // (Each way the order fails in words of its own, translated, with what to do.)
         let cycle = vec![module("a", Path::new("a"), &["b"]), module("b", Path::new("b"), &["a"])];
-        assert!(dependency_order("a", &cycle).unwrap_err().english().contains("cycle"));
+        let circle = dependency_order("a", &cycle).unwrap_err();
+        assert_eq!(circle.code, "DEPENDENCY_CYCLE");
+        assert!(circle.words.english().contains("circle") && !circle.words.texts().is_empty(), "{circle:?}");
+        let mut conflicting = module("a", Path::new("a"), &["b"]);
+        conflicting.manifest.conflicts.push("b".into());
+        let conflict = dependency_order("a", &[conflicting, module("b", Path::new("b"), &[])]).unwrap_err();
+        assert_eq!(conflict.code, "DEPENDENCY_CONFLICT", "{conflict:?}");
+        let mut newer = module("a", Path::new("a"), &[]);
+        newer.manifest.requires_reborn = "999.0".into();
+        let newer = dependency_order("a", &[newer]).unwrap_err();
+        assert_eq!(newer.code, "DEPENDENCY_NEEDS_NEWER", "{newer:?}");
+        assert!(newer.words.english().contains("999.0") && newer.suggestion.contains("Update TA Reborn"), "{newer:?}");
     }
 
     #[test]
@@ -1121,11 +1168,11 @@ mod tests {
         let order = [&mods[0]];
         let cancel = AtomicBool::new(false);
         let before = snapshot(&roots, &cancel).unwrap();
-        let a = fingerprint(&before, &order, &Arc::default(), &cancel, None).unwrap();
+        let a = fingerprint(&before, &order, &Arc::default(), &cancel, None, Some("test")).unwrap();
         std::fs::write(&file, b"after!").unwrap();
         std::fs::File::options().write(true).open(&file).unwrap().set_times(std::fs::FileTimes::new().set_modified(modified)).unwrap();
         let after = snapshot(&roots, &cancel).unwrap();
-        let b = fingerprint(&after, &order, &Arc::default(), &cancel, None).unwrap();
+        let b = fingerprint(&after, &order, &Arc::default(), &cancel, None, Some("test")).unwrap();
         assert_ne!(a, b, "a fresh rescan must hash bytes even when a replacement preserves the manifest and file metadata");
         std::fs::write(dir.0.join("readme.txt"), "not read by the game").unwrap();
         assert_eq!(after, snapshot(&roots, &cancel).unwrap(), "what the game never reads does not change the fingerprint");
@@ -1182,12 +1229,67 @@ mod tests {
         old.report.schema_version = validation::SCHEMA_VERSION + 1;
         write_cache(&path, &old).unwrap();
         assert!(read_cache(&path, &valid).is_none());
+        // A report its content stopped (past the check's limits) is kept: checked again, it would
+        // stop there again. One cancelled is never used.
         old = valid.clone();
         old.report.complete = false;
+        old.report.issues.push(Issue { code: "validation.limit".into(), ..Issue::default() });
         write_cache(&path, &old).unwrap();
-        assert!(read_cache(&path, &valid).is_none());
+        assert!(read_cache(&path, &valid).is_some(), "a report past the check's limits is kept");
+        old.report.issues.push(Issue { code: "validation.cancelled".into(), ..Issue::default() });
+        write_cache(&path, &old).unwrap();
+        assert!(read_cache(&path, &valid).is_none(), "a cancelled check is never used");
         std::fs::write(&path, b"{truncated").unwrap();
         assert!(read_cache(&path, &valid).is_none());
+    }
+
+    /// The fingerprint of a mod's check takes the mod checked whole (its pictures are checked) and
+    /// what it depends on by what decides what the game reads with them: a dependency's new
+    /// banner or description is no new check, nor a new check of the content without the mod.
+    #[test]
+    fn a_dependencys_presentation_changes_no_fingerprint() {
+        let dir = Temp::new();
+        for name in ["dep", "target"] {
+            std::fs::create_dir_all(dir.0.join(name).join("media")).unwrap();
+            std::fs::write(dir.0.join(name).join("media/banner.png"), b"first").unwrap();
+        }
+        let modules = |dep_banner: &str, description: &str| {
+            let mut dep = module("dep", &dir.0.join("dep"), &[]);
+            dep.manifest.media.banner = dep_banner.into();
+            dep.manifest.description = description.into();
+            let mut target = module("target", &dir.0.join("target"), &["dep"]);
+            target.manifest.media.banner = "media/banner.png".into();
+            [dep, target]
+        };
+        let cancel = AtomicBool::new(false);
+        let snap = Snapshot::default();
+        let prints = |mods: &[ModInfo; 2]| {
+            let order = [&mods[0], &mods[1]];
+            (fingerprint(&snap, &order, &Arc::default(), &cancel, None, Some("target")).unwrap(),
+             fingerprint(&snap, &order[..1], &Arc::default(), &cancel, Some("mod:target"), None).unwrap())
+        };
+        let first = prints(&modules("media/banner.png", "one"));
+        assert_eq!(prints(&modules("media/other.png", "two")), first, "the dependency's pictures and words");
+        std::fs::write(dir.0.join("dep/media/banner.png"), b"second!").unwrap();
+        assert_eq!(prints(&modules("media/banner.png", "one")), first, "the dependency's banner redrawn");
+        std::fs::write(dir.0.join("target/media/banner.png"), b"second!").unwrap();
+        let after = prints(&modules("media/banner.png", "one"));
+        assert_ne!(after.0, first.0, "the mod's own banner redrawn: its check again");
+        assert_eq!(after.1, first.1, "but not the content's without it");
+        let mut renamed = modules("media/banner.png", "one");
+        renamed[0].manifest.rename.insert("art".into(), "anims".into());
+        let renamed = prints(&renamed);
+        assert!(renamed.0 != after.0 && renamed.1 != after.1, "what decides what the game reads changes both");
+        // The mod's own manifest as written (a key read past, the line a key is on) is checked:
+        // another text, read the same, is another check. A dependency's is not.
+        std::fs::write(dir.0.join("target/mod.toml"), "id = \"target\"\nname = \"target\"\n").unwrap();
+        let read_same = prints(&modules("media/banner.png", "one"));
+        std::fs::write(dir.0.join("target/mod.toml"), "id = \"target\"\nname = \"target\"\ndependss = [\"dep\"]\n").unwrap();
+        assert_ne!(prints(&modules("media/banner.png", "one")).0, read_same.0, "the mod's own manifest as written");
+        std::fs::write(dir.0.join("dep/mod.toml"), "id = \"dep\"\nname = \"dep\"\nhomepage = \"x\"\n").unwrap();
+        let with_dep_text = prints(&modules("media/banner.png", "one"));
+        std::fs::write(dir.0.join("dep/mod.toml"), "id = \"dep\"\nname = \"dep\"\n").unwrap();
+        assert_eq!(prints(&modules("media/banner.png", "one")), with_dep_text, "a dependency's manifest text");
     }
 
     #[test]
@@ -1437,13 +1539,13 @@ mod tests {
         let mut validation = ModValidation::new(cache.clone());
         validation.sync(None, vec![module.clone()], false);
         let snap = snapshot(&roots, &cancel).unwrap();
-        let first = fingerprint(&snap, &[&module], &validation.memo, &cancel, None).unwrap();
+        let first = fingerprint(&snap, &[&module], &validation.memo, &cancel, None, Some(&module.manifest.id)).unwrap();
         assert_eq!(validation.memo.lock().unwrap().known.len(), 1);
         validation.shutdown();
         // The next launch: the digest is there without reading the file.
         let validation = ModValidation::new(cache.clone());
         assert_eq!(validation.memo.lock().unwrap().known.len(), 1, "kept in {}", DIGESTS);
-        assert_eq!(fingerprint(&snap, &[&module], &validation.memo, &cancel, None).unwrap(), first);
+        assert_eq!(fingerprint(&snap, &[&module], &validation.memo, &cancel, None, Some(&module.manifest.id)).unwrap(), first);
         let mut validation = validation;
         validation.sync(None, vec![module.clone()], false);
         validation.request("test");
@@ -1465,10 +1567,15 @@ mod tests {
         }
         let kept = std::fs::read_dir(&dir.0).unwrap().count();
         assert_eq!(kept, MAX_BASELINES);
-        let partial = Report { complete: false, ..Report::default() };
+        // (One past the check's limits is kept, checked again it stops there again: what the mod
+        // changes is then not told apart. One cancelled is never used.)
+        let limited = Report { complete: false, issues: vec![Issue { code: "validation.limit".into(), ..Issue::default() }], ..Report::default() };
         let path = dir.0.join("baseline-partial.json");
-        write_baseline(&path, "p", &partial);
-        assert!(read_baseline(&path, "p").is_none(), "an incomplete baseline is never used");
+        write_baseline(&path, "p", &limited);
+        assert!(read_baseline(&path, "p").is_some_and(|kept| !kept.complete), "a baseline past the limits is kept");
+        let cancelled = Report { complete: false, issues: vec![Issue { code: "validation.cancelled".into(), ..Issue::default() }], ..Report::default() };
+        write_baseline(&path, "p", &cancelled);
+        assert!(read_baseline(&path, "p").is_none(), "a cancelled baseline is never used");
     }
 
     #[test]

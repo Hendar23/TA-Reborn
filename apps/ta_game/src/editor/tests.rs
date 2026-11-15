@@ -490,6 +490,123 @@ fn failed_map_save_preserves_the_entire_previous_map_and_unrelated_content() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// A map saved again keeps what its mod.toml was given by hand (a banner, links, tags, a theme,
+/// its own description and version, co-authors, keys this TA Reborn does not know, comments): the
+/// editor writes only its own (the name, its author among the others, its description while it is
+/// the editor's).
+#[test]
+fn saving_a_map_again_keeps_its_manifests_hand_added_keys() {
+    let root = std::env::temp_dir().join(format!("ta_editor_manifest_{}", ta_config::profiles::new_id()));
+    let mut doc = blank();
+    let palette = ta_formats::image::Palette::default();
+    let first = save::write_mod(&doc, &palette, &root, "Tester").unwrap();
+    let path = first.dir.join("mod.toml");
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(written.contains("The map Test Map, made with the TA Reborn map editor."), "{written}");
+    let edited = format!("{written}tags = [\"desert\"]\nfuture_key = \"a later version's\" # kept as it is\n\n# Its pictures.\n[media]\nbanner = \"media/banner.png\"\n\n[links]\nForum = \"https://example.com\"\n\n[theme]\naccent = \"#5ab4ff\"\n");
+    std::fs::write(&path, edited).unwrap();
+    doc.props.description = "Renamed".into();
+    let again = save::write_mod(&doc, &palette, &root, "Tester").unwrap();
+    assert_eq!(again.id, first.id);
+    let read = ta_vfs::mods::read_mod(&again.dir).unwrap().unwrap().manifest;
+    assert_eq!(read.media.banner, "media/banner.png");
+    assert_eq!(read.tags, ["desert"]);
+    assert_eq!(read.links.get("Forum").map(String::as_str), Some("https://example.com"));
+    assert_eq!(read.theme.look.accent, "#5ab4ff");
+    assert_eq!((read.name.as_str(), read.version.as_str()), ("Test Map (map)", "1.0"));
+    assert_eq!(read.authors, ["Tester"], "the same author once");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("future_key = \"a later version's\" # kept as it is") && text.contains("# Its pictures.\n[media]"), "{text}");
+    // An author's own description and version are theirs; another author is added after the
+    // first, co-authors added by hand stay.
+    let text = text.replace("The map Test Map, made with the TA Reborn map editor.", "Dunes and a river.").replace("version = \"1.0\"", "version = \"2.1\"")
+        .replace("authors = [\"Tester\"]", "authors = [\"Tester\", \"A. Painter\"]");
+    std::fs::write(&path, text).unwrap();
+    save::write_mod(&doc, &palette, &root, "Second").unwrap();
+    let read = ta_vfs::mods::read_mod(&again.dir).unwrap().unwrap().manifest;
+    assert_eq!((read.description.as_str(), read.version.as_str()), ("Dunes and a river.", "2.1"));
+    assert_eq!(read.authors, ["Tester", "A. Painter", "Second"]);
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.starts_with("# Written by the TA Reborn map editor."), "{text}");
+    assert!(text.contains("future_key = \"a later version's\" # kept as it is") && text.contains("# Its pictures."), "{text}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A map's mod.toml edited by hand so that it does not read is said to be that, with why: not
+/// taken for another mod's folder, and not written over. One edited in a form the game reads
+/// leniently (one tag for a list) is the map's still, and kept as written.
+#[test]
+fn a_maps_hand_edited_manifest_that_does_not_read_is_said_to() {
+    let root = std::env::temp_dir().join(format!("ta_editor_unreadable_{}", ta_config::profiles::new_id()));
+    let doc = blank();
+    let palette = ta_formats::image::Palette::default();
+    let saved = save::write_mod(&doc, &palette, &root, "Tester").unwrap();
+    let path = saved.dir.join("mod.toml");
+    let good = std::fs::read_to_string(&path).unwrap();
+    let broken = format!("{good}tags = [\"desert\"\n");
+    std::fs::write(&path, &broken).unwrap();
+    let problem = save::name_problem(&ta_vfs::Vfs::new(), &doc.props.name, &root).expect("a problem");
+    assert!(problem.contains("does not read") && problem.contains("mod.toml") && !problem.contains("did not save"), "{problem}");
+    let error = format!("{:#}", save::write_mod(&doc, &palette, &root, "Tester").unwrap_err());
+    assert!(error.contains("does not read") && error.contains("line"), "{error}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), broken, "left as the author wrote it");
+    let lenient = format!("{good}tags = \"desert\"\n");
+    std::fs::write(&path, &lenient).unwrap();
+    assert_eq!(save::name_problem(&ta_vfs::Vfs::new(), &doc.props.name, &root), None);
+    save::write_mod(&doc, &palette, &root, "Tester").unwrap();
+    assert!(std::fs::read_to_string(&path).unwrap().contains("tags = \"desert\""));
+    assert_eq!(ta_vfs::mods::read_mod(&saved.dir).unwrap().unwrap().manifest.tags, ["desert"]);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A save stopped between its two renames (the game closed by force) left the map's only copy
+/// aside, hidden from discovery: the next save puts it back first, and saves over it as over any
+/// earlier save (what was added to its folder by hand kept).
+#[test]
+fn a_save_stopped_half_way_is_put_right_by_the_next() {
+    let root = std::env::temp_dir().join(format!("ta_editor_interrupted_{}", ta_config::profiles::new_id()));
+    let mut doc = blank();
+    let palette = ta_formats::image::Palette::default();
+    let saved = save::write_mod(&doc, &palette, &root, "Tester").unwrap();
+    std::fs::write(saved.dir.join("README.txt"), b"user notes").unwrap();
+    let aside = root.join(ta_vfs::package::editor_backup_name(".editor-1-0", &saved.stem));
+    std::fs::rename(&saved.dir, &aside).unwrap();
+    assert!(ta_vfs::mods::scan(&root).0.is_empty(), "the map is gone to discovery");
+    doc.tnt.heights[0] += 10;
+    let again = save::write_mod(&doc, &palette, &root, "Tester").unwrap();
+    assert_eq!((again.dir.clone(), again.id.clone()), (saved.dir.clone(), saved.id.clone()));
+    assert_eq!(std::fs::read(again.dir.join("README.txt")).unwrap(), b"user notes", "the copy aside was the map's");
+    assert!(!aside.exists());
+    let left: Vec<String> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".old") || n.ends_with(".installing") || n.starts_with(".trash-")).collect();
+    assert!(left.is_empty(), "{left:?}");
+    assert_eq!(ta_vfs::mods::scan(&root).0.len(), 1);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A map's folder held open a moment by another program (an antivirus, the launcher reading it)
+/// is swapped all the same, the rename tried again: not a failed save. (Windows refuses renaming a
+/// folder another program holds.)
+#[cfg(windows)]
+#[test]
+fn a_map_folder_held_a_moment_is_saved_all_the_same() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let root = std::env::temp_dir().join(format!("ta_editor_held_{}", ta_config::profiles::new_id()));
+    let mut doc = blank();
+    let palette = ta_formats::image::Palette::default();
+    let saved = save::write_mod(&doc, &palette, &root, "Tester").unwrap();
+    // (Its folder open, others let read and write in it but not move it, as a reader may.)
+    let held = std::fs::OpenOptions::new().read(true).share_mode(0x1 | 0x2).custom_flags(0x0200_0000).open(&saved.dir).unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        drop(held);
+    });
+    doc.tnt.heights[0] += 10;
+    let again = save::write_mod(&doc, &palette, &root, "Tester");
+    release.join().unwrap();
+    assert_eq!(again.unwrap().dir, saved.dir);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn editor_saves_keep_legacy_ids_and_distinguish_colliding_names() {
     let root = std::env::temp_dir().join(format!("ta_editor_ids_{}", ta_config::profiles::new_id()));

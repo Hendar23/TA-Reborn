@@ -563,3 +563,16 @@ and are joined by a comma ("com fonte própria, imagens de fundo nos painéis").
 | TA Reborn {version} or later / this is {current} (this TA Reborn's version) | o TA Reborn {version} ou posterior / a sua versão é {current} |
 | NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | REQUER UM TA REBORN MAIS NOVO |
 | requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / a versão mais antiga do TA Reborn em que o mod funciona |
+
+## mod.toml's keys read past, and a load order that does not resolve (`presentation.rs`, `validation.rs`, `mod_order.rs`, `mods.rs`)
+
+| English | pt-BR |
+|---|---|
+| key / table / a [table] line (TOML; `[table]`, `[{table}]` kept) | chave / tabela / uma linha [table] ("A chave {key} do mod.toml está abaixo de uma linha [table]") |
+| read past (a key) / leave out (a value) | ignorar ("O TA Reborn não conhece a chave {key} do mod.toml e a ignora") / descartar ("o TA Reborn descarta esse valor") |
+| value kinds filling {found} and {expected} ("O valor da chave {key} do mod.toml é {found}, mas ela aceita {expected}") | texto entre aspas / um número inteiro / um número / true ou false (TOML's own words) / uma data / uma lista entre colchetes / uma tabela |
+| a later TA Reborn / older TA Reborns / a slip of the pen | uma versão mais nova do TA Reborn / versões mais antigas do TA Reborn / erro de digitação |
+| in a circle (dependencies) / nest more than 64 deep | em círculo / se aninham em mais de 64 níveis |
+| plates (the HUD's, panel_texture tiled behind them) / the side's own metal plates | placas ("a imagem {path} das placas") / as placas metálicas padrão do lado |
+| line spacing (a font's) | espaçamento entre linhas (altura das linhas) |
+| TURN OFF {name} / STOP PREVIEW (beside VER PRÉVIA) | DESATIVAR {name} (as ATIVAR {name}) / PARAR PRÉVIA |

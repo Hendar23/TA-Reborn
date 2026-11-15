@@ -18,6 +18,16 @@ use thiserror::Error;
 
 use crate::ARCHIVE_EXTENSIONS;
 
+mod manifest;
+pub use manifest::{MOUNTING_KEYS, ManifestNote, ManifestNoteKind, ValueKind, closest_key, manifest_notes, write_manifest};
+
+/// A mod's `mod.toml`. What only presents the mod (`version`, `description`, `authors`, `source`,
+/// `tags`, `media`, `links`, `theme`) reads leniently: a value of another kind than its key takes
+/// is left out, the rest read ([`manifest_notes`] tells it). What decides whether the mod is
+/// mounted (`id`, `name`, `depends`, `load_after`, `conflicts`, `requires_reborn`, `rename`,
+/// `replaces`) does not read with a wrong kind, as a manifest that is no TOML. One string where a
+/// list is wanted is a list of one, in either. (Keys it does not know are read past; written back
+/// with [`write_manifest`], they are kept.)
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ModManifest {
     /// The folder it is installed in, on disks that do not tell case apart: kept in lower
@@ -27,28 +37,28 @@ pub struct ModManifest {
     #[serde(deserialize_with = "lower_case")]
     pub id: String,
     pub name: String,
-    #[serde(default = "default_version")]
+    #[serde(default, deserialize_with = "manifest::loose_text")]
     pub version: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "manifest::loose_text")]
     pub description: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "manifest::loose_texts")]
     pub authors: Vec<String>,
     /// Mods that must be present and are loaded before this one.
-    #[serde(default, deserialize_with = "lower_case_list")]
+    #[serde(default, deserialize_with = "manifest::lower_case_list")]
     pub depends: Vec<String>,
     /// Mods that, if enabled, are loaded before this one.
-    #[serde(default, deserialize_with = "lower_case_list")]
+    #[serde(default, deserialize_with = "manifest::lower_case_list")]
     pub load_after: Vec<String>,
     /// Mods that must not be on with this one (they change the same things in ways that break each
     /// other): with one of them on too, neither is mounted, as with a mod it needs missing.
-    #[serde(default, deserialize_with = "lower_case_list", skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "manifest::lower_case_list", skip_serializing_if = "Vec::is_empty")]
     pub conflicts: Vec<String>,
     /// The oldest TA Reborn the mod plays in (`"1.0.7"`): in an older one it is not mounted, as
     /// with a mod it needs missing ([`version_older`]).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub requires_reborn: String,
     /// Where the mod came from (its page, e.g. on ModDB), when it was installed from there.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(default, deserialize_with = "manifest::loose_text", skip_serializing_if = "String::is_empty")]
     pub source: String,
     /// Folders of the mod's own seen as TA's (`guim = "guis"`: see [`crate::Renames`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -59,18 +69,18 @@ pub struct ModManifest {
     /// placeholders a package ships here (`replaces = ["btdata.ccx"]`) instead of copying them;
     /// an author may name archives a player was told to remove. Its own archives, named like the
     /// install's, replace those without being named here ([`replaced_archives`]).
-    #[serde(default, deserialize_with = "lower_case_list", skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "manifest::lower_case_list", skip_serializing_if = "Vec::is_empty")]
     pub replaces: Vec<String>,
     /// Words the launcher's library finds the mod by and shows on its page ("units", "total
     /// conversion").
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "manifest::loose_texts", skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     /// The pictures the launcher presents the mod with ([`Media`]).
     #[serde(default, skip_serializing_if = "Media::is_empty")]
     pub media: Media,
     /// Web pages of the mod's beyond [`ModManifest::source`], by the words of their buttons
     /// (`Discord = "https://…"`): http and https addresses only are opened.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, deserialize_with = "manifest::loose_links", skip_serializing_if = "BTreeMap::is_empty")]
     pub links: BTreeMap<String, String>,
     /// The colours (and pictures and font) its battles' interface is drawn in ([`Theme`]).
     #[serde(default, skip_serializing_if = "Theme::is_empty")]
@@ -81,9 +91,9 @@ pub struct ModManifest {
 /// mod (the last mod in the load order with one gives them; a player may turn them off). Colours
 /// are written `#rrggbb` (or `#rgb`, `#rrggbbaa`); the pictures and the font are named from the
 /// mod's folder, as its [`Media`] are. Anything left out keeps TA Reborn's own; the shades of a
-/// colour given (its brighter and darker kinds) are made from it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(default)]
+/// colour given (its brighter and darker kinds) are made from it. (Read leniently: its
+/// `Deserialize` is `manifest`'s.)
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Theme {
     /// The colours and pictures of every side's interface.
     #[serde(flatten)]
@@ -102,8 +112,7 @@ pub struct Theme {
 }
 
 /// The colours and pictures of a theme's interface (or of one side's).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Look {
     /// Titles, the chosen and the main action, focus (TA Reborn's brass), and its brighter kind.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -178,8 +187,7 @@ impl Look {
 }
 
 /// The classic HUD's own lettering in a theme.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ClassicLook {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub text: String,
@@ -242,9 +250,9 @@ pub const MEDIA_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "ttf", "otf
 
 /// How the launcher presents a mod: pictures in its folder, each named by its path from the
 /// folder (`media/banner.png`; best in its [`MEDIA_FOLDER`]). Any of them may be left out: a mod
-/// without a banner gets a plate of its own with its name.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(default)]
+/// without a banner gets a plate of its own with its name. (Read leniently: its `Deserialize` is
+/// `manifest`'s.)
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Media {
     /// A wide picture, the mod's card in the library and the top of its page (PNG or JPEG; 2:1,
     /// 1280 × 640 at best: the card shows it whole, the page its middle).
@@ -327,11 +335,6 @@ fn lower_case<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error
     <String as serde::Deserialize>::deserialize(d).map(|id| id.to_lowercase())
 }
 
-/// Mod ids as read, in lower case.
-fn lower_case_list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
-    <Vec<String> as serde::Deserialize>::deserialize(d).map(|ids| ids.into_iter().map(|id| id.to_lowercase()).collect())
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModKind {
     /// Directory with (or without) a manifest; mounted via `Vfs::mount_mod_dir`.
@@ -353,6 +356,8 @@ pub enum ModError {
     Missing(String),
     #[error("mod '{module}' depends on '{dependency}', which is not enabled")]
     MissingDependency { module: String, dependency: String },
+    /// Mods that need each other in a circle: the circle, each id followed by one it needs loaded
+    /// before it, back to the first (`a → b → a`).
     #[error("mod dependency cycle involving: {0}")]
     Cycle(String),
     #[error("mod dependency nesting exceeds 64 levels at: {0}")]
@@ -464,10 +469,7 @@ pub fn read_mod(path: &Path) -> Result<Option<ModInfo>, ModError> {
             }
             manifest
         } else {
-            // (A folder's whole name: "TA.Escalation" is not "TA", nor "Mod v1.2" "Mod v1".)
-            let mut manifest = implicit_manifest(&path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
-            manifest.rename = kept_renames(path, &ModKind::Directory);
-            manifest
+            implicit_folder_manifest(path)
         };
         if reserved_id(&manifest.id) {
             return Err(reserved(path, &manifest.id));
@@ -520,7 +522,7 @@ pub(crate) fn install_work_directory(path: &Path) -> bool {
         .is_some_and(crate::package::safe_component)
 }
 
-fn read_manifest(path: &Path) -> std::io::Result<String> {
+pub(crate) fn read_manifest(path: &Path) -> std::io::Result<String> {
     use std::io::Read;
     let file = std::fs::File::open(path)?;
     let mut text = String::new();
@@ -622,6 +624,16 @@ fn kept_renames(path: &Path, kind: &ModKind) -> BTreeMap<String, String> {
         kept.insert(path.to_path_buf(), (stamp, renames.clone()));
     }
     renames
+}
+
+/// The manifest a folder without one is given ([`read_mod`]): named by the folder's whole name
+/// ("TA.Escalation" is not "TA", nor "Mod v1.2" "Mod v1"), with the renamed folders it uses
+/// ([`implicit_renames`]). Its id is not checked here: the installer names what it installs
+/// itself, whatever the folder of its content is called (`Base/`).
+pub(crate) fn implicit_folder_manifest(path: &Path) -> ModManifest {
+    let mut manifest = implicit_manifest(&path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
+    manifest.rename = kept_renames(path, &ModKind::Directory);
+    manifest
 }
 
 fn implicit_manifest(stem: &str) -> ModManifest {
@@ -736,6 +748,20 @@ pub fn reserved_id(id: &str) -> bool {
 /// `ta-tools mod-install` hold to it.)
 pub fn valid_id(id: &str) -> bool {
     crate::package::safe_component(id) && (1..=MOST_ID_LETTERS).contains(&id.chars().count()) && !reserved_id(id)
+}
+
+/// The id a package (a file of a mod, or a folder) named `name` (its file's stem, or the folder's
+/// name) is installed as when it names none itself in a `mod.toml` of its own: the name's letters
+/// and digits in lower case, any script (`TA_Frenzy_1.41` gives `tafrenzy141`), the first
+/// [`MOST_ID_LETTERS`] of them, and `-mod` after them where they make an id no mod may take
+/// ([`valid_id`]: `base` gives `base-mod`, as `con` gives `con-mod`). Always a [`valid_id`]; None
+/// when the name has no letter or digit. (The launcher and `ta-tools mod-install` make it alike.)
+pub fn package_id(name: &str) -> Option<String> {
+    let id: String = name.to_lowercase().chars().filter(|c| c.is_alphanumeric()).take(MOST_ID_LETTERS).collect();
+    if id.is_empty() { return None; }
+    if valid_id(&id) { return Some(id); }
+    let id = format!("{}-mod", id.chars().take(MOST_ID_LETTERS - 4).collect::<String>());
+    valid_id(&id).then_some(id)
 }
 
 /// Whether a manifest's `[rename]` entry is one the game can follow: a folder of the mod's own
@@ -1043,31 +1069,39 @@ pub fn resolve_load_order<'a>(enabled: &[String], available: &'a [ModInfo]) -> R
     // Depth-first topological sort that visits mods in user order.
     let mut order = Vec::new();
     let mut state: BTreeMap<&str, u8> = BTreeMap::new(); // 1 = visiting, 2 = done
+    // (`path`: the mods being visited, each needing the next before it: a mod met again on it
+    // closes a circle, told whole.)
     fn visit<'a>(
         id: &'a str,
         by_id: &BTreeMap<&str, &'a ModInfo>,
         before: &BTreeMap<&str, Vec<&'a str>>,
         state: &mut BTreeMap<&'a str, u8>,
         order: &mut Vec<&'a ModInfo>,
-        depth: usize,
+        path: &mut Vec<&'a str>,
     ) -> Result<(), ModError> {
         match state.get(id) {
             Some(2) => return Ok(()),
-            Some(1) => return Err(ModError::Cycle(id.to_string())),
+            Some(1) => {
+                let from = path.iter().position(|on| *on == id).unwrap_or(0);
+                let circle: Vec<&str> = path[from..].iter().copied().chain([id]).collect();
+                return Err(ModError::Cycle(circle.join(" → ")));
+            }
             _ => {}
         }
-        if depth > 64 { return Err(ModError::Depth(id.to_string())); }
+        if path.len() > 64 { return Err(ModError::Depth(id.to_string())); }
         let m = by_id[id];
         state.insert(m.manifest.id.as_str(), 1);
+        path.push(m.manifest.id.as_str());
         for &dep in before.get(id).into_iter().flatten() {
-            visit(by_id[dep].manifest.id.as_str(), by_id, before, state, order, depth + 1)?;
+            visit(by_id[dep].manifest.id.as_str(), by_id, before, state, order, path)?;
         }
+        path.pop();
         state.insert(m.manifest.id.as_str(), 2);
         order.push(m);
         Ok(())
     }
     for id in enabled {
-        visit(by_id[id.as_str()].manifest.id.as_str(), &by_id, &before, &mut state, &mut order, 0)?;
+        visit(by_id[id.as_str()].manifest.id.as_str(), &by_id, &before, &mut state, &mut order, &mut Vec::new())?;
     }
     Ok(order)
 }
@@ -1311,6 +1345,48 @@ mod tests {
         assert!(resolve_load_order(&["o".into()], &older).is_ok(), "this version itself: fine");
     }
 
+    /// A mod whose manifest gives one of its presentation's keys a wrong kind (one screenshot for
+    /// a list, a colour as a number) is found all the same, the rest of it read: it was left out
+    /// of the game for it. One whose dependency is written under `[media]` mounts without it, and
+    /// the notes name the key (where TOML put it), for the check to tell its author.
+    #[test]
+    fn a_wrong_kind_in_a_mods_presentation_never_leaves_it_out() {
+        let root = std::env::temp_dir().join(format!("ta_mod_lenient_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let text = "id = \"lenient\"\nname = \"Lenient\"\ndepends = \"Hulls\"\ntags = \"units\"\n\n[media]\nscreenshots = \"media/a.png\"\nrequires_reborn = \"99.0\"\n\n[theme]\naccent = 0x5ab4ff\ntext = \"#dfe7ef\"\n";
+        std::fs::create_dir_all(root.join("lenient")).unwrap();
+        std::fs::write(root.join("lenient/mod.toml"), text).unwrap();
+        let (found, problems) = scan(&root);
+        assert!(problems.is_empty(), "{problems:?}");
+        let manifest = &found[0].manifest;
+        assert_eq!((manifest.depends.as_slice(), manifest.tags.as_slice(), manifest.media.screenshots.as_slice()), (["hulls".to_string()].as_slice(), ["units".to_string()].as_slice(), ["media/a.png".to_string()].as_slice()));
+        assert_eq!((manifest.theme.colour("arm", "accent"), manifest.theme.colour("arm", "text")), (None, Some("#dfe7ef")));
+        assert_eq!(manifest.requires_reborn, "", "written under [media]: the media's, not the mod's");
+        let notes: Vec<(String, ManifestNoteKind)> = manifest_notes(text).into_iter().map(|note| (note.key, note.kind)).collect();
+        assert!(notes.contains(&("media.requires_reborn".to_string(), ManifestNoteKind::Misplaced { belongs: String::new() })), "{notes:?}");
+        assert!(notes.contains(&("theme.accent".to_string(), ManifestNoteKind::WrongKind { expected: ValueKind::String, found: ValueKind::Integer })), "{notes:?}");
+        // What decides mounting, of a wrong kind: the manifest does not read, as before.
+        std::fs::write(root.join("lenient/mod.toml"), "id = \"lenient\"\nname = \"Lenient\"\ndepends = 5\n").unwrap();
+        assert!(matches!(read_mod(&root.join("lenient")), Err(ModError::Manifest { .. })));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A package without a manifest of its own is installed under an id made of its name: always
+    /// one a mod may take, whatever the name.
+    #[test]
+    fn a_packages_id_is_made_from_its_name() {
+        assert_eq!(package_id("TA_Frenzy_1.41").as_deref(), Some("tafrenzy141"));
+        assert_eq!(package_id("Моды 2").as_deref(), Some("моды2"));
+        assert_eq!(package_id("Base").as_deref(), Some("base-mod"));
+        assert_eq!(package_id("REBORN").as_deref(), Some("reborn-mod"));
+        assert_eq!(package_id("com1").as_deref(), Some("com1-mod"));
+        assert_eq!(package_id(&"Ab1 ".repeat(30)).map(|id| id.chars().count()), Some(MOST_ID_LETTERS));
+        assert_eq!(package_id("___ ..."), None);
+        for name in ["Base", "con", &"x".repeat(200), "Übermacht Karten"] {
+            assert!(package_id(name).is_some_and(|id| valid_id(&id)), "{name}");
+        }
+    }
+
     /// Only http and https addresses are opened.
     #[test]
     fn only_web_addresses_are_links() {
@@ -1367,6 +1443,13 @@ mod tests {
             resolve_load_order(&["a".to_string(), "b".to_string()], &cyclic),
             Err(ModError::Cycle(_))
         ));
+        // (The whole circle is told, not the mod it was found at alone.)
+        let three = vec![m("a", &["b"], &[]), m("b", &["c"], &[]), m("c", &["a"], &[]), m("d", &["a"], &[])];
+        let enabled: Vec<String> = ["d", "a", "b", "c"].map(String::from).to_vec();
+        match resolve_load_order(&enabled, &three) {
+            Err(ModError::Cycle(circle)) => assert_eq!(circle, "a → b → c → a"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
@@ -1620,7 +1703,7 @@ mod discovery_tests {
     #[test]
     fn a_manifest_that_does_not_read_is_named_for_its_mod() {
         let root = temp("broken_manifest");
-        for (folder, text) in [("mymod", "id = \"mymod\"\nversion = 1.0\n"), ("fine", "id = \"fine\"\nname = \"Fine\"\n")] {
+        for (folder, text) in [("mymod", "id = \"mymod\"\nname = \"Mine\"\ndepends = 1.0\n"), ("fine", "id = \"fine\"\nname = \"Fine\"\n")] {
             std::fs::create_dir_all(root.join(folder)).unwrap();
             std::fs::write(root.join(folder).join("mod.toml"), text).unwrap();
         }

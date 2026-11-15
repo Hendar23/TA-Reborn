@@ -16,9 +16,11 @@
 - Mods can theme the battle's interface: a `[theme]` in their `mod.toml` draws the HUD, modern
   and classic, in colours of their own (an accent, text, panels, the metal and energy bars, health
   and warnings, a side's own over the rest), with pictures of their own behind the modern HUD's
-  plates and top bar and a font for its titles; the classic HUD keeps TA's art (a mod's interface
-  files change it) and takes the theme's lettering. The last mod in the load order with a theme
-  gives it; MODS' INTERFACE THEMES in the Interface options turns them off. The launcher shows a
+  plates and top bar and a font for its titles (fitted to the HUD's lines); the classic HUD keeps
+  TA's art (a mod's interface files change it) and takes the theme's lettering. The battle's menus,
+  dialogs and result pages, the loading screens and the cockpit keep TA Reborn's own look. The
+  last mod in the load order with a theme gives it; MODS' INTERFACE THEMES in the Interface options
+  turns them off. The launcher shows a
   mod's theme on its page, and the mod check tells what would not draw as meant. Without a theme
   the HUD is drawn as before, to the pixel. See
   [docs/MODDING.md](docs/MODDING.md#theming-the-interface).
@@ -28,6 +30,48 @@
   shows a red lamp when it needs a newer TA Reborn).
 - `ta-tools mod-new <folder>` makes a new mod's folder: a `mod.toml` naming it, every other key
   written out and commented, a `media` folder and a read-me of what goes where.
+- The mod check reads a mod's `mod.toml` as TA Reborn reads it and tells what is read otherwise
+  than written: a key it does not know (with the key likely meant, `depends` for `depend`), a key
+  written below a `[table]` line, which TOML takes for that table's (a `requires_reborn` after
+  `[media]` is never read), a value of the wrong kind, one text where a list is wanted. A key that
+  decides what the game mounts, misplaced or mistyped, is a warning: the mod is mounted as if it
+  were not given.
+- When the load order does not resolve, LOAD ORDER offers to turn off what stops it: a mod that
+  needs one not installed or a newer TA Reborn, or either of two that cannot be on together.
+
+### Changed
+- A `mod.toml` is read more forgivingly: a value of the wrong kind in what only presents the mod
+  (its version, description, authors, tags, pictures, links or theme) is left out and the rest
+  read, where the whole mod was left out; one text where a list is wanted is a list of that one
+  (`tags = "units"`, `depends = "ship-hulls"`). What decides whether it is mounted is read as
+  strictly as before.
+- Installing a mod, the launcher and `ta-tools mod-install` keep its `mod.toml` as written,
+  comments and keys this TA Reborn does not know too, changing only what the install sets; the map
+  editor, saving a map as a mod again, does the same and keeps the map's other authors.
+
+### Fixed
+- Installing a mod failed when its manifest named a file in one of TA's folders in other capitals
+  than the disk's (`Fonts/hud.ttf` for `fonts/hud.ttf`), when its content folder was called `Base`
+  or `Reborn`, when the package's file name made an id the launcher refuses (longer than 64
+  letters, `base.zip`) though the package names its own, and when it held only a `mod.toml` that
+  blanks archives of the original game. A manifest that does not read is named by its place in the
+  package, with what TOML found.
+- The map editor saving a map as a mod: a save cut off between its two steps (by an antivirus, a
+  crash) could leave the map in a hidden backup folder; the launcher puts it back at its start,
+  and the editor at its next save. A `mod.toml` edited by hand that did not read made the editor
+  say the folder was not its own: it now says what does not read.
+- The launcher checked a mod again at every start when the check stopped at its own limits (a very
+  large mod) or found nothing of it to read: such a report is now kept for the same content, as a
+  complete one is (a cancelled check never is). The check of the original game without the mod is
+  no longer redone when a mod it depends on changes only its name, description, pictures or
+  theme.
+- A mod's check that could not mount the mod with what it needs said so in English only, with
+  advice that did not fit: mods needing each other in a circle, a mod that cannot be on with
+  another it is mounted with, and one that needs a newer TA Reborn each have words of their own,
+  in the player's language, and what to do, in the launcher and in `ta-tools validate-mod` alike.
+- `ta-tools validate-mod` lists its findings in the launcher's order.
+- Names listed together on the Mods page ("by …", "requires …") are joined as the player's
+  language joins them.
 
 ## 1.0.6 — 2026-11-15
 

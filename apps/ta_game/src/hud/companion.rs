@@ -46,8 +46,8 @@ impl Hud {
             waiting_card(ui, screen, key);
             return;
         }
-        let side = game.sim.players.get(game.hud_player() as usize).map_or_else(String::new, |p| p.side.clone());
-        self.skin.load(&ctx, vfs, &side, &self.theme_textures);
+        let side = game.sim.players.get(game.hud_player() as usize).map_or("", |p| p.side.as_str());
+        self.skin.load(&ctx, vfs, side, &self.theme_pictures);
         self.trend.sample(game);
         let header = Rect::from_min_size(screen.min + vec2(MARGIN, MARGIN), vec2(screen.width() - 2.0 * MARGIN, HEADER));
         self.companion_plate(ui, header, false, |hud, ui| hud.companion_close |= header_line(ui, game));
@@ -295,7 +295,7 @@ impl Hud {
         let some = idle_builders > 0;
         let (rect, response) = ui.allocate_exact_size(vec2(width, 26.0), if some { Sense::click() } else { Sense::hover() });
         let p = ui.painter();
-        p.rect_filled(rect, 3.0, if some && response.hovered() { Color32::from_rgb(70, 52, 30) } else { Color32::from_black_alpha(60) });
+        p.rect_filled(rect, 3.0, if some && response.hovered() { lit_brass(Color32::from_rgb(70, 52, 30)) } else { Color32::from_black_alpha(60) });
         if some {
             p.rect_stroke(rect, 3.0, Stroke::new(1.0, pal().accent.gamma_multiply(0.5)), StrokeKind::Inside);
         }
@@ -392,7 +392,7 @@ fn events(ui: &mut egui::Ui, game: &mut Game) {
             let button = Rect::from_min_size(pos2(rect.right() - look, rect.top() + 2.0), vec2(look, EVENT_ROW - 4.0));
             let response = ui.interact(button, ui.id().with(("look", tick)), Sense::click());
             let p = ui.painter();
-            p.rect_filled(button, 2.0, if response.hovered() { Color32::from_rgb(70, 52, 30) } else { Color32::from_rgb(48, 38, 24) });
+            p.rect_filled(button, 2.0, lit_brass(if response.hovered() { Color32::from_rgb(70, 52, 30) } else { Color32::from_rgb(48, 38, 24) }));
             p.rect_stroke(button, 2.0, Stroke::new(1.0, pal().accent.gamma_multiply(0.6)), StrokeKind::Inside);
             p.text(button.center(), Align2::CENTER_CENTER, t("LOOK"), strong(10.5), pal().accent_bright);
             if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -400,6 +400,11 @@ fn events(ui: &mut egui::Ui, game: &mut Game) {
             }
         }
     }
+}
+
+/// A button's dark brass (TA Reborn's), as a theme moved the accent's darkest shade.
+fn lit_brass(colour: Color32) -> Color32 {
+    retinted(colour, AMBER_DEEP, pal().accent_deep)
 }
 
 /// Outside a battle: the emblem, the screen's name, and what will be there.

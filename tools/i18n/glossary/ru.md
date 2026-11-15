@@ -540,3 +540,24 @@ mod's page and checked under ОФОРМЛЕНИЕ. HUD stays HUD, masculine, in 
 | TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} или новее ("Моду {name} нужен …", on the mod's page "требуется …") / у вас {current} |
 | NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | НУЖЕН БОЛЕЕ НОВЫЙ TA REBORN |
 | requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / самая старая версия TA Reborn, в которой работает мод (мод подключается) |
+
+## A mod's mod.toml as read, and the load order in the check (`presentation.rs`, `validation.rs`, `pages/mods.rs`, `mod_order.rs`)
+
+Keys, `[table]`, `[{table}]`, `depends`, `load_after`, `conflicts`, `panel_texture` and file names stay as written. TA Reborn takes no pronoun here (its gender varies in the file): "TA Reborn не знает ключа…", "у вас {this}, а эта версия его не подключает".
+
+| English | Русский |
+|---|---|
+| key / value / table (TOML's) | ключ / значение / таблица ("Ключ {key} в mod.toml", "Значение ключа {key} в mod.toml") |
+| a [table] line / below it / at the top of mod.toml | строка [table] / ниже строки [table], "поэтому считается частью этой таблицы" / в начале mod.toml, выше первой строки [table] |
+| it belongs in [{table}] / move the line | его место — в таблице [{table}] / перенесите строку с ключом |
+| reads past (a key it does not know) / did you mean | пропускает при чтении / возможно, вы имели в виду |
+| a key of a later TA Reborn's / a slip of the pen / kept as written | ключ более новой версии TA Reborn / опечатка / остаётся в файле нетронутым |
+| value kinds ({found}, {expected}: nominative, after "—" and "а требуется") | текст в кавычках / целое число / число / true или false (TOML's literals) / дата / список в квадратных скобках / таблица: "Значение ключа {key} в mod.toml — {found}, а требуется {expected}" |
+| leaves it out (a value of the wrong kind) | не учитывает (not пропускает, which also reads as "lets through") |
+| one text where a list is wanted / a list of that one | задано одним текстом, а нужен список / список из одного элемента |
+| dependencies in a circle / nest more than 64 deep | зависят друг от друга по кругу / вложены глубже чем на 64 уровня |
+| the mods it needs (the check's fix) / archives it blanks (its replaces) | зависимости этого мода / архивы, которые он отключает |
+| STOP PREVIEW (beside СМОТРЕТЬ РОЛИК) / TURN OFF {name} | ОСТАНОВИТЬ РОЛИК / ВЫКЛЮЧИТЬ {name} (as ВКЛЮЧИТЬ {name}) |
+| one frame in {stride} / choppier than it was made | один кадр из {stride} / менее плавно, чем в оригинале |
+| plates (the HUD's metal plates) / its plates' picture / the side's own metal plates | панели / фоновое изображение панелей / собственные металлические панели стороны |
+| line spacing / its letters show at {percent}% | межстрочный интервал / буквы отображаются в масштабе {percent}% ("в {line} раза": раза after a fraction) |

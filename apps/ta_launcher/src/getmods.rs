@@ -73,12 +73,13 @@ impl Source {
 
     /// A package as the mod it becomes. A folder laid out as a mod already (its `mod.toml`)
     /// keeps its id and name; anything else is named after the file or folder: the id its
-    /// letters and digits in lower case, in any script (as `ta-tools mod-install` makes it),
-    /// the name as it came. None when nothing of the name is left to make an id of. (An
-    /// archive's own manifest is found once it is unpacked.)
+    /// letters and digits in lower case, in any script, the first 64, `-mod` after one no mod may
+    /// take (`ta_vfs::mods::package_id`, as `ta-tools mod-install` makes it), the name as it came.
+    /// None when nothing of the name is left to make an id of. (An archive's own manifest is found
+    /// once it is unpacked, and names it then.)
     pub fn package(path: &Path) -> Option<Source> {
         if path.is_dir()
-            && let Some(own) = own_manifest(path).ok().flatten()
+            && let Some((own, _)) = own_manifest(path).ok().flatten()
         {
             return Some(Source::Package { path: path.to_path_buf(), id: own.id, name: own.name });
         }
@@ -93,8 +94,8 @@ impl Source {
             // in lower case as it is, any letter).
             return Some(Source::Classic { path: path.to_path_buf(), id: stem.to_lowercase(), name: stem });
         }
-        let id: String = stem.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect();
-        (!id.is_empty()).then(|| Source::Package { path: path.to_path_buf(), id, name: stem.trim().to_string() })
+        let id = ta_vfs::mods::package_id(&stem)?;
+        Some(Source::Package { path: path.to_path_buf(), id, name: stem.trim().to_string() })
     }
 }
 
@@ -109,8 +110,9 @@ pub fn catalogue_release(path: &Path) -> Option<&'static Entry> {
 }
 
 /// The manifest of a mod laid out as one already (`mod.toml` in `dir`), when it reads and its
-/// id can name a folder. Invalid metadata must not silently become an implicit manifest.
-fn own_manifest(dir: &Path) -> Result<Option<ta_vfs::mods::ModManifest>, String> {
+/// id can name a folder, with its text (the installed copy's is written over it). Invalid metadata
+/// must not silently become an implicit manifest.
+fn own_manifest(dir: &Path) -> Result<Option<(ta_vfs::mods::ModManifest, String)>, String> {
     use std::io::Read;
     use ta_ui::i18n::{t, tf};
     const LIMIT: u64 = 1 << 20;
@@ -134,7 +136,7 @@ fn own_manifest(dir: &Path) -> Result<Option<ta_vfs::mods::ModManifest>, String>
     if manifest.rename.iter().any(|(from, to)| !ta_vfs::mods::valid_rename(from, to)) {
         return Err(invalid(&t("a renamed folder may stand only for one of TA's own")));
     }
-    Ok(Some(manifest))
+    Ok(Some((manifest, text)))
 }
 
 /// Why a mod cannot be installed as `id`: one the original game's or TA Reborn's own content goes
@@ -422,19 +424,18 @@ fn install(
         return Err(Failure::Cancelled);
     }
     send(Stage::Unpacking);
-    if !ta_vfs::mods::valid_id(&manifest.id) {
-        return Err(refused_id(&manifest.id).into());
-    }
-    let legacy_temp = cache.join("unpack").join(&manifest.id);
+    // (The id asked for is checked once the package is read: its own manifest may name it
+    // otherwise, whatever its file is called.)
+    let legacy_temp = ta_vfs::package::safe_component(&manifest.id).then(|| cache.join("unpack").join(&manifest.id));
     // A recovered old staging folder may contain unfinished files. Preserve it and
     // ask the player to move it before importing; never clear it as scratch space.
-    if within(&path, &legacy_temp) || within(&legacy_temp, &path) {
+    if legacy_temp.as_ref().is_some_and(|legacy_temp| within(&path, legacy_temp) || within(legacy_temp, &path)) {
         return Err(t("the source overlaps the install staging folder; move it outside the cache first").to_string().into());
     }
     let workspace = InstallWorkspace::create(&cache.join("unpack"))?;
     let temp = workspace.0.join("content");
     (|| -> Result<(usize, usize, String), Failure> {
-        let (plan, own) = if path.is_dir() {
+        let (mut plan, own) = if path.is_dir() {
             // A folder needs no unpacking: it is planned where it is, and what goes into the mod
             // copied out of it (the player's folder stays as it was). Not a drive, nor a folder
             // holding the launcher's own (it would be copied into itself).
@@ -460,13 +461,25 @@ fn install(
         // A mod laid out as one already keeps its own manifest (its id, what it needs): one of
         // another mod installed now is asked about first, as a package named after it would be
         // (where it is, and that it goes, are the player's to agree to).
-        if let Some(own) = &own
+        if let Some((own, _)) = &own
             && own.id != manifest.id
             && installed.lock().is_ok_and(|installed| installed.contains(&own.id))
         {
             return Err(Failure::Replaces { id: own.id.clone(), name: own.name.clone() });
         }
-        let manifest = own.unwrap_or_else(|| manifest.clone());
+        // (Its own manifest from the package's top, over its content's folder: the installed
+        // copy's is written over that one, its comments and keys TA Reborn does not know kept.)
+        let manifest = match own {
+            Some((own, text)) => {
+                if plan.authored_text.is_none() { plan.authored_text = Some(text); }
+                own
+            }
+            None => manifest.clone(),
+        };
+        // (Named after its file, or its own manifest: refused here, before anything changes.)
+        if !ta_vfs::mods::valid_id(&manifest.id) {
+            return Err(refused_id(&manifest.id).into());
+        }
         // (Cancelled while it was being unpacked: nothing is installed.)
         if cancelled() {
             return Err(Failure::Cancelled);
@@ -601,6 +614,7 @@ pub fn package_error(e: &ta_vfs::package::PackageError) -> String {
         E::NoUnpacker => t("No program to unpack archives was found: install 7-Zip from 7-zip.org.").to_string(),
         E::Incomplete { file } => tf("Only part of {file} could be unpacked: install 7-Zip (7-zip.org) and try again.", &[("file", file)]),
         E::NoContent => t("No Total Annihilation content was found in the package.").to_string(),
+        E::Manifest { path, message } => tf("The manifest {file} does not read: {error}", &[("file", path), ("error", &message.trim())]),
         E::Unpack { tool, file, message } => tf("{tool} could not unpack {file}: {message}", &[("tool", tool), ("file", file), ("message", message)]),
         other => other.to_string(),
     }
@@ -736,19 +750,24 @@ fn install_catalogue(
     let unpacked = workspace.0.join("unpacked");
     unpacker.unpack_cancellable(&archive, &unpacked, cancelled).map_err(unpack_failure)?;
     let plan = ta_vfs::package::plan(&unpacked).map_err(|e| package_error(&e))?;
-    let mut manifest = ta_vfs::mods::ModManifest {
+    let catalogue = ta_vfs::mods::ModManifest {
         id: entry.id.into(), name: entry.name.into(), version: file.map_or("unverified", |file| file.version).into(),
         description: entry.pitch.into(), authors: vec![entry.team.into()],
         depends: Vec::new(), load_after: Vec::new(), source: entry.page(), rename: BTreeMap::new(), replaces: Vec::new(), ..Default::default()
     };
-    // (The catalogue names it; how it presents itself is its own: the pictures, links, tags and
-    // interface theme its package's manifest gives.)
-    if let Some(own) = &plan.authored {
-        manifest.media = own.media.clone();
-        manifest.links = own.links.clone();
-        manifest.tags = own.tags.clone();
-        manifest.theme = own.theme.clone();
-    }
+    // The catalogue names it: its id (the settings', records' and other mods' name for it), name,
+    // the version it tested, its pitch, its team and its page. The rest is the package's own
+    // manifest's: what it needs and loads after, what it must not be on with, the TA Reborn it
+    // plays in, the archives it replaces, how it presents itself (its pictures, links, tags and
+    // interface theme), and what this TA Reborn does not know of it (the installed manifest is
+    // written over the package's: `Plan::authored_text`).
+    let manifest = match &plan.authored {
+        Some(own) => ta_vfs::mods::ModManifest {
+            id: catalogue.id, name: catalogue.name, version: catalogue.version, description: catalogue.description,
+            authors: catalogue.authors, source: catalogue.source, ..own.clone()
+        },
+        None => catalogue,
+    };
     if cancelled() { return Err(Failure::Cancelled); }
     publish_install(&plan, &manifest, mods_dir, cancelled, running, game)?;
     log::info!("installed {} {} ({} units, {} maps; left out: {})", manifest.name, manifest.version, plan.units, plan.maps, plan.skipped.join(", "));
@@ -1683,6 +1702,17 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(Source::package(Path::new("___.zip")).is_none(), "nothing to make an id of");
+        // An id any mod may take, whatever the file is called: the first 64 letters and digits,
+        // and not one of the game's own content's (its own manifest, once unpacked, may name it
+        // otherwise).
+        let long = format!("{}.zip", "Very Long Name ".repeat(8));
+        for (file, id) in [("base.zip", "base-mod"), ("Reborn.7z", "reborn-mod"), ("con.rar", "con-mod"), (long.as_str(), "verylongname".repeat(6).get(..64).unwrap())] {
+            match Source::package(&Path::new("Downloads").join(file)) {
+                Some(Source::Package { id: made, .. }) => assert_eq!(made, id, "{file}"),
+                other => panic!("{file}: {other:?}"),
+            }
+            assert!(ta_vfs::mods::valid_id(id));
+        }
         // A classic archive is the mod the game reads it as (its id in lower case, any letter:
         // as the settings keep it).
         match Source::package(&Path::new("Downloads").join("Übermacht Karten.UFO")) {
@@ -2254,6 +2284,97 @@ version = \"1.1\"
         assert!(!mods.join("late").exists(), "nothing installed");
         assert!(!cache.join("unpack").join("late").exists(), "nothing left in the cache");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A package asked for under an id no mod may take (one named after its file by an older
+    /// launcher: `base`, or more than 64 letters) is installed as its own manifest names it: the
+    /// id asked is checked only where nothing replaces it, and then refused before anything
+    /// changes.
+    #[test]
+    fn a_packages_own_manifest_names_it_whatever_it_was_asked_as() {
+        let dir = temp_dir("own_names_it");
+        let package = dir.join("base");
+        std::fs::create_dir_all(package.join("units")).unwrap();
+        std::fs::write(package.join("units/a.fbi"), b"[UNITINFO]{UnitName=A;}").unwrap();
+        std::fs::write(package.join("mod.toml"), "id = \"own-id\"\nname = \"Own\"\n").unwrap();
+        let mods = dir.join("mods");
+        for asked in ["base".to_string(), "x".repeat(70)] {
+            let source = Source::Package { path: package.clone(), id: asked.clone(), name: "base".into() };
+            let result = install(&source, &mods, &dir.join("cache"), &|_| {}, &|| false, &Mutex::default(), &AtomicBool::new(false), &Mutex::default());
+            assert!(matches!(&result, Ok((1, 0, id)) if id == "own-id"), "{asked}: {result:?}");
+        }
+        std::fs::remove_file(package.join("mod.toml")).unwrap();
+        let source = Source::Package { path: package.clone(), id: "base".into(), name: "base".into() };
+        let result = install(&source, &dir.join("mods2"), &dir.join("cache"), &|_| {}, &|| false, &Mutex::default(), &AtomicBool::new(false), &Mutex::default());
+        assert!(matches!(&result, Err(Failure::Error(why)) if why.contains("another name")), "{result:?}");
+        assert!(!dir.join("mods2").exists() || ta_vfs::mods::scan(&dir.join("mods2")).0.is_empty(), "nothing installed");
+        // (Named as the launcher names it now: a mod of its own.)
+        let source = Source::package(&package).unwrap();
+        assert_eq!(source.id(), "base-mod");
+        let result = install(&source, &dir.join("mods2"), &dir.join("cache"), &|_| {}, &|| false, &Mutex::default(), &AtomicBool::new(false), &Mutex::default());
+        assert!(matches!(&result, Ok((1, 0, id)) if id == "base-mod"), "{result:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A dropped folder naming a file in another case than the disk's, in a folder of TA's kept
+    /// whole (`font = "Fonts/hud.ttf"` for `fonts/hud.ttf`), installs: it was copied twice, and
+    /// the second copy failed. One that brings only an interface theme installs too.
+    #[test]
+    fn a_dropped_folder_naming_its_files_in_any_case_or_only_theming_installs() {
+        let dir = temp_dir("dropped_case");
+        let package = dir.join("Cased");
+        std::fs::create_dir_all(package.join("units")).unwrap();
+        std::fs::create_dir_all(package.join("fonts")).unwrap();
+        std::fs::write(package.join("units/a.fbi"), b"[UNITINFO]{UnitName=A;}").unwrap();
+        std::fs::write(package.join("fonts/hud.ttf"), b"ttf").unwrap();
+        std::fs::write(package.join("mod.toml"), "id = \"cased\"\nname = \"Cased\"\n[theme]\nfont = \"Fonts/hud.ttf\"\n").unwrap();
+        let mods = dir.join("mods");
+        let result = install(&Source::package(&package).unwrap(), &mods, &dir.join("cache"), &|_| {}, &|| false, &Mutex::default(), &AtomicBool::new(false), &Mutex::default());
+        assert!(matches!(&result, Ok((1, 0, id)) if id == "cased"), "{result:?}");
+        assert!(mods.join("cased/fonts/hud.ttf").is_file());
+        let themed = dir.join("Blue HUD");
+        std::fs::create_dir_all(themed.join("media/hud")).unwrap();
+        std::fs::write(themed.join("media/hud/panel.png"), b"png").unwrap();
+        std::fs::write(themed.join("mod.toml"), "id = \"blue-hud\"\nname = \"Blue HUD\"\n[theme]\naccent = \"#5ab4ff\"\npanel_texture = \"media/hud/panel.png\"\n").unwrap();
+        let result = install(&Source::package(&themed).unwrap(), &mods, &dir.join("cache"), &|_| {}, &|| false, &Mutex::default(), &AtomicBool::new(false), &Mutex::default());
+        assert!(matches!(&result, Ok((0, 0, id)) if id == "blue-hud"), "{result:?}");
+        let installed = ta_vfs::mods::read_mod(&mods.join("blue-hud")).unwrap().unwrap();
+        assert_eq!(installed.manifest.theme.colour("arm", "accent"), Some("#5ab4ff"));
+        assert!(mods.join("blue-hud/media/hud/panel.png").is_file());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A catalogue install is named by the catalogue (its id, name, version, pitch, team and
+    /// page), and keeps the rest of its package's own manifest: what it needs and loads after, what
+    /// it must not be on with, the TA Reborn it plays in, the archives it replaces, and the keys
+    /// and comments this TA Reborn does not know.
+    #[test]
+    fn a_catalogue_install_keeps_its_packages_guards() {
+        if ta_vfs::package::Unpacker::find().is_none() { return; }
+        let dir = temp_dir("catalogue_guards");
+        let manifest = b"# The package's own.\nid = \"taesc\"\nname = \"Escalation\"\nversion = \"9.4\"\ndepends = [\"core-units\"]\nload_after = [\"maps\"]\nconflicts = [\"old-navy\"]\nrequires_reborn = \"1.0.7\"\nreplaces = [\"btdata.ccx\"]\nfuture_key = \"kept\"\n";
+        let files: [(&str, &[u8]); 2] = [("units/TEST.FBI", b"[UNITINFO]{UnitName=TEST;}"), ("mod.toml", manifest)];
+        let bytes = ta_vfs::test_archive::zip(&files);
+        let entry = website_entry(catalogue::File { download: catalogue::Download::ManualOnly, ..pinned_file(&bytes) });
+        let source = dir.join("test.zip");
+        std::fs::write(&source, &bytes).unwrap();
+        let mods = dir.join("mods");
+        let result = install(&Source::Catalogue(entry, Some(source)), &mods, &dir.join("cache"), &|_| {}, &|| false, &Mutex::default(), &AtomicBool::new(false), &Mutex::default());
+        assert!(matches!(&result, Ok((1, 0, id)) if id == "verifiedtest"), "{result:?}");
+        let installed = ta_vfs::mods::read_mod(&mods.join("verifiedtest")).unwrap().unwrap().manifest;
+        assert_eq!((installed.id.as_str(), installed.name.as_str(), installed.version.as_str(), installed.source.as_str()), ("verifiedtest", "Verified test", "test", "https://example.invalid/mod"));
+        assert_eq!((installed.depends.as_slice(), installed.load_after.as_slice(), installed.conflicts.as_slice()), (["core-units".to_string()].as_slice(), ["maps".to_string()].as_slice(), ["old-navy".to_string()].as_slice()));
+        assert_eq!((installed.requires_reborn.as_str(), installed.replaces.as_slice()), ("1.0.7", ["btdata.ccx".to_string()].as_slice()));
+        let text = std::fs::read_to_string(mods.join("verifiedtest/mod.toml")).unwrap();
+        assert!(text.contains("# The package's own.") && text.contains("future_key = \"kept\""), "{text}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A package's manifest that does not read is said as that, where the package has it.
+    #[test]
+    fn a_packages_manifest_that_does_not_read_is_said_to() {
+        let said = package_error(&ta_vfs::package::PackageError::Manifest { path: "My Mod/mod.toml".into(), message: "expected `=`\n".into() });
+        assert_eq!(said, "The manifest My Mod/mod.toml does not read: expected `=`");
     }
 
     /// Cancelling an install before it starts leaves it as if never asked for (no failure).

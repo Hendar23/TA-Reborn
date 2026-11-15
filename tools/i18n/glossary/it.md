@@ -571,3 +571,22 @@ fondo metallico, drawn invece: "metallo" alone reads as the resource. Straight a
 | TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} o versioni successive / hai la {current} |
 | NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | RICHIEDE UN TA REBORN PIÙ RECENTE |
 | requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / la versione più vecchia di TA Reborn con cui funziona la mod |
+
+## The manifest of a mod as the check reads it, and its load order (`presentation.rs`, `validation.rs`, `mod_order.rs`)
+
+`mod.toml`, `[table]`, `[{table}]`, `depends`, `load_after`, `conflicts`, `panel_texture` and
+`tags = ["units"]` stay as written; a manifest key is una voce (feminine: la salta, la tralascia), as
+"La voce {key} di mod.toml". `{found}` and `{expected}` fill "La voce {key} di mod.toml è {found} ma
+dovrebbe essere {expected}": noun phrases with their article. Straight apostrophes.
+
+| English | Italiano |
+|---|---|
+| key (of mod.toml) / value / table / [table] line / manifest | voce / valore / tabella / riga [table] / manifesto |
+| text in quotes / a whole number / a number / true or false | un testo tra virgolette / un numero intero / un numero / true o false (TOML's own words) |
+| a date / a list in square brackets / a table | una data / una lista tra parentesi quadre / una tabella |
+| reads past it (an unknown key) / leaves it out (a value of another kind) | la salta / la tralascia |
+| a slip of the pen | una svista |
+| need each other in a circle / nest more than 64 deep | si richiedono a vicenda in un circolo chiuso / si annidano per più di 64 livelli |
+| plates (the HUD's, a theme's picture behind them) / the side's own metal plates | piastre / le piastre metalliche proprie della fazione |
+| line spacing / one frame in {stride} (a preview played with fewer frames) / choppier | interlinea / uno ogni {stride} / più a scatti |
+| TURN OFF {name} (a mod, beside ENABLE {name}) / STOP PREVIEW (beside PLAY PREVIEW) | DISATTIVA {name} / FERMA ANTEPRIMA (as STOP: FERMA) |

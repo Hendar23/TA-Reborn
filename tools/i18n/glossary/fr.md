@@ -621,3 +621,24 @@ is son propre fond métallique, shown à la place: "métal" alone reads as the r
 | TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} ou version ultérieure / vous avez la {current} |
 | NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | NÉCESSITE UN TA REBORN PLUS RÉCENT |
 | requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / la plus ancienne version de TA Reborn où le mod fonctionne |
+
+## A mod's manifest as the check reads it, and its load order (`presentation.rs`, `validation.rs`, `mod_order.rs`)
+
+`mod.toml`, `[table]`, `[{table}]`, `depends`, `load_after`, `conflicts`, `panel_texture` and
+`tags = ["units"]` stay as written; a manifest key is une entrée (feminine: elle, la), as "L’entrée
+{key} de mod.toml". `{found}` and `{expected}` fill "L’entrée {key} de mod.toml est {found} alors
+qu’elle attend {expected}": noun phrases with their article. The check's notes use curly ’ and
+no-break spaces; the launcher's own lines (`modlist.rs`, `mods.rs`) keep straight apostrophes.
+
+| English | Français |
+|---|---|
+| key (of mod.toml) / value / table / [table] line / manifest | entrée / valeur / table / ligne [table] / manifeste |
+| text in quotes / a whole number / a number / true or false | du texte entre guillemets / un nombre entier / un nombre / true ou false (TOML's own words) |
+| a date / a list in square brackets / a table | une date / une liste entre crochets / une table |
+| an unknown key read past / a value of another kind left out | inconnue de TA Reborn, qui l’ignore / TA Reborn l’écarte |
+| a slip of the pen | une faute de frappe |
+| need each other in a circle / nest more than 64 deep | dépendent les uns des autres en boucle / s’imbriquent sur plus de 64 niveaux |
+| plates (the HUD's, a theme's picture behind them) / the side's own metal plates | plaques / les plaques métalliques propres au camp |
+| line spacing / its letters show at {percent}% of their size | hauteur de ligne, interligne / ses lettres s’affichent à {percent} % de leur taille |
+| one frame in {stride} (a preview played with fewer of its frames) / choppier | une sur {stride} / plus saccadé |
+| TURN OFF {name} (a mod, beside ENABLE {name}) / STOP PREVIEW (beside PLAY PREVIEW) | DÉSACTIVER {name} / ARRÊTER L'APERÇU |

@@ -505,3 +505,19 @@ script 腳本, piece 零件, archive 壓縮檔, manifest 資訊清單; lists 「
 | TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} 或以上版本 (not 或更新版本: it would sit beside 請更新, update) / 目前為 {current} |
 | NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | 需要較新版本的 TA REBORN |
 | requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / 此模組可執行的最低 TA Reborn 版本 (not a version: 不是版本號) |
+
+## A mod's mod.toml as read, its load order (`presentation.rs`, `validation.rs`, `modlist.rs`)
+
+`[table]`, `[{table}]`, `depends`, `load_after`, `conflicts`, `panel_texture` and `docs/MODDING.md`
+stay as they are. {found} and {expected} hold Chinese words, so no space around them: mod.toml 的
+{key} 的值是{found}，但該鍵需要的是{expected}.
+
+| English | 繁體中文 |
+|---|---|
+| key (mod.toml's) / the key's name / a [table] line / table | 鍵 / 鍵名 / [table] 行 / 表 |
+| reads past it (a key it does not know) / leaves it out (a value of another kind) | 會被跳過 / 會略過此值 |
+| text in quotes / a whole number / a number / true or false / a date / a list in square brackets / a table | 以引號括住的文字 / 整數 / 數字 / 布林值（true 或 false） / 日期 / 以方括號括住的清單 / 表 |
+| a later TA Reborn / older TA Reborns / a slip of the pen | 較新版本 TA Reborn / 舊版 TA Reborn / 筆誤 |
+| need each other in a circle / nest more than 64 deep (dependencies) | 互相需要、形成循環 / 巢狀超過 64 層（相依關係） |
+| plates (the HUD's, panel_texture tiled on them; beside 面板, the panels' colour) / the side's own metal plates | 底板（底板圖片） / 陣營本身的金屬底板 |
+| TURN OFF {name} / STOP PREVIEW (beside 啟用 {name}, 播放預覽) | 停用 {name} / 停止預覽 |

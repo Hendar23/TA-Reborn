@@ -522,3 +522,19 @@ its brackets round the translated words, no spaces: ARM 已损失[[数十亿]], 
 | TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} 或更高版本 / 当前为 {current} |
 | NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | 需要更高版本的 TA REBORN |
 | requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / 此模组可运行的最低 TA Reborn 版本 (not a version: 不是版本号) |
+
+## A mod's mod.toml as read, its load order (`presentation.rs`, `validation.rs`, `modlist.rs`)
+
+`[table]`, `[{table}]`, `depends`, `load_after`, `conflicts`, `panel_texture` and `docs/MODDING.md`
+stay as they are. {found} and {expected} hold Chinese words, so no space around them: mod.toml 的
+{key} 的值是{found}，但该键需要的是{expected}.
+
+| English | 简体中文 |
+|---|---|
+| key (mod.toml's) / the key's name / a [table] line / table | 键 / 键名 / [table] 行 / 表 |
+| reads past it (a key it does not know) / leaves it out (a value of another kind) | 会被跳过 / 会略去此值 |
+| text in quotes / a whole number / a number / true or false / a date / a list in square brackets / a table | 带引号的文本 / 整数 / 数字 / 布尔值（true 或 false） / 日期 / 用方括号括起的列表 / 表 |
+| a later TA Reborn / older TA Reborns / a slip of the pen | 更高版本 TA Reborn / 旧版 TA Reborn / 笔误 |
+| need each other in a circle / nest more than 64 deep (dependencies) | 互相需要、形成循环 / 嵌套超过 64 层（依赖关系） |
+| plates (the HUD's, panel_texture tiled on them; beside 面板, the panels' colour) / the side's own metal plates | 底板（底板图片） / 阵营自己的金属底板 |
+| TURN OFF {name} / STOP PREVIEW (beside 启用 {name}, 播放预览) | 停用 {name} / 停止预览 |

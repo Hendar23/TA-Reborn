@@ -3057,8 +3057,13 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   other keys). A library lock covers destination checks and publication. Existing targets
   must be ordinary editor-owned folders; a disabled unrelated mod cannot be overwritten.
   The complete replacement, including retained extra assets/documents, is prepared in a
-  private `.installing` folder before the old directory is moved aside. A failed publish
-  restores the old directory, or reports the retained backup if restoration also fails.
+  private `.installing` folder before the old directory is moved aside (to
+  `.editor-<pid>-<n>-<folder>.old`; each rename retried a few seconds where Windows refuses it
+  for a file held open). A failed publish restores the old directory, or reports the retained
+  backup if restoration also fails; a save stopped between the two renames is put right by the
+  next save and by the launcher's start (`ta_vfs::package::restore_editor_backups`). The
+  `mod.toml` is written over the earlier one (`ta_vfs::mods::write_manifest`): what was added by
+  hand (co-authors, keys TA Reborn does not know, comments) is kept.
   Copying rejects links and bounds depth, entry count and total bytes. The save then enables
   the mod in settings and mounts it over the running game's data (a new VFS with the same
   layers), so the skirmish page lists the map at once. Settings failure remains a save error;
