@@ -235,7 +235,7 @@ impl LauncherApp {
                     if off.is_empty() {
                         self.notify(tf("{name} is installed and on: {units} units, {maps} maps", &[("name", &entry.name), ("units", &units), ("maps", &maps)]), GREEN);
                     } else {
-                        self.notify(tf("{name} is installed and on in place of {others}: {units} units, {maps} maps", &[("name", &entry.name), ("others", &off.join(", ")), ("units", &units), ("maps", &maps)]), GREEN);
+                        self.notify(tf("{name} is installed and on in place of {others}: {units} units, {maps} maps", &[("name", &entry.name), ("others", &crate::pages::listed(&off)), ("units", &units), ("maps", &maps)]), GREEN);
                     }
                 }
                 None => {
@@ -286,7 +286,15 @@ impl LauncherApp {
         }
     }
 
+    /// A dialog is open over the page: the launcher's own, or the Mods library's screenshots on
+    /// the whole window. (Under one, the page and the shortcuts take no keys.)
     pub(crate) fn dialog_open(&self) -> bool {
+        self.mod_lightbox.is_some() || self.question_open()
+    }
+
+    /// A dialog of the launcher's own is open: over everything, the Mods library's screenshots on
+    /// the whole window too (they are only opened from the page).
+    pub(crate) fn question_open(&self) -> bool {
         self.profiles.dialog_open() || self.show_shortcuts || self.whats_new.is_some()
             || self.confirm_uninstall.is_some() || self.confirm_replace.is_some() || self.mod_validation.selected.is_some() || self.conversion_prompt.is_some() || self.battle_prompt.is_some() || self.show_mod_folders
             || self.confirm_close || self.confirm_end_game || self.show_progress
@@ -405,7 +413,7 @@ impl LauncherApp {
             ui.add(egui::Label::new(RichText::new(text).color(TEXT)).wrap());
             // (The mods that need it: they would not be loaded without it.)
             if !needing.is_empty() {
-                ui.add(egui::Label::new(RichText::new(tf("{mods} need it: they are not loaded without it.", &[("mods", &needing.join(", "))])).color(AMBER)).wrap());
+                ui.add(egui::Label::new(RichText::new(tf("{mods} need it: they are not loaded without it.", &[("mods", &crate::pages::listed(&needing))])).color(AMBER)).wrap());
             }
             ui.add(egui::Label::new(RichText::new(path.display().to_string()).font(mono(12.0)).color(STEEL)).wrap());
             ui.add_space(6.0);

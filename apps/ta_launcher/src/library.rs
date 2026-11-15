@@ -63,6 +63,8 @@ pub struct Pictures {
     name: &'static str,
     threads: usize,
     cap: usize,
+    /// How the textures are drawn (smoothly, and to their edges unless repeated).
+    options: egui::TextureOptions,
     queue: Option<Arc<Queue>>,
     workers: Vec<JoinHandle<()>>,
     results: Option<mpsc::Receiver<Made>>,
@@ -79,8 +81,23 @@ const QUEUE_CAP: usize = 512;
 
 impl Pictures {
     pub fn new(name: &'static str, threads: usize, cap: usize) -> Self {
-        Self { name, threads, cap, queue: None, workers: Vec::new(), results: None, pending: HashSet::new(), show: HashSet::new(),
+        Self { name, threads, cap, options: egui::TextureOptions::LINEAR, queue: None, workers: Vec::new(), results: None, pending: HashSet::new(), show: HashSet::new(),
             failed: HashSet::new(), textures: HashMap::new(), sizes: HashMap::new(), frame: 0, made: 0 }
+    }
+
+    /// Its textures drawn so (a picture repeated across what it fills: `TextureWrapMode::Repeat`).
+    pub fn options(mut self, options: egui::TextureOptions) -> Self {
+        self.options = options;
+        self
+    }
+
+    /// Lets go of every texture, and of the pictures still waiting their turn (those being made
+    /// are let go as they come in): none of them is on show any more.
+    pub fn clear(&mut self) {
+        if self.textures.is_empty() && self.show.is_empty() { return; }
+        self.drop_queued();
+        self.show.clear();
+        self.textures.clear();
     }
 
     /// The picture for `key`, if made (it counts as shown this frame).
@@ -194,7 +211,7 @@ impl Pictures {
                 Ok(picture) => {
                     if let Some(size) = picture.size { self.sizes.insert(key.clone(), size); }
                     if show {
-                        let texture = ctx.load_texture(format!("{}:{key}", self.name), picture.image, egui::TextureOptions::LINEAR);
+                        let texture = ctx.load_texture(format!("{}:{key}", self.name), picture.image, self.options);
                         self.textures.insert(key, (texture, self.frame));
                     }
                 }

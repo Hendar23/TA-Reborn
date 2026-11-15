@@ -614,3 +614,21 @@ its place 옵션 · 인터페이스. {most} (a size limit, "16.0 MB") is followe
 | TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} 이상 (필요) / 현재 {current} |
 | NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | TA REBORN 업데이트 필요 |
 | requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / 모드가 작동하는 가장 오래된 TA Reborn 버전 |
+
+## A mod's mod.toml as read, its load order (`presentation.rs`, `validation.rs`, `modlist.rs`)
+
+The notes follow the presentation notes above (two sentences, 하세요). `[table]`, `[{table}]`,
+`depends`, `load_after`, `conflicts`, `panel_texture` and `docs/MODDING.md` stay as they are; a
+manifest key is {key} 항목, and mod.toml takes a noun before a particle that depends on its sound
+(mod.toml 파일을). {found} and {expected} are followed by 형식: 항목 값이 {found} 형식입니다. 이 항목은
+{expected} 형식을 받으므로...
+
+| English | 한국어 |
+|---|---|
+| key (mod.toml's) / a [table] line / table | 키 ({key} 항목) / [table] 줄 / 테이블 |
+| reads past it (a key it does not know) / leaves it out (a value of another kind) | 읽지 않고 건너뜁니다 / 이 값을 빼고 읽습니다 |
+| text in quotes / a whole number / a number / true or false / a date / a list in square brackets / a table | 따옴표로 묶은 텍스트 / 정수 / 숫자 / true 또는 false / 날짜 / 대괄호로 묶은 목록 / 테이블 |
+| a later TA Reborn / older TA Reborns / a slip of the pen | 더 새로운 TA Reborn / 이전 버전의 TA Reborn / 오타 |
+| need each other in a circle / nest more than 64 deep (dependencies) | 순환하며 서로를 필요로 하다 / 64단계보다 깊게 중첩 (의존 관계) |
+| plates (the HUD's, panel_texture tiled on them; beside 패널, the panels' colour) / the side's own metal plates | 판 (판에 깔린 이미지) / 진영 고유의 금속판 |
+| TURN OFF {name} / STOP PREVIEW (beside ENABLE {name}, PLAY PREVIEW) | {name} 끄기 / 미리 보기 정지 |

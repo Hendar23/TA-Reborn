@@ -16,7 +16,7 @@ pub fn run(dir: &Path, id: Option<String>, name: Option<String>) -> Result<()> {
     let folder = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "My Mod".into());
     let name = name.unwrap_or(folder);
     let id = id.unwrap_or_else(|| id_of(&name)).to_lowercase();
-    anyhow::ensure!(ta_vfs::mods::valid_id(&id), "the id {id:?} is not one a mod may have: 1 to 64 letters, digits, - or _, not base or reborn (give one with --id)");
+    anyhow::ensure!(ta_vfs::mods::valid_id(&id), "the id {id:?} is not one a mod may have: 1 to 64 characters that can name a folder on every system (no control characters, none of < > : \" / \\ | ? *, not ending in a dot or a space, not a name Windows keeps for a device such as CON, NUL or COM1), other than base and reborn (give one with --id)");
     std::fs::create_dir_all(dir.join("media")).with_context(|| dir.display().to_string())?;
     std::fs::write(dir.join("mod.toml"), manifest(&id, &name))?;
     std::fs::write(dir.join("README.md"), readme(&name))?;
@@ -118,6 +118,11 @@ mod tests {
         let read = ta_vfs::mods::read_mod(&root.join("x")).unwrap().unwrap();
         assert_eq!((read.manifest.id.as_str(), read.manifest.name.as_str()), ("my_id", "A \"quoted\" name"));
         assert!(run(&root.join("y"), Some("base".into()), None).is_err(), "a reserved id");
+        // The rule the error tells is the rule ids are held to: any script, dots and spaces too,
+        // not a folder name some system refuses.
+        run(&root.join("z"), Some("作者.mod v2".into()), None).expect("an id any script may write");
+        let refused = run(&root.join("w"), Some("con".into()), None).unwrap_err().to_string();
+        assert!(refused.contains("1 to 64 characters") && refused.contains("CON") && !refused.contains("letters, digits, - or _"), "{refused}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

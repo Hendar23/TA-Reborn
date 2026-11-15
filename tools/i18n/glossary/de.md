@@ -646,3 +646,24 @@ Metalloptik: "Metall" alone reads as the resource.
 | TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} oder neuer / Installiert ist {current} |
 | NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | BENÖTIGT NEUERES TA REBORN |
 | requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / die älteste Version von TA Reborn, in der die Mod läuft |
+
+## A mod's manifest as the check reads it, and its load order (`presentation.rs`, `validation.rs`, `mod_order.rs`)
+
+`mod.toml`, `[table]`, `[{table}]`, `depends`, `load_after`, `conflicts`, `panel_texture` and
+`tags = ["units"]` stay as written; a manifest key is ein Eintrag throughout ("Der Eintrag {key} in
+mod.toml", as the presentation notes). `{found}` and `{expected}` fill "Der Eintrag {key} in mod.toml
+ist {found}, erwartet wird aber {expected}": noun phrases that read the same in the nominative and the
+accusative.
+
+| English | Deutsch |
+|---|---|
+| key (of mod.toml) / value / table / [table] line / manifest | Eintrag / Wert / Tabelle / [table]-Zeile / Manifest |
+| text in quotes / a whole number / a number / true or false | Text in Anführungszeichen / eine ganze Zahl / eine Zahl / true oder false (TOML's own words) |
+| a date / a list in square brackets / a table | ein Datum / eine Liste in eckigen Klammern / eine Tabelle |
+| reads past it (an unknown key) / leaves it out (a value of another kind) | wird überlesen / lässt ihn weg |
+| a slip of the pen | ein Schreibfehler |
+| need each other in a circle / nest more than 64 deep | benötigen einander im Kreis / mehr als 64 Ebenen tief verschachtelt |
+| plates (the HUD's, a theme's picture behind them) / the side's own metal plates | Platten / die eigenen Metallplatten der Seite |
+| line spacing / its letters show at {percent}% of their size | Zeilenabstand / ihre Buchstaben erscheinen mit {percent}% ihrer Größe |
+| one frame in {stride} (a preview played with fewer of its frames) / choppier | einen von {stride} Frames / ruckeliger |
+| TURN OFF {name} (a mod, beside ENABLE {name}) / STOP PREVIEW (beside PLAY PREVIEW) | {name} DEAKTIVIEREN / VORSCHAU STOPPEN |

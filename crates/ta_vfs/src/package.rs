@@ -35,6 +35,11 @@ pub enum PackageError {
     Incomplete { file: String },
     #[error("no Total Annihilation content was found in the package")]
     NoContent,
+    /// The `mod.toml` of the package's content (`path`, where the package has it) does not read,
+    /// or says what no mod may (an id of the game's own content's, a renamed folder the game
+    /// cannot follow): its author meant it, so the package is not installed by guesswork.
+    #[error("the package's {path} does not read: {message}")]
+    Manifest { path: String, message: String },
     #[error("{path}: {source}")]
     Io { path: String, source: std::io::Error },
     /// Stopped on request (the tool was killed).
@@ -398,6 +403,45 @@ pub struct Plan {
     /// (its pictures, links and tags) for an install that names the mod otherwise (the
     /// catalogue's).
     pub authored: Option<ModManifest>,
+    /// The text of the package's own manifest ([`Plan::authored`], or one a caller takes from
+    /// elsewhere in the package): [`install`] writes the installed copy's `mod.toml` over it,
+    /// keeping its comments and the keys TA Reborn does not know ([`crate::mods::write_manifest`]).
+    pub authored_text: Option<String>,
+}
+
+/// Whether a manifest gives a mod something of its own beyond files of TA's: an interface theme,
+/// pictures of itself, or archives of the original game it replaces. A package holding no more is
+/// a mod all the same (one that only themes the interface, or only blanks archives).
+fn presents(manifest: &ModManifest) -> bool {
+    !manifest.theme.is_empty() || !manifest.media.is_empty() || !manifest.replaces.is_empty()
+}
+
+/// `path` (in `root`, as a manifest names it: on a disk that does not tell case apart it opens
+/// in any case of its letters) as the disk spells it: each of its parts below `root` as its folder
+/// lists it (the one of that very name, else one of another case). The mod is installed as the
+/// package lays it out.
+fn as_on_disk(root: &Path, path: &Path) -> PathBuf {
+    let Ok(relative) = path.strip_prefix(root) else { return path.to_path_buf() };
+    let mut at = root.to_path_buf();
+    for part in relative.components() {
+        let part = part.as_os_str();
+        let listed = std::fs::read_dir(&at).ok().and_then(|entries| {
+            let mut names: Vec<std::ffi::OsString> = entries.flatten().map(|entry| entry.file_name()).collect();
+            names.sort();
+            let lower = part.to_string_lossy().to_lowercase();
+            names.iter().find(|name| name.as_os_str() == part).or_else(|| names.iter().find(|name| name.to_string_lossy().to_lowercase() == lower)).cloned()
+        });
+        at.push(listed.as_deref().unwrap_or(part));
+    }
+    at
+}
+
+/// Whether `path` is `folder` or in it, the names of their parts compared in any case: a manifest
+/// may name a file in another case than the disk has it, and on a disk that does not tell case
+/// apart (Windows', macOS's) the named path opens as it is written.
+fn within_any_case(path: &Path, folder: &Path) -> bool {
+    let mut parts = path.components();
+    folder.components().all(|part| parts.next().is_some_and(|other| other.as_os_str().to_string_lossy().to_lowercase() == part.as_os_str().to_string_lossy().to_lowercase()))
 }
 
 /// The most a mod's pictures and fonts may weigh, each and all together, and how many there may
@@ -476,6 +520,9 @@ pub fn plan(unpacked: &Path) -> Result<Plan, PackageError> {
     // own folder contains data. A wrapper manifest without data still uses the old layout.
     manifests.sort_by_key(|dir| (dir.components().count(), dir.clone()));
     let mut authored = None;
+    // (Else, the shallowest of a mod that brings nothing of TA's: one that only themes the
+    // interface, presents itself or blanks archives. Taken only where nothing else is found.)
+    let mut presenting = None;
     for dir in manifests {
         // Probe candidates without letting skipped examples or extras invalidate the
         // package. The selected root's metadata is read and validated below.
@@ -485,6 +532,9 @@ pub fn plan(unpacked: &Path) -> Result<Plan, PackageError> {
             authored = Some(dir);
             break;
         }
+        if presenting.is_none() && presents(&own.manifest) {
+            presenting = Some(dir);
+        }
     }
     // Without an authored layout, content is beside the largest archive, else TA's
     // shallowest folder, as in the original community packages.
@@ -492,19 +542,41 @@ pub fn plan(unpacked: &Path) -> Result<Plan, PackageError> {
         Some(root) => root,
         None => match archives.iter().max_by_key(|(_, size)| *size) {
             Some((path, _)) => path.parent().unwrap_or(unpacked).to_path_buf(),
-            None => folder_parents.iter().min_by_key(|p| p.components().count()).cloned().ok_or(PackageError::NoContent)?,
+            None => match folder_parents.iter().min_by_key(|p| p.components().count()) {
+                Some(parent) => parent.clone(),
+                None => presenting.ok_or(PackageError::NoContent)?,
+            },
         },
     };
-    let own = crate::mods::read_mod(&root).map_err(|error| PackageError::Unsafe(error.to_string()))?
-        .ok_or(PackageError::NoContent)?.manifest;
-    let declared = renamed_folders(&own.rename)?;
-    let has_manifest = crate::mods::manifest_path(&root).is_file();
-    let mut plan = Plan { root: root.clone(), rename: own.rename.clone(), authored: has_manifest.then(|| own.clone()), ..Default::default() };
     let rel = |p: &Path| p.strip_prefix(unpacked).unwrap_or(p).to_string_lossy().replace('\\', "/");
-    // The pictures (and its theme's font) its manifest names beside the content, wherever they
-    // are there (those in a folder kept whole come with it).
-    let named: std::collections::BTreeSet<PathBuf> = own.media.files().chain(own.theme.files()).filter_map(|file| crate::mods::media_path(&root, file))
-        .filter(|path| path.file_name().is_some_and(|name| is_media(&name.to_string_lossy()))).collect();
+    let manifest_file = crate::mods::manifest_path(&root);
+    let has_manifest = std::fs::symlink_metadata(&manifest_file).is_ok();
+    let (own, authored_text) = if has_manifest {
+        // (Its author meant it: one that does not read is told as that, where the package has it.)
+        let unreadable = |message: String| PackageError::Manifest { path: rel(&manifest_file), message };
+        let own = match crate::mods::read_mod(&root) {
+            Ok(own) => own.ok_or(PackageError::NoContent)?.manifest,
+            Err(crate::mods::ModError::Manifest { message, .. }) => return Err(unreadable(message)),
+            Err(error) => return Err(unreadable(error.to_string())),
+        };
+        (own, Some(crate::mods::read_manifest(&manifest_file).map_err(|error| unreadable(error.to_string()))?))
+    } else {
+        // (Named by its folder, as a folder without a manifest is, whatever that is called: the
+        // install names the mod itself, so a folder named like the game's own content, `Base/`,
+        // is no matter.)
+        (crate::mods::implicit_folder_manifest(&root), None)
+    };
+    let declared = renamed_folders(&own.rename)?;
+    let mut plan = Plan { root: root.clone(), rename: own.rename.clone(), authored: has_manifest.then(|| own.clone()), authored_text, ..Default::default() };
+    // The pictures (and its theme's files) its manifest names beside the content, wherever they
+    // are there, in the order it names them (those in a folder kept whole come with it: below).
+    let mut named: Vec<PathBuf> = Vec::new();
+    for path in own.media.files().chain(own.theme.files()).filter_map(|file| crate::mods::media_path(&root, file)) {
+        let path = as_on_disk(&root, &path);
+        if path.file_name().is_some_and(|name| is_media(&name.to_string_lossy())) && !named.contains(&path) {
+            named.push(path);
+        }
+    }
     let mut media_folders = Vec::new();
     plan.archives = archives.iter().filter(|(p, _)| p.parent() == Some(root.as_path())).map(|(p, _)| p.clone()).collect();
     plan.archives.sort();
@@ -543,6 +615,8 @@ pub fn plan(unpacked: &Path) -> Result<Plan, PackageError> {
         } else if plan.archives.contains(&path) || stubs.contains(&path) || unreadable.iter().any(|(p, _)| *p == path) {
         } else if named.contains(&path) {
             // (One of its pictures: below.)
+        } else if has_manifest && name == "mod.toml" {
+            // (Its manifest: the installed copy's is written over it.)
         } else if is_document(&name) {
             plan.docs.push(path);
         } else {
@@ -564,31 +638,6 @@ pub fn plan(unpacked: &Path) -> Result<Plan, PackageError> {
             }
         }
     }
-    // Its pictures and fonts: the media folder's (of their kinds, as many as it may hold), then
-    // those the manifest names elsewhere, outside the folders it keeps whole.
-    let mut weight = 0u64;
-    let in_root = |path: &Path| path.strip_prefix(&root).ok().map(|p| p.to_string_lossy().replace('\\', "/"));
-    let take = |plan: &mut Plan, path: &Path, weight: &mut u64| {
-        let Some(to) = in_root(path).filter(|to| safe_relative(to)) else { plan.skipped.push(rel(path)); return };
-        let size = std::fs::metadata(path).map_or(u64::MAX, |m| m.len());
-        if !path.file_name().is_some_and(|name| is_media(&name.to_string_lossy())) {
-            plan.skipped.push(format!("{} (not a picture or a font)", rel(path)));
-        } else if size > MAX_MEDIA_FILE || weight.saturating_add(size) > MAX_MEDIA_BYTES || plan.media.len() >= MAX_MEDIA_FILES {
-            plan.skipped.push(format!("{} (beyond what a mod's pictures may weigh)", rel(path)));
-        } else if !plan.media.iter().any(|(_, taken)| taken.eq_ignore_ascii_case(&to)) {
-            *weight += size;
-            plan.media.push((path.to_path_buf(), to));
-        }
-    };
-    for folder in &media_folders {
-        let mut files = Vec::new();
-        walk(folder, 0, &mut |path, is_dir| if !is_dir { files.push(path.to_path_buf()) });
-        files.sort();
-        for file in files { take(&mut plan, &file, &mut weight); }
-    }
-    let kept_whole = |path: &Path| plan.folders.iter().chain(&media_folders).any(|folder| path.starts_with(folder));
-    let outside: Vec<PathBuf> = named.iter().filter(|path| !kept_whole(path)).cloned().collect();
-    for path in outside { take(&mut plan, &path, &mut weight); }
     // What the content holds, by top folder: how many files of each kind.
     let mut contents = Contents::new();
     let mut content_paths = std::collections::BTreeSet::new();
@@ -622,7 +671,38 @@ pub fn plan(unpacked: &Path) -> Result<Plan, PackageError> {
             plan.skipped.push(format!("{}/", f.strip_prefix(&unpacked_root).unwrap_or(&f).to_string_lossy().replace('\\', "/")));
         }
     }
-    if plan.archives.is_empty() && plan.folders.is_empty() {
+    // Its pictures and fonts, once the folders it keeps whole are known (one named like TA's that
+    // proved to be none is not kept: a picture named in it is taken on its own). Those its
+    // manifest names first, wherever they are beside the content (outside the folders kept whole,
+    // which bring theirs), so that none of the rest crowds them out; then the media folder's (of
+    // their kinds, as many as may be).
+    let mut weight = 0u64;
+    let in_root = |path: &Path| path.strip_prefix(&root).ok().map(|p| p.to_string_lossy().replace('\\', "/"));
+    let take = |plan: &mut Plan, path: &Path, weight: &mut u64| {
+        let Some(to) = in_root(path).filter(|to| safe_relative(to)) else { plan.skipped.push(rel(path)); return };
+        let size = std::fs::metadata(path).map_or(u64::MAX, |m| m.len());
+        if !path.file_name().is_some_and(|name| is_media(&name.to_string_lossy())) {
+            plan.skipped.push(format!("{} (not a picture or a font)", rel(path)));
+        } else if plan.media.iter().any(|(_, taken)| taken.to_lowercase() == to.to_lowercase()) {
+            // (Named, and in the media folder too: taken once.)
+        } else if size > MAX_MEDIA_FILE || weight.saturating_add(size) > MAX_MEDIA_BYTES || plan.media.len() >= MAX_MEDIA_FILES {
+            plan.skipped.push(format!("{} (beyond what a mod's pictures may weigh)", rel(path)));
+        } else {
+            *weight += size;
+            plan.media.push((path.to_path_buf(), to));
+        }
+    };
+    let outside: Vec<PathBuf> = named.iter().filter(|path| !plan.folders.iter().any(|folder| within_any_case(path, folder))).cloned().collect();
+    for path in &outside { take(&mut plan, path, &mut weight); }
+    for folder in &media_folders {
+        let mut files = Vec::new();
+        walk(folder, 0, &mut |path, is_dir| if !is_dir { files.push(path.to_path_buf()) });
+        files.sort();
+        for file in files { take(&mut plan, &file, &mut weight); }
+    }
+    // (A manifest of a mod that brings nothing of TA's but its theme, its pictures or the archives
+    // it replaces is a mod all the same.)
+    if plan.archives.is_empty() && plan.folders.is_empty() && !plan.authored.as_ref().is_some_and(presents) {
         return Err(PackageError::NoContent);
     }
     // Count distinct virtual files after applying the same full-path mapping the VFS
@@ -898,7 +978,10 @@ pub fn install_with_commit_guard<G>(
         for name in &plan.replaces {
             if !manifest.replaces.contains(name) { manifest.replaces.push(name.clone()); }
         }
-        let text = toml::to_string_pretty(&manifest).map_err(|e| PackageError::Io { path: "mod.toml".into(), source: std::io::Error::other(e) })?;
+        // (Over the package's own, where it has one: its comments, and keys this TA Reborn does not
+        // know, a later one's, kept.)
+        let text = crate::mods::write_manifest(plan.authored_text.as_deref(), &manifest)
+            .map_err(|e| PackageError::Io { path: "mod.toml".into(), source: std::io::Error::other(e) })?;
         let toml_path = staging.join("mod.toml");
         std::fs::write(&toml_path, text).map_err(io(&toml_path))
     })();
@@ -974,8 +1057,8 @@ const RENAME_PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// A rename of the swap, tried again for a few seconds where Windows refuses it because a file
 /// in the folder is open for a moment: an antivirus reading the files just written, a check or
-/// a picture still reading the version replaced.
-fn rename_patiently(from: &Path, to: &Path) -> std::io::Result<()> {
+/// a picture still reading the version replaced. (The map editor's swap too.)
+pub fn rename_patiently(from: &Path, to: &Path) -> std::io::Result<()> {
     let deadline = std::time::Instant::now() + RENAME_PATIENCE;
     loop {
         match std::fs::rename(from, to) {
@@ -998,8 +1081,9 @@ pub(crate) const TRASH_PREFIX: &str = ".trash-";
 /// Removes a version replaced (`path`, in `mods_dir`): renamed out of its reserved name first,
 /// in one step, then deleted. Stopped half way (the launcher closed, the power cut), what is
 /// left is a folder of no mod's that [`recover`] sweeps away, never a version half deleted
-/// under the name the next install of the mod would take for one of its own.
-fn discard(mods_dir: &Path, path: &Path) -> Result<(), PackageError> {
+/// under the name the next install of the mod would take for one of its own. (The map editor
+/// discards the copy of a map it replaced so too.)
+pub fn discard(mods_dir: &Path, path: &Path) -> Result<(), PackageError> {
     if std::fs::symlink_metadata(path).is_err() { return Ok(()); }
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
@@ -1187,6 +1271,111 @@ pub fn recover(mods_dir: &Path) -> Vec<String> {
             }
         }
     }
+    // (A map editor's save stopped half way: put right while no editor saves, its lock free.)
+    if entries.iter().any(|entry| entry.file_name().to_str().is_some_and(|name| editor_backup(name).is_some()))
+        && let Ok((_, lock)) = open_lock(mods_dir.join(EDITOR_SAVE_LOCK))
+        && lock.try_lock().is_ok()
+        && let Ok(_publishing) = lock_publication(mods_dir)
+    {
+        done.extend(restore_editor_backups(mods_dir));
+    }
+    done
+}
+
+/// The lock the map editor holds on a mods folder while it saves a map there: what a save stopped
+/// half way left is put right ([`restore_editor_backups`]) only while no save holds it.
+pub const EDITOR_SAVE_LOCK: &str = ".editor-save.lock";
+
+/// The folder the map editor moves the previous copy of a map's folder (`folder`, in the mods
+/// folder) aside to while it puts the new copy in its place (`work`: the save's own working name,
+/// `.editor-<pid>-<n>`): named after the map's folder, so that a save stopped between its two
+/// steps can be put right. Hidden from discovery, as an install's working folders are.
+pub fn editor_backup_name(work: &str, folder: &str) -> String {
+    format!("{work}-{folder}.old")
+}
+
+/// A name of the map editor's backups read ([`editor_backup_name`]): the map's folder it was
+/// moved aside from, or None for one an editor from before that named it so left
+/// (`.editor-<pid>-<n>.old`). None of either: no backup of the editor's.
+fn editor_backup(name: &str) -> Option<Option<String>> {
+    let rest = name.strip_prefix(".editor-")?.strip_suffix(".old")?;
+    let digits = |part: &str| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit());
+    let (pid, rest) = rest.split_once('-')?;
+    if !digits(pid) { return None; }
+    match rest.split_once('-') {
+        Some((n, folder)) if digits(n) && !folder.is_empty() => Some(Some(folder.to_string())),
+        None if digits(rest) => Some(None),
+        _ => None,
+    }
+}
+
+/// Where a backup an older map editor left belongs ([`editor_backup`]: its name does not tell): the
+/// folder named like the one map it holds (`maps/<name>.tnt`, the editor's folder for it). None
+/// when it holds none, or several.
+fn older_editor_backup_folder(backup: &Path) -> Option<String> {
+    let maps = crate::install::find_dir_ci(backup, "maps")?;
+    let stems: Vec<String> = std::fs::read_dir(maps).ok()?.flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_str()?.to_string();
+            let (stem, extension) = name.rsplit_once('.')?;
+            (extension.eq_ignore_ascii_case("tnt") && entry.file_type().is_ok_and(|t| t.is_file())).then(|| stem.to_string())
+        })
+        .collect();
+    match stems.as_slice() {
+        [stem] => Some(stem.clone()),
+        _ => None,
+    }
+}
+
+/// Puts right what a map editor's save stopped half way (the game closed by force, the power
+/// gone) left in `mods_dir`: the previous copy of a map's folder, moved aside for the swap
+/// ([`editor_backup_name`]), goes back to its folder when that is missing (discovery hides the
+/// copy aside: the map was gone), and is discarded when the folder holds the same map again (the
+/// swap had finished: the same mod id). One an older editor left, whose name does not tell its
+/// folder, goes back to the folder named like the one map it holds when that is missing and no mod
+/// there has its id. Anything else is left as it is, and said. The caller holds the editor's save
+/// lock ([`EDITOR_SAVE_LOCK`]: the editor's next save does, [`recover`] takes it). What was done,
+/// for the log.
+pub fn restore_editor_backups(mods_dir: &Path) -> Vec<String> {
+    let mut done = Vec::new();
+    let Ok(entries) = std::fs::read_dir(mods_dir) else { return done };
+    let mut backups: Vec<(String, PathBuf, Option<String>)> = entries.flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| {
+            let name = entry.file_name().to_str()?.to_string();
+            let folder = editor_backup(&name)?;
+            Some((name, entry.path(), folder))
+        })
+        .collect();
+    backups.sort();
+    let id_of = |dir: &Path| crate::mods::read_mod(dir).ok().flatten().map(|m| m.manifest.id);
+    for (name, backup, folder) in backups {
+        let older = folder.is_none();
+        let Some(folder) = folder.or_else(|| older_editor_backup_folder(&backup)).filter(|folder| safe_component(folder)) else {
+            done.push(format!("left {name} as it is: which map's folder it was is not known"));
+            continue;
+        };
+        let target = mods_dir.join(&folder);
+        let id = id_of(&backup);
+        match std::fs::symlink_metadata(&target) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if older && id.as_ref().is_some_and(|id| crate::mods::scan(mods_dir).0.iter().any(|m| m.manifest.id == *id)) {
+                    done.push(format!("left {name} as it is: the map {folder} is installed elsewhere"));
+                    continue;
+                }
+                match rename_patiently(&backup, &target) {
+                    Ok(()) => done.push(format!("restored the map {folder} (its save had stopped half way) from {name}")),
+                    Err(e) => done.push(format!("could not restore the map {folder} from {name}: {e}")),
+                }
+            }
+            Ok(_) if id.is_some() && id_of(&target) == id => match discard(mods_dir, &backup) {
+                Ok(()) => done.push(format!("removed the replaced copy of the map {folder} ({name})")),
+                Err(e) => done.push(format!("could not remove the replaced copy of the map {folder} ({name}): {e}")),
+            },
+            Ok(_) => done.push(format!("left {name} as it is: {folder} holds another mod")),
+            Err(e) => done.push(format!("left {name} as it is: {folder}: {e}")),
+        }
+    }
     done
 }
 
@@ -1238,7 +1427,11 @@ fn move_path(from: &Path, to: &Path) -> Result<(), PackageError> {
         let _ = std::fs::remove_dir_all(from);
         Ok(())
     } else {
-        std::fs::copy(from, to).map_err(io(to))?;
+        std::fs::copy(from, to).map_err(|error| {
+            // (Named for the one at fault: the file moved, gone or not to be opened, else where it goes.)
+            let source = std::fs::File::open(from).is_err();
+            io(if source { from } else { to })(error)
+        })?;
         let _ = std::fs::remove_file(from);
         Ok(())
     }
@@ -1276,7 +1469,12 @@ mod tests {
         std::fs::write(root.join("Main/units/tank.fbi"), b"unit").unwrap();
         for invalid in ["not TOML", "id = '../escape'\nname = 'Unsafe'", "id = 'main'\nname = 'Main'\n[rename]\n'../outside' = 'units'"] {
             std::fs::write(root.join("Main/mod.toml"), invalid).unwrap();
-            assert!(matches!(plan(&root), Err(PackageError::Unsafe(_))), "selected metadata must fail validation: {invalid}");
+            // (Told as the manifest that does not read, where the package has it, with why: not as
+            // unsafe content at a path of the cache's.)
+            let result = plan(&root);
+            assert!(matches!(&result, Err(PackageError::Manifest { path, message }) if path == "Main/mod.toml" && !message.is_empty()), "selected metadata must fail validation: {invalid}: {result:?}");
+            let said = result.unwrap_err().to_string();
+            assert!(said.starts_with("the package's Main/mod.toml does not read: ") && !said.contains(&root.display().to_string()), "{said}");
             assert!(root.join("Main/units/tank.fbi").is_file());
         }
         std::fs::remove_dir_all(root).unwrap();
@@ -2059,6 +2257,241 @@ banner = \"docs/banner.png\"
         assert_eq!(found[0].manifest.source, manifest.source);
         assert_eq!(found[0].manifest.replaces, ["btdata.ccx", "totala1.hpi"]);
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    /// A fresh folder of its own for a test (removed first if a run before left it).
+    fn fresh(name: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!("ta_package_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    fn write(path: PathBuf, bytes: &[u8]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    /// Pictures a manifest names in a folder whose name starts like one of TA's (`gameplay/`,
+    /// `gui/`) but that proves to be none are installed: the folder is left out, what the manifest
+    /// names in it is not.
+    #[test]
+    fn pictures_named_in_a_folder_named_like_one_of_tas_are_installed() {
+        let base = fresh("named_in_candidates");
+        let source = base.join("package");
+        write(source.join("units/NEW.FBI"), b"[UNITINFO]{UnitName=NEW;}");
+        write(source.join("mod.toml"), b"id = \"shots\"\nname = \"Shots\"\n\n[media]\npreview = \"gameplay/preview.gif\"\nscreenshots = [\"gameplay/shot1.png\"]\n\n[theme]\npanel_texture = \"gui/panel.png\"\n");
+        write(source.join("gameplay/shot1.png"), b"png");
+        write(source.join("gameplay/preview.gif"), b"gif");
+        write(source.join("gameplay/notes.txt"), b"not named");
+        write(source.join("gui/panel.png"), b"png");
+        let plan = plan(&source).unwrap();
+        let mut kept: Vec<&str> = plan.media.iter().map(|(_, to)| to.as_str()).collect();
+        kept.sort();
+        assert_eq!(kept, ["gameplay/preview.gif", "gameplay/shot1.png", "gui/panel.png"], "{:?}", plan.skipped);
+        assert!(plan.folders.iter().all(|f| !f.ends_with("gameplay") && !f.ends_with("gui")), "{:?}", plan.folders);
+        assert!(plan.skipped.iter().any(|s| s == "gameplay/") && plan.skipped.iter().any(|s| s == "gui/"), "{:?}", plan.skipped);
+        let dir = install(&plan, plan.authored.as_ref().unwrap(), &base.join("mods")).unwrap();
+        for file in ["gameplay/preview.gif", "gameplay/shot1.png", "gui/panel.png"] {
+            assert!(dir.join(file).is_file(), "{file} installed");
+        }
+        assert!(!dir.join("gameplay/notes.txt").exists());
+        let installed = crate::mods::read_mod(&dir).unwrap().unwrap().manifest;
+        assert!(installed.theme.texture("arm", "panel").and_then(|named| crate::mods::media_path(&dir, named)).is_some_and(|path| path.is_file()));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// A file a manifest names in another case than the disk's, inside a folder of TA's that is
+    /// kept whole (`font = "Fonts/hud.ttf"` for `fonts/hud.ttf`; an old package's `BITMAPS/`), comes
+    /// with its folder, once: on a disk that does not tell case apart it was planned twice, with
+    /// the folder and on its own, and the install failed.
+    #[test]
+    fn a_file_named_in_another_case_in_a_kept_folder_comes_with_it() {
+        let base = fresh("named_case");
+        let source = base.join("package");
+        write(source.join("UNITS/NEW.FBI"), b"[UNITINFO]{UnitName=NEW;}");
+        write(source.join("fonts/hud.ttf"), b"ttf");
+        write(source.join("BITMAPS/banner.png"), b"png");
+        write(source.join("mod.toml"), b"id = \"cased\"\nname = \"Cased\"\n\n[media]\nbanner = \"bitmaps/banner.png\"\n\n[theme]\nfont = \"Fonts/hud.ttf\"\n");
+        let plan = plan(&source).unwrap();
+        assert!(plan.media.is_empty(), "with their folders, not on their own: {:?}", plan.media);
+        let dir = install(&plan, plan.authored.as_ref().unwrap(), &base.join("mods")).unwrap();
+        assert!(dir.join("fonts/hud.ttf").is_file() && dir.join("BITMAPS/banner.png").is_file());
+        let installed = crate::mods::read_mod(&dir).unwrap().unwrap().manifest;
+        assert!(crate::mods::media_path(&dir, &installed.theme.font).is_some_and(|path| path.is_file()));
+        assert!(crate::mods::media_path(&dir, &installed.media.banner).is_some_and(|path| path.is_file()));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// A mod that brings nothing of TA's but its interface theme (with its pictures), or the
+    /// archives of the original game it replaces, is installed as it reads put in a mods folder by
+    /// hand. A manifest of a name and nothing else is still no mod, nor a folder of pictures; and
+    /// a package's top manifest of pictures alone does not take the place of its content's folder.
+    #[test]
+    fn a_mod_of_a_theme_or_of_what_it_replaces_alone_is_installed() {
+        let base = fresh("theme_only");
+        let mods = base.join("mods");
+        let themed = base.join("themed");
+        write(themed.join("mod.toml"), b"id = \"blue-hud\"\nname = \"Blue HUD\"\n\n[theme]\naccent = \"#5ab4ff\"\npanel_texture = \"media/hud/panel.png\"\n");
+        write(themed.join("media/hud/panel.png"), b"png");
+        let planned = plan(&themed).unwrap();
+        assert_eq!((planned.units, planned.maps, planned.media.len()), (0, 0, 1));
+        let dir = install(&planned, planned.authored.as_ref().unwrap(), &mods).unwrap();
+        let installed = crate::mods::read_mod(&dir).unwrap().unwrap().manifest;
+        assert_eq!(installed.theme.colour("arm", "accent"), Some("#5ab4ff"));
+        assert!(installed.theme.texture("core", "panel").and_then(|named| crate::mods::media_path(&dir, named)).is_some_and(|path| path.is_file()));
+        let blanking = base.join("blanking");
+        write(blanking.join("mod.toml"), b"id = \"no-bt\"\nname = \"No Battle Tactics\"\nreplaces = [\"btdata.ccx\"]\n");
+        let planned = plan(&blanking).unwrap();
+        let dir = install(&planned, planned.authored.as_ref().unwrap(), &mods).unwrap();
+        assert_eq!(crate::mods::read_mod(&dir).unwrap().unwrap().manifest.replaces, ["btdata.ccx"]);
+        let named_only = base.join("named");
+        write(named_only.join("mod.toml"), b"id = \"nothing\"\nname = \"Nothing\"\ntags = [\"units\"]\n");
+        assert!(matches!(plan(&named_only), Err(PackageError::NoContent)));
+        let pictures = base.join("pictures");
+        write(pictures.join("media/banner.png"), b"png");
+        assert!(matches!(plan(&pictures), Err(PackageError::NoContent)));
+        let wrapped = base.join("wrapped");
+        write(wrapped.join("mod.toml"), b"id = \"wrapped\"\nname = \"Wrapped\"\n[media]\nbanner = \"banner.png\"\n");
+        write(wrapped.join("banner.png"), b"png");
+        write(wrapped.join("Main/units/NEW.FBI"), b"[UNITINFO]{UnitName=NEW;}");
+        let planned = plan(&wrapped).unwrap();
+        assert_eq!((planned.root.clone(), planned.units), (wrapped.join("Main"), 1), "the content's folder, as before");
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// The content's folder of a package without a manifest of its own may be called anything,
+    /// `Base` or `Reborn` too: the install names the mod, not the folder.
+    #[test]
+    fn a_content_folder_named_like_the_games_own_content_is_planned() {
+        let base = fresh("base_folder");
+        for folder in ["Base", "reborn"] {
+            let package = base.join(format!("pkg-{folder}"));
+            write(package.join(folder).join("units/a.fbi"), b"[UNITINFO]{UnitName=A;}");
+            write(package.join("Extras/Optional/units/b.fbi"), b"[UNITINFO]{UnitName=B;}");
+            let planned = plan(&package).unwrap_or_else(|e| panic!("{folder}: {e}"));
+            assert_eq!((planned.root.clone(), planned.units), (package.join(folder), 1));
+            assert!(planned.authored.is_none());
+            let dir = install(&planned, &manifest(&format!("pack-{folder}"), "1"), &base.join("mods")).unwrap();
+            assert!(dir.join("units/a.fbi").is_file());
+        }
+        // (One whose own manifest takes such an id is still refused: it would never be found.)
+        let named = base.join("named");
+        write(named.join("units/a.fbi"), b"[UNITINFO]{UnitName=A;}");
+        write(named.join("mod.toml"), b"id = \"base\"\nname = \"Base\"\n");
+        assert!(matches!(plan(&named), Err(PackageError::Manifest { .. })));
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// The package's own `mod.toml` is used, not left out: it is never listed among what the
+    /// install leaves behind. A file moved whose source is gone is named, not where it was going.
+    #[test]
+    fn the_manifest_is_not_left_out_and_a_missing_source_is_named() {
+        let base = fresh("manifest_skipped");
+        let source = base.join("package");
+        write(source.join("units/NEW.FBI"), b"[UNITINFO]{UnitName=NEW;}");
+        write(source.join("Mod.toml"), b"id = \"listed\"\nname = \"Listed\"\n");
+        write(source.join("setup.exe"), b"MZ");
+        let planned = plan(&source).unwrap();
+        assert!(planned.skipped.iter().any(|s| s == "setup.exe"), "{:?}", planned.skipped);
+        assert!(!planned.skipped.iter().any(|s| s.to_lowercase().contains("mod.toml")), "{:?}", planned.skipped);
+        let missing = base.join("gone.png");
+        let to = base.join("there").join("gone.png");
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        match move_path(&missing, &to) {
+            Err(PackageError::Io { path, .. }) => assert_eq!(path, missing.display().to_string()),
+            other => panic!("{other:?}"),
+        }
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// The pictures and the font a manifest names are taken first: a media folder of more files
+    /// than a mod's pictures may number never crowds them out, whatever their names.
+    #[test]
+    fn the_named_pictures_are_taken_before_the_rest_of_the_media_folder() {
+        let base = fresh("named_first");
+        let source = base.join("package");
+        write(source.join("units/NEW.FBI"), b"[UNITINFO]{UnitName=NEW;}");
+        for n in 0..MAX_MEDIA_FILES + 8 {
+            write(source.join(format!("media/a{n:04}.png")), b"png");
+        }
+        write(source.join("media/zz_banner.png"), b"png");
+        write(source.join("media/zz_font.ttf"), b"ttf");
+        write(source.join("mod.toml"), b"id = \"many\"\nname = \"Many\"\n[media]\nbanner = \"media/zz_banner.png\"\n[theme]\nfont = \"media/zz_font.ttf\"\n");
+        let planned = plan(&source).unwrap();
+        assert_eq!(planned.media.len(), MAX_MEDIA_FILES);
+        assert_eq!(planned.media[..2].iter().map(|(_, to)| to.as_str()).collect::<Vec<_>>(), ["media/zz_banner.png", "media/zz_font.ttf"]);
+        assert!(planned.skipped.iter().any(|s| s.ends_with("(beyond what a mod's pictures may weigh)")));
+        assert!(!planned.skipped.iter().any(|s| s.contains("zz_")), "{:?}", planned.skipped);
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// An install of a package with a `mod.toml` of its own keeps it as written where the install
+    /// changes nothing: its comments, and keys this TA Reborn does not know (a later one's), are
+    /// in the installed copy's; what the install sets (another id, the renamed folders it found) is
+    /// written in.
+    #[test]
+    fn an_install_keeps_the_packages_manifest_as_written() {
+        let base = fresh("manifest_kept");
+        let source = base.join("package");
+        write(source.join("guiM/ARMCOM1.GUI"), b"gui");
+        write(source.join("units/NEW.FBI"), b"[UNITINFO]{UnitName=NEW;}");
+        let text = "# Naval Additions: three ships.\nid = \"naval\"\nname = \"Naval Additions\" # shown in the launcher\nversion = \"1.2\"\nfuture_key = \"kept\"\n\n[future_table]\nanswer = 42\n";
+        write(source.join("mod.toml"), text.as_bytes());
+        let planned = plan(&source).unwrap();
+        assert_eq!(planned.authored_text.as_deref(), Some(text));
+        let mut own = planned.authored.clone().unwrap();
+        own.id = "naval-2".into();
+        let dir = install(&planned, &own, &base.join("mods")).unwrap();
+        let written = std::fs::read_to_string(dir.join("mod.toml")).unwrap();
+        for kept in ["# Naval Additions: three ships.", "name = \"Naval Additions\" # shown in the launcher", "future_key = \"kept\"", "[future_table]\nanswer = 42"] {
+            assert!(written.contains(kept), "{kept}:\n{written}");
+        }
+        let installed = crate::mods::read_mod(&dir).unwrap().unwrap().manifest;
+        assert_eq!((installed.id.as_str(), installed.version.as_str()), ("naval-2", "1.2"));
+        assert_eq!(installed.rename.get("guim").map(String::as_str), Some("guis"), "{written}");
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    /// A map editor's save stopped between its two renames left the map's only copy aside (hidden
+    /// from discovery): it goes back to its folder when that is missing, and is discarded when the
+    /// folder holds the same map again; one that does not say which map's it was, or whose folder
+    /// holds another mod, is left as it is. An older editor's, whose name does not tell its folder,
+    /// goes back to the folder of the one map it holds. Nothing is touched while an editor saves.
+    #[test]
+    fn a_map_editors_interrupted_save_is_put_right() {
+        let base = fresh("editor_backups");
+        let mods = base.join("mods");
+        let map = |dir: &str, id: &str, maps: &[&str]| {
+            write(mods.join(dir).join("mod.toml"), format!("id = \"{id}\"\nname = \"{id}\"\n").as_bytes());
+            for name in maps { write(mods.join(dir).join("maps").join(format!("{name}.tnt")), b"tnt"); }
+        };
+        map(&editor_backup_name(".editor-7-0", "Test Map"), "map-test-map-1", &["Test Map"]);
+        map(&editor_backup_name(".editor-7-1", "Done"), "map-done-2", &["Done"]);
+        map("Done", "map-done-2", &["Done"]);
+        map(&editor_backup_name(".editor-7-2", "Taken"), "map-taken-3", &["Taken"]);
+        map("Taken", "someone-elses", &[]);
+        map(".editor-6-0.old", "map-legacy", &["Legacy"]);
+        map(".editor-6-1.old", "map-two", &["One", "Two"]);
+        assert!(crate::mods::scan(&mods).0.iter().all(|m| !m.manifest.id.starts_with("map-test")), "hidden while aside");
+        // (While an editor saves, nothing.)
+        let (_, held) = open_lock(mods.join(EDITOR_SAVE_LOCK)).unwrap();
+        held.lock().unwrap();
+        let log = recover(&mods);
+        assert!(mods.join(editor_backup_name(".editor-7-0", "Test Map")).is_dir() && !mods.join("Test Map").exists(), "{log:?}");
+        drop(held);
+        let log = recover(&mods);
+        assert!(mods.join("Test Map/maps/Test Map.tnt").is_file(), "the only copy is back: {log:?}");
+        assert!(!mods.join(editor_backup_name(".editor-7-1", "Done")).exists() && mods.join("Done/maps/Done.tnt").is_file(), "{log:?}");
+        assert!(mods.join(editor_backup_name(".editor-7-2", "Taken")).is_dir() && mods.join("Taken/mod.toml").is_file(), "another mod's folder: both kept: {log:?}");
+        assert!(mods.join("Legacy/maps/Legacy.tnt").is_file() && !mods.join(".editor-6-0.old").exists(), "{log:?}");
+        assert!(mods.join(".editor-6-1.old").is_dir(), "which of its maps is not known: {log:?}");
+        let ids: Vec<String> = crate::mods::scan(&mods).0.into_iter().map(|m| m.manifest.id).collect();
+        assert!(ids.contains(&"map-test-map-1".to_string()) && ids.contains(&"map-legacy".to_string()), "{ids:?}");
+        // (What is done is done once: nothing more the next time.)
+        let again = restore_editor_backups(&mods);
+        assert!(again.iter().all(|line| line.starts_with("left ")), "{again:?}");
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     /// An archive with one empty folder and no file, laid out as TA: Enhanced's `btdata.ccx` is.

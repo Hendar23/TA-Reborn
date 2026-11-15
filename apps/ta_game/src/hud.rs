@@ -70,8 +70,8 @@ pub struct Hud {
     /// The panel metal of the side shown.
     skin: hud_skin::Skin,
     /// A mod's interface theme's pictures behind the plates and the top bar, in place of the
-    /// side's metal (`mod_theme`; the app sets them each frame).
-    pub theme_textures: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
+    /// side's metal (`mod_theme`; the app hands them over when they change).
+    pub theme_pictures: std::sync::Arc<hud_skin::ThemePictures>,
     /// The cheat panel's spawn picker.
     cheats: cheats::CheatPanel,
     /// The economy's last minutes, for the deck's charts.
@@ -489,7 +489,7 @@ impl Hud {
         let summary = if game.history_open { crate::accessibility::battle_summary(game) } else { String::new() };
         self.history.show(&ctx, &game.event_history, &mut game.history_open, &summary);
         if !self.classic {
-            self.skin.load(&ctx, vfs, &game.sim.players[game.hud_player() as usize].side, &self.theme_textures);
+            self.skin.load(&ctx, vfs, &game.sim.players[game.hud_player() as usize].side, &self.theme_pictures);
             self.trend.sample(game);
             self.top_bar(ui, game);
             self.lay_out_minimap(&ctx, game);
@@ -1986,7 +1986,10 @@ impl Hud {
                     if multiplayer {
                         // Who hears it: click to switch (Shift+Enter opens the chat to allies).
                         let to = t(if *allies { "To allies:" } else { "To all:" });
-                        if ui.add(egui::Label::new(egui::RichText::new(to).color(if *allies { Color32::from_rgb(120, 220, 140) } else { pal().accent })).sense(egui::Sense::click())).on_hover_text(t("Click to switch between everyone and your allies")).clicked() && !spectator {
+                        // (Allies in TA Reborn's green, or as a theme moved its allies' colour, `info`;
+                        // either readable on the chat's plate, a theme's panel.)
+                        let colour = if *allies { crate::theme::legible(crate::theme::retinted(Color32::from_rgb(120, 220, 140), crate::theme::SKY, pal().info), pal().panel, 4.5) } else { pal().accent };
+                        if ui.add(egui::Label::new(egui::RichText::new(to).color(colour)).sense(egui::Sense::click())).on_hover_text(t("Click to switch between everyone and your allies")).clicked() && !spectator {
                             *allies = !*allies;
                         }
                     } else {
@@ -2163,12 +2166,13 @@ impl Hud {
         if let Some(net) = &game.net {
             if let Some(tick) = net.desync {
                 let since = format!("{:02}:{:02}", tick / 30 / 60, tick / 30 % 60);
-                status.push((ta_ui::i18n::tf("OUT OF SYNC since {time}: the players' games no longer match", &[("time", &since)]), Color32::from_rgb(255, 90, 70)));
+                // (Red for what went wrong: TA Reborn's, or a theme's `bad` made as light.)
+                status.push((ta_ui::i18n::tf("OUT OF SYNC since {time}: the players' games no longer match", &[("time", &since)]), notice_ink(crate::theme::retinted(Color32::from_rgb(255, 90, 70), crate::theme::RED, pal().bad))));
             }
             if !net.waiting_for.is_empty() {
                 let secs = game.net_wait as u32;
                 let time = format!("{}:{:02}", secs / 60, secs % 60);
-                status.push((ta_ui::i18n::tf("Waiting for {players} · {time}", &[("players", &net.waiting_for.join(", ")), ("time", &time)]), pal().accent));
+                status.push((ta_ui::i18n::tf("Waiting for {players} · {time}", &[("players", &net.waiting_for.join(", ")), ("time", &time)]), notice_ink(pal().accent)));
                 ctx.request_repaint_after(std::time::Duration::from_millis(250));
             }
         }
@@ -2214,8 +2218,8 @@ impl Hud {
                 if let Some(o) = legend {
                     egui::Frame::new().fill(Color32::from_black_alpha(180)).stroke(Stroke::new(1.0, ta_ui::metal::STEEL_SHADE)).inner_margin(egui::Margin::symmetric(12, 5)).corner_radius(2).show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.add(egui::Label::new(ta_ui::widgets::caption(o.label()).color(pal().accent)).extend());
-                            ui.add(egui::Label::new(egui::RichText::new(ta_ui::i18n::t(o.legend())).font(crate::theme::body(12.5)).color(pal().text)).wrap());
+                            ui.add(egui::Label::new(ta_ui::widgets::caption(o.label()).color(notice_ink(pal().accent))).extend());
+                            ui.add(egui::Label::new(egui::RichText::new(ta_ui::i18n::t(o.legend())).font(crate::theme::body(12.5)).color(notice_ink(pal().text))).wrap());
                         });
                     });
                 }
@@ -2230,11 +2234,13 @@ impl Hud {
                 for (i, notice) in game.messages.iter().enumerate() {
                     use crate::game::Tone;
                     let fade = notice.secs.min(1.0);
+                    // (Red for what went wrong: TA Reborn's light red, or a theme's `bad` made as light.)
                     let (words, edge, rim) = match notice.tone {
                         Tone::Note => (pal().accent_bright, pal().accent, ta_ui::metal::STEEL_SHADE),
                         Tone::Done => (pal().good, pal().good, ta_ui::metal::STEEL_SHADE),
-                        Tone::Trouble => (Color32::from_rgb(255, 132, 112), pal().bad, pal().bad.gamma_multiply(0.55)),
+                        Tone::Trouble => (crate::theme::retinted(Color32::from_rgb(255, 132, 112), crate::theme::RED, pal().bad), pal().bad, pal().bad.gamma_multiply(0.55)),
                     };
+                    let words = notice_ink(words);
                     let shown = egui::Frame::new()
                         .fill(Color32::from_black_alpha((170.0 * fade) as u8))
                         .stroke(Stroke::new(1.0, rim.gamma_multiply(fade)))
@@ -2270,6 +2276,16 @@ impl Hud {
             }
         }
     }
+}
+
+/// What the notices' frames (black, two thirds opaque) leave of a mid-grey battlefield behind them:
+/// the backdrop their words are made readable on.
+const NOTICE_BACKDROP: Color32 = Color32::from_rgb(43, 43, 43);
+
+/// A notice's words, readable on its frame's fixed dark backdrop whatever the theme (TA Reborn's
+/// own colours are, as they are; a light theme's dark text and accent are lit until they are).
+fn notice_ink(colour: Color32) -> Color32 {
+    crate::theme::legible(colour, NOTICE_BACKDROP, 3.0)
 }
 
 /// Multiplayer, in the top bar: the slowest connection's bars and milliseconds (the battle goes

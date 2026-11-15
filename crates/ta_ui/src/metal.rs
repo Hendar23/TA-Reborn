@@ -543,7 +543,11 @@ impl Slab {
     pub fn text(self, hot: f32) -> Color32 {
         match self {
             Slab::Steel => pal().button_text.lerp_to_gamma(Color32::from_rgb(255, 250, 214), hot),
-            Slab::Brass => pal().on_accent,
+            // (Dark on TA Reborn's brass; on a theme's accent, whatever reads on it.)
+            Slab::Brass => {
+                let (top, foot) = brass();
+                legible(pal().on_accent, top.lerp_to_gamma(foot, 0.5), 4.5)
+            }
             Slab::Rust => Color32::from_rgb(250, 226, 212),
             Slab::Slot => pal().text.lerp_to_gamma(pal().accent_bright, hot),
         }
@@ -562,7 +566,7 @@ pub fn slab(ctx: &Context, rect: Rect, kind: Slab, hot: f32, down: bool) -> Shap
     let r = CornerRadius::same(2);
     let (top, bottom) = match kind {
         Slab::Steel => (Color32::from_rgb(102, 103, 98), Color32::from_rgb(58, 59, 55)),
-        Slab::Brass => (Color32::from_rgb(230, 196, 110), Color32::from_rgb(150, 114, 45)),
+        Slab::Brass => brass(),
         Slab::Rust => (Color32::from_rgb(142, 62, 47), Color32::from_rgb(82, 32, 25)),
         Slab::Slot => (Color32::from_rgb(33, 32, 27), Color32::from_rgb(22, 21, 18)),
     };
@@ -583,6 +587,14 @@ pub fn slab(ctx: &Context, rect: Rect, kind: Slab, hot: f32, down: bool) -> Shap
     let (upper, lower) = if down { (shade, lit) } else { (lit, shade) };
     shapes.extend(bevel(body.shrink(0.5), upper, lower));
     Shape::Vec(shapes)
+}
+
+/// The main action's brass, at its top and its foot: TA Reborn's, or in a theme's HUD the
+/// theme's accent made metal as the brass is made of TA Reborn's ([`retinted`]), its lettering
+/// the accent's too ([`Slab::text`]).
+fn brass() -> (Color32, Color32) {
+    let accent = pal().accent;
+    (retinted(Color32::from_rgb(230, 196, 110), AMBER, accent), retinted(Color32::from_rgb(150, 114, 45), AMBER, accent))
 }
 
 /// A gunmetal slab shaped as an arrow plate (TA's previous and next buttons): pointed on the
@@ -793,5 +805,28 @@ mod tests {
         let bounds = pipe_frame(rect, 5.0).visual_bounding_rect();
         assert!(rect.expand(1.5).contains_rect(bounds), "{bounds:?} in {rect:?}");
         assert!(pipe_inset(5.0) > 5.0);
+    }
+
+    /// The main action's button is TA Reborn's brass, dark-lettered, outside a theme's HUD; in one
+    /// (a theme's accent), made of the accent and lettered in what reads on it, a dark accent too.
+    #[test]
+    fn the_main_actions_brass_is_the_accents() {
+        assert_eq!(brass(), (Color32::from_rgb(230, 196, 110), Color32::from_rgb(150, 114, 45)));
+        assert_eq!(Slab::Brass.text(0.0), ON_AMBER);
+        let ctx = Context::default();
+        crate::theme::install(&ctx);
+        for accent in [Color32::from_rgb(90, 180, 255), Color32::from_rgb(31, 95, 191)] {
+            set_battle_palette(Palette::REBORN.themed(&|key| (key == "accent").then_some(accent)));
+            ctx.run_ui(Default::default(), |ui| {
+                crate::theme::hud(ui, |_| {
+                    let (top, foot) = brass();
+                    assert!(top.b() > top.r() && foot.b() > foot.r(), "{accent:?}: {top:?} to {foot:?}");
+                    assert!(contrast(Slab::Brass.text(0.0), top.lerp_to_gamma(foot, 0.5)) >= 4.5, "{accent:?}: its lettering reads");
+                });
+                assert_eq!(brass().0, Color32::from_rgb(230, 196, 110), "TA Reborn's outside the HUD");
+            })
+            .drop_without_applying_deltas();
+        }
+        set_battle_palette(Palette::REBORN);
     }
 }

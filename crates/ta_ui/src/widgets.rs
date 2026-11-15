@@ -182,9 +182,10 @@ pub fn fitted_title(ui: &mut Ui, text: &str, size: f32, color: Color32) -> Respo
     if truncated { response.hover_tip(text) } else { response }
 }
 
-/// Small letter-spaced caption, used for field names ("LOCATION", "SOURCE").
+/// Small letter-spaced caption, used for field names ("LOCATION", "SOURCE"): in the labels'
+/// colour ([`STEEL`]; a theme's in the HUD, [`crate::theme::hud`]).
 pub fn caption(text: &str) -> RichText {
-    RichText::new(t(text)).font(strong(11.5)).color(STEEL).extra_letter_spacing(crate::i18n::tracking(1.2))
+    RichText::new(t(text)).font(strong(11.5)).color(pal().steel).extra_letter_spacing(crate::i18n::tracking(1.2))
 }
 
 /// Fills `rect` with a horizontal gradient.
@@ -839,7 +840,7 @@ fn play_label(painter: &Painter, rect: Rect, text: &str, size: f32, kind: Slab, 
 
 // ---- Inputs --------------------------------------------------------------------------------
 
-/// A square recessed checkbox with a brass check mark.
+/// A square recessed checkbox with a brass check mark (the accent's, a theme's in the HUD).
 pub fn check_box(ui: &mut Ui, checked: &mut bool) -> Response {
     check_box_named(ui, checked, "")
 }
@@ -860,7 +861,7 @@ pub fn check_box_named(ui: &mut Ui, checked: &mut bool, label: &str) -> Response
         painter.add(metal::well(r, if response.hovered() { PANEL_HI } else { INSET }));
         if *checked {
             paint_check(painter, r.translate(vec2(0.5, 1.0)), Stroke::new(2.4, Color32::from_black_alpha(200)));
-            paint_check(painter, r, Stroke::new(2.2, AMBER_BRIGHT));
+            paint_check(painter, r, Stroke::new(2.2, pal().accent_bright));
         }
         focus_ring(ui, &response, rect);
     }
@@ -1193,7 +1194,8 @@ fn segments<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, &str
     if let Some(chip) = chip {
         painter.add(metal::slab(ui.ctx(), chip, Slab::Steel, 0.0, true));
         let bar = Rect::from_min_max(pos2(chip.min.x + 6.0, chip.max.y - 4.0), pos2(chip.max.x - 6.0, chip.max.y - 2.0));
-        painter.add(metal::vgrad(bar, AMBER_BRIGHT, AMBER_DIM));
+        // (The accent marks what is chosen: TA Reborn's brass, a theme's in the HUD.)
+        painter.add(metal::vgrad(bar, pal().accent_bright, pal().accent_dim));
     }
     for (i, ((segment, seg), text)) in segments.iter().zip(&hits).zip(galleys).enumerate() {
         let inner = segment.shrink(2.5);
@@ -1327,10 +1329,15 @@ pub fn chip(ui: &mut Ui, text: &str, on: bool) -> Response {
     response
 }
 
-/// A tiny tag such as "FOLDER" or "v1.2": a small dark slot with coloured lettering.
+/// A tiny tag such as "FOLDER" or "v1.2": a small dark slot with coloured lettering. In a row that
+/// wraps (`horizontal_wrapped`), one wider than the whole row wraps its words within it, taller,
+/// rather than running out of it.
 pub fn tag(ui: &mut Ui, text: &str, color: Color32) -> Response {
-    let text = galley(ui, RichText::new(t(text)).font(strong(10.5)).color(color).extra_letter_spacing(crate::i18n::tracking(0.8)));
-    let (rect, response) = ui.allocate_exact_size(vec2(text.size().x + 12.0, 18.0), Sense::hover());
+    let words = RichText::new(t(text)).font(strong(10.5)).color(color).extra_letter_spacing(crate::i18n::tracking(0.8));
+    let row = ui.max_rect().width();
+    let text = galley(ui, words.clone());
+    let text = if ui.layout().main_wrap() && text.size().x + 12.0 > row && row > 24.0 { wrapped_galley(ui, words, row - 12.0) } else { text };
+    let (rect, response) = ui.allocate_exact_size(vec2(text.size().x + 12.0, (text.size().y + 4.0).max(18.0)), Sense::hover());
     ui.painter().rect(rect, CornerRadius::same(2), Color32::from_black_alpha(90), Stroke::new(1.0, color.gamma_multiply(0.4)), StrokeKind::Inside);
     ui.painter().galley(rect.center() - text.size() / 2.0, text, color);
     response
@@ -1937,6 +1944,27 @@ mod tests {
         assert_eq!(ctx.memory(|m| m.focused()), Some(ids[12]));
         assert!(offset > 300.0, "focused button was revealed: {offset}");
         assert!(clip.contains_rect(focused_rect), "focused control must be fully visible: {focused_rect:?} in {clip:?}");
+    }
+
+    /// A tag wider than the row that wraps it wraps its words within the row, taller; a short
+    /// one, or one in a row that does not wrap, keeps to a line.
+    #[test]
+    fn a_tag_wider_than_its_wrapping_row_wraps_within_it() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let long = "VERSION: 1.0.0-RELEASE-CANDIDATE.12+BUILD.20261115.WINDOWS-X86_64-NIGHTLY";
+        let mut rects = Vec::new();
+        ctx.run_ui(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(240.0, 400.0))), ..Default::default() }, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                rects.push(tag(ui, "FOLDER", Color32::WHITE).rect);
+                rects.push(tag(ui, long, Color32::WHITE).rect);
+            });
+            ui.horizontal(|ui| rects.push(tag(ui, long, Color32::WHITE).rect));
+        }).drop_without_applying_deltas();
+        let (short, wrapped, unwrapped) = (rects[0], rects[1], rects[2]);
+        assert_eq!(short.height(), 18.0, "a short tag keeps to a line");
+        assert!(wrapped.width() <= 240.0 + 0.5 && wrapped.height() > 30.0, "wrapped within the row: {wrapped:?}");
+        assert!(unwrapped.width() > 240.0 && unwrapped.height() == 18.0, "a row that does not wrap is left as it was: {unwrapped:?}");
     }
 
     #[test]

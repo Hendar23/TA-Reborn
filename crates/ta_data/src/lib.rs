@@ -9,6 +9,7 @@ mod compatibility;
 pub use compatibility::Compatibility;
 
 pub mod feature;
+pub mod font;
 pub mod map;
 pub mod mission;
 pub mod unit;

@@ -612,3 +612,22 @@ recurso. Delante de o-: «TrueType u OpenType», «.ttf u .otf».
 | TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} o posterior / tienes la {current} |
 | NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | REQUIERE UN TA REBORN MÁS NUEVO |
 | requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / la versión más antigua de TA Reborn en la que funciona el mod |
+
+## El manifiesto de un mod según la comprobación, y su orden de carga (`presentation.rs`, `validation.rs`, `mod_order.rs`)
+
+`mod.toml`, `[table]`, `[{table}]`, `depends`, `load_after`, `conflicts`, `panel_texture` y
+`tags = ["units"]` se quedan como están; una clave del manifiesto es una entrada (femenino: la omite,
+la pasa por alto), como «La entrada {key} de mod.toml». `{found}` y `{expected}` rellenan «La entrada
+{key} de mod.toml es {found} cuando debería ser {expected}»: sintagmas nominales.
+
+| English | Español |
+|---|---|
+| key (of mod.toml) / value / table / [table] line / manifest | entrada / valor / tabla / línea [table] / manifiesto |
+| text in quotes / a whole number / a number / true or false | texto entre comillas / un número entero / un número / true o false (las palabras de TOML) |
+| a date / a list in square brackets / a table | una fecha / una lista entre corchetes / una tabla |
+| reads past it (an unknown key) / leaves it out (a value of another kind) | la pasa por alto / la omite |
+| a slip of the pen | una errata |
+| need each other in a circle / nest more than 64 deep | se necesitan unos a otros en círculo / se anidan a más de 64 niveles |
+| plates (the HUD's, a theme's picture behind them) / the side's own metal plates | placas / las placas metálicas propias del bando |
+| line spacing / one frame in {stride} (a preview played with fewer frames) / choppier | interlineado / uno de cada {stride} / más entrecortada |
+| TURN OFF {name} (un mod, junto a ENABLE {name}) / STOP PREVIEW (junto a PLAY PREVIEW) | DESACTIVAR {name} / PARAR VISTA PREVIA (como STOP: PARAR) |

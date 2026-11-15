@@ -531,3 +531,19 @@ The check's notes follow the presentation notes above (two sentences, 〜して�
 | TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version}以降 / 必要なTA Reborn：{version}以降（現在は{current}） |
 | NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | より新しいTA Rebornが必要 |
 | requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / MODが動作する最も古いTA Rebornのバージョン |
+
+## A mod's mod.toml as read, its load order (`presentation.rs`, `validation.rs`, `modlist.rs`)
+
+The notes follow the presentation notes above (two sentences, 〜してください). `[table]`, `[{table}]`,
+`depends`, `load_after`, `conflicts`, `panel_texture` and `docs/MODDING.md` stay as they are.
+{found} and {expected} sit in 「mod.tomlの{key}の値が{found}になっていますが、このキーに指定するのは{expected}です」.
+
+| English | 日本語 |
+|---|---|
+| key (mod.toml's) / a [table] line / table | キー / [table]の行 / テーブル |
+| reads past it (a key it does not know) / leaves it out (a value of another kind) | 読み飛ばされます / この値を除外します |
+| text in quotes / a whole number / a number / true or false / a date / a list in square brackets / a table | 引用符で囲んだテキスト / 整数 / 数値 / trueまたはfalse / 日付 / 角かっこで囲んだリスト / テーブル |
+| a later TA Reborn / older TA Reborns / a slip of the pen | より新しいTA Reborn / 古いバージョンのTA Reborn / 書き間違い |
+| need each other in a circle / nest more than 64 deep | 循環して互いを必要としている / 64段を超える深さ |
+| plates (the HUD's, panel_texture tiled on them; beside パネル, the panels' colour) / the side's own metal plates | プレート（プレートの画像） / 陣営本来の金属プレート |
+| TURN OFF {name} / STOP PREVIEW (beside ENABLE {name}, PLAY PREVIEW) | {name}を無効化 / プレビューを停止 |

@@ -16,8 +16,11 @@ finding of `--fail-on`'s severity or worse counts (`error` by default) or the ch
 incomplete (`never`: it never does), so a mod's build can run it. Give it each mod the mod
 depends on with `--mod`, and what those depend on: without one, the check is incomplete. They
 are mounted in the order the game would mount them together, whatever order they are given in;
-mods the game would not load together (needing each other) make the check incomplete too. A mod
-whose `mod.toml` does not read is refused, as the game leaves it out (a `--mod` too).
+mods the game would not load together make the check incomplete too, each way in words of its
+own, as the launcher says them: needing each other in a circle (`DEPENDENCY_CYCLE`), one that
+cannot be on with another it is mounted with (`DEPENDENCY_CONFLICT`), one that needs a newer TA
+Reborn (`DEPENDENCY_NEEDS_NEWER`). A mod whose `mod.toml` does not read is refused, as the game
+leaves it out (a `--mod` too). Its findings are listed in the launcher's order.
 
 Validation never enables the mod, modifies its files or runs executables from its package.
 It pauses while a game, an installation or the map library is busy.
@@ -90,7 +93,9 @@ for every mod, since the game cannot start without them.
 - **Errors found:** content the game cannot use, in the mod or caused by it. A card of a mod
   with errors carries a red lamp, and a check that finds errors in a mod that is on says so.
 - **Nothing to check:** the mod holds nothing the data checks read (music, documents,
-  pictures; WAV tracks in `music/` are checked as the WAVs they are).
+  pictures; WAV tracks in `music/` are checked as the WAVs they are), or is its `mod.toml` alone,
+  one that themes the interface, presents the mod or blanks archives (`validation.manifest_only`;
+  what its manifest gives is checked on its own).
 - **Check incomplete:** the check could not cover every file (a resource limit, a missing
   dependency, a changed manifest). This is never presented as a pass.
 - **Check failed:** the check itself could not run; run it again.
@@ -119,7 +124,8 @@ The report has three tabs.
 **WARNINGS**, **NOTES**, each with its count) and, when asked, what is **INHERITED**; the search
 finds findings by their words, file, archive or code. Findings are grouped by what they concern
 (packaging, files, units, weapons, features, maps, scripts, models and textures, animations and
-effects, sounds, menus and sides). In a group, three or more findings of one check with one fix
+effects, sounds, menus and sides, and presentation: the mod's pictures, links and interface
+theme). In a group, three or more findings of one check with one fix
 are one card (**N OF ONE KIND**): the first three, **SHOW ALL** for the rest, and the fix they
 share. Each finding gives its file, its line where it has one, the archive it came from, its
 code, and **HOW TO FIX** a click away. Notes never count: they are worth knowing (a unit with no
@@ -210,21 +216,39 @@ original game's).
   on that Reborn lacks. (`ta_data::validation::ANSWERED_VALUES`, held to the script host's.)
 - **Packaging:** files where the game never reads them (an FBI outside `units/`, a model
   outside `objects3d/`…), archives in subfolders (only the top level's are opened), and a mod
-  wrapped in a folder of its own (`My Mod/units/…`).
+  wrapped in a folder of its own (`My Mod/units/…`). And what the mod's `mod.toml` holds that is
+  read otherwise than written (`ta_data::presentation::manifest_keys`, over
+  `ta_vfs::mods::manifest_notes`, with the line): a key TA Reborn does not know
+  (`manifest.unknown`, with the key it was likely meant to be), a key written below a `[table]`
+  line it does not belong to (`manifest.misplaced`: TOML reads it as that table's), a value of
+  another kind than its key takes, left out (`manifest.wrong_kind`), one text where a list is
+  wanted (`manifest.one_for_list`, which older TA Reborns refuse). Notes, but for a key that
+  decides what the game mounts (`id`, `depends`, `load_after`, `conflicts`, `requires_reborn`,
+  `rename`, `replaces`), misplaced or mistyped: a warning, as the mod is mounted as if it were not
+  given.
 - **Presentation** (notes, never counted in the badge): what the manifest's `media`, `links` and
-  `source` name that the launcher would not show or open as meant (`ta_data::presentation`): a
+  `source` name that the launcher would not show or open as meant (`ta_data::presentation`, whose
+  readers the launcher and the game use too, so that what the check passes is what they show): a
   picture that is not in the mod's folder (`presentation.missing`) or names a place outside it
-  (`presentation.outside`), one that is not a PNG, JPEG or GIF (`presentation.format`), too heavy
-  or too large (`presentation.too_large`) or does not read (`presentation.unreadable`), a banner
-  or an icon too small (`presentation.small`) or of the wrong shape (`presentation.shape`), a
-  gameplay preview that does not move (`presentation.still`) or runs long
-  (`presentation.long`), more screenshots than are shown (`presentation.many`), a link that is no
-  web address (`presentation.link`). Editing a picture checks the mod again. And of its
-  interface theme (`theme.*`): a colour that is none (`theme.colour`), a picture or a font not
-  there (`theme.missing`), of another kind (`theme.format`), too large (`theme.too_large`) or
-  unreadable (`theme.unreadable`), a font that does not read as the game reads fonts
-  (`theme.font`), text or an accent hard to read on its panels (`theme.contrast`, under 4.5:1 and
-  3:1), a side the game has not (`theme.side`). And a `requires_reborn` that is not a version
+  (`presentation.outside`), one that is not a PNG, JPEG or GIF by its content, whatever its name
+  (`presentation.format`), too heavy or too large (`presentation.too_large`, a GIF frame that says
+  it is too large too) or does not read whole (`presentation.unreadable`: pictures are decoded,
+  within the launcher's limits), a banner or an icon too small (`presentation.small`) or of the
+  wrong shape (`presentation.shape`), a gameplay preview that does not move
+  (`presentation.still`) or that the launcher plays otherwise than it was made
+  (`presentation.long`: past its first 1,000 frames, or keeping one frame in two or more because
+  its frames at the size it is shown take more than the launcher's 96 MB for a preview; its frames
+  are counted, not decoded), more screenshots than are shown (`presentation.many`), a link that is
+  no web address (`presentation.link`). Editing a picture checks the mod again. And of its
+  interface theme (`theme.*`), read as the HUD reads it: a colour that is none (`theme.colour`), a
+  picture or a font not there (`theme.missing`), a picture that is not a PNG, JPEG or GIF by its
+  content (`theme.format`), too large (`theme.too_large`, past 2,048 pixels a side or 16 MB) or
+  unreadable (`theme.unreadable`), a font the game's interface does not read
+  (`theme.font`) or one the HUD shows at less than 85% or more than 115% of its size, fitting its
+  lines, far from 1.2 times its size, to its own (`theme.font_scaled`), text or an accent hard to read where it is drawn (`theme.contrast`, under 4.5:1
+  and 3:1, the theme's own and each side's: on its panels' colour, on its plates' picture's
+  average colour, and on the sides' own dark metal where it gives the plates no picture), a side
+  the game has not (`theme.side`). And a `requires_reborn` that is not a version
   (`presentation.requires`): the mod is then mounted in any TA Reborn.
 - **Limits:** footprints (a footprint of none is an upgrade module's, which takes no ground: kept), texture frames and layers (the textures the models in `objects3d`
   paint with, as the game loads them: an entry no model names takes no room, and the rest fit
@@ -243,11 +267,17 @@ the same on any computer, references resolved, then each finding's origin settle
 `validation.rs` schedules checks one at a time off the interface's thread, resolves
 dependencies, fingerprints inputs and keeps the reports under `cache/mod-validation`:
 
-- the fingerprint covers only the files the game reads (archives and the kinds the checks
-  decode) and those whose presence the report notes (programs and their libraries, files in
-  `ai/`: `validation::noted_file`), with their digests kept between launches by size and times
-  (`digests.json`), and what each mod replaces of the original game; an explicit rescan reads
-  every file again, and CHECK AGAIN reads its mod's;
+- the fingerprint covers the files the game reads (archives and the kinds the checks decode)
+  and those whose presence the report notes (programs and their libraries, files in `ai/`:
+  `validation::noted_file`), with their digests kept between launches by size and times
+  (`digests.json`), and what each mod replaces of the original game; of the mod checked, its
+  whole manifest and the pictures and theme files it names (they are checked, by size and time);
+  of the mods it depends on, only what decides what the game reads with them (their ids, order,
+  renames and replacements): a dependency's name, pictures or theme change no fingerprint, and
+  the content without the mod (its baseline) is not checked again for them. An explicit rescan
+  reads every file again, and CHECK AGAIN reads its mod's;
+- a report is kept when it is complete, or when its content stopped it (past the check's
+  limits: checked again, it would stop there again); a cancelled check is never kept;
 - the checks' version, not the launcher's build, keys the cache, so a rebuild keeps reports;
 - baselines are kept by their own fingerprint (`baseline-*.json`, the newest eight);
 - after an install or a removal the changed mods are checked again, and every mod depending

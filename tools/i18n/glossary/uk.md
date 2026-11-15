@@ -588,3 +588,24 @@ mod's page and checked under ОФОРМЛЕННЯ. HUD stays HUD, masculine, in 
 | TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn версії {version} або новішої / у вас {current} |
 | NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | ПОТРІБЕН НОВІШИЙ TA REBORN |
 | requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / найстаріша версія TA Reborn, у якій працює мод (мод підключається) |
+
+## A mod's mod.toml as read, and the load order in the check (`presentation.rs`, `validation.rs`, `pages/mods.rs`, `mod_order.rs`)
+
+Keys, `[table]`, `[{table}]`, `depends`, `load_after`, `conflicts`, `panel_texture` and file names stay as written; "у mod.toml" after {key}, as before. мод's genitive is моду here (the validator's older lines also have мода).
+
+| English | Українська |
+|---|---|
+| key / value / table (TOML's) | ключ / значення / таблиця ("Ключ {key} у mod.toml", "Значення ключа {key} у mod.toml"); the key's name: назва ключа |
+| a [table] line / below it / at the top of mod.toml | рядок [table] / нижче рядка [table], "тож вважається частиною цієї таблиці" / на початку mod.toml, вище першого рядка [table] |
+| it belongs in [{table}] / move the line | його місце — у таблиці [{table}] / перенесіть рядок із ключем |
+| reads past (a key it does not know) / did you mean | пропускає під час читання / можливо, ви мали на увазі |
+| a key of a later TA Reborn's / a slip of the pen / kept as written | ключ новішої версії TA Reborn / описка / залишається у файлі незмінним |
+| value kinds ({found}, {expected}: nominative, after "—" and "а має бути") | текст у лапках / ціле число / число / true або false (TOML's literals) / дата / список у квадратних дужках / таблиця: "Значення ключа {key} у mod.toml — {found}, а має бути {expected}" |
+| leaves it out (a value of the wrong kind) | не враховує |
+| one text where a list is wanted / a list of that one | задано одним текстом, а потрібен список / список з одного елемента |
+| dependencies in a circle / nest more than 64 deep | залежать один від одного по колу / вкладено глибше ніж на 64 рівні |
+| the mods it needs (the check's fix) / archives it blanks (its replaces) | залежності цього моду / архіви, які він вимикає |
+| STOP PREVIEW (beside ДИВИТИСЯ РОЛИК) / TURN OFF {name} | ЗУПИНИТИ РОЛИК / ВИМКНУТИ {name} (as УВІМКНУТИ {name}) |
+| one frame in {stride} / choppier than it was made | один кадр із {stride} / менш плавно, ніж в оригіналі |
+| plates (the HUD's metal plates) / its plates' picture / the side's own metal plates | панелі / фонове зображення панелей / власні металеві панелі сторони |
+| line spacing / its letters show at {percent}% | міжрядковий інтервал / літери відображаються в масштабі {percent}% ("в {line} раза": раза after a fraction) |

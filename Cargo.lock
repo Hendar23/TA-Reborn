@@ -3933,6 +3933,7 @@ dependencies = [
 name = "ta_data"
 version = "1.0.6"
 dependencies = [
+ "gif",
  "image",
  "log",
  "rayon",
@@ -4162,8 +4163,8 @@ dependencies = [
  "image",
  "log",
  "rfd",
- "skrifa",
  "ta_config",
+ "ta_data",
  "toml",
  "trash",
  "windows",
@@ -4180,6 +4181,7 @@ dependencies = [
  "ta_formats",
  "thiserror 2.0.21",
  "toml",
+ "toml_edit",
  "winreg 0.56.0",
 ]
 
@@ -4346,6 +4348,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

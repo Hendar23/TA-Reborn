@@ -58,7 +58,8 @@ impl Hud {
         let max_height = ctx.data(|d| d.get_temp::<Rows>(rows_id)).map_or(max_height, |rows| rows.cut(max_height));
         let mut close = false;
         egui::Area::new(egui::Id::new("cheat_panel")).anchor(Align2::RIGHT_TOP, [-14.0, clear.top + clear.right_top + 12.0]).order(egui::Order::Foreground).show(ctx, |ui| {
-            let page = Panel::new("CHEATS").subtitle("SINGLE PLAYER · +HELP ON THE CHAT LINE").width(WIDTH).exit(Exit::Close).accent(pal().bad);
+            // (A dialog on TA Reborn's plate, in its look whatever the HUD's theme: its red too.)
+            let page = Panel::new("CHEATS").subtitle("SINGLE PLAYER · +HELP ON THE CHAT LINE").width(WIDTH).exit(Exit::Close).accent(ta_ui::theme::RED);
             let response = page.show(ui, |ui| {
                 // (An area offers only the room it took last frame: ask for the height outright.)
                 let area = egui::ScrollArea::vertical().max_height(max_height).min_scrolled_height(max_height).auto_shrink([false, true]);

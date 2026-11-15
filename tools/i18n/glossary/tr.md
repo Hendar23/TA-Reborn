@@ -555,3 +555,17 @@ follows a colon, so its items stay nominative noun phrases: "ayrıca şunlar kul
 | TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} veya üzeri (gerekli) / seninki {current} |
 | NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | DAHA YENİ TA REBORN GEREKLİ |
 | requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn ("requires_reborn anahtarı") / modun çalıştığı en eski TA Reborn sürümü |
+
+## mod.toml's keys read past, and a load order that does not resolve (`presentation.rs`, `validation.rs`, `mod_order.rs`, `mods.rs`)
+
+| English | Türkçe |
+|---|---|
+| key / table / a [table] line (TOML; `[table]`, `[{table}]` kept) | anahtar / tablo / [table] satırı ("bir [table] satırının altında", "[{table}] tablosuna ait") |
+| read past (a key) / leave out (a value) | atlamak ("TA Reborn tanımıyor ve atlıyor") / dışarıda bırakmak ("TA Reborn bu değeri dışarıda bırakır") |
+| value kinds filling {found} and {expected}, bare nominatives ("{key} anahtarı {expected} bekliyor, ama {found} yazılmış") | tırnak içinde metin / tam sayı / sayı / true ya da false (TOML's own words) / tarih / köşeli parantez içinde liste / tablo |
+| did you mean {meant}? | {meant} anahtarını mı kastettin? (the question particle follows a noun, never the placeholder) |
+| a later TA Reborn / older TA Reborns / a slip of the pen | TA Reborn'un daha yeni bir sürümü / TA Reborn'un eski sürümleri / yazım hatası |
+| in a circle (dependencies) | bir döngü içinde |
+| plates (the HUD's, panel_texture tiled behind them) / the side's own metal plates | plakalar ("plakaların {path} resmi") / tarafın kendi metal plakaları |
+| line spacing / line height (a font's) | satır aralığı / satır yüksekliği |
+| TURN OFF {name} / STOP PREVIEW (beside ÖNİZLEMEYİ OYNAT) | KAPAT: {name} (as ETKİNLEŞTİR: {name}) / ÖNİZLEMEYİ DURDUR |

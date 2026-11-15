@@ -327,6 +327,22 @@ impl LoadingCapture {
 mod tests {
     use super::*;
 
+    /// The loading screen is TA Reborn's whatever battle it comes after: its interface, made while
+    /// the battle's window letters its HUD in a mod's theme's font and the battle's palette is the
+    /// theme's, has no such font, and draws in TA Reborn's palette.
+    #[test]
+    fn the_loading_screen_never_takes_a_battles_theme() {
+        use ta_ui::theme::{Palette, Weight};
+        let battle = egui::Context::default();
+        crate::theme::install_compact(&battle);
+        assert!(ta_ui::theme::set_battle_font(&battle, Some(Arc::new(ta_ui::theme::ui_face(Weight::Display).bytes.to_vec()))));
+        ta_ui::theme::set_battle_palette(Palette::REBORN.themed(&|key| (key == "accent").then_some(egui::Color32::from_rgb(1, 2, 3))));
+        let ctx = loading_context(1.0);
+        assert!(!ta_ui::theme::has_battle_font(&ctx));
+        assert_eq!(ta_ui::theme::pal(), Palette::REBORN);
+        ta_ui::theme::set_battle_palette(Palette::REBORN);
+    }
+
     #[test]
     fn first_loading_frame_uses_window_bounds_at_initial_ui_scale() {
         for (scale, native_dpi, pixels, expected_zoom) in [

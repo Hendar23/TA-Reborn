@@ -51,10 +51,10 @@ enum Group { Check, Packaging, Files, Units, Weapons, Features, Maps, Scripts, M
 impl Group {
     fn of(issue: &Issue) -> Group {
         let code = issue.code.as_str();
-        if code.starts_with("validation.") || matches!(code, "DEPENDENCY" | "MANIFEST_CHANGED" | "BASE_MISSING" | "SOURCE_UNREADABLE" | "BASE_MOUNT" | "BUILTIN_MOUNT" | "MOD_MOUNT") {
+        if code.starts_with("validation.") || code.starts_with("DEPENDENCY") || matches!(code, "MANIFEST_CHANGED" | "BASE_MISSING" | "SOURCE_UNREADABLE" | "BASE_MOUNT" | "BUILTIN_MOUNT" | "MOD_MOUNT") {
             return Group::Check;
         }
-        if code.starts_with("packaging.") { return Group::Packaging; }
+        if code.starts_with("packaging.") || code.starts_with("manifest.") { return Group::Packaging; }
         if code.starts_with("presentation.") || code.starts_with("theme.") { return Group::Presentation; }
         if code == "ARCHIVE_UNREADABLE" { return Group::Files; }
         if code.starts_with("render.sprite") { return Group::Animations; }

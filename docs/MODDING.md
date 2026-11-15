@@ -128,7 +128,9 @@ What the installer does with a package or a folder:
   (or `bsdtar`) is needed for any package.
 - It finds the content: the folder of a `mod.toml` that stands beside TA's folders or archives;
   else the folder holding the largest TA archive (recognised by its contents, whatever its
-  extension); else the shallowest folder holding TA's folders.
+  extension); else the shallowest folder holding TA's folders; else the folder of a `mod.toml`
+  with an interface theme, pictures or archives it replaces of its own (a mod that brings only
+  those).
 - It keeps the TA archives there (one with an extension of its own, such as Total Battletech's
   `rev31.mwp`, is installed as a `.gp3`), TA's folders, folders the mod's own engine read in place
   of TA's ([renamed folders](#renamed-folders)) and documents (`.txt`, `.md`, `.rtf`, `.pdf`,
@@ -141,10 +143,11 @@ What the installer does with a package or a folder:
   ([below](#replacing-the-original-games-archives)).
 - It refuses a package that would unpack to more than 8 GiB or 100,000 files (read from its list
   of contents before anything is unpacked, where the unpacker gives one), or that holds links.
-- It writes the mod's `mod.toml`. A package laid out as a mod already keeps its own id, name,
-  version and dependencies. Anything else is named after its file or folder: its id is the
-  name's letters and digits in lower case (`TotalM1130.zip` gives `totalm1130`), its version
-  unknown.
+- It writes the mod's `mod.toml`. A package laid out as a mod already keeps its own: its id,
+  name, version and dependencies, its comments and keys TA Reborn does not know. Anything else is
+  named after its file or folder: its id is the name's letters and digits in lower case
+  (`TotalM1130.zip` gives `totalm1130`; the first 64 of them, with `-mod` after a name no mod may
+  take: `base.zip` gives `base-mod`), its version unknown.
 
 A TA archive is a mod by itself: its id is its file name without the extension, in lower case.
 
@@ -225,18 +228,20 @@ others. A mod's manifest can name:
 
 When the order cannot be resolved, the problem takes the place of the effective order, with what
 puts it right: **ENABLE name** for a dependency installed but off, **GET name** for one the
-catalogue can download. Until it is resolved the launcher does not start the game; a game started
-another way loads no mod at all, and its title screen says why. A mod that is on and cannot be read
-(a damaged archive) also leaves every mod out: the game starts without mods, and its title screen
-says why.
+catalogue can download, and **TURN OFF name** for the mod that needs it, for a mod that needs a
+newer TA Reborn, and for each of two mods that cannot be on together (turn off either). Until it is
+resolved the launcher does not start the game; a game started another way loads no mod at all, and
+its title screen says why. A mod that is on and cannot be read (a damaged archive) also leaves every
+mod out: the game starts without mods, and its title screen says why.
 
 | Problem | What to do |
 | --- | --- |
 | "X is on, but it is not installed" | Install X, or take it out of the load order. |
-| "X cannot be on with Y" | X's manifest says the two break each other: turn one of them off. |
-| "X needs TA Reborn 1.0.7 or later" | Update TA Reborn (the launcher's Play page offers updates), or turn X off. |
+| "X cannot be on with Y" | X's manifest says the two break each other: turn one of them off (**TURN OFF X** or **TURN OFF Y**). |
+| "X needs TA Reborn 1.0.7 or later" | Update TA Reborn (the launcher's Play page offers updates), or turn X off (**TURN OFF X**). |
 | "X is on, but its manifest … does not read: …" | Fix its `mod.toml` ([troubleshooting](#troubleshooting)). |
-| "X needs Y, which is not on" | Turn Y on (**ENABLE Y**), or turn X off. |
+| "X needs Y, which is not on" | Turn Y on (**ENABLE Y**), or turn X off (**TURN OFF X**). |
+| "X needs Y, which is not installed" | Install Y (**GET Y** where the catalogue has it), or turn X off (**TURN OFF X**). |
 | "These mods each need another loaded before them: …" | Their `depends` make a circle: one of the mods is wrong. |
 | "These mods need one another more than 64 deep: …" | A chain of dependencies too long: one of the mods is wrong. |
 | "X could not be read: …" | Its archive or folder is damaged or unreadable: install it again, or turn it off. |
@@ -310,7 +315,8 @@ Before a catalogue mod is installed, its badge is the catalogue's review: **REVI
   the findings to fix first; for a catalogue mod, what the project saw of it in play; and which
   version was checked, when, and over what.
 - **FINDINGS** groups the findings by what they concern (packaging, files, units, weapons,
-  features, maps, scripts, models and textures, animations and effects, sounds, menus and sides).
+  features, maps, scripts, models and textures, animations and effects, sounds, menus and sides,
+  and presentation: the mod's pictures, links and interface theme).
   The filters **ERRORS**, **WARNINGS** and **NOTES** show what counts, with how many; notes never
   count against a mod. A search finds findings by their words, file, archive or code. Three or
   more findings of one check with one fix are one card (**N OF ONE KIND**), the first three shown.
@@ -552,16 +558,28 @@ Windows keeps for devices (`CON`, `PRN`, `AUX`, `NUL`, `COM1`, `LPT1`…). It ma
 are safest.
 
 - The file is TOML, at most 1 MiB, named `mod.toml` in any case (`Mod.toml` is found on Linux
-  too). Keys TA Reborn does not know are ignored.
+  too). Keys TA Reborn does not know are read past, and kept when the launcher or the map editor
+  writes the file again. TOML puts every key below a `[table]` line in that table: the keys above
+  (`requires_reborn`, `depends`...) go above the first `[table]` line, or they are read as that
+  table's and not as the mod's. **MOD INFO**'s check names the keys read past.
+- A value of another kind than its key takes, in a key that only presents the mod (`version`,
+  `description`, `authors`, `source`, `tags`, `media`, `links`, `theme`), is left out and the
+  rest read (`version = 1.2` gives no version: write `"1.2"`). In a key that decides whether the
+  mod is mounted (`id`, `name`, `depends`, `load_after`, `conflicts`, `requires_reborn`, `rename`,
+  `replaces`), the manifest does not read. One string where a list is wanted is a list of one
+  (`tags = "units"`, `depends = "ship-hulls"`); TA Reborn 1.0.6 and earlier refuse it, so write a
+  list for them.
 - A `mod.toml` that does not read leaves its mod out (the launcher lists it under **PROBLEMS**,
   with the line); it is never replaced by a made-up manifest.
 - Name the folder after the id. The id need not match it, but the launcher installs a mod in a
   folder of its id, and when a mod is not found it looks for a broken manifest in a folder of that
   name to say why.
-- Installing a package that has a `mod.toml`, the launcher writes the installed copy's `mod.toml`
-  itself, from these fields (comments are not kept), adding any renamed folders and placeholder
-  archives it found. A mod installed from the catalogue is named by the catalogue, and keeps the
-  `media`, `links`, `tags` and `theme` of its package's own `mod.toml`.
+- Installing a package that has a `mod.toml`, the launcher keeps it as written (comments and keys
+  it does not know too), changing only what the install sets: the id and the name it is installed
+  as, and any renamed folders and placeholder archives it found. A mod installed from the catalogue
+  is named by the catalogue (its id, name, version, description, authors and page), and keeps the
+  rest of its package's own `mod.toml`: `depends`, `load_after`, `conflicts`, `requires_reborn`,
+  `replaces`, `media`, `links`, `tags` and `theme`.
 
 A mod without a manifest (a folder or an archive put in a mods folder by hand) is given one: its
 id is its folder's whole name, or its archive's name without the extension, in lower case
@@ -604,23 +622,30 @@ screenshots = ["media/harbour.jpg", "media/battle.jpg"]
 - Each is named by its path from the mod's folder, with `/` between folders, in any case of its
   letters. A path that leaves the folder (`..`, a drive, a root) is never read.
 - Pictures may weigh up to 16 MB each (the preview 32 MB) and be up to 4096 pixels a side. The
-  launcher reads them on worker threads and keeps no more of them than are on show.
+  launcher reads them on worker threads and keeps no more of them than are on show: a screenshot
+  shown on the whole window is let go as it closes, and the previews as the library is left. One
+  that is not there, or does not read, shows a quiet cross in its place.
 - A preview's frames are kept in memory as it plays: a long or a large one plays in fewer frames
   (every other one kept, each shown for both, as often as it must), and a frame that asks for no
-  time at all shows for a tenth of a second, as in a web browser. It does not play with **REDUCE
-  MOTION** on (its page has a **PLAY PREVIEW** button then), nor while the launcher stands idle.
+  time at all shows for a tenth of a second, as in a web browser. On the mod's page, **STOP
+  PREVIEW** stops it. It does not play with **REDUCE MOTION** on (its page has a **PLAY PREVIEW**
+  button then; a card's never plays), nor while the launcher is in the background or stands idle.
+  A still picture, or a GIF of one frame, is no preview: the banner shows as it is.
 - Any of them may be left out. A mod without a banner gets a plate of its own: dark metal of a
   colour of its id's, its name lettered on it (and its icon beside the name).
 - The installer keeps the `media` folder whole (its PNG, JPEG, GIF, TTF and OTF files, up to 256 MB
   together), and a picture the manifest names elsewhere beside the content (`banner.png` beside
-  `mod.toml`). The game never reads the `media` folder, and the library's **WHAT IT CHANGES**
+  `mod.toml`). The pictures and the font the manifest names go first: the rest of a large folder
+  never crowds them out. The game never reads the `media` folder, and the library's **WHAT IT CHANGES**
   leaves it out.
 - The pictures are found again every few seconds: one changed on the disk shows without a
   **RESCAN** (a change to `mod.toml` itself needs one).
 - **MOD INFO**'s check tells what would not show as meant, under **PRESENTATION**: a picture that
-  is not there or does not read, one too small or of the wrong shape, a preview that does not
-  move, a link that is no web address. These are notes: they never change the mod's badge, which
-  is how it plays.
+  is not there or does not read (pictures are read by their content and whole, as the launcher
+  reads them), one too small or of the wrong shape, a preview that does not move or that the
+  launcher plays choppier than it was made (its frames at the size it is shown take more than the
+  96 MB it keeps for a preview), a link that is no web address. These are notes: they never change
+  the mod's badge, which is how it plays.
 
 The repository's [example mod](examples/example-mod) has a banner, an icon, a preview and
 screenshots of its own, and a `mod.toml` naming them.
@@ -631,6 +656,21 @@ A mod's `[theme]` draws its battles' HUD in colours of its own, with pictures be
 and a font for its titles: the look of the mod in play as well as in its units. The theme is the
 last mod's in the load order that has one; a player may turn mods' themes off (**MODS' INTERFACE
 THEMES**, in the game's Interface options).
+
+The theme draws the battle's HUD, and only that:
+
+- **Themed**: the top bar, the command deck and the minimap's plate (classic or modern HUD), the
+  messages and the overlay's legend, the allies' cards, the radial menu, the unit cards and health
+  bars over the battlefield, the HUD's floating bars (the replay and spectator controls, the chat,
+  a scenario's or a Conquest battle's goals, the players' table, the pause banner), the enemy
+  Commanders' transmissions, the cast's scoreboard and kill feed (on screen and over a film made of
+  the replay), and the companion screen. egui's own controls in them (fields, drop-downs, hints)
+  take the theme's colours and font too.
+- **TA Reborn's own look, whatever the theme**: the menus and the launcher, the loading screen,
+  the battle menu and its pages (options, statistics, controls), the dialogs on TA Reborn's plates
+  that the HUD opens (sharing, cheats, a unit's page, the battle's history, a replay's video and
+  clip export), the result page, the tutorial's windows, the tips and hints, and the cockpit (its
+  view, its glass and instruments).
 
 ```toml
 [theme]
@@ -655,33 +695,45 @@ accent = "#ff7a4d"
 
 | Key | What it colours | TA Reborn's own |
 | --- | --- | --- |
-| `accent` | Titles (the side's name on the top bar), the chosen, the main action, focus, the deck's tabs. Its brighter and darker shades are made from it, unless `accent_bright` gives the brighter. | `#d8b456` |
+| `accent` | Titles (the side's name on the top bar), the chosen, the main action (its button made of the accent as TA Reborn's is of brass, lettered in whatever reads on it), focus, the deck's tabs, lit keycaps. Its brighter and darker shades are made from it, unless `accent_bright` gives the brighter. | `#d8b456` |
 | `text` | Text; `text_bright` the headings and values (else made from `text`). | `#d8d3c4` |
 | `dim` | Labels and secondary text. | `#9e998a` |
-| `panel` | The panels' metal, where the side has no tiles of its own and no `panel_texture`; the background, the raised and the hovered from it, and the wells and lines unless `inset` and `line` give them. | `#1f1e1a` |
+| `panel` | The panels' metal, where the side has no tiles of its own and no `panel_texture`, and the HUD's floating bars' (the replay bar, the chat, the goals); the background, the raised and the hovered from it, and the wells and lines unless `inset` and `line` give them. | `#1f1e1a` |
 | `inset`, `line` | Wells sunk in the panels (bars, fields); hairlines and borders. | `#0d0e09`, `#3c3932` |
 | `metal`, `energy` | The resource bar's metal and energy. | `#aab8c4`, `#f2d43c` |
 | `good`, `bad`, `info` | Health and lamps lit; damage and warnings; radar and allies. | `#78d65c`, `#e05e4a`, `#68b8e8` |
 | `button_text` | The buttons' stencil lettering. | `#e2deb6` |
-| `panel_texture`, `bar_texture` | Pictures (PNG or JPEG, up to 2048 pixels a side) in place of the side's own metal, `bitmaps/<side>guisidetile.pcx` and `<side>guitoptile.pcx`. Made seamless, a few hundred pixels across. | the side's tiles |
-| `font` | A TrueType or OpenType font (up to 16 MB) for the HUD's titles, numbers and buttons; TA Reborn's own gives the letters it lacks. | Bahnschrift, else Sofia Sans |
+| `panel_texture`, `bar_texture` | Pictures (PNG, JPEG or a GIF's first frame, read by their content, up to 2048 pixels a side and 16 MB) in place of the side's own metal, `bitmaps/<side>guisidetile.pcx` and `<side>guitoptile.pcx`. Made seamless, a few hundred pixels across. | the side's tiles |
+| `font` | A TrueType or OpenType font (up to 16 MB) for the HUD's titles, numbers and buttons; TA Reborn's own gives the letters it lacks. It is set on the HUD's lines: scaled so that a line of it is as tall as one of TA Reborn's (1.2 times the size), its capitals in the middle of it, so a font whose line is taller than its letters looks smaller. Body text stays TA Reborn's. | Bahnschrift, else Sofia Sans |
 | `classic.text`, `classic.button_text`, `classic.dim`, `classic.pressed` | The classic HUD's lettering: its text, its buttons', dimmed, a button held down. | TA's |
 
 - Colours are written `#rrggbb` (or `#rgb`, `#rrggbbaa`). Anything left out keeps TA Reborn's
   own, so a theme may be a single `accent`.
-- `[theme.sides.<side>]` takes the same keys as `[theme]`, for one side (named as
-  `gamedata/sidedata.tdf` names it, any case): a spectator following another player sees that
-  player's side's.
+- `[theme.sides.<side>]` takes the colours (`accent`, `accent_bright`, `text`, `text_bright`,
+  `dim`, `panel`, `inset`, `line`, `good`, `bad`, `info`, `button_text`, `metal`, `energy`) and
+  the pictures (`panel_texture`, `bar_texture`), for one side (named as `gamedata/sidedata.tdf`
+  names it, any case); what it leaves out is the theme's. `font` and `[theme.classic]` are the
+  theme's for every side: written under a side, they are not read. A spectator following another
+  player sees that player's side's.
 - The classic HUD is TA's own art: a mod's interface files (`guis/`, `anims/<side>int.gaf`...)
   change it as they did in TA; the theme gives its lettering.
-- Team colours, the units, the map and the cockpit's view are never themed.
+- Team colours, the units and the map are never themed. Status colours keep their sense: the
+  health bars' yellow between `good` and `bad` stays yellow, and the words the HUD sets on its own
+  dark backdrops (the messages over the battlefield) are lit until they read there, whatever the
+  theme's `text` and `accent`.
 - The pictures and the font go in the mod's `media` folder, which the installer keeps; the game
   reads them from the mod's folder (not from its archives).
-- The theme draws only in battle; the menus keep TA Reborn's look. The mod's page in the launcher
-  shows a preview of it.
+- The theme draws only in battle, the HUD as listed above. The mod's page in the launcher shows
+  a preview of it: its top bar and its panels' picture repeated as the HUD repeats them, and each
+  of its colours with its value.
 - **MOD INFO**'s check tells under **PRESENTATION** what the game would not draw as meant: a
-  colour that is none, a picture or a font that is not there or does not read, text or an accent
-  hard to read on the panels, a side the game has not.
+  colour that is none, a picture or a font that is not there or does not read (both read as the
+  game reads them), text or an accent hard to read where it is drawn (on the theme's panels, on
+  its plates' picture, and on the sides' own dark metal where it gives the plates no picture; the
+  theme's own colours and each side's), a font the HUD shows smaller or larger than its size (its
+  lines far from 1.2 times its size: the HUD fits it to its own), a side the game has not. A mod of
+  its `mod.toml` alone, a theme and nothing else, is checked complete: nothing of the game's data
+  to check.
 
 The [example mod](examples/example-mod) has a theme of its own, with its panel and bar pictures.
 
@@ -1026,7 +1078,7 @@ names the mod's folder (an absolute path, with its `mod.toml`):
 | Units, weapons, features, sides, build menus | `crates/ta_data/src/lib.rs`, `crates/ta_data/src/unit.rs` |
 | The mod check | `crates/ta_data/src/validation.rs`, `apps/ta_launcher/src/validation.rs` |
 | A mod's presentation: its pictures, preview and links, and their check | `crates/ta_vfs/src/mods.rs` (`Media`), `apps/ta_launcher/src/mod_media.rs`, `crates/ta_data/src/presentation.rs` |
-| A mod's interface theme: the palette, applying it in battle, its check | `crates/ta_vfs/src/mods.rs` (`Theme`), `crates/ta_ui/src/theme.rs` (`Palette`), `apps/ta_game/src/mod_theme.rs`, `apps/ta_game/src/hud_skin.rs`, `crates/ta_data/src/presentation.rs` |
+| A mod's interface theme: the palette, applying it in battle (the HUD alone: `hud`, `reborn`), its check | `crates/ta_vfs/src/mods.rs` (`Theme`), `crates/ta_ui/src/theme.rs` (`Palette`, `hud`), `apps/ta_game/src/mod_theme.rs`, `apps/ta_game/src/hud_skin.rs`, `crates/ta_data/src/presentation.rs` |
 | Script values | `crates/ta_sim/src/host.rs` |
 | The classic build pages, 768-pixel layouts, shared places | `apps/ta_game/src/hud_classic_art.rs` |
 | The catalogue, installs, the MODS page | `apps/ta_launcher/src/catalogue.rs`, `getmods.rs`, `modlist.rs`, `mod_library.rs`, `pages/mods.rs`, `pages/mod_order.rs`, `pages/mod_report.rs` |
