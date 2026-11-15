@@ -533,3 +533,24 @@ The chronicle told plainly and a little solemn; each archive document in its own
 | the CORE machine remembering (its sex unknown) | its "I" takes no gendered past tense ("у рідному місті", "Смерть наздоганяла мене", "Я триваю") |
 | mod check labels: feature / faction / wreckage / build option | об'єкт / сторона / уламки / варіант будівництва |
 | empty file (blanks out a file below) | порожній файл (затирає) |
+
+## A mod's presentation in the MODS library (`pages/mods.rs`, `ta_data/src/presentation.rs`)
+
+A mod's banner, gameplay preview, icon, screenshots and links, and the mod check's notes on them
+(the report's group PRESENTATION). Manifest keys (`banner`, `preview`, `icon`, `screenshots`) and
+paths stay as written: "Ключ {key} у mod.toml вказує на {path}"; sizes as "Розмір файлу {path} —
+{size}", "Розміри зображення {path} — {width} × {height}", "Розмір банера — {width} × {height}".
+No "виглядає" (the language file never uses it): "стає розмитим", "буде чітким".
+
+| English | Українська |
+|---|---|
+| banner (the card and the top of the mod's page) | банер (банера) |
+| gameplay preview (an animated GIF of the mod in play) / PLAY PREVIEW | ролик ігрового процесу (as ігровий процес for gameplay) / ДИВИТИСЯ РОЛИК (as WATCH = ДИВИТИСЯ) |
+| icon (a mod's) | значок (as СТРАТЕГІЧНІ ЗНАЧКИ) |
+| screenshot(s) / SCREENSHOTS / Screenshot {n} of {count} / {n} of {count} | знімок, знімки екрана / ЗНІМКИ ЕКРАНА / Знімок екрана {n} з {count} / {n} з {count} |
+| MOD PAGE (the link to the mod's web page) | САЙТ МОДУ (WEBSITE = САЙТ) |
+| PRESENTATION (the report's group heading) | ОФОРМЛЕННЯ |
+| web address | веб-адреса |
+| blurred / sharp | розмитий / чіткий |
+| give it more pixels / at best | збільште роздільність / найкраще |
+| frames and seconds from placeholders | "кадрів: {frames}, {seconds} с"; a count of screenshots: "Знімків екрана в mod.toml: {count}" |

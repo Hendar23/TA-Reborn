@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Mods present themselves in the launcher's library with pictures of their own, named in their
+  `mod.toml`'s new `[media]`: a banner (their card, and the top of their page), an animated GIF of
+  the mod in play (played in the banner on their page, and on their card while the pointer rests
+  on it), an icon beside their name, and screenshots on their page that open on the whole window.
+  A mod installed from a file or a folder now looks as one from the catalogue does. `tags` find a
+  mod in the library and show on its page, and `[links]` (and `source`) are links there. The
+  installer keeps a mod's `media` folder and the pictures its manifest names; the mod check tells
+  under PRESENTATION what would not show as meant (notes: a mod's badge is how it plays). See
+  [docs/MODDING.md](docs/MODDING.md#presenting-a-mod-in-the-launcher) and the
+  [example mod](docs/examples/example-mod).
+
 ## 1.0.6 — 2026-11-15
 
 NVIDIA's graphics driver has more room on the game's main thread, after crashes on some cards, and

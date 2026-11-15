@@ -389,6 +389,32 @@ pub struct Plan {
     /// Units and maps the content brings (`.fbi` and `.ota` files).
     pub units: usize,
     pub maps: usize,
+    /// The mod's pictures and fonts: its [`crate::mods::MEDIA_FOLDER`]'s (of
+    /// [`crate::mods::MEDIA_EXTENSIONS`]), and those its manifest names elsewhere beside the
+    /// content (`banner.png`). Each file, and where it goes in the mod's folder (`media/banner.png`,
+    /// as the package spells it).
+    pub media: Vec<(PathBuf, String)>,
+    /// The package's own manifest, when its content's folder has one: what it says of itself
+    /// (its pictures, links and tags) for an install that names the mod otherwise (the
+    /// catalogue's).
+    pub authored: Option<ModManifest>,
+}
+
+/// The most a mod's pictures and fonts may weigh, each and all together, and how many there may
+/// be: more is left out of an install.
+pub const MAX_MEDIA_FILE: u64 = 64 << 20;
+const MAX_MEDIA_BYTES: u64 = 256 << 20;
+const MAX_MEDIA_FILES: usize = 512;
+
+/// Whether a file's name (any case) is of a kind a mod's media keeps.
+pub fn is_media(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(_, extension)| crate::mods::MEDIA_EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str()))
+}
+
+/// Whether a path a plan moves within its mod's folder (`media/hud/panel.png`) is one: relative,
+/// each part an ordinary name.
+fn safe_relative(path: &str) -> bool {
+    !path.is_empty() && path.split('/').all(safe_component)
 }
 
 /// Whether a file is a TA archive: a `HAPI` header (checked first) and a directory that
@@ -472,8 +498,14 @@ pub fn plan(unpacked: &Path) -> Result<Plan, PackageError> {
     let own = crate::mods::read_mod(&root).map_err(|error| PackageError::Unsafe(error.to_string()))?
         .ok_or(PackageError::NoContent)?.manifest;
     let declared = renamed_folders(&own.rename)?;
-    let mut plan = Plan { root: root.clone(), rename: own.rename.clone(), ..Default::default() };
+    let has_manifest = crate::mods::manifest_path(&root).is_file();
+    let mut plan = Plan { root: root.clone(), rename: own.rename.clone(), authored: has_manifest.then(|| own.clone()), ..Default::default() };
     let rel = |p: &Path| p.strip_prefix(unpacked).unwrap_or(p).to_string_lossy().replace('\\', "/");
+    // The pictures its manifest names beside the content, wherever they are there (those in a
+    // folder kept whole come with it).
+    let named: std::collections::BTreeSet<PathBuf> = own.media.files().filter_map(|file| crate::mods::media_path(&root, file))
+        .filter(|path| path.file_name().is_some_and(|name| is_media(&name.to_string_lossy()))).collect();
+    let mut media_folders = Vec::new();
     plan.archives = archives.iter().filter(|(p, _)| p.parent() == Some(root.as_path())).map(|(p, _)| p.clone()).collect();
     plan.archives.sort();
     for (path, _) in archives.iter().filter(|(p, _)| p.parent() != Some(root.as_path())) {
@@ -503,10 +535,14 @@ pub fn plan(unpacked: &Path) -> Result<Plan, PackageError> {
                 plan.folders.push(path);
             } else if DOCUMENT_FOLDERS.contains(&name.as_str()) {
                 document_folders.push(path);
+            } else if name == crate::mods::MEDIA_FOLDER {
+                media_folders.push(path);
             } else {
                 plan.skipped.push(format!("{}/", rel(&path)));
             }
         } else if plan.archives.contains(&path) || stubs.contains(&path) || unreadable.iter().any(|(p, _)| *p == path) {
+        } else if named.contains(&path) {
+            // (One of its pictures: below.)
         } else if is_document(&name) {
             plan.docs.push(path);
         } else {
@@ -528,6 +564,31 @@ pub fn plan(unpacked: &Path) -> Result<Plan, PackageError> {
             }
         }
     }
+    // Its pictures and fonts: the media folder's (of their kinds, as many as it may hold), then
+    // those the manifest names elsewhere, outside the folders it keeps whole.
+    let mut weight = 0u64;
+    let in_root = |path: &Path| path.strip_prefix(&root).ok().map(|p| p.to_string_lossy().replace('\\', "/"));
+    let take = |plan: &mut Plan, path: &Path, weight: &mut u64| {
+        let Some(to) = in_root(path).filter(|to| safe_relative(to)) else { plan.skipped.push(rel(path)); return };
+        let size = std::fs::metadata(path).map_or(u64::MAX, |m| m.len());
+        if !path.file_name().is_some_and(|name| is_media(&name.to_string_lossy())) {
+            plan.skipped.push(format!("{} (not a picture or a font)", rel(path)));
+        } else if size > MAX_MEDIA_FILE || weight.saturating_add(size) > MAX_MEDIA_BYTES || plan.media.len() >= MAX_MEDIA_FILES {
+            plan.skipped.push(format!("{} (beyond what a mod's pictures may weigh)", rel(path)));
+        } else if !plan.media.iter().any(|(_, taken)| taken.eq_ignore_ascii_case(&to)) {
+            *weight += size;
+            plan.media.push((path.to_path_buf(), to));
+        }
+    };
+    for folder in &media_folders {
+        let mut files = Vec::new();
+        walk(folder, 0, &mut |path, is_dir| if !is_dir { files.push(path.to_path_buf()) });
+        files.sort();
+        for file in files { take(&mut plan, &file, &mut weight); }
+    }
+    let kept_whole = |path: &Path| plan.folders.iter().chain(&media_folders).any(|folder| path.starts_with(folder));
+    let outside: Vec<PathBuf> = named.iter().filter(|path| !kept_whole(path)).cloned().collect();
+    for path in outside { take(&mut plan, &path, &mut weight); }
     // What the content holds, by top folder: how many files of each kind.
     let mut contents = Contents::new();
     let mut content_paths = std::collections::BTreeSet::new();
@@ -744,6 +805,13 @@ pub fn install_with_commit_guard<G>(
             return Err(PackageError::Unsafe("planned file is outside the content root".into()));
         }
     }
+    // (Its pictures and fonts: files in the content's folder, each going to a place of ordinary
+    // names in the mod's, beside none of the rest.)
+    for (path, to) in &plan.media {
+        if !path.starts_with(&plan.root) || !safe_relative(to) || !std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file()) {
+            return Err(PackageError::Unsafe(format!("planned picture {to} is not a file in the content root")));
+        }
+    }
     // Archives with unrecognised extensions acquire .gp3 when installed. Check
     // the final names before moving anything, including on case-sensitive disks.
     let mut names = std::collections::BTreeSet::from(["mod.toml".to_string()]);
@@ -754,6 +822,14 @@ pub fn install_with_commit_guard<G>(
     {
         if !names.insert(name.to_lowercase()) {
             return Err(PackageError::Unsafe(format!("multiple package entries install as {name}")));
+        }
+    }
+    // (The pictures' first folders, or the files themselves beside the manifest, are names of
+    // their own; several pictures share a folder.)
+    let media_tops: std::collections::BTreeSet<String> = plan.media.iter().map(|(_, to)| to.split('/').next().unwrap_or_default().to_lowercase()).collect();
+    for top in media_tops {
+        if !names.insert(top.clone()) {
+            return Err(PackageError::Unsafe(format!("multiple package entries install as {top}")));
         }
     }
     std::fs::create_dir_all(mods_dir).map_err(io(mods_dir))?;
@@ -807,6 +883,11 @@ pub fn install_with_commit_guard<G>(
                     move_path(path, &docs.join(name))?;
                 }
             }
+        }
+        for (path, to) in &plan.media {
+            let target = staging.join(to);
+            if let Some(folder) = target.parent() { std::fs::create_dir_all(folder).map_err(io(folder))?; }
+            move_path(path, &target)?;
         }
         let mut manifest = manifest.clone();
         manifest.rename.extend(plan.rename.clone());
@@ -1419,7 +1500,7 @@ mod tests {
         std::fs::create_dir_all(base.join("victim")).unwrap();
         std::fs::write(base.join("victim/canary"), b"keep").unwrap();
         for id in ["../victim", "..\\victim", "C:\\victim", "x:stream", "NUL", "COM1.txt", "COM¹.txt", "LPT³", "CONOUT$", "trailing."] {
-            let manifest = ModManifest { id: id.into(), name: "test".into(), version: "1".into(), description: String::new(), authors: Vec::new(), depends: Vec::new(), load_after: Vec::new(), source: String::new(), rename: BTreeMap::new(), replaces: Vec::new() };
+            let manifest = ModManifest { id: id.into(), name: "test".into(), version: "1".into(), description: String::new(), authors: Vec::new(), depends: Vec::new(), load_after: Vec::new(), source: String::new(), rename: BTreeMap::new(), replaces: Vec::new(), ..Default::default() };
             assert!(install(&Plan::default(), &manifest, &base.join("mods")).is_err(), "{id}");
             assert_eq!(std::fs::read(base.join("victim/canary")).unwrap(), b"keep");
         }
@@ -1441,7 +1522,7 @@ mod tests {
         std::fs::create_dir_all(&staging).unwrap();
         std::fs::write(staging.join("canary"), b"first install is still using this").unwrap();
         let held = lock_install(&mods, "testmod").unwrap();
-        let manifest = ModManifest { id: "testmod".into(), name: "Test".into(), version: "1".into(), description: String::new(), authors: Vec::new(), depends: Vec::new(), load_after: Vec::new(), source: String::new(), rename: BTreeMap::new(), replaces: Vec::new() };
+        let manifest = ModManifest { id: "testmod".into(), name: "Test".into(), version: "1".into(), description: String::new(), authors: Vec::new(), depends: Vec::new(), load_after: Vec::new(), source: String::new(), rename: BTreeMap::new(), replaces: Vec::new(), ..Default::default() };
         let (started_tx, started_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
         let other_mods = mods.clone();
@@ -1482,7 +1563,7 @@ mod tests {
         std::fs::write(source.join("units/NEW.FBI"), b"new version").unwrap();
         std::fs::create_dir_all(mods.join("testmod")).unwrap();
         std::fs::write(mods.join("testmod/canary"), b"previous version").unwrap();
-        let manifest = ModManifest { id: "testmod".into(), name: "Test".into(), version: "1".into(), description: String::new(), authors: Vec::new(), depends: Vec::new(), load_after: Vec::new(), source: String::new(), rename: BTreeMap::new(), replaces: Vec::new() };
+        let manifest = ModManifest { id: "testmod".into(), name: "Test".into(), version: "1".into(), description: String::new(), authors: Vec::new(), depends: Vec::new(), load_after: Vec::new(), source: String::new(), rename: BTreeMap::new(), replaces: Vec::new(), ..Default::default() };
         let released = Cell::new(false);
         let installed = install_with_commit_guard(&plan(&source).unwrap(), &manifest, &mods, || {
             assert!(mods.join(".testmod.installing/units/NEW.FBI").is_file(), "copying is finished before acquiring the guard");
@@ -1509,7 +1590,7 @@ mod tests {
             let backup = mods.join(".testmod.old");
             std::fs::create_dir_all(&backup).unwrap();
             std::fs::write(backup.join("canary"), b"previous version").unwrap();
-            let manifest = ModManifest { id: "testmod".into(), name: "Test".into(), version: "2".into(), description: String::new(), authors: Vec::new(), depends: Vec::new(), load_after: Vec::new(), source: String::new(), rename: BTreeMap::new(), replaces: Vec::new() };
+            let manifest = ModManifest { id: "testmod".into(), name: "Test".into(), version: "2".into(), description: String::new(), authors: Vec::new(), depends: Vec::new(), load_after: Vec::new(), source: String::new(), rename: BTreeMap::new(), replaces: Vec::new(), ..Default::default() };
             std::fs::write(backup.join("mod.toml"), toml::to_string(&manifest).unwrap()).unwrap();
             let result = install_with_commit_guard(&plan(&source).unwrap(), &manifest, &mods, || {
                 if outcome == "cancel" { return Err(PackageError::Cancelled); }
@@ -1542,7 +1623,7 @@ mod tests {
     }
 
     fn manifest(id: &str, version: &str) -> ModManifest {
-        ModManifest { id: id.into(), name: id.into(), version: version.into(), description: String::new(), authors: Vec::new(), depends: Vec::new(), load_after: Vec::new(), source: String::new(), rename: BTreeMap::new(), replaces: Vec::new() }
+        ModManifest { id: id.into(), name: id.into(), version: version.into(), description: String::new(), authors: Vec::new(), depends: Vec::new(), load_after: Vec::new(), source: String::new(), rename: BTreeMap::new(), replaces: Vec::new(), ..Default::default() }
     }
 
     #[test]
@@ -1621,6 +1702,53 @@ mod tests {
     }
 
     /// A unit to install, as a package's content.
+    /// A package's pictures and fonts are kept: its media folder's (of their kinds only), and a
+    /// picture its manifest names beside the content; the installed manifest keeps how it names
+    /// them, its links and its tags, and the plan the package's own manifest (a catalogue install
+    /// takes its pictures from it).
+    #[test]
+    fn an_install_keeps_the_mods_pictures_and_fonts() {
+        let base = std::env::temp_dir().join(format!("ta_package_media_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let source = base.join("package/My Mod");
+        std::fs::create_dir_all(source.join("units")).unwrap();
+        std::fs::create_dir_all(source.join("Media/hud")).unwrap();
+        std::fs::write(source.join("units/NEW.FBI"), b"[UNITINFO]{UnitName=NEW;}").unwrap();
+        std::fs::write(source.join("mod.toml"), "id = \"mymod\"\nname = \"My Mod\"\ntags = [\"units\", \"balance\"]\n\n[media]\nbanner = \"banner.png\"\npreview = \"Media/gameplay.gif\"\nicon = \"media/icon.png\"\nscreenshots = [\"media/shot1.jpg\"]\n\n[links]\nDiscord = \"https://discord.gg/example\"\n").unwrap();
+        std::fs::write(source.join("banner.png"), b"png").unwrap();
+        std::fs::write(source.join("Media/gameplay.gif"), b"gif").unwrap();
+        std::fs::write(source.join("Media/icon.png"), b"png").unwrap();
+        std::fs::write(source.join("Media/shot1.jpg"), b"jpg").unwrap();
+        std::fs::write(source.join("Media/hud/panel.png"), b"png").unwrap();
+        std::fs::write(source.join("Media/hud/Font.TTF"), b"ttf").unwrap();
+        std::fs::write(source.join("Media/notes.psd"), b"psd").unwrap();
+        std::fs::write(source.join("cover.png"), b"not named").unwrap();
+        std::fs::write(source.join("TotalA.exe"), b"MZ").unwrap();
+        let plan = plan(&base.join("package")).unwrap();
+        let mut kept: Vec<&str> = plan.media.iter().map(|(_, to)| to.as_str()).collect();
+        kept.sort();
+        assert_eq!(kept, ["Media/gameplay.gif", "Media/hud/Font.TTF", "Media/hud/panel.png", "Media/icon.png", "Media/shot1.jpg", "banner.png"]);
+        assert!(plan.skipped.iter().any(|s| s.contains("notes.psd")), "not a picture or a font: {:?}", plan.skipped);
+        assert!(plan.skipped.iter().any(|s| s.ends_with("cover.png")), "a picture the manifest does not name stays behind: {:?}", plan.skipped);
+        let own = plan.authored.clone().expect("the package's own manifest");
+        assert_eq!(own.media.banner, "banner.png");
+        let mods = base.join("mods");
+        let dir = install(&plan, &own, &mods).unwrap();
+        for file in ["banner.png", "Media/gameplay.gif", "Media/hud/panel.png", "Media/hud/Font.TTF"] {
+            assert!(dir.join(file).is_file(), "{file} installed");
+        }
+        assert!(!dir.join("cover.png").exists() && !dir.join("TotalA.exe").exists() && !dir.join("Media/notes.psd").exists());
+        let (found, errors) = crate::mods::scan(&mods);
+        assert!(errors.is_empty(), "{errors:?}");
+        let manifest = &found[0].manifest;
+        assert_eq!(manifest.tags, ["units", "balance"]);
+        assert_eq!(manifest.media.preview, "Media/gameplay.gif");
+        assert_eq!(manifest.links.get("Discord").map(String::as_str), Some("https://discord.gg/example"));
+        // (Named in another case than the disk's, each is found.)
+        assert!(crate::mods::media_path(&dir, &manifest.media.icon).is_some_and(|path| path.is_file()));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     fn content(base: &Path, text: &[u8]) -> Plan {
         let source = base.join(format!("source-{}", base.read_dir().map_or(0, |d| d.count())));
         std::fs::create_dir_all(source.join("units")).unwrap();
@@ -1890,7 +2018,7 @@ mod tests {
             load_after: Vec::new(),
             source: "https://www.moddb.com/mods/test".into(),
             rename: BTreeMap::new(),
-            replaces: Vec::new(),
+            replaces: Vec::new(), ..Default::default()
         };
         let dir = install(&plan, &manifest, &mods).unwrap();
         assert!(dir.join("units/NEWUNIT.FBI").is_file() && dir.join("docs/Readme.txt").is_file() && !dir.join("TotalA.exe").exists());

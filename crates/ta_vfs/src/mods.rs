@@ -18,7 +18,7 @@ use thiserror::Error;
 
 use crate::ARCHIVE_EXTENSIONS;
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ModManifest {
     /// The folder it is installed in, on disks that do not tell case apart: kept in lower
     /// case, whatever case its `mod.toml` wrote it in, as its name makes it without one (one
@@ -53,6 +53,97 @@ pub struct ModManifest {
     /// install's, replace those without being named here ([`replaced_archives`]).
     #[serde(default, deserialize_with = "lower_case_list", skip_serializing_if = "Vec::is_empty")]
     pub replaces: Vec<String>,
+    /// Words the launcher's library finds the mod by and shows on its page ("units", "total
+    /// conversion").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// The pictures the launcher presents the mod with ([`Media`]).
+    #[serde(default, skip_serializing_if = "Media::is_empty")]
+    pub media: Media,
+    /// Web pages of the mod's beyond [`ModManifest::source`], by the words of their buttons
+    /// (`Discord = "https://…"`): http and https addresses only are opened.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub links: BTreeMap<String, String>,
+}
+
+/// The folder of a mod's own that holds its pictures (and, for its interface theme, its pictures
+/// and fonts): kept by the installer whole (of [`MEDIA_EXTENSIONS`]), never read by the game as
+/// TA's data.
+pub const MEDIA_FOLDER: &str = "media";
+
+/// The kinds of file (extensions, lower case) a mod's [`MEDIA_FOLDER`] keeps: pictures and fonts.
+pub const MEDIA_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "ttf", "otf"];
+
+/// How the launcher presents a mod: pictures in its folder, each named by its path from the
+/// folder (`media/banner.png`; best in its [`MEDIA_FOLDER`]). Any of them may be left out: a mod
+/// without a banner gets a plate of its own with its name.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Media {
+    /// A wide picture, the mod's card in the library and the top of its page (PNG or JPEG; 2:1,
+    /// 1280 × 640 at best: the card shows it whole, the page its middle).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub banner: String,
+    /// An animated GIF of the mod in play, shown in its banner: on its page, and on its card while
+    /// the pointer rests on it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub preview: String,
+    /// A square picture (256 × 256 at best), beside the mod's name.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub icon: String,
+    /// Pictures of the mod in play, on its page (the first [`MAX_SCREENSHOTS`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub screenshots: Vec<String>,
+}
+
+/// How many of a mod's screenshots its page shows.
+pub const MAX_SCREENSHOTS: usize = 12;
+
+impl Media {
+    pub fn is_empty(&self) -> bool {
+        self.banner.is_empty() && self.preview.is_empty() && self.icon.is_empty() && self.screenshots.is_empty()
+    }
+
+    /// Every file it names, banner first (as written: see [`media_path`]).
+    pub fn files(&self) -> impl Iterator<Item = &str> {
+        [&self.banner, &self.preview, &self.icon].into_iter().chain(self.screenshots.iter().take(MAX_SCREENSHOTS))
+            .map(String::as_str).filter(|file| !file.trim().is_empty())
+    }
+}
+
+/// The file a mod's manifest names (`media/banner.png`, from its folder `dir`), as the disk has it:
+/// each part of the path found in any case of its letters (a file system that tells cases apart,
+/// Linux's, finds what the others find). None when it names nothing there: a path that leaves the
+/// folder (`..`, a drive, a root), a part that is not there, a link, or anything but a file.
+pub fn media_path(dir: &Path, named: &str) -> Option<PathBuf> {
+    let named = named.trim().replace('\\', "/");
+    if named.is_empty() || named.starts_with('/') || named.contains(':') { return None; }
+    let mut at = dir.to_path_buf();
+    let parts: Vec<&str> = named.split('/').filter(|part| !part.is_empty() && *part != ".").collect();
+    if parts.is_empty() { return None; }
+    for (index, part) in parts.iter().enumerate() {
+        if *part == ".." || !crate::package::safe_component(part) { return None; }
+        let exact = at.join(part);
+        let next = if std::fs::symlink_metadata(&exact).is_ok() { exact } else {
+            std::fs::read_dir(&at).ok()?.flatten()
+                .find(|entry| entry.file_name().to_str().is_some_and(|name| name.eq_ignore_ascii_case(part)))?
+                .path()
+        };
+        let meta = std::fs::symlink_metadata(&next).ok()?;
+        if crate::is_link(&meta) { return None; }
+        let last = index + 1 == parts.len();
+        if last && !meta.is_file() || !last && !meta.is_dir() { return None; }
+        at = next;
+    }
+    Some(at)
+}
+
+/// Whether `url` is one the launcher opens: an http or https address.
+pub fn web_address(url: &str) -> bool {
+    let url = url.trim();
+    let lower = url.to_ascii_lowercase();
+    (lower.starts_with("https://") || lower.starts_with("http://")) && url.len() > lower.find("://").map_or(0, |at| at + 3)
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 /// A mod that does not say its version has none: "" (shown as unknown), never a made-up one.
@@ -345,7 +436,7 @@ fn implicit_manifest(stem: &str) -> ModManifest {
         load_after: Vec::new(),
         source: String::new(),
         rename: BTreeMap::new(),
-        replaces: Vec::new(),
+        replaces: Vec::new(), ..Default::default()
     }
 }
 
@@ -908,6 +999,53 @@ fn comes_after(before: &BTreeMap<&str, Vec<&str>>, from: &str, to: &str) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A manifest's presentation (its tags, pictures and links) reads, and is written back as it
+    /// read (the installer writes every installed mod's manifest), the rest of it as before.
+    #[test]
+    fn a_manifests_presentation_reads_and_is_written_back() {
+        let text = "id = \"MyMod\"\nname = \"My Mod\"\nversion = \"1.2\"\ntags = [\"Units\", \"total conversion\"]\nsource = \"https://www.moddb.com/mods/mymod\"\nreplaces = [\"btdata.ccx\"]\n\n[rename]\nguim = \"guis\"\n\n[media]\nbanner = \"media/banner.png\"\npreview = \"media/gameplay.gif\"\nicon = \"media/icon.png\"\nscreenshots = [\"media/1.jpg\", \"media/2.jpg\"]\n\n[links]\n\"Home page\" = \"https://example.com\"\nDiscord = \"https://discord.gg/x\"\n";
+        let manifest: ModManifest = toml::from_str(text).unwrap();
+        assert_eq!(manifest.id, "mymod");
+        assert_eq!(manifest.tags, ["Units", "total conversion"], "tags as written");
+        assert_eq!(manifest.media.preview, "media/gameplay.gif");
+        assert_eq!(manifest.media.files().collect::<Vec<_>>(), ["media/banner.png", "media/gameplay.gif", "media/icon.png", "media/1.jpg", "media/2.jpg"]);
+        assert_eq!(manifest.links.len(), 2);
+        let written = toml::to_string_pretty(&manifest).unwrap();
+        assert_eq!(toml::from_str::<ModManifest>(&written).unwrap(), manifest, "{written}");
+        // A manifest without them writes none of them.
+        let plain: ModManifest = toml::from_str("id = \"plain\"\nname = \"Plain\"\n").unwrap();
+        let written = toml::to_string_pretty(&plain).unwrap();
+        assert!(!written.contains("media") && !written.contains("links") && !written.contains("tags"), "{written}");
+    }
+
+    /// A picture a manifest names is found in the mod's folder in any case of its letters, and
+    /// never outside it: not by `..`, a root or a drive, nor a folder where a file is meant.
+    #[test]
+    fn a_named_picture_is_found_in_the_mods_folder_and_never_outside_it() {
+        let root = std::env::temp_dir().join(format!("ta-mod-media-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("mod/Media/HUD")).unwrap();
+        std::fs::write(root.join("mod/Media/HUD/Panel.png"), b"png").unwrap();
+        std::fs::write(root.join("outside.png"), b"png").unwrap();
+        let dir = root.join("mod");
+        for named in ["Media/HUD/Panel.png", "media/hud/panel.png", "media\\hud\\PANEL.PNG", "./media/hud/panel.png"] {
+            assert!(media_path(&dir, named).is_some_and(|path| path.is_file()), "{named}");
+        }
+        for named in ["../outside.png", "media/../../outside.png", "/outside.png", "C:/outside.png", "media/hud", "media/hud/none.png", "", "   "] {
+            assert_eq!(media_path(&dir, named), None, "{named}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Only http and https addresses are opened.
+    #[test]
+    fn only_web_addresses_are_links() {
+        assert!(web_address("https://www.moddb.com/mods/x") && web_address("http://example.com") && web_address(" HTTPS://EXAMPLE.COM "));
+        for not in ["", "www.example.com", "ftp://example.com", "file:///C:/x", "javascript:alert(1)", "https://", "https://exa mple.com"] {
+            assert!(!web_address(not), "{not}");
+        }
+    }
 
     #[test]
     fn a_manifest_path_that_is_a_directory_cannot_become_an_implicit_mod() {

@@ -563,3 +563,22 @@ after them (ARM의 손실: [[수십억]]).
 | stamps RECOVERED, BY ORDER OF THE COUNCIL, TRANSMITTED ON ALL BANDS, RESTRICTED, FOR TRAINING USE | 회수됨, 평의회 명령, 전 대역 송신, 대외비, 훈련용 |
 | stamps UNDELIVERED, INTERCEPTED, FLAGGED FOR CORRECTION, SEALED UNTIL NEEDED, CLASSIFIED | 미배달, 감청됨, 수정 대상, 유사시까지 봉인, 기밀 |
 | FIGHT IT (caption before the campaigns that fight a chapter) | 참전 |
+
+## A mod's presentation in the launcher (`pages/mods.rs`, `ta_data/src/presentation.rs`)
+
+The check's notes are polite sentences, the English colon split into two sentences; what to do
+ends in 하세요. `mod.toml`, `media/banner.png`, PNG, JPEG, GIF, http:// and https:// stay as they
+are, the `media` folder keeps its name (모드의 media 폴더). A placeholder is followed by a noun
+({path} 파일은, {key} 항목이) or 입니다. JPEG is read 제이펙: "JPEG 형식으로", never "JPEG로".
+
+| English | 한국어 |
+|---|---|
+| banner (a mod's: its card and the top of its page) / icon | 배너 / 아이콘 |
+| preview / gameplay preview (an animated GIF) / PLAY PREVIEW | 미리 보기 (as the skins page's) / 게임플레이 미리 보기 / 미리 보기 재생 |
+| screenshot(s) / SCREENSHOTS / Screenshot {n} of {count}, {n} of {count} | 스크린샷 (pictures count in 장: {count}장) / 스크린샷 / 스크린샷 {n}/{count}, {n}/{count} |
+| MOD PAGE (a link to the mod's web page) / link / web address | 모드 페이지 / 링크 / 웹 주소 |
+| PRESENTATION (the report's group: how a mod shows in the library) | 라이브러리 표시 |
+| mod.toml's {key} names {path} / a path read from the mod's folder | mod.toml의 {key} 항목이 가리키는 {path} 경로 / 모드 폴더를 기준으로 한 경로 |
+| animated GIF / still picture / picture editor | 애니메이션 GIF / 정지 이미지 / 이미지 편집 프로그램 |
+| blurred / sharp / cut off (a picture) | 흐릿하게 보입니다 / 선명하게 보입니다 / 잘립니다 |
+| Give it more pixels: 1280 × 640 at best | 해상도를 높이세요. 1280 × 640이 가장 좋습니다. (a literal size, so the particle can agree) |

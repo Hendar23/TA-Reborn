@@ -35,6 +35,7 @@ release brought. Every check the launcher runs on a mod is in
 [A first mod](#a-first-mod) ·
 [Folder layout](#folder-layout) ·
 [The mod.toml manifest](#the-modtoml-manifest) ·
+[Presenting a mod in the launcher](#presenting-a-mod-in-the-launcher) ·
 [Archives or loose folders](#archives-or-loose-folders) ·
 [How mods are mounted](#how-mods-are-mounted) ·
 [Replacing the original game's archives](#replacing-the-original-games-archives) ·
@@ -497,6 +498,17 @@ authors = ["A. Modder", "B. Painter"]
 source = "https://example.org/naval-additions"
 depends = ["ship-hulls"]      # must be on too; loads before this mod
 load_after = ["ship-tweaks"]  # loads before this mod when it is on
+tags = ["units", "naval"]     # found by these in the library, shown on its page
+
+[media]                       # how the launcher presents it (see below)
+banner = "media/banner.png"
+preview = "media/gameplay.gif"
+icon = "media/icon.png"
+screenshots = ["media/harbour.jpg", "media/battle.jpg"]
+
+[links]                       # buttons on its page, by their words
+"Home page" = "https://example.org/naval-additions"
+Discord = "https://discord.gg/example"
 ```
 
 | Field | Type | Default | What it does |
@@ -506,11 +518,14 @@ load_after = ["ship-tweaks"]  # loads before this mod when it is on
 | `version` | string | `""`, shown as unknown | Shown, kept in saved games and replays, and named when two copies differ. A string: `"1.2"`, not `1.2`. |
 | `description` | string | `""` | Shown in the mod's details. |
 | `authors` | list of strings | `[]` | Shown as "by …". |
-| `source` | string | `""` | The mod's web page. The launcher writes it for catalogue installs; it does not show it at present. |
+| `source` | string | `""` | The mod's web page: a **MOD PAGE** link on its page (a catalogue mod's page is the catalogue's). The launcher writes it for catalogue installs. |
 | `depends` | list of ids | `[]` | Mods that must be on too; they load before this one. Shown as "requires …". |
 | `load_after` | list of ids | `[]` | Mods this one loads after when they are on. |
 | `rename` | table | none | Folders of the mod's own read in place of TA's: see [Renamed folders](#renamed-folders). |
 | `replaces` | list of file names | `[]` | Archives of the original game this mod takes the place of, beyond its own archives of their names: see [Replacing the original game's archives](#replacing-the-original-games-archives). |
+| `tags` | list of strings | `[]` | Words the library finds the mod by, shown on its page as written. |
+| `media` | table | none | Its banner, gameplay preview, icon and screenshots: see [Presenting a mod in the launcher](#presenting-a-mod-in-the-launcher). |
+| `links` | table | none | Its web pages, `"Words on the button" = "https://…"`: links on its page, in the order of their words. Only `http://` and `https://` addresses are opened. |
 
 The id must be usable as a folder's name on every system: not empty, not `.` or `..`, without
 control characters or any of `< > : " / \ | ? *`, not ending in a dot or a space, and not a name
@@ -528,12 +543,70 @@ are safest.
   name to say why.
 - Installing a package that has a `mod.toml`, the launcher writes the installed copy's `mod.toml`
   itself, from these fields (comments are not kept), adding any renamed folders and placeholder
-  archives it found.
+  archives it found. A mod installed from the catalogue is named by the catalogue, and keeps the
+  `media`, `links` and `tags` of its package's own `mod.toml`.
 
 A mod without a manifest (a folder or an archive put in a mods folder by hand) is given one: its
 id is its folder's whole name, or its archive's name without the extension, in lower case
 (`TA.Escalation` is `ta.escalation`); its name is as written; it has no version; and the renamed
 folders it uses are found from what it holds ([below](#renamed-folders)).
+
+### Presenting a mod in the launcher
+
+The launcher's **MODS** library shows each mod as a card, and the chosen mod's page beside the
+cards. A mod installed from a file or a folder looks as good there as one from the catalogue when
+its `mod.toml` names pictures of its own, in a `media` folder beside it:
+
+```text
+naval-additions/
+  mod.toml
+  media/
+    banner.png        1280 × 640, the card and the top of the page
+    gameplay.gif      an animated GIF of the mod in play, played in the banner
+    icon.png          256 × 256, beside the mod's name
+    harbour.jpg       screenshots, shown on the page
+    battle.jpg
+  units/ ...
+```
+
+```toml
+[media]
+banner = "media/banner.png"
+preview = "media/gameplay.gif"
+icon = "media/icon.png"
+screenshots = ["media/harbour.jpg", "media/battle.jpg"]
+```
+
+| Key | What it is | Best |
+| --- | --- | --- |
+| `banner` | A wide picture: the mod's card in the library (twice as wide as tall) and the top of its page. A PNG or a JPEG. | 1280 × 640, its subject in the middle: the page shows a little less of its sides |
+| `preview` | An animated GIF of the mod in play. It plays in the banner on the mod's page, and on its card while the pointer rests on it (a ▶ in the card's corner tells it has one). | 5 to 15 seconds, about 640 pixels wide, at most 32 MB |
+| `icon` | A square picture, beside the mod's name on its page; on a card without a banner, with the name on the mod's own plate. | 256 × 256 |
+| `screenshots` | Pictures of the mod in play: a row on its page, each opening on the whole window (the arrow keys step through them). The first 12 are shown. | 1920 × 1080 PNGs or JPEGs |
+
+- Each is named by its path from the mod's folder, with `/` between folders, in any case of its
+  letters. A path that leaves the folder (`..`, a drive, a root) is never read.
+- Pictures may weigh up to 16 MB each (the preview 32 MB) and be up to 4096 pixels a side. The
+  launcher reads them on worker threads and keeps no more of them than are on show.
+- A preview's frames are kept in memory as it plays: a long or a large one plays in fewer frames
+  (every other one kept, each shown for both, as often as it must), and a frame that asks for no
+  time at all shows for a tenth of a second, as in a web browser. It does not play with **REDUCE
+  MOTION** on (its page has a **PLAY PREVIEW** button then), nor while the launcher stands idle.
+- Any of them may be left out. A mod without a banner gets a plate of its own: dark metal of a
+  colour of its id's, its name lettered on it (and its icon beside the name).
+- The installer keeps the `media` folder whole (its PNG, JPEG, GIF, TTF and OTF files, up to 256 MB
+  together), and a picture the manifest names elsewhere beside the content (`banner.png` beside
+  `mod.toml`). The game never reads the `media` folder, and the library's **WHAT IT CHANGES**
+  leaves it out.
+- The pictures are found again every few seconds: one changed on the disk shows without a
+  **RESCAN** (a change to `mod.toml` itself needs one).
+- **MOD INFO**'s check tells what would not show as meant, under **PRESENTATION**: a picture that
+  is not there or does not read, one too small or of the wrong shape, a preview that does not
+  move, a link that is no web address. These are notes: they never change the mod's badge, which
+  is how it plays.
+
+The repository's [example mod](examples/example-mod) has a banner, an icon, a preview and
+screenshots of its own, and a `mod.toml` naming them.
 
 ### Archives or loose folders
 
@@ -875,6 +948,7 @@ names the mod's folder (an absolute path, with its `mod.toml`):
 | Installing packages | `crates/ta_vfs/src/package.rs` |
 | Units, weapons, features, sides, build menus | `crates/ta_data/src/lib.rs`, `crates/ta_data/src/unit.rs` |
 | The mod check | `crates/ta_data/src/validation.rs`, `apps/ta_launcher/src/validation.rs` |
+| A mod's presentation: its pictures, preview and links, and their check | `crates/ta_vfs/src/mods.rs` (`Media`), `apps/ta_launcher/src/mod_media.rs`, `crates/ta_data/src/presentation.rs` |
 | Script values | `crates/ta_sim/src/host.rs` |
 | The classic build pages, 768-pixel layouts, shared places | `apps/ta_game/src/hud_classic_art.rs` |
 | The catalogue, installs, the MODS page | `apps/ta_launcher/src/catalogue.rs`, `getmods.rs`, `modlist.rs`, `mod_library.rs`, `pages/mods.rs`, `pages/mod_order.rs`, `pages/mod_report.rs` |

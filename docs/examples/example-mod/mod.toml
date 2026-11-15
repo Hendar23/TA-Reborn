@@ -1,0 +1,21 @@
+# The example mod: how a mod presents itself in TA Reborn's launcher (docs/MODDING.md,
+# "Presenting a mod in the launcher"). Copy this folder into one of your mod folders (the
+# launcher's MOD FOLDERS... names them) and press RESCAN to see it in the MODS library.
+id = "example-mod"
+name = "Example Mod"
+version = "1.0"
+description = "A template for TA Reborn mods: its banner, gameplay preview, icon and screenshots show how a mod presents itself in the launcher."
+authors = ["TA Reborn"]
+tags = ["example", "template"]
+source = "https://github.com/Jared-woodruff/TA-Reborn/blob/main/docs/MODDING.md"
+
+# Pictures, named by their paths from this folder.
+[media]
+banner = "media/banner.png"          # 1280 x 640: the card and the top of the mod's page
+preview = "media/gameplay.gif"       # an animated GIF, played in the banner
+icon = "media/icon.png"              # 256 x 256, beside the mod's name
+screenshots = ["media/campaign-map.png", "media/new-units.png"]
+
+# Buttons on the mod's page, by their words.
+[links]
+"Modding guide" = "https://github.com/Jared-woodruff/TA-Reborn/blob/main/docs/MODDING.md"

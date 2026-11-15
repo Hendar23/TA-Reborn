@@ -61,7 +61,7 @@ serde = { version = "1", features = ["derive"] }
 bincode = "1.3"
 toml = "1"
 clap = { version = "4.6", features = ["derive"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
 # Checks mod downloads against ModDB's MD5 (the launcher's mod browser).
 md-5 = "0.10"
 # Checks an update's setup against its release's SHA-256 sums (the launcher).

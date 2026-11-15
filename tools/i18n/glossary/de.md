@@ -590,3 +590,27 @@ you): "Die Mod läuft", "Die Prüfung brach ab".
 | TA's later engines / the patched engines of later years | spätere TA-Engines / die gepatchten Engines späterer Jahre |
 | ID, IDs (a weapon's) | ID, IDs (Waffen-ID) |
 | the campaign screen | die Kampagnenseite (as die Gefechtsseite) |
+
+## A mod's presentation in the launcher (`pages/mods.rs`, `crates/ta_data/src/presentation.rs`)
+
+A mod's banner, gameplay preview, icon, screenshots and links in the MODS library, and the mod
+check's notes on them, under the report's group PRÄSENTATION. The mod's own folder is "der Ordner
+der Mod" (Mod-Ordner is the mods folder); `mod.toml`, `media/banner.png` and `{key}` (a manifest
+key: banner, preview, icon, screenshots) stay as they are: "Der Eintrag {key} in mod.toml verweist
+auf {path}, eine Datei …".
+
+| English | Deutsch |
+|---|---|
+| PRESENTATION (the report's group of notes) | PRÄSENTATION |
+| banner (the card and the top of the mod's page) | Banner (das Banner) |
+| gameplay preview (an animated GIF of the mod in play) | Gameplay-Vorschau |
+| PLAY PREVIEW (the banner's button, with motion reduced) | VORSCHAU ABSPIELEN (as CHRONIK ABSPIELEN) |
+| icon (a mod's) | Symbol (das Symbol), as STRATEGISCHE SYMBOLE |
+| SCREENSHOTS / Screenshot {n} of {count} / {n} of {count} | SCREENSHOTS / Screenshot {n} von {count} / {n} von {count} |
+| MOD PAGE (a link to the mod's web page, beside its links) | MOD-SEITE |
+| the mod's media folder / a path from the mod's folder | der Ordner „media“ der Mod / ein Pfad relativ zum Ordner der Mod |
+| frames (of a GIF) | Frames (as the mod check's "{frames} Frames") |
+| shows blurred / shows sharp | wirkt unscharf / wirkt scharf |
+| … at best (the size to aim for) | am besten … |
+| still picture / picture editor | Standbild / Bildbearbeitungsprogramm |
+| link / web address | Link / Webadresse |

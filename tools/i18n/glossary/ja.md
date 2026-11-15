@@ -481,3 +481,22 @@ Years have no thousands separator (3977年, 212–3977年). Headings keep proper
 | stamps RECOVERED, BY ORDER OF THE COUNCIL, TRANSMITTED ON ALL BANDS, RESTRICTED, FOR TRAINING USE | 回収済、評議会命令、全周波数で送信、部外秘、訓練用 |
 | stamps UNDELIVERED, INTERCEPTED, FLAGGED FOR CORRECTION, SEALED UNTIL NEEDED, CLASSIFIED | 未配達、傍受、修正対象、有事まで封印、機密 |
 | FIGHT IT (caption before the campaigns that fight a chapter) | 参戦 |
+
+## A mod's presentation in the launcher (`pages/mods.rs`, `ta_data/src/presentation.rs`)
+
+The check's notes are polite sentences, the English colon split into two sentences (。); what to do
+ends in 〜してください. `mod.toml`, `media/banner.png`, PNG, JPEG, GIF, http:// and https:// stay as
+they are, the `media` folder keeps its name (MODのmediaフォルダー); parentheses full width
+（media/banner.png）.
+
+| English | 日本語 |
+|---|---|
+| banner (a mod's: its card and the top of its page) / icon | バナー / アイコン |
+| gameplay preview (an animated GIF) / PLAY PREVIEW | ゲームプレイのプレビュー / プレビューを再生 |
+| screenshot(s) / SCREENSHOTS / Screenshot {n} of {count}, {n} of {count} | スクリーンショット（{count}枚） / スクリーンショット / スクリーンショット {n}/{count}、{n}/{count} |
+| MOD PAGE (a link to the mod's web page) / link / web address | MODページ / リンク / ウェブアドレス |
+| PRESENTATION (the report's group: how a mod shows in the library) | ライブラリでの表示 |
+| mod.toml's {key} names {path} / a path read from the mod's folder | mod.tomlの{key}が指定している{path} / MODのフォルダーを基準にしたパス |
+| animated GIF / still picture / picture editor | アニメーションGIF / 静止画 / 画像編集ソフト |
+| blurred / sharp / cut off (a picture) | ぼやけて表示 / くっきり表示 / 切り取られる |
+| Give it more pixels: 1280 × 640 at best | 解像度を上げてください。1280 × 640が最適です。 |

@@ -502,3 +502,22 @@ report's button quotes it as shown ("YENİDEN ÖLÇ düğmesine bas").
 | ID (a weapon's) | kimlik (silah kimliği, kimlikler) |
 | TA's later engines / the patched engines of later years | TA'nın sonraki motorları / sonraki yılların yamalı motorları |
 | the campaign screen | sefer ekranı |
+
+## A mod's presentation in the launcher (`pages/mods.rs`, `ta_data/src/presentation.rs`)
+
+`mod.toml`, `media/banner.png`, PNG, JPEG, GIF, http:// and https:// stay as they are; the `media`
+folder keeps its name ("modun media klasörü"). {key} is the manifest's own key (banner, preview,
+icon, screenshots): "mod.toml dosyasındaki {key} anahtarı".
+
+| English | Türkçe |
+|---|---|
+| banner (a mod's: its card and the top of its page) | afiş |
+| icon (a mod's) | simge (as STRATEJİK SİMGELER) |
+| preview / gameplay preview (an animated GIF) / PLAY PREVIEW | önizleme (as the skins page's; not the older ÖN İZLEME) / oynanış önizlemesi / ÖNİZLEMEYİ OYNAT |
+| screenshot / SCREENSHOTS / Screenshot {n} of {count}, {n} of {count} | ekran görüntüsü / EKRAN GÖRÜNTÜLERİ / Ekran görüntüsü {n} / {count}, {n} / {count} |
+| MOD PAGE (a link to the mod's web page) / link / web address | MOD SAYFASI / bağlantı ("{label} bağlantısı") / web adresi |
+| PRESENTATION (the report's group: how a mod presents itself) | SUNUM (beside PAKETLEME, DOSYALAR) |
+| names {path} / a path read from the mod's folder | {path} yolunu belirtiyor / yol, modun klasörüne göre okunur |
+| animated GIF / still picture / picture editor | hareketli GIF / hareketsiz resim / resim düzenleyici |
+| {width} × {height} (a picture's size) / at best | {width} × {height} boyutunda / en iyisi (en iyisi 1280 × 640) |
+| blurred / sharp / cut off (a picture) / Give it more pixels | bulanık görünür / net görünür / kırpılır / Çözünürlüğü artır |

@@ -488,3 +488,23 @@ The chronicle told plainly and a little solemn; each archive document in its own
 | build option | вариант постройки |
 | wreckage | обломки |
 | feature (map object) | объект |
+
+## A mod's presentation in the MODS library (`pages/mods.rs`, `ta_data/src/presentation.rs`)
+
+A mod's banner, gameplay preview, icon, screenshots and links, and the mod check's notes on them
+(the report's group PRESENTATION). Manifest keys (`banner`, `preview`, `icon`, `screenshots`) and
+paths stay as written: "Ключ {key} в mod.toml указывает на {path}"; sizes as "Размер файла {path} —
+{size}", "Размеры изображения {path} — {width} × {height}", "Размер баннера — {width} × {height}".
+
+| English | Русский |
+|---|---|
+| banner (the card and the top of the mod's page) | баннер |
+| gameplay preview (an animated GIF of the mod in play) / PLAY PREVIEW | ролик игрового процесса (as игровой процесс for gameplay; not превью, which reads as a still thumbnail) / СМОТРЕТЬ РОЛИК (as WATCH: СМОТРЕТЬ) |
+| icon (a mod's) | значок (as СТРАТЕГИЧЕСКИЕ ЗНАЧКИ) |
+| screenshot(s) / SCREENSHOTS / Screenshot {n} of {count} / {n} of {count} | снимок, снимки экрана / СНИМКИ ЭКРАНА / Снимок экрана {n} из {count} / {n} из {count} |
+| MOD PAGE (the link to the mod's web page) | САЙТ МОДА (as "с сайта мода", WEBSITE: САЙТ) |
+| PRESENTATION (the report's group heading) | ОФОРМЛЕНИЕ (ПРЕЗЕНТАЦИЯ reads as a slideshow) |
+| web address | веб-адрес |
+| blurred / sharp | выглядит размытым / выглядит чётко |
+| give it more pixels / at best | увеличьте разрешение / лучше всего |
+| frames and seconds from placeholders | "кадров: {frames}, {seconds} с"; a count of screenshots: "Снимков экрана в mod.toml: {count}" |

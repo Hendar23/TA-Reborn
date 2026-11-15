@@ -260,6 +260,24 @@ rendering of a foreign rank otherwise; every title distinct.
 | sides / campaigns of its own; programs (a mod brings) | 自有阵营 / 自有战役；程序 |
 | the map library | 地图库 (as 模组库, 皮肤库) |
 
+## A mod's pictures and links in the launcher (`pages/mods.rs`, the check's PRESENTATION, `presentation.rs`)
+
+| English | 简体中文 |
+|---|---|
+| PRESENTATION (the mod check's group: its pictures and links) | 展示 |
+| banner / icon / screenshot(s), SCREENSHOTS (a mod's pictures) | 横幅 / 图标 / 截图 |
+| gameplay preview (an animated GIF of the mod in play) / PLAY PREVIEW | 实机预览 / 播放预览 (the early-release tag PREVIEW stays 预览版) |
+| animated GIF / still picture | GIF 动图 / 静态图片 |
+| MOD PAGE (a link to the mod's web page) | 模组主页 (not 模组页面: that is the launcher's Mods page) |
+| link / web address | 链接 / 网址 |
+| Screenshot {n} of {count} (screen reader) / {n} of {count} (over a screenshot on the whole window) | 第 {n} 张截图，共 {count} 张 / {n}/{count} |
+| is {w} × {h} (a picture's size in a sentence) | 尺寸为 {w} × {h} |
+| shows blurred / shows sharp | 显示模糊 / 显示清晰 |
+| Give it more pixels / at best (the ideal size) | 请提高分辨率 / 最好为 |
+| named from the mod's folder (a path) | 相对于模组文件夹的路径 |
+| the launcher shows the mod without it | 启动器显示此模组时将略去它 |
+| picture editor | 图片编辑软件 |
+
 ## Conquest (the galaxy campaign: briefing, galaxy map, side panel, debrief, in-battle strip)
 
 | English | 简体中文 |

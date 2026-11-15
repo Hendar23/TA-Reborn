@@ -46,7 +46,7 @@ enum ReportTab { Overview, Findings, Review }
 
 /// What the findings concern, in the order the report lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum Group { Check, Packaging, Files, Units, Weapons, Features, Maps, Scripts, Models, Animations, Sounds, Menus, Other }
+enum Group { Check, Packaging, Files, Units, Weapons, Features, Maps, Scripts, Models, Animations, Sounds, Menus, Presentation, Other }
 
 impl Group {
     fn of(issue: &Issue) -> Group {
@@ -55,6 +55,7 @@ impl Group {
             return Group::Check;
         }
         if code.starts_with("packaging.") { return Group::Packaging; }
+        if code.starts_with("presentation.") { return Group::Presentation; }
         if code == "ARCHIVE_UNREADABLE" { return Group::Files; }
         if code.starts_with("render.sprite") { return Group::Animations; }
         if code.starts_with("render.texture") { return Group::Models; }
@@ -92,6 +93,7 @@ impl Group {
             Group::Animations => n("ANIMATIONS & EFFECTS"),
             Group::Sounds => n("SOUNDS"),
             Group::Menus => n("MENUS & SIDES"),
+            Group::Presentation => n("PRESENTATION"),
             Group::Other => n("OTHER"),
         }
     }

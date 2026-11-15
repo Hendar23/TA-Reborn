@@ -413,7 +413,7 @@ fn install(
                 load_after: Vec::new(),
                 source: String::new(),
                 rename: BTreeMap::new(),
-                replaces: Vec::new(),
+                replaces: Vec::new(), ..Default::default()
             };
             (path.clone(), manifest)
         }
@@ -501,7 +501,7 @@ fn install_from_game_folder(
         load_after: Vec::new(),
         source: entry.map_or_else(String::new, |entry| entry.page()),
         rename: found.rename.clone(),
-        replaces: Vec::new(),
+        replaces: Vec::new(), ..Default::default()
     };
     if !ta_vfs::mods::valid_id(&manifest.id) {
         return Err(ta_ui::i18n::t("invalid mod id").to_string().into());
@@ -736,11 +736,18 @@ fn install_catalogue(
     let unpacked = workspace.0.join("unpacked");
     unpacker.unpack_cancellable(&archive, &unpacked, cancelled).map_err(unpack_failure)?;
     let plan = ta_vfs::package::plan(&unpacked).map_err(|e| package_error(&e))?;
-    let manifest = ta_vfs::mods::ModManifest {
+    let mut manifest = ta_vfs::mods::ModManifest {
         id: entry.id.into(), name: entry.name.into(), version: file.map_or("unverified", |file| file.version).into(),
         description: entry.pitch.into(), authors: vec![entry.team.into()],
-        depends: Vec::new(), load_after: Vec::new(), source: entry.page(), rename: BTreeMap::new(), replaces: Vec::new(),
+        depends: Vec::new(), load_after: Vec::new(), source: entry.page(), rename: BTreeMap::new(), replaces: Vec::new(), ..Default::default()
     };
+    // (The catalogue names it; how it presents itself is its own: the pictures, links and tags
+    // its package's manifest gives.)
+    if let Some(own) = &plan.authored {
+        manifest.media = own.media.clone();
+        manifest.links = own.links.clone();
+        manifest.tags = own.tags.clone();
+    }
     if cancelled() { return Err(Failure::Cancelled); }
     publish_install(&plan, &manifest, mods_dir, cancelled, running, game)?;
     log::info!("installed {} {} ({} units, {} maps; left out: {})", manifest.name, manifest.version, plan.units, plan.maps, plan.skipped.join(", "));
@@ -868,8 +875,8 @@ fn download_sources(
     Err(Failure::Error(last))
 }
 
-/// Copies what `plan` takes from a folder (its archives, folders and documents) into `to`,
-/// and returns the plan for the copy.
+/// Copies what `plan` takes from a folder (its archives, folders, documents and pictures) into
+/// `to`, and returns the plan for the copy.
 fn copy_planned(plan: &ta_vfs::package::Plan, to: &Path, cancelled: &dyn Fn() -> bool) -> std::io::Result<ta_vfs::package::Plan> {
     std::fs::create_dir_all(to)?;
     let copy = |from: &PathBuf| -> std::io::Result<PathBuf> {
@@ -886,6 +893,13 @@ fn copy_planned(plan: &ta_vfs::package::Plan, to: &Path, cancelled: &dyn Fn() ->
         archives: plan.archives.iter().map(copy).collect::<Result<_, _>>()?,
         folders: plan.folders.iter().map(copy).collect::<Result<_, _>>()?,
         docs: plan.docs.iter().map(copy).collect::<Result<_, _>>()?,
+        // (Each to its place, folders and all: `media/hud/panel.png`.)
+        media: plan.media.iter().map(|(from, place)| {
+            let target = to.join(place);
+            if let Some(folder) = target.parent() { std::fs::create_dir_all(folder)?; }
+            copy_file(from, &target, cancelled)?;
+            Ok((target, place.clone()))
+        }).collect::<std::io::Result<_>>()?,
         ..plan.clone()
     })
 }
@@ -1591,7 +1605,7 @@ mod tests {
         std::fs::create_dir_all(mods.join("testmod")).unwrap();
         std::fs::write(mods.join("testmod/canary"), b"previous version").unwrap();
         let plan = ta_vfs::package::plan(&source).unwrap();
-        let manifest = ta_vfs::mods::ModManifest { id: "testmod".into(), name: "Test".into(), version: "1".into(), description: String::new(), authors: Vec::new(), depends: Vec::new(), load_after: Vec::new(), source: String::new(), rename: BTreeMap::new(), replaces: Vec::new() };
+        let manifest = ta_vfs::mods::ModManifest { id: "testmod".into(), name: "Test".into(), version: "1".into(), description: String::new(), authors: Vec::new(), depends: Vec::new(), load_after: Vec::new(), source: String::new(), rename: BTreeMap::new(), replaces: Vec::new(), ..Default::default() };
         let installer = Installer::new(mods.clone(), dir.join("cache"));
         let gate = installer.current.clone();
         let stopped = installer.stopped.clone();

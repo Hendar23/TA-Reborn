@@ -249,6 +249,24 @@ One rank every five levels, in ROC (Taiwan) rank names; every title distinct.
 | sides / campaigns of its own; programs (a mod brings) | 自有陣營 / 自有戰役；程式 |
 | the map library | 地圖庫 |
 
+## A mod's pictures and links in the launcher (`pages/mods.rs`, the check's PRESENTATION, `presentation.rs`)
+
+| English | 繁體中文 |
+|---|---|
+| PRESENTATION (the mod check's group: its pictures and links) | 展示 |
+| banner / icon / screenshot(s), SCREENSHOTS (a mod's pictures) | 橫幅 / 圖示 / 螢幕截圖 (as SCREENSHOT) |
+| gameplay preview (an animated GIF of the mod in play) / PLAY PREVIEW | 實機預覽 / 播放預覽 (the early-release tag PREVIEW stays 預覽版) |
+| animated GIF / still picture | GIF 動畫 / 靜態圖片 |
+| MOD PAGE (a link to the mod's web page) | 模組網頁 (not 模組頁面: that is the launcher's Mods page) |
+| link / web address | 連結 / 網址 |
+| Screenshot {n} of {count} (screen reader) / {n} of {count} (over a screenshot on the whole window) | 第 {n} 張螢幕截圖，共 {count} 張 / {n}/{count} |
+| is {w} × {h} (a picture's size in a sentence) | 尺寸為 {w} × {h} |
+| shows blurred / shows sharp | 顯示模糊 / 顯示清晰 |
+| Give it more pixels / at best (the ideal size) | 請提高解析度 / 最好是 |
+| named from the mod's folder (a path) | 相對於模組資料夾的路徑 |
+| the launcher shows the mod without it | 啟動器顯示此模組時會略過它 |
+| picture editor | 圖片編輯軟體 |
+
 ## Conquest (the galaxy campaign: briefing, galaxy map, side panel, debrief, in-battle strip)
 
 | English | 繁體中文 |
