@@ -92,6 +92,15 @@ pub struct GameData {
     game_features: usize,
 }
 
+/// The names of the sides `gamedata/sidedata.tdf` gives (as written there, in capitals): ARM, CORE,
+/// a mod's own.
+pub fn side_names(vfs: &Vfs) -> Vec<String> {
+    read_tdf(vfs, "gamedata/sidedata.tdf").map_or_else(Vec::new, |doc| {
+        doc.sections.iter().filter(|s| s.name.to_ascii_uppercase().starts_with("SIDE"))
+            .map(|s| s.get_str("name", "").trim().to_ascii_uppercase()).filter(|name| !name.is_empty()).collect()
+    })
+}
+
 fn read_tdf(vfs: &Vfs, path: &str) -> Option<TdfDocument> {
     vfs.read_opt(path).map(|b| tdf::parse_bytes(&b))
 }

@@ -63,6 +63,7 @@ mod map_list;
 mod map_preview;
 mod menu;
 mod minimap;
+mod mod_theme;
 mod night;
 mod ore;
 mod orders;

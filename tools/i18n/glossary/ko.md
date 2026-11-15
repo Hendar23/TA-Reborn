@@ -582,3 +582,26 @@ are, the `media` folder keeps its name (모드의 media 폴더). A placeholder i
 | animated GIF / still picture / picture editor | 애니메이션 GIF / 정지 이미지 / 이미지 편집 프로그램 |
 | blurred / sharp / cut off (a picture) | 흐릿하게 보입니다 / 선명하게 보입니다 / 잘립니다 |
 | Give it more pixels: 1280 × 640 at best | 해상도를 높이세요. 1280 × 640이 가장 좋습니다. (a literal size, so the particle can agree) |
+
+## A mod's interface theme (`pages/mods.rs`, `settings.rs`, `ta_data/src/presentation.rs`)
+
+HUD stays HUD; read either way (허드, 에이치유디) it ends in a vowel: HUD가, HUD는, HUD를.
+{extras} (its own font, pictures behind its panels, joined by ", " in the code) takes the
+invariant 도: {extras}도 적용됩니다. The switch is quoted in sentences ('모드 인터페이스 테마'),
+its place 옵션 · 인터페이스. {most} (a size limit, "16.0 MB") is followed by a noun ({most} 제한,
+{most} 크기). The check's notes follow the presentation notes above (two sentences, 하세요).
+
+| English | 한국어 |
+|---|---|
+| interface theme / INTERFACE THEME (the mod page's caption) | 인터페이스 테마 |
+| MODS' INTERFACE THEMES (the switch) | 모드 인터페이스 테마 |
+| these colours / the mod's colours | 이 색상 / 모드의 색상 |
+| accent (colour) / text | 강조 색 (as Windows' own) / 텍스트 |
+| font / its own font / pictures behind its panels | 글꼴 / 고유 글꼴 / 패널 배경 이미지 |
+| the HUD draws its own metal there (the side's panel tiles in place of a picture) | HUD는 그 자리에 원래의 금속 질감을 그립니다 |
+| the HUD keeps TA Reborn's own | TA Reborn 고유의 색을 그대로 씁니다 / TA Reborn 고유의 글꼴을 유지합니다 |
+| the HUD does without it | HUD는 이 파일 없이 표시됩니다 |
+| a contrast of {ratio}:1 / {least}:1 reads well | 대비가 {ratio}:1이라 / {least}:1 이상이면 잘 읽힙니다 |
+| # and six hexadecimal digits | # 뒤에 16진수 여섯 자리 |
+| side (a theme's, named as sidedata.tdf names it) | 진영 ({side} 진영, 게임의 진영: {sides}) |
+| Off: TA Reborn's own always | 끄면 항상 TA Reborn 고유의 모습으로 표시됩니다 |

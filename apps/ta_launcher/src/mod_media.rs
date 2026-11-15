@@ -178,6 +178,12 @@ impl ModMedia {
         self.picture(info, &named, Use::Icon)
     }
 
+    /// The picture its interface theme puts behind the HUD's plates (`panel`) or top bar (`bar`).
+    pub fn theme_picture(&mut self, info: &ModInfo, which: &str) -> Option<TextureHandle> {
+        let named = info.manifest.theme.texture("", which)?.to_string();
+        self.picture(info, &named, Use::Banner)
+    }
+
     /// The mod's `index`th screenshot of those shown (`Media::shots`), small for the details' row
     /// or `full` for the window.
     pub fn screenshot(&mut self, info: &ModInfo, index: usize, full: bool) -> Option<TextureHandle> {

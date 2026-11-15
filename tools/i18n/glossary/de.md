@@ -614,3 +614,26 @@ auf {path}, eine Datei …".
 | … at best (the size to aim for) | am besten … |
 | still picture / picture editor | Standbild / Bildbearbeitungsprogramm |
 | link / web address | Link / Webadresse |
+
+## A mod's interface theme (`pages/mods.rs`, `settings.rs`, `presentation.rs`)
+
+A mod's `[theme]` draws its battles' HUD in colours, pictures and a font of its own; the mod's page
+previews it under OBERFLÄCHENDESIGN, the game's Options (Oberfläche) turn it off. A theme is ein
+Design here (Windows' word for one; Thema stays the season's, SAISONALES THEMA); the HUD stays das
+HUD. `{extras}` follows "mit", so its pieces are datives ("eigener Schriftart", "Bildern hinter
+seinen Panels"). The HUD's own metal (its side's tiles, where a picture would go) is its
+Metalloptik: "Metall" alone reads as the resource.
+
+| English | Deutsch |
+|---|---|
+| interface theme / INTERFACE THEME (a mod page's caption) / theme (in the notes) | Oberflächendesign / OBERFLÄCHENDESIGN / Design ("des Designs") |
+| MODS' INTERFACE THEMES (the switch) / in the game's Interface options | OBERFLÄCHENDESIGNS DER MODS / im Spiel unter Optionen, Oberfläche |
+| HUD / panels | das HUD / Panels (as UI-SKALIERUNG's hint) |
+| accent (a theme's colour) | Akzentfarbe (Akzent is the skin editor's Detail) |
+| font / font file | Schriftart (as SCHRIFTART) / Schriftdatei |
+| the HUD draws its own metal there | Das HUD zeigt stattdessen seine eigene Metalloptik |
+| the HUD keeps TA Reborn's own (colour, font) | Das HUD behält dort die Farbe von TA Reborn / behält die von TA Reborn |
+| a tile (a picture repeated across the panels) | Kachel |
+| a contrast of {ratio}:1 / {least}:1 reads well | einen Kontrast von {ratio}:1 / Ab {least}:1 ist sie gut lesbar |
+| the theme's {key} (a manifest key) / a colour key | der Eintrag {key} des Designs / die Farbe {key} |
+| side ([theme.sides.arm]) | Seite (as "Benötigt die Seite {side}") |

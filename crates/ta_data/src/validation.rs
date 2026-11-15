@@ -30,8 +30,9 @@ use crate::words::{en, enf, Fill, Words};
 /// error told in words of the check's own around the reader's; 13: what a mod uses of TA's later
 /// engines and how the game plays it, `Report::engine`; 14: a map's own features,
 /// `maps/<map>.features`, checked as definitions and known to its terrain; 15: how a mod presents
-/// itself in the launcher, its pictures, gameplay preview and links, `presentation.*`).
-pub const SCHEMA_VERSION: u32 = 15;
+/// itself in the launcher, its pictures, gameplay preview and links, `presentation.*`; 16: its
+/// interface theme, `theme.*`).
+pub const SCHEMA_VERSION: u32 = 16;
 
 /// The keys of `gamedata/sound.tdf`'s categories the game plays (`ta_audio`'s sound events), each
 /// with or without a variant number (`select1`, `select2`…), with `count0` to `count9`; the

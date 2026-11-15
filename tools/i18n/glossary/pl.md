@@ -587,3 +587,26 @@ wskazuje plik {path}”, „Plik {path} waży {size}”, „Obraz {path} ma wymi
 | weighs / blurred / sharp | waży / rozmyty / ostry |
 | give it more pixels / at best | zwiększ rozdzielczość / najlepiej |
 | frames and seconds from placeholders | „klatki: {frames}, czas: {seconds} s” (count-safe); a count of screenshots: „Zrzuty ekranu w mod.toml: {count}” |
+
+## A mod's interface theme (`pages/mods.rs`, `settings.rs`, `ta_data/src/presentation.rs`)
+
+A mod's `[theme]`: the battle's HUD in colours, pictures and a font of its own, previewed on the
+mod's page and checked under PREZENTACJA. HUD stays HUD, masculine, kept in the nominative or
+accusative („HUD ma te kolory”, „własny HUD TA Reborn”) so it never needs HUD-u. Manifest keys
+({key}: `accent`, `text`, `panel_texture`, `font`...) stay as written, anchored by a noun: „Klucz
+{key} motywu”, „Kolor {key} motywu”. The fragments filling {extras} are accusatives after „HUD ma
+te kolory, a także …”, joined by a comma („własną czcionkę, obrazy w tle paneli”).
+
+| English | Polski |
+|---|---|
+| theme / INTERFACE THEME (the caption over the preview) | motyw (as MOTYW SEZONOWY) / MOTYW INTERFEJSU |
+| MODS' INTERFACE THEMES (the game's Interface option) | MOTYWY INTERFEJSU MODÓW („w grze (Opcje, Interfejs)”, as „Opcje, Rozgrywka”) |
+| accent (the theme's main colour) | kolor akcentu (as Windows' Polish) |
+| font / its own font | czcionka / własną czcionkę |
+| pictures behind its panels (the panels' tiled picture) | obrazy w tle paneli |
+| its own metal (the panels' metal, drawn where a picture fails) | własna metalowa tekstura („HUD rysuje w jego miejsce własną metalową teksturę”; not „metal”: the resource) |
+| a tile (of a picture, repeated across the panels) | kafelek („kafelek o boku kilkuset pikseli”) |
+| hexadecimal digits | cyfry szesnastkowe |
+| contrast of {ratio}:1 / reads well | kontrast {ratio}:1 / dobrze czyta się od {least}:1 |
+| a side (in [theme.sides.arm]) | frakcja, as the mod check's other notes („frakcji {side}”, „Frakcje gry: {sides}”) |
+| TA Reborn's own (colour, font, HUD) | własny kolor / własna czcionka / własny HUD TA Reborn |

@@ -36,6 +36,11 @@ impl InPlay {
         InPlay { mods, digests: Default::default(), worker: Arc::new(Mutex::new(worker)) }
     }
 
+    /// The mods mounted, in load order (their manifests and folders).
+    pub fn mods(&self) -> &[ModInfo] {
+        &self.mods
+    }
+
     /// What a record made now keeps of them (waiting for their digests if they are not done).
     pub fn record(&self) -> Vec<RecordMod> {
         let digests = self.digests.get_or_init(|| {

@@ -135,7 +135,7 @@ pub fn order_button(ui: &mut Ui, glyph: Glyph, active: bool, key: &str, width: f
         stamped(painter, Rect::from_center_size(pos2(rect.center().x, rect.top() + size / 2.0 + 4.5 + dy), vec2(size, size)), glyph, color);
         keycap(painter, pos2(rect.center().x, rect.bottom() - 7.5 + dy), key, active, rect.width() - 3.0);
         if active {
-            painter.add(metal::lamp(rect.right_top() + vec2(-5.5, 5.5), 2.2, GREEN, 1.0));
+            painter.add(metal::lamp(rect.right_top() + vec2(-5.5, 5.5), 2.2, pal().good, 1.0));
         }
     }
     if response.clicked() {
@@ -194,10 +194,10 @@ pub fn state_icon_button(ui: &mut Ui, glyph: Glyph, size: Vec2, lit: bool, warn:
             let spacing = ((rect.height() - 8.0) / f32::from(of.max(1))).min(6.0);
             let first = rect.center().y - spacing * f32::from(of.saturating_sub(1)) / 2.0;
             for k in 0..of {
-                painter.add(metal::lamp(pos2(rect.right() - 5.0, first + spacing * f32::from(k)), 1.7, AMBER, if k == at { 1.0 } else { 0.0 }));
+                painter.add(metal::lamp(pos2(rect.right() - 5.0, first + spacing * f32::from(k)), 1.7, pal().accent, if k == at { 1.0 } else { 0.0 }));
             }
         } else if lit {
-            painter.add(metal::lamp(rect.right_top() + vec2(-5.5, 5.5), 2.2, GREEN, 1.0));
+            painter.add(metal::lamp(rect.right_top() + vec2(-5.5, 5.5), 2.2, pal().good, 1.0));
         }
     }
     if response.clicked() {
@@ -229,11 +229,11 @@ pub fn stance_button(ui: &mut Ui, glyph: Glyph, label: &str, size: Vec2, lit: bo
         let mut edge = rect.right() - 5.0;
         if let Some((at, of)) = steps {
             for k in (0..of).rev() {
-                painter.add(metal::lamp(pos2(edge - 2.0, rect.center().y + dy), 1.9, AMBER, if k == at { 1.0 } else { 0.0 }));
+                painter.add(metal::lamp(pos2(edge - 2.0, rect.center().y + dy), 1.9, pal().accent, if k == at { 1.0 } else { 0.0 }));
                 edge -= 6.0;
             }
         } else if lit {
-            painter.add(metal::lamp(pos2(edge - 2.5, rect.center().y + dy), 2.3, GREEN, 1.0));
+            painter.add(metal::lamp(pos2(edge - 2.5, rect.center().y + dy), 2.3, pal().good, 1.0));
             edge -= 8.0;
         }
         let left = glyph_at.x + side / 2.0 + 5.0;

@@ -13,6 +13,15 @@
   under PRESENTATION what would not show as meant (notes: a mod's badge is how it plays). See
   [docs/MODDING.md](docs/MODDING.md#presenting-a-mod-in-the-launcher) and the
   [example mod](docs/examples/example-mod).
+- Mods can theme the battle's interface: a `[theme]` in their `mod.toml` draws the HUD, modern
+  and classic, in colours of their own (an accent, text, panels, the metal and energy bars, health
+  and warnings, a side's own over the rest), with pictures of their own behind the modern HUD's
+  plates and top bar and a font for its titles; the classic HUD keeps TA's art (a mod's interface
+  files change it) and takes the theme's lettering. The last mod in the load order with a theme
+  gives it; MODS' INTERFACE THEMES in the Interface options turns them off. The launcher shows a
+  mod's theme on its page, and the mod check tells what would not draw as meant. Without a theme
+  the HUD is drawn as before, to the pixel. See
+  [docs/MODDING.md](docs/MODDING.md#theming-the-interface).
 
 ## 1.0.6 — 2026-11-15
 

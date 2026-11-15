@@ -9,6 +9,7 @@
 //! shorter one at once.
 
 use std::collections::HashMap;
+use crate::theme::pal;
 
 use egui::{Color32, Painter, Pos2, Stroke};
 use ta_sim::{Sim, UnitId};
@@ -106,8 +107,8 @@ pub(super) fn clock_text(seconds: f32) -> String {
 /// shadowed so that they read on pale ground; `strength` (0 to 1) fades the lot (the zoom's).
 pub(super) fn paint(painter: &Painter, at: Pos2, eta: Eta, strength: f32) {
     let (text, colour, shown) = match eta {
-        Eta::Left(seconds, shown) => (clock_text(seconds), crate::theme::TEXT, shown),
-        Eta::Stalled(shown) => ("--:--".to_string(), crate::theme::AMBER, shown),
+        Eta::Left(seconds, shown) => (clock_text(seconds), pal().text, shown),
+        Eta::Stalled(shown) => ("--:--".to_string(), pal().accent, shown),
     };
     // (Dim: the bars say the rest, and it must not shout over the battle.)
     let strength = shown * strength * 0.8;

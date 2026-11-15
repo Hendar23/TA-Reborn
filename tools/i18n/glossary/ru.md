@@ -508,3 +508,26 @@ paths stay as written: "Ключ {key} в mod.toml указывает на {path
 | blurred / sharp | выглядит размытым / выглядит чётко |
 | give it more pixels / at best | увеличьте разрешение / лучше всего |
 | frames and seconds from placeholders | "кадров: {frames}, {seconds} с"; a count of screenshots: "Снимков экрана в mod.toml: {count}" |
+
+## A mod's interface theme (`pages/mods.rs`, `settings.rs`, `ta_data/src/presentation.rs`)
+
+A mod's `[theme]`: the battle's HUD in colours, pictures and a font of its own, previewed on the
+mod's page and checked under ОФОРМЛЕНИЕ. HUD stays HUD, masculine, in the nominative ("HUD
+отображается", "собственный HUD TA Reborn"). Manifest keys ({key}: `accent`, `text`,
+`panel_texture`, `font`...) stay as written, anchored by a noun: "Ключ {key} темы", "Значение ключа
+{key}", "Цвет {key} темы". The fragments filling {extras} are instrumentals after "HUD отображается в
+этих цветах, с …", joined by a comma ("собственным шрифтом, фоновыми изображениями панелей").
+
+| English | Русский |
+|---|---|
+| theme / INTERFACE THEME (the caption over the preview) | тема (as СЕЗОННАЯ ТЕМА) / ТЕМА ИНТЕРФЕЙСА |
+| MODS' INTERFACE THEMES (the game's Interface option) | ТЕМЫ ИНТЕРФЕЙСА МОДОВ ("в настройках игры, раздел «Интерфейс»", as «Игра») |
+| accent (the theme's main colour) | акцентный цвет |
+| font / its own font | шрифт / собственным шрифтом |
+| pictures behind its panels (the panels' tiled picture) | фоновые изображения панелей |
+| its own metal (the panels' metal, drawn where a picture fails) | собственная металлическая текстура ("HUD рисует вместо него собственную металлическую текстуру"; not "металл": the resource) |
+| a tile (of a picture, repeated across the panels) | тайл ("достаточно тайла в несколько сотен пикселей") |
+| hexadecimal digits | шестнадцатеричные цифры ("по две на красный, зелёный и синий") |
+| contrast of {ratio}:1 / reads well | контраст {ratio}:1 / хорошо читается контраст от {least}:1 |
+| a side (in [theme.sides.arm]) | сторона ("стороне {side}", "Стороны игры: {sides}") |
+| TA Reborn's own (colour, font, HUD) | собственный цвет / шрифт / HUD TA Reborn |

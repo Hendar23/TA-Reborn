@@ -741,12 +741,13 @@ fn install_catalogue(
         description: entry.pitch.into(), authors: vec![entry.team.into()],
         depends: Vec::new(), load_after: Vec::new(), source: entry.page(), rename: BTreeMap::new(), replaces: Vec::new(), ..Default::default()
     };
-    // (The catalogue names it; how it presents itself is its own: the pictures, links and tags
-    // its package's manifest gives.)
+    // (The catalogue names it; how it presents itself is its own: the pictures, links, tags and
+    // interface theme its package's manifest gives.)
     if let Some(own) = &plan.authored {
         manifest.media = own.media.clone();
         manifest.links = own.links.clone();
         manifest.tags = own.tags.clone();
+        manifest.theme = own.theme.clone();
     }
     if cancelled() { return Err(Failure::Cancelled); }
     publish_install(&plan, &manifest, mods_dir, cancelled, running, game)?;

@@ -278,6 +278,24 @@ rendering of a foreign rank otherwise; every title distinct.
 | the launcher shows the mod without it | 启动器显示此模组时将略去它 |
 | picture editor | 图片编辑软件 |
 
+## A mod's interface theme (`pages/mods.rs`, the setting MODS' INTERFACE THEMES, the check's notes in `presentation.rs`)
+
+| English | 简体中文 |
+|---|---|
+| HUD (the battle's interface) | HUD (kept: HUD 会以这些颜色显示) |
+| interface theme / INTERFACE THEME (the mod page's caption) / MODS' INTERFACE THEMES (the switch) | 界面主题 / 界面主题 / 模组界面主题 |
+| the game's Interface options | 游戏内的“选项 · 界面” (as “选项 · 游戏”) |
+| Off: TA Reborn's own always / keeps TA Reborn's own (a colour, the font) | 关闭后：始终使用 TA Reborn 自己的外观 / 沿用 TA Reborn 自己的颜色、字体 |
+| its own font / pictures behind its panels (the {extras}; the code joins them with ", ") | 专属字体 / 面板背景图片 |
+| accent (colour) / panel(s) / a contrast of {ratio}:1 | 强调色 / 面板 / 对比度为 {ratio}:1 |
+| font / font file (.ttf, .otf) / a font's makers | 字体 / 字体文件 / 字体制作者 |
+| (the HUD) draws its own metal there (the side's metal tiles in place of the picture) | （HUD）在此处改用自己的金属底纹 |
+| a tile repeated across the panels | 在面板上重复平铺 |
+| # and six hexadecimal digits, red, green and blue | # 加六位十六进制数字，依次表示红、绿、蓝 |
+| not a colour as a theme writes them | 不符合主题的颜色写法 |
+| the HUD does without it | HUD 将略去它 (as the launcher's 略去) |
+| colours of its own (a side's) / Its sides: {sides} (the game's) | 专属颜色 / 游戏中的阵营：{sides} |
+
 ## Conquest (the galaxy campaign: briefing, galaxy map, side panel, debrief, in-battle strip)
 
 | English | 简体中文 |

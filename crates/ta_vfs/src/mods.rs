@@ -64,6 +64,164 @@ pub struct ModManifest {
     /// (`Discord = "https://…"`): http and https addresses only are opened.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub links: BTreeMap<String, String>,
+    /// The colours (and pictures and font) its battles' interface is drawn in ([`Theme`]).
+    #[serde(default, skip_serializing_if = "Theme::is_empty")]
+    pub theme: Theme,
+}
+
+/// A mod's interface theme: the colours the game's HUD is drawn in, in battles played with the
+/// mod (the last mod in the load order with one gives them; a player may turn them off). Colours
+/// are written `#rrggbb` (or `#rgb`, `#rrggbbaa`); the pictures and the font are named from the
+/// mod's folder, as its [`Media`] are. Anything left out keeps TA Reborn's own; the shades of a
+/// colour given (its brighter and darker kinds) are made from it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Theme {
+    /// The colours and pictures of every side's interface.
+    #[serde(flatten)]
+    pub look: Look,
+    /// A font (TTF or OTF) for the HUD's titles, numbers and buttons; TA Reborn's own fills in
+    /// the letters it lacks.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub font: String,
+    /// The classic HUD's own lettering (its art is TA's or the mod's own interface files).
+    #[serde(skip_serializing_if = "ClassicLook::is_empty")]
+    pub classic: ClassicLook,
+    /// A side's own colours and pictures over the rest, by the side's name (`[theme.sides.core]`,
+    /// any case).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub sides: BTreeMap<String, Look>,
+}
+
+/// The colours and pictures of a theme's interface (or of one side's).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Look {
+    /// Titles, the chosen and the main action, focus (TA Reborn's brass), and its brighter kind.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub accent: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub accent_bright: String,
+    /// Text, and its brighter kind (headings, values).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub text: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub text_bright: String,
+    /// Labels and secondary text.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub dim: String,
+    /// The panels' metal (with its lighter and darker kinds), the wells sunk in them, and lines.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub panel: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub inset: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub line: String,
+    /// Health and lamps lit; damage and warnings; radar and allies.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub good: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub bad: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub info: String,
+    /// The lettering on the HUD's buttons.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub button_text: String,
+    /// The resource bar's metal and energy.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub metal: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub energy: String,
+    /// Pictures (PNG or JPEG), tiled behind the modern HUD's plates (the command deck, the
+    /// minimap's) and its top bar, in place of the side's own metal.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub panel_texture: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub bar_texture: String,
+}
+
+/// The keys of a [`Look`]'s colours, as `mod.toml` writes them.
+pub const LOOK_COLOURS: &[&str] = &["accent", "accent_bright", "text", "text_bright", "dim", "panel", "inset", "line", "good", "bad", "info", "button_text", "metal", "energy"];
+
+impl Look {
+    pub fn is_empty(&self) -> bool { *self == Look::default() }
+
+    /// Its colour of `key` (one of [`LOOK_COLOURS`]), as written; None where it gives none.
+    pub fn colour(&self, key: &str) -> Option<&str> {
+        let value = match key {
+            "accent" => &self.accent,
+            "accent_bright" => &self.accent_bright,
+            "text" => &self.text,
+            "text_bright" => &self.text_bright,
+            "dim" => &self.dim,
+            "panel" => &self.panel,
+            "inset" => &self.inset,
+            "line" => &self.line,
+            "good" => &self.good,
+            "bad" => &self.bad,
+            "info" => &self.info,
+            "button_text" => &self.button_text,
+            "metal" => &self.metal,
+            "energy" => &self.energy,
+            _ => return None,
+        };
+        Some(value.trim()).filter(|value| !value.is_empty())
+    }
+}
+
+/// The classic HUD's own lettering in a theme.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ClassicLook {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub text: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub button_text: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub dim: String,
+    /// A button's lettering while it is held down.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub pressed: String,
+}
+
+impl ClassicLook {
+    pub fn is_empty(&self) -> bool { *self == ClassicLook::default() }
+}
+
+impl Theme {
+    pub fn is_empty(&self) -> bool { *self == Theme::default() }
+
+    /// The look of the side `side` (any case): its own, where it gives one, over the theme's.
+    pub fn side(&self, side: &str) -> Option<&Look> {
+        self.sides.iter().find(|(name, _)| name.eq_ignore_ascii_case(side.trim())).map(|(_, look)| look)
+    }
+
+    /// The colour of `key` for `side` (as written): the side's own, else the theme's. Also the
+    /// classic HUD's, `classic.text`, `classic.button_text`, `classic.dim`, `classic.pressed`.
+    pub fn colour(&self, side: &str, key: &str) -> Option<&str> {
+        if let Some(key) = key.strip_prefix("classic.") {
+            let value = match key { "text" => &self.classic.text, "button_text" => &self.classic.button_text, "dim" => &self.classic.dim, "pressed" => &self.classic.pressed, _ => return None };
+            return Some(value.trim()).filter(|value| !value.is_empty());
+        }
+        self.side(side).and_then(|look| look.colour(key)).or_else(|| self.look.colour(key))
+    }
+
+    /// The picture behind the plates (`panel`) or the top bar (`bar`) for `side`: the side's own,
+    /// else the theme's, as written.
+    pub fn texture(&self, side: &str, which: &str) -> Option<&str> {
+        fn of<'a>(look: &'a Look, which: &str) -> Option<&'a str> {
+            let value = if which == "bar" { &look.bar_texture } else { &look.panel_texture };
+            Some(value.trim()).filter(|value| !value.is_empty())
+        }
+        self.side(side).and_then(|look| of(look, which)).or_else(|| of(&self.look, which))
+    }
+
+    /// Every file it names (its pictures and its font), as written.
+    pub fn files(&self) -> impl Iterator<Item = &str> {
+        let looks = std::iter::once(&self.look).chain(self.sides.values());
+        looks.flat_map(|look| [look.panel_texture.as_str(), look.bar_texture.as_str()]).chain(std::iter::once(self.font.as_str()))
+            .map(str::trim).filter(|file| !file.is_empty())
+    }
 }
 
 /// The folder of a mod's own that holds its pictures (and, for its interface theme, its pictures
@@ -1022,6 +1180,28 @@ mod tests {
         let plain: ModManifest = toml::from_str("id = \"plain\"\nname = \"Plain\"\n").unwrap();
         let written = toml::to_string_pretty(&plain).unwrap();
         assert!(!written.contains("media") && !written.contains("links") && !written.contains("tags"), "{written}");
+    }
+
+    /// A manifest's interface theme reads (its colours, pictures and font, the classic HUD's
+    /// lettering, a side's own) and is written back as it read; a side's colour wins over the
+    /// theme's, any case of the side's name.
+    #[test]
+    fn a_manifests_theme_reads_and_is_written_back() {
+        let text = "id = \"t\"\nname = \"T\"\n\n[theme]\naccent = \"#5ab4ff\"\ntext = \"#d6e2ee\"\npanel = \"#1a2230\"\npanel_texture = \"media/hud/panel.png\"\nfont = \"media/hud/Font.ttf\"\n\n[theme.classic]\ntext = \"#e8e8e8\"\n\n[theme.sides.CORE]\naccent = \"#ce4834\"\nbar_texture = \"media/hud/core_bar.png\"\n";
+        let manifest: ModManifest = toml::from_str(text).unwrap();
+        let theme = &manifest.theme;
+        assert_eq!(theme.colour("arm", "accent"), Some("#5ab4ff"));
+        assert_eq!(theme.colour("Core", "accent"), Some("#ce4834"), "the side's own");
+        assert_eq!(theme.colour("core", "text"), Some("#d6e2ee"), "the theme's, where the side gives none");
+        assert_eq!(theme.colour("arm", "classic.text"), Some("#e8e8e8"));
+        assert_eq!(theme.colour("arm", "metal"), None);
+        assert_eq!(theme.texture("core", "bar"), Some("media/hud/core_bar.png"));
+        assert_eq!(theme.texture("core", "panel"), Some("media/hud/panel.png"));
+        assert_eq!(theme.files().collect::<Vec<_>>(), ["media/hud/panel.png", "media/hud/core_bar.png", "media/hud/Font.ttf"]);
+        let written = toml::to_string_pretty(&manifest).unwrap();
+        assert_eq!(toml::from_str::<ModManifest>(&written).unwrap(), manifest, "{written}");
+        let plain: ModManifest = toml::from_str("id = \"plain\"\nname = \"Plain\"\n").unwrap();
+        assert!(plain.theme.is_empty() && !toml::to_string_pretty(&plain).unwrap().contains("theme"));
     }
 
     /// A picture a manifest names is found in the mod's folder in any case of its letters, and

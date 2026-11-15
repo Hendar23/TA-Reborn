@@ -500,3 +500,25 @@ they are, the `media` folder keeps its name (MODのmediaフォルダー); parent
 | animated GIF / still picture / picture editor | アニメーションGIF / 静止画 / 画像編集ソフト |
 | blurred / sharp / cut off (a picture) | ぼやけて表示 / くっきり表示 / 切り取られる |
 | Give it more pixels: 1280 × 640 at best | 解像度を上げてください。1280 × 640が最適です。 |
+
+## A mod's interface theme (`pages/mods.rs`, `settings.rs`, `ta_data/src/presentation.rs`)
+
+The interface is UI here, as in クラシックUI and UIの拡大率 (the Options category itself stays
+「インターフェース」). HUD stays HUD. {extras} (its own font, pictures behind its panels) is joined
+by the code with an ASCII ", " and takes も: 「HUDがこの配色で表示され、{extras}も使われます」.
+The check's notes follow the presentation notes above (two sentences, 〜してください).
+
+| English | 日本語 |
+|---|---|
+| interface theme / INTERFACE THEME (the mod page's caption) | UIテーマ |
+| MODS' INTERFACE THEMES (the switch, in 「オプション」→「インターフェース」) | MODのUIテーマ |
+| these colours (the theme's) / the mod's colours | この配色 / そのMODの色 |
+| accent (colour) / text | アクセントカラー / テキスト |
+| font / its own font / pictures behind its panels | フォント / 独自のフォント / パネルの背景画像 |
+| the HUD draws its own metal there (the side's panel tiles in place of a picture) | HUDはその部分に本来の金属の質感を描きます |
+| the HUD keeps TA Reborn's own | HUDのその部分にはTA Reborn本来の色が使われます / HUDはTA Reborn本来のフォントのままです |
+| the HUD does without it | HUDはこのファイルなしで表示されます |
+| a contrast of {ratio}:1 / {least}:1 reads well | コントラスト比が{ratio}:1 / {least}:1以上なら読みやすくなります |
+| # and six hexadecimal digits | #に続けて16進数6桁 |
+| side (a theme's, named as sidedata.tdf names it) | 陣営（陣営{side}、ゲームの陣営：{sides}） |
+| Off: TA Reborn's own always | オフにすると、常にTA Reborn本来の表示になります |
