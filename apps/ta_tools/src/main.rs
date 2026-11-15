@@ -9,6 +9,7 @@ mod brand;
 mod i18n;
 mod inspect;
 mod mapgen;
+mod mod_new;
 mod notices;
 mod sprites;
 mod supcom;
@@ -144,6 +145,17 @@ enum Cmd {
         /// The mod's id (default: the package's name).
         #[arg(long)]
         id: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Make a new mod's folder: a mod.toml naming it (every other key written out, commented),
+    /// a media folder and a read-me of what goes where.
+    ModNew {
+        folder: PathBuf,
+        /// The mod's id (default: made from its name).
+        #[arg(long)]
+        id: Option<String>,
+        /// Its name (default: the folder's).
         #[arg(long)]
         name: Option<String>,
     },
@@ -424,6 +436,7 @@ fn main() -> Result<()> {
     let _ = MODS.set(cli.mods);
     match cli.cmd {
         Cmd::ModInstall { package, mods_dir, id, name } => mod_install(&package, &mods_dir, id, name)?,
+        Cmd::ModNew { folder, id, name } => mod_new::run(&folder, id, name)?,
         Cmd::Brand { out } => brand::run(&out)?,
         Cmd::Mapgen { id, out, preview } => {
             let (_, vfs) = open_vfs()?;

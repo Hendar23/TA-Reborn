@@ -562,3 +562,12 @@ fondo metallico, drawn invece: "metallo" alone reads as the resource. Straight a
 | a contrast of {ratio}:1 / {least}:1 reads well | un contrasto di {ratio}:1 / Con {least}:1 si legge bene |
 | the theme's {key} (a manifest key) / a colour key | la voce {key} del tema / il colore {key} |
 | side ([theme.sides.arm]) | fazione |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | Italiano |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} non può essere attiva insieme a {other}: disattivane una / incompatibile con {mods} |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} o versioni successive / hai la {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | RICHIEDE UN TA REBORN PIÙ RECENTE |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / la versione più vecchia di TA Reborn con cui funziona la mod |

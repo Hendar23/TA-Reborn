@@ -612,3 +612,12 @@ is son propre fond métallique, shown à la place: "métal" alone reads as the r
 | a contrast of {ratio}:1 / {least}:1 reads well | un contraste de {ratio}:1 / Dès {least}:1, elle se lit bien |
 | the theme's {key} (a manifest key) / a colour key | l’entrée {key} du thème / la couleur {key} |
 | side ([theme.sides.arm]) | camp |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | Français |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} ne peut pas être activé en même temps que {other} (no-break space) : désactivez l'un des deux / incompatible avec {mods} (the problems keep straight apostrophes, as "qui n'est pas activé") |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} ou version ultérieure / vous avez la {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | NÉCESSITE UN TA REBORN PLUS RÉCENT |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / la plus ancienne version de TA Reborn où le mod fonctionne |

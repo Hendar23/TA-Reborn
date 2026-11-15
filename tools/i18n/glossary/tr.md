@@ -546,3 +546,12 @@ follows a colon, so its items stay nominative noun phrases: "ayrıca şunlar kul
 | more than {most} (a size limit) | {most} sınırını aşıyor |
 | side (a theme's, named as sidedata.tdf names it) | taraf ("{side} tarafına", "Oyunun tarafları: {sides}") |
 | Off: TA Reborn's own always | Kapalıysa her zaman TA Reborn'un kendi görünümü kullanılır |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | Türkçe |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} ile {other} birlikte açık olamaz: birini kapat / şunlarla birlikte açık olamaz: {mods} (as "gerekli: {mods}") |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} veya üzeri (gerekli) / seninki {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | DAHA YENİ TA REBORN GEREKLİ |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn ("requires_reborn anahtarı") / modun çalıştığı en eski TA Reborn sürümü |

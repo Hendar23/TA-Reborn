@@ -522,3 +522,12 @@ The check's notes follow the presentation notes above (two sentences, 〜して�
 | # and six hexadecimal digits | #に続けて16進数6桁 |
 | side (a theme's, named as sidedata.tdf names it) | 陣営（陣営{side}、ゲームの陣営：{sides}） |
 | Off: TA Reborn's own always | オフにすると、常にTA Reborn本来の表示になります |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | 日本語 |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name}は{other}と同時に有効にできません。どちらかを無効にしてください / 併用不可：{mods}（前提MOD：{mods}と並ぶ） |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version}以降 / 必要なTA Reborn：{version}以降（現在は{current}） |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | より新しいTA Rebornが必要 |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / MODが動作する最も古いTA Rebornのバージョン |

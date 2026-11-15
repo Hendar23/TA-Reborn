@@ -637,3 +637,12 @@ Metalloptik: "Metall" alone reads as the resource.
 | a contrast of {ratio}:1 / {least}:1 reads well | einen Kontrast von {ratio}:1 / Ab {least}:1 ist sie gut lesbar |
 | the theme's {key} (a manifest key) / a colour key | der Eintrag {key} des Designs / die Farbe {key} |
 | side ([theme.sides.arm]) | Seite (as "Benötigt die Seite {side}") |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | Deutsch |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} kann nicht zusammen mit {other} aktiviert sein: Deaktiviere eine der beiden / kann nicht zusammen mit {mods} aktiviert sein |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} oder neuer / Installiert ist {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | BENÖTIGT NEUERES TA REBORN |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / die älteste Version von TA Reborn, in der die Mod läuft |

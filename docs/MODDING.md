@@ -218,6 +218,10 @@ others. A mod's manifest can name:
 
 - `depends`: mods that must be on too. They load before it.
 - `load_after`: mods it loads after, when they are on. A wish that would close a circle gives way.
+- `conflicts`: mods that must not be on with it. With one of them on too, the order does not
+  resolve: turn one of them off.
+- `requires_reborn`: the oldest TA Reborn it plays in. In an older one the order does not
+  resolve: update TA Reborn, or turn the mod off. Its card shows a red lamp.
 
 When the order cannot be resolved, the problem takes the place of the effective order, with what
 puts it right: **ENABLE name** for a dependency installed but off, **GET name** for one the
@@ -229,6 +233,8 @@ says why.
 | Problem | What to do |
 | --- | --- |
 | "X is on, but it is not installed" | Install X, or take it out of the load order. |
+| "X cannot be on with Y" | X's manifest says the two break each other: turn one of them off. |
+| "X needs TA Reborn 1.0.7 or later" | Update TA Reborn (the launcher's Play page offers updates), or turn X off. |
 | "X is on, but its manifest … does not read: …" | Fix its `mod.toml` ([troubleshooting](#troubleshooting)). |
 | "X needs Y, which is not on" | Turn Y on (**ENABLE Y**), or turn X off. |
 | "These mods each need another loaded before them: …" | Their `depends` make a circle: one of the mods is wrong. |
@@ -432,6 +438,11 @@ and why mods were not loaded.
 
 ### A first mod
 
+`ta-tools mod-new "%APPDATA%\TA Reborn\mods\Naval Additions"` makes steps 1 and 2: the folder,
+a `mod.toml` naming the mod (its id made from the name, every other key written out and
+commented), a `media` folder and a read-me of what goes where (`--id` and `--name` choose them).
+By hand:
+
 1. Make a folder in your mods folder: `%APPDATA%\TA Reborn\mods\naval-additions\`.
 2. Put a `mod.toml` in it:
 
@@ -499,6 +510,8 @@ authors = ["A. Modder", "B. Painter"]
 source = "https://example.org/naval-additions"
 depends = ["ship-hulls"]      # must be on too; loads before this mod
 load_after = ["ship-tweaks"]  # loads before this mod when it is on
+conflicts = ["old-navy"]      # must not be on with this mod
+requires_reborn = "1.0.7"     # the oldest TA Reborn it plays in
 tags = ["units", "naval"]     # found by these in the library, shown on its page
 
 [media]                       # how the launcher presents it (see below)
@@ -522,6 +535,8 @@ Discord = "https://discord.gg/example"
 | `source` | string | `""` | The mod's web page: a **MOD PAGE** link on its page (a catalogue mod's page is the catalogue's). The launcher writes it for catalogue installs. |
 | `depends` | list of ids | `[]` | Mods that must be on too; they load before this one. Shown as "requires …". |
 | `load_after` | list of ids | `[]` | Mods this one loads after when they are on. |
+| `conflicts` | list of ids | `[]` | Mods that must not be on with this one: with one of them on too, no mod is mounted until one is turned off. Shown as "cannot be on with …". |
+| `requires_reborn` | string | `""` | The oldest TA Reborn the mod plays in (`"1.0.7"`): in an older one it is not mounted. Shown on its page, in red when this TA Reborn is older. |
 | `rename` | table | none | Folders of the mod's own read in place of TA's: see [Renamed folders](#renamed-folders). |
 | `replaces` | list of file names | `[]` | Archives of the original game this mod takes the place of, beyond its own archives of their names: see [Replacing the original game's archives](#replacing-the-original-games-archives). |
 | `tags` | list of strings | `[]` | Words the library finds the mod by, shown on its page as written. |

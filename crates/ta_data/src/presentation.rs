@@ -142,6 +142,11 @@ pub fn check(dir: &Path, manifest: &ModManifest, layer: &str, sides: Option<&[St
                 en("Give the page's whole address, starting https://."));
         }
     }
+    let requires = manifest.requires_reborn.trim();
+    if !requires.is_empty() && ta_vfs::mods::version_older("0", requires).is_none() {
+        note("presentation.requires", "mod.toml", enf("mod.toml's requires_reborn is {value}, which is not a version: the mod is mounted in any TA Reborn.", [("value", Fill::name(requires))]),
+            en("Write the oldest TA Reborn the mod plays in, as 1.0.7."));
+    }
     check_theme(dir, &manifest.theme, sides, &mut note);
     issues
 }
@@ -342,6 +347,8 @@ mod tests {
         toml::from_str(&format!("id = \"m\"\nname = \"M\"\n{text}")).unwrap()
     }
 
+    fn manifest_with(text: &str) -> ModManifest { manifest(text) }
+
     fn codes(issues: &[Issue]) -> Vec<(&str, &str)> {
         issues.iter().map(|i| (i.code.as_str(), i.path.as_str())).collect()
     }
@@ -443,6 +450,8 @@ mod tests {
             assert!(found.contains(&expected), "{expected:?} in {found:?}");
         }
         assert_eq!(found.iter().filter(|(code, _)| *code == "presentation.link").count(), 2, "the source and the forum's link");
+        let odd = manifest_with("requires_reborn = \"latest\"\n");
+        assert_eq!(codes(&check(&dir, &odd, "mod:m", None)), [("presentation.requires", "mod.toml")]);
         assert_words(&issues);
         let _ = std::fs::remove_dir_all(&dir);
     }

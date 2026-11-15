@@ -319,6 +319,8 @@ fn describe_mod_problem(e: &ta_vfs::mods::ModError, available: &[ta_vfs::mods::M
         ModError::MissingDependency { module, dependency } => tf("{name} needs {other}, which is not on", &[("name", &name(module)), ("other", &name(dependency))]),
         ModError::Cycle(ids) => tf("These mods each need another loaded before them: {mods}", &[("mods", ids)]),
         ModError::Unreadable { id, message } => tf("{name} could not be read: {error}", &[("name", &name(id)), ("error", message)]),
+        ModError::Conflict { module, other } => tf("{name} cannot be on with {other}: turn one of them off", &[("name", &name(module)), ("other", &name(other))]),
+        ModError::NeedsNewer { module, version } => tf("{name} needs TA Reborn {version} or later: update TA Reborn, or turn the mod off", &[("name", &name(module)), ("version", version)]),
         ModError::Manifest { .. } | ModError::Depth(_) | ModError::Duplicate { .. } => e.to_string(),
     }
 }

@@ -83,6 +83,8 @@ fn problem_words(e: &ModError, broken: &[ModError], name: &dyn Fn(&str) -> Strin
         ModError::Unreadable { id, message } => tf("{name} could not be read: {error}", &[("name", &name(id)), ("error", message)]),
         ModError::Manifest { path, message } => tf("The manifest {file} does not read: {error}", &[("file", &mods::shown_path(path)), ("error", &message.trim())]),
         ModError::Duplicate { id, path } => tf("Two mods in one folder are called {id}: {ignored} is left out", &[("id", id), ("ignored", &path.display())]),
+        ModError::Conflict { module, other } => tf("{name} cannot be on with {other}: turn one of them off", &[("name", &name(module)), ("other", &name(other))]),
+        ModError::NeedsNewer { module, version } => tf("{name} needs TA Reborn {version} or later: update TA Reborn, or turn the mod off", &[("name", &name(module)), ("version", version)]),
     }
 }
 

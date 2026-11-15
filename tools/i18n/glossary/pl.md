@@ -610,3 +610,12 @@ te kolory, a także …”, joined by a comma („własną czcionkę, obrazy w t
 | contrast of {ratio}:1 / reads well | kontrast {ratio}:1 / dobrze czyta się od {least}:1 |
 | a side (in [theme.sides.arm]) | frakcja, as the mod check's other notes („frakcji {side}”, „Frakcje gry: {sides}”) |
 | TA Reborn's own (colour, font, HUD) | własny kolor / własna czcionka / własny HUD TA Reborn |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | Polski |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} nie może być włączony razem z modem {other}: wyłącz jeden z nich / niezgodny z: {mods} (as „wymaga: {mods}”) |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn w wersji {version} lub nowszej / obecna wersja to {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | WYMAGA NOWSZEGO TA REBORN |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / najstarsza wersja TA Reborn, w której działa mod |

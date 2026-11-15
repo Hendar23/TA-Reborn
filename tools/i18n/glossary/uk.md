@@ -579,3 +579,12 @@ mod's page and checked under ОФОРМЛЕННЯ. HUD stays HUD, masculine, in 
 | a side (in [theme.sides.arm]) | сторона ("стороні {side}", "Сторони гри: {sides}") |
 | TA Reborn's own (colour, font, HUD) | власний колір / шрифт / HUD TA Reborn |
 | search keywords | both колір and кольори (the search matches substrings, and колір is not in кольори) |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | Українська |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | Мод {name} не можна вмикати разом із модом {other}: вимкніть один із них / несумісний з {mods} |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn версії {version} або новішої / у вас {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | ПОТРІБЕН НОВІШИЙ TA REBORN |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / найстаріша версія TA Reborn, у якій працює мод (мод підключається) |
