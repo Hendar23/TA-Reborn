@@ -560,12 +560,24 @@ impl Sim {
                 Some(Target::Unit(tid)) if forced != target => self.unit(tid).is_some_and(|tu| self.bad_target(t.id, slot, tu)) && !self.players.get(owner as usize).is_some_and(|p| p.shoot_all),
                 _ => false,
             };
-            if available[slot] && (target.is_none() || on_bad) && (!w.command_fire || roving_bombs) && fire_state >= 2 && (self.tick + id.slot as u64).is_multiple_of(RETARGET_TICKS) {
+            // An automatic target kept past what the weapon can fire on (it is kept a little past
+            // the weapon's range, `Sim::target_valid`, as it moves about): a look round too, for
+            // one in reach, which it turns to, bad or not. With none it is kept, and fired on the
+            // moment it comes back into reach. (An ordered target is the order's; a roving
+            // bomber's runs keep theirs.)
+            let past_reach = match target {
+                Some(tg) if forced != Some(tg) && !roving_bombs => self.weapon_target_point(w, tg).is_none_or(|tp| {
+                    let from = self.aim_from_point(id, slot);
+                    from.distance_xz(tp) > w.range + self.target_radius(tg) || self.launch_pitch(w, tp - from).is_none()
+                }),
+                _ => false,
+            };
+            if available[slot] && (target.is_none() || on_bad || past_reach) && (!w.command_fire || roving_bombs) && fire_state >= 2 && (self.tick + id.slot as u64).is_multiple_of(RETARGET_TICKS) {
                 let tick = self.tick;
                 let skip = self.unit(id).and_then(|u| u.weapons[slot].blocked).filter(|&(_, until)| tick < until).map(|(t, _)| t);
                 let reach = if roving_bombs { self.bomber_lookout(t).min(w.range) } else { w.range };
                 let found = self.find_target(id, slot, w, owner, skip, reach);
-                if target.is_none() || matches!(found, Some(Target::Unit(tid)) if self.unit(tid).is_some_and(|tu| !self.bad_target(t.id, slot, tu))) {
+                if target.is_none() || past_reach && found.is_some() || matches!(found, Some(Target::Unit(tid)) if self.unit(tid).is_some_and(|tu| !self.bad_target(t.id, slot, tu))) {
                     target = found;
                 }
             }
@@ -1836,12 +1848,20 @@ impl Sim {
             self.halt(id);
             return true;
         }
-        let engaged = u.weapons.iter().zip(t.weapons.iter()).any(|(ws, w)| {
-            w.is_some_and(|wid| {
-                let weapon = self.weapon_types.get(wid);
-                self.weapon_can_fire_from(u, weapon) && ws.target.is_some_and(|tg| self.target_known(tg, u.owner) && self.target_point(tg).is_some_and(|p| u.pos.within_xz(p, weapon.range + Fx::from_int(24))))
-            })
+        let targets = u.weapons.map(|ws| ws.target);
+        let owner = u.owner;
+        let weapons = self.weapon_types.clone();
+        let engaged = targets.into_iter().zip(t.weapons).enumerate().any(|(slot, (target, weapon))| {
+            let (Some(target), Some(wid)) = (target, weapon) else { return false };
+            let weapon = weapons.get(wid);
+            if !self.unit(id).is_some_and(|u| self.weapon_can_fire_from(u, weapon)) || !self.target_known(target, owner) {
+                return false;
+            }
+            let Some(tp) = self.weapon_target_point(weapon, target) else { return false };
+            let from = self.aim_from_point(id, slot);
+            from.within_xz(tp, weapon.range + self.target_radius(target)) && self.launch_pitch(weapon, tp - from).is_some()
         });
+        let Some(u) = self.unit(id) else { return false };
         let planned = u.move_request == Some(dest);
         let arrived = planned && u.path_goal.is_none();
         if engaged {

@@ -72,6 +72,10 @@
 - `ta-tools validate-mod` lists its findings in the launcher's order.
 - Names listed together on the Mods page ("by …", "requires …") are joined as the player's
   language joins them.
+- A turret whose target had moved just out of its reach kept it, held fire and passed over
+  another enemy it could hit; it now turns to one in reach, and fires on the first again the moment
+  it comes back. Units on attack-move or patrol kept stopping short of a target their weapons could
+  not reach yet: they now close until they can fire. An attack order keeps its target as before.
 
 ## 1.0.6 — 2026-11-15
 
