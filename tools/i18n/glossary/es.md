@@ -558,3 +558,26 @@ original». Las etiquetas sin concordancia de género (compatible, sin uso).
 | patch / the patched engines of later years / engine | parche / los motores parcheados de años posteriores / motor |
 | weapon ID / unit value (a script's) / cloak (unit value 111) | ID de arma (los ID) / valor de unidad / camuflaje |
 | sides / campaigns of its own; TA's own computer players | bandos / campañas propios del mod; jugadores IA del propio TA |
+
+## La presentación de un mod en el lanzador (`pages/mods.rs`, `crates/ta_data/src/presentation.rs`)
+
+El banner, la vista previa de juego, el icono, las capturas y los enlaces de un mod en la biblioteca
+de MODS, y las notas de la comprobación sobre ellos, en el grupo PRESENTACIÓN del informe.
+`mod.toml`, `media/banner.png` y `{key}` (una clave del manifiesto: banner, preview, icon,
+screenshots) no se traducen: "La entrada {key} de mod.toml apunta a {path}".
+
+| English | Español |
+|---|---|
+| PRESENTATION (grupo de notas del informe) | PRESENTACIÓN |
+| banner (la tarjeta y la parte superior de la página del mod) | banner (el banner) |
+| gameplay preview (un GIF animado del mod en partida) | vista previa de juego (como «imágenes de juego») |
+| PLAY PREVIEW (botón del banner con el movimiento reducido) | VER VISTA PREVIA |
+| icon (de un mod) | icono |
+| SCREENSHOTS / Screenshot {n} of {count} / {n} of {count} | CAPTURAS (como CAPTURA) / Captura {n} de {count} / {n} de {count} |
+| MOD PAGE (enlace a la página web del mod) | PÁGINA DEL MOD |
+| the mod's media folder / a path from the mod's folder | la carpeta media del mod / una ruta relativa a la carpeta del mod |
+| frames (de un GIF) | fotogramas |
+| shows blurred / shows sharp | se ve borroso / se ve nítido |
+| … at best (el tamaño ideal) | lo ideal es … |
+| still picture / picture editor | imagen fija / editor de imágenes |
+| link / web address | enlace / dirección web |

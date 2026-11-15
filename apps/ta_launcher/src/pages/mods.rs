@@ -6,7 +6,7 @@
 //! view, as they were otherwise: installed, on or off. The load order of the mods that are on is
 //! the page's other view (`mod_order.rs`); the mod folders open in a dialog.
 
-use egui::{Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use egui::{Align, Color32, CornerRadius, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use ta_ui::i18n::{n, t, tf};
 use ta_ui::panel::{Exit, Panel};
 use ta_ui::tooltip::TooltipExt as _;
@@ -52,7 +52,10 @@ impl LauncherApp {
         let ctx = ui.ctx().clone();
         // (The installs' news is taken in by the app, whatever the page.)
         if self.media.poll(&ctx) { ctx.request_repaint(); }
+        self.mod_media.get_mut().poll(&ctx);
         self.mod_library.changes.poll(&ctx);
+        // (A mod's screenshots on the whole window, over the page: first, to take its keys.)
+        self.mod_lightbox_ui(ui);
         let now = ctx.input(|i| i.time);
         if self.celebrate.as_ref().is_some_and(|(_, at)| ((now - at) as f32) < getmods::CELEBRATION) {
             ta_ui::motion::next_frame(&ctx, std::time::Duration::from_millis(33));
@@ -414,7 +417,8 @@ impl LauncherApp {
             let card = Card { title: &item.name, detail: &detail, lamps: &lamps, star: false, selected: item.id == this.mod_library.selected, spoken: &spoken,
                 ribbon: ribbon.then_some(hidden_word.as_str()) };
             let id = Id::new(("mod_card", &item.id));
-            let paint = |ui: &Ui, frame: Rect| this.paint_banner(ui, frame, item, false);
+            let over = ui.rect_contains_pointer(rect);
+            let paint = |ui: &Ui, frame: Rect| { this.paint_banner(ui, frame, item, false, over); };
             let response = match view {
                 View::Grid => library::card(ui, id, rect, well, card, paint),
                 View::List => library::picture_row(ui, id, rect, 1.8, card, paint),
@@ -633,18 +637,71 @@ impl LauncherApp {
         (detail, lamps, check.map(|(_, words)| words))
     }
 
-    /// A mod's banner: its picture (or a plate of its own with its name), and on the details'
-    /// larger one, how it fared (its review, or this copy's check).
-    fn paint_banner(&self, ui: &Ui, frame: Rect, item: &Item, badge: bool) {
-        let texture = item.catalogue.and_then(|entry| self.media.pictures.get(entry.id));
-        let bundled = item.catalogue.is_some_and(|entry| entry.bundled_image().is_some());
+    /// A mod's banner: its own picture (its manifest's), else the catalogue's, else a plate of its
+    /// own with its name (and its icon); its gameplay preview playing in it, on the details as
+    /// they show and on a card once the pointer has rested on it (`over`: the pointer is on the
+    /// card); and on the details' larger one (`badge`), how it fared (its review, or this copy's
+    /// check). True when the player asks for its preview to play (motion they reduced).
+    fn paint_banner(&self, ui: &Ui, frame: Rect, item: &Item, badge: bool, over: bool) -> bool {
+        let ctx = ui.ctx().clone();
+        let own = self.mods.get(&item.id).map(|entry| &entry.info);
+        let mut media = self.mod_media.borrow_mut();
+        let banner = own.and_then(|info| media.banner(info));
+        let icon = own.and_then(|info| media.icon(info));
+        let (texture, bundled) = match banner {
+            Some(banner) => (Some(banner), false),
+            None => (item.catalogue.and_then(|entry| self.media.pictures.get(entry.id)).cloned(), item.catalogue.is_some_and(|entry| entry.bundled_image().is_some())),
+        };
+        // Its gameplay preview: on the details unless motion is held (the player's preference
+        // holds it until they ask; the window in the background or idle, whatever they asked), on
+        // a card once the pointer has rested on it.
+        let preview = own.filter(|info| media.has_preview(info));
+        let asked = self.preview_asked.as_deref() == Some(item.id.as_str());
+        let playing = preview.is_some() && if badge {
+            if asked { !ta_ui::motion::held(&ctx) } else { !ta_ui::motion::still(&ctx) }
+        } else {
+            !ta_ui::motion::reduced(&ctx) && media.resting(&ctx, &item.id, over)
+        };
+        let shown = if playing { preview.and_then(|info| media.preview(&ctx, info, true)) } else { None };
+        drop(media);
+        let showing = shown.is_some();
         let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(frame));
-        getmods::paint_picture(&painter, frame, texture, &item.id, &item.name, bundled, 0.0);
+        match shown {
+            Some((frame_texture, next)) => {
+                getmods::paint_picture(&painter, frame, Some(&frame_texture), &item.id, &item.name, false, 0.0, None);
+                if let Some(next) = next {
+                    let next = std::time::Duration::from_secs_f32(next.max(0.01));
+                    if asked { ctx.request_repaint_after(next); } else { ta_ui::motion::next_frame(&ctx, next); }
+                }
+            }
+            None => getmods::paint_picture(&painter, frame, texture.as_ref(), &item.id, &item.name, bundled, 0.0, icon.as_ref()),
+        }
         painter.add(ta_ui::metal::well(frame, Color32::TRANSPARENT));
         if badge {
             let (label, colour) = self.fit_badge(item);
             getmods::badge(ui, &painter, frame.left_top() + vec2(10.0, 10.0), t(label), colour, egui::Align2::LEFT_TOP);
         }
+        // A preview to play: a card's mark in its corner; on the details, a button to play it
+        // while it does not (motion reduced).
+        let mut ask = false;
+        if preview.is_some() && !showing {
+            if badge && !playing {
+                let label = widgets::galley(ui, RichText::new(t("PLAY PREVIEW")).font(strong(11.5)).extra_letter_spacing(ta_ui::i18n::tracking(1.0)));
+                let size = vec2(label.size().x + 40.0, 28.0);
+                let rect = Rect::from_min_size(frame.right_bottom() - size - vec2(10.0, 10.0), size);
+                let response = ui.interact(rect, Id::new(("mod_preview_play", &item.id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                let fill = if response.hovered() { Color32::from_black_alpha(230) } else { Color32::from_black_alpha(190) };
+                painter.rect(rect, CornerRadius::same(3), fill, Stroke::new(1.0, if response.hovered() { AMBER } else { STEEL_DIM }), StrokeKind::Inside);
+                widgets::paint_glyph(&painter, widgets::Glyph::Play, pos2(rect.left() + 16.0, rect.center().y), 0.75, AMBER_BRIGHT);
+                painter.galley(pos2(rect.left() + 30.0, rect.center().y - label.size().y / 2.0), label, TEXT_BRIGHT);
+                ask = response.clicked();
+            } else if !badge {
+                let center = frame.right_bottom() - vec2(17.0, 17.0);
+                painter.circle(center, 11.0, Color32::from_black_alpha(175), Stroke::new(1.0, STEEL_DIM));
+                widgets::paint_glyph(&painter, widgets::Glyph::Play, center + vec2(1.0, 0.0), 0.6, TEXT_BRIGHT);
+            }
+        }
+        ask
     }
 
     /// How a mod fared: this copy's own check once installed, else the catalogue's review.
@@ -689,6 +746,7 @@ impl LauncherApp {
             return;
         };
         let mut actions: Vec<Action> = Vec::new();
+        let mut play = false;
         let mut area = egui::ScrollArea::vertical().id_salt(("mod_details", &item.id)).max_height(height).min_scrolled_height(0.0).auto_shrink([false, false]);
         if let Some(offset) = self.capture_scroll { area = area.vertical_scroll_offset(offset); }
         ta_ui::scroll::show(ui, area, ta_ui::scroll::Behind::Backdrop(BG), |ui| widgets::card(ui, |ui| {
@@ -704,7 +762,7 @@ impl LauncherApp {
                         ui.set_width(left);
                         ui.spacing_mut().item_spacing.y = 7.0;
                         let (rect, _) = ui.allocate_exact_size(vec2(left, (left * 0.56).round()), Sense::hover());
-                        self.paint_banner(ui, rect, &item, true);
+                        play |= self.paint_banner(ui, rect, &item, true, false);
                         self.mod_about(ui, &item, &mut actions);
                     });
                     ui.allocate_ui_with_layout(vec2(right, 0.0), Layout::top_down(Align::Min), |ui| {
@@ -716,20 +774,35 @@ impl LauncherApp {
                 });
             } else {
                 let (rect, _) = ui.allocate_exact_size(vec2(width, (width * 0.4).clamp(100.0, 200.0).min(height * 0.4)), Sense::hover());
-                self.paint_banner(ui, rect, &item, true);
+                play |= self.paint_banner(ui, rect, &item, true, false);
                 self.mod_heading(ui, &item, &mut actions);
                 ui.add_space(space::XS);
                 self.mod_about(ui, &item, &mut actions);
                 self.mod_files(ui, &item, &mut actions);
             }
         }));
+        if play { self.preview_asked = Some(item.id.clone()); }
         for action in actions { self.push(action); }
     }
 
     /// A mod's name and creators, and what can be done with it.
     fn mod_heading(&mut self, ui: &mut Ui, item: &Item, actions: &mut Vec<Action>) {
-        ui.add(egui::Label::new(RichText::new(item.name.to_uppercase()).font(display(24.0)).color(TEXT_BRIGHT)
-            .extra_letter_spacing(ta_ui::i18n::tracking(1.0))).wrap());
+        let title = egui::Label::new(RichText::new(item.name.to_uppercase()).font(display(24.0)).color(TEXT_BRIGHT)
+            .extra_letter_spacing(ta_ui::i18n::tracking(1.0))).wrap();
+        // (Its icon before its name, where it has one.)
+        let icon = self.mods.get(&item.id).map(|entry| entry.info.clone()).and_then(|info| self.mod_media.borrow_mut().icon(&info));
+        match icon {
+            Some(icon) => {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    let (rect, _) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::hover());
+                    ui.painter().rect_filled(rect.expand(1.0), CornerRadius::same(4), INSET);
+                    ui.painter().add(egui::Shape::Rect(egui::epaint::RectShape::filled(rect, CornerRadius::same(3), Color32::WHITE).with_texture(icon.id(), getmods::square_uv(&icon))));
+                    ui.add(title);
+                });
+            }
+            None => { ui.add(title); }
+        }
         let installed = self.mods.get(&item.id).cloned();
         let version = installed.as_ref().map(|entry| entry.info.manifest.version.clone());
         let on = self.config.mods.enabled.contains(&item.id);
@@ -836,6 +909,10 @@ impl LauncherApp {
                 tags(ui, &|ui: &mut Ui| {
                     widgets::tag(ui, &tf("Version: {version}", &[("version", &shown)]), STEEL);
                     widgets::tag(ui, if entry.is_archive() { "ARCHIVE" } else { "FOLDER" }, STEEL);
+                    // (Its own words for what it is: as written.)
+                    for tag in manifest.tags.iter().filter(|tag| !tag.trim().is_empty()).take(12) {
+                        widgets::tag(ui, &tag.trim().to_uppercase(), STEEL);
+                    }
                 });
                 if !manifest.description.is_empty() {
                     ui.add(egui::Label::new(RichText::new(t(&manifest.description)).font(body(13.5)).color(TEXT)).wrap());
@@ -847,6 +924,96 @@ impl LauncherApp {
             }
             (None, None) => {}
         }
+        self.mod_presentation(ui, item, actions);
+    }
+
+    /// What an installed mod shows of itself beyond its words: its web pages (its manifest's
+    /// `source`, where the catalogue does not give one, and `links`) and its screenshots, a click
+    /// on one showing them on the whole window.
+    fn mod_presentation(&mut self, ui: &mut Ui, item: &Item, actions: &mut Vec<Action>) {
+        let Some(info) = self.mods.get(&item.id).map(|entry| entry.info.clone()) else { return };
+        let manifest = &info.manifest;
+        let mut links: Vec<(String, String)> = Vec::new();
+        if item.catalogue.is_none() && ta_vfs::mods::web_address(&manifest.source) {
+            links.push((t("MOD PAGE").to_string(), manifest.source.trim().to_string()));
+        }
+        links.extend(manifest.links.iter().filter(|(label, url)| !label.trim().is_empty() && ta_vfs::mods::web_address(url))
+            .map(|(label, url)| (label.trim().to_uppercase(), url.trim().to_string())));
+        if !links.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(14.0, 6.0);
+                for (label, url) in links {
+                    let response = ui.add(egui::Label::new(RichText::new(format!("{label} ↗")).font(strong(12.0)).color(AMBER)).sense(Sense::click()))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand).hover_tip(url.as_str());
+                    if response.clicked() { actions.push(Action::OpenUrl(url)); }
+                }
+            });
+        }
+        let count = crate::mod_media::ModMedia::screenshots(&info);
+        if count == 0 { return; }
+        ui.add_space(space::XS);
+        ui.label(widgets::caption("SCREENSHOTS"));
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+            for index in 0..count {
+                let (rect, response) = ui.allocate_exact_size(vec2(112.0, 63.0), Sense::click());
+                let texture = self.mod_media.borrow_mut().screenshot(&info, index, false);
+                library::picture(ui, rect, texture.as_ref(), false);
+                if response.hovered() { ui.painter().rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.5, AMBER), StrokeKind::Inside); }
+                let response = response.on_hover_cursor(egui::CursorIcon::ZoomIn);
+                ui.ctx().accesskit_node_builder(response.id, |node| node.set_label(tf("Screenshot {n} of {count}", &[("n", &(index + 1)), ("count", &count)])));
+                if response.clicked() { self.mod_lightbox = Some((item.id.clone(), index)); }
+            }
+        });
+    }
+
+    /// A mod's screenshots on the whole window, while one is chosen: the arrows (and the keys)
+    /// step through them; Escape, the cross or a click beside the picture closes them.
+    fn mod_lightbox_ui(&mut self, ui: &mut Ui) {
+        let Some((id, index)) = self.mod_lightbox.clone() else { return };
+        let Some(info) = self.mods.get(&id).map(|entry| entry.info.clone()) else { self.mod_lightbox = None; return };
+        let count = crate::mod_media::ModMedia::screenshots(&info);
+        if count == 0 { self.mod_lightbox = None; return; }
+        let index = index.min(count - 1);
+        let ctx = ui.ctx().clone();
+        let (mut close, mut step) = (false, 0i32);
+        ctx.input_mut(|input| {
+            close |= input.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft) { step -= 1; }
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight) { step += 1; }
+        });
+        let screen = ctx.content_rect();
+        let texture = self.mod_media.borrow_mut().screenshot(&info, index, true);
+        egui::Area::new(Id::new("mod_lightbox")).order(egui::Order::Foreground).fixed_pos(screen.min).show(&ctx, |ui| {
+            ui.set_min_size(screen.size());
+            let painter = ui.painter().clone();
+            painter.rect_filled(screen, 0.0, Color32::from_black_alpha(232));
+            if ui.interact(screen, Id::new("mod_lightbox_back"), Sense::click()).clicked() { close = true; }
+            // The picture, as large as fits between the arrows; its name and place above it.
+            let area = Rect::from_min_max(screen.min + vec2(72.0, 56.0), screen.max - vec2(72.0, 40.0));
+            match &texture {
+                Some(texture) => {
+                    let size = texture.size_vec2();
+                    let scale = (area.width() / size.x.max(1.0)).min(area.height() / size.y.max(1.0));
+                    let shown = Rect::from_center_size(area.center(), size * scale);
+                    painter.image(texture.id(), shown, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                    painter.rect_stroke(shown, CornerRadius::ZERO, Stroke::new(1.0, LINE), StrokeKind::Outside);
+                    ui.interact(shown, Id::new("mod_lightbox_picture"), Sense::click());
+                }
+                None => library::picture(ui, Rect::from_center_size(area.center(), vec2(320.0, 180.0)), None, false),
+            }
+            let title = format!("{} · {}", info.manifest.name.to_uppercase(), tf("{n} of {count}", &[("n", &(index + 1)), ("count", &count)]));
+            painter.text(pos2(screen.center().x, screen.top() + 28.0), egui::Align2::CENTER_CENTER, title, strong(14.0), TEXT_BRIGHT);
+            let button = |ui: &mut Ui, at: Pos2, glyph: widgets::Glyph, enabled: bool| {
+                ui.put(Rect::from_center_size(at, vec2(36.0, 36.0)), |ui: &mut Ui| widgets::glyph_button(ui, glyph, vec2(36.0, 36.0), widgets::Tone::Secondary, enabled)).clicked()
+            };
+            if button(ui, pos2(screen.right() - 30.0, screen.top() + 28.0), widgets::Glyph::Close, true) { close = true; }
+            if count > 1 {
+                if button(ui, pos2(screen.left() + 36.0, area.center().y), widgets::Glyph::Left, true) { step -= 1; }
+                if button(ui, pos2(screen.right() - 36.0, area.center().y), widgets::Glyph::Right, true) { step += 1; }
+            }
+        });
+        self.mod_lightbox = if close { None } else { Some((id, (index as i32 + step).rem_euclid(count as i32) as usize)) };
     }
 
     /// What an installed mod changes, its documents and where it is.

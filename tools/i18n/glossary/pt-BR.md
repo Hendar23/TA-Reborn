@@ -511,3 +511,24 @@ the validator's sentences, as "o motor de TA".
 | patch / the patched engines of later years / engine | patch (o patch) / os motores com patches dos anos seguintes / motor |
 | weapon ID / unit value (a script's) / cloak (unit value 111) | ID da arma (os IDs) / valor de unidade / camuflagem |
 | sides / campaigns of its own; TA's own computer players | lados / campanhas próprios do mod; jogadores da IA do próprio TA |
+
+## A mod's presentation in the MODS library (`pages/mods.rs`, `ta_data/src/presentation.rs`)
+
+A mod's banner, gameplay preview, icon, screenshots and links, and the mod check's notes on them
+(the report's group PRESENTATION). Manifest keys (`banner`, `preview`, `icon`, `screenshots`) and
+paths stay as written: "A chave {key} do mod.toml indica {path}" (indica, as "o replaces do
+mod.toml indica").
+
+| English | pt-BR |
+|---|---|
+| banner (the card and the top of the mod's page) | banner (o banner) |
+| gameplay preview (an animated GIF of the mod in play) / PLAY PREVIEW (its button, beside a ▶) | prévia de gameplay (gameplay: Brazil's word for footage; jogabilidade stays the settings' GAMEPLAY) / VER PRÉVIA |
+| icon (a mod's) | ícone |
+| screenshot(s) / SCREENSHOTS / Screenshot {n} of {count} / {n} of {count} | captura(s) de tela / CAPTURAS DE TELA / Captura de tela {n} de {count} / {n} de {count} |
+| MOD PAGE (the link to the mod's web page) | SITE DO MOD (as "o site do mod"; PÁGINA DO MOD would echo the mod's page in the library) |
+| PRESENTATION (the report's group heading) | APRESENTAÇÃO |
+| web address | endereço da web |
+| weighs {size} / make it smaller (the file) | pesa {size} / deixe o arquivo mais leve |
+| blurred / sharp | borrado / nítido ("fica borrado", "fica nítido") |
+| at best (the ideal size) | o ideal é ("o ideal é 1280 × 640") |
+| a still picture / an animated GIF | imagem estática / GIF animado |

@@ -28,6 +28,7 @@ mod music_control;
 mod native_crash;
 mod maps;
 mod mod_library;
+mod mod_media;
 mod news;
 mod pad;
 mod pages;

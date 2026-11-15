@@ -127,11 +127,11 @@ pub fn catalogue_matches(entry: &Entry, query: &str) -> bool {
         .into_iter().chain(entry.tags.iter().copied()).chain(entry.tags.iter().map(|tag| t(tag))))
 }
 
-/// Whether an installed mod matches a search: its name, id, words and authors.
+/// Whether an installed mod matches a search: its name, id, words, authors and tags.
 pub fn installed_matches(entry: &ModEntry, query: &str) -> bool {
     let manifest = &entry.info.manifest;
     matches_words(query, [manifest.name.as_str(), manifest.id.as_str(), manifest.description.as_str(), t(&manifest.description)]
-        .into_iter().chain(manifest.authors.iter().map(String::as_str)))
+        .into_iter().chain(manifest.authors.iter().map(String::as_str)).chain(manifest.tags.iter().map(String::as_str)))
 }
 
 /// A catalogue play-test recommendation must not hide problems in this player's copy: an
@@ -267,8 +267,10 @@ pub fn changes(request: &ChangesRequest) -> Result<Changes, String> {
     let target = request.mods.iter().find(|info| info.manifest.id == request.target).ok_or_else(|| t("The mod is no longer installed.").to_string())?;
     let mut alone = Vfs::new();
     mount(&mut alone, target).map_err(|error| error.to_string())?;
-    // (The game reads what is in folders: a read-me beside them is no game data.)
-    let files: Vec<String> = alone.list("", None, true).into_iter().filter(|path| path.contains('/') && !path.starts_with("docs/")).collect();
+    // (The game reads what is in folders: a read-me beside them is no game data, nor are the
+    // launcher's pictures of it.)
+    let media = format!("{}/", ta_vfs::mods::MEDIA_FOLDER);
+    let files: Vec<String> = alone.list("", None, true).into_iter().filter(|path| path.contains('/') && !path.starts_with("docs/") && !path.starts_with(&media)).collect();
     // The sources before it (the game, Reborn's own, the mods loaded earlier) and those after
     // it, each stack mounted by itself: a file of its own may replace one before it and be
     // replaced by one after it.

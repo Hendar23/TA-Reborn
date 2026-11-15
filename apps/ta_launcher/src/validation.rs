@@ -396,7 +396,10 @@ fn mod_stamp(module: &ModInfo) -> ModStamp {
     let stat = |path: &Path| std::fs::metadata(path).map_or((0, None), |m| (m.len(), m.modified().ok()));
     ModStamp(match module.kind {
         ModKind::Archive => vec![stat(&module.path)],
-        ModKind::Directory => vec![stat(&module.path), stat(&ta_vfs::mods::manifest_path(&module.path))],
+        // (And its pictures', whose presentation is checked: a new banner is a change.)
+        ModKind::Directory => [stat(&module.path), stat(&ta_vfs::mods::manifest_path(&module.path))].into_iter()
+            .chain(module.manifest.media.files().map(|named| ta_vfs::mods::media_path(&module.path, named).map_or((0, None), |path| stat(&path))))
+            .collect(),
     })
 }
 
@@ -409,11 +412,14 @@ fn same_inventory(left: &[ModInfo], right: &[ModInfo]) -> bool {
     left_by_id.iter().all(|(id, a)| right_by_id.get(id).is_some_and(|b| {
         // Exhaustive destructuring makes adding a manifest field require a deliberate
         // cache/discovery decision instead of silently ignoring the new setting.
-        let ta_vfs::mods::ModManifest { id, name, version, description, authors, depends, load_after, source, rename, replaces } = &a.manifest;
+        // (Its tags, pictures and links are the library's: a mod whose presentation changed is
+        // another to discovery, so that its page shows the new.)
+        let ta_vfs::mods::ModManifest { id, name, version, description, authors, depends, load_after, source, rename, replaces, tags, media, links } = &a.manifest;
         a.path == b.path && a.kind == b.kind && id == &b.manifest.id && name == &b.manifest.name
             && version == &b.manifest.version && description == &b.manifest.description && authors == &b.manifest.authors
             && depends == &b.manifest.depends && load_after == &b.manifest.load_after && source == &b.manifest.source
             && rename == &b.manifest.rename && replaces == &b.manifest.replaces
+            && tags == &b.manifest.tags && media == &b.manifest.media && links == &b.manifest.links
     }))
 }
 
@@ -629,9 +635,13 @@ fn mount(base: &Path, builtin: Option<&Path>, modules: &[&ModInfo], target: Opti
         issues.retain(|issue| !(issue.code == "ARCHIVE_UNREADABLE" && issue.layer == layer && module.kind == ModKind::Directory
             && (replaced.iter().any(|name| name.eq_ignore_ascii_case(&issue.path)) || claims.contains(&issue.path.to_lowercase()))
             && ta_vfs::package::is_placeholder(&module.path.join(&issue.path))));
-        // (Which of the original game's archives the mod checked takes the place of: notes.)
+        // (Which of the original game's archives the mod checked takes the place of: notes. And
+        // how it presents itself in the library, its pictures and links: notes too.)
         if Some(layer.as_str()) == target {
             issues.extend(replaced.iter().map(|archive| validation::replaced_archive(&layer, archive)));
+            if module.kind == ModKind::Directory {
+                issues.extend(ta_data::presentation::check(&module.path, &module.manifest, &layer));
+            }
         }
     }
     Ok(mounted.vfs)
@@ -803,6 +813,15 @@ fn fingerprint(snapshot: &Snapshot, order: &[&ModInfo], memo: &DigestMemo, cance
         // install's archives of those names were left out is not this mod's as mounted now.
         let replaced = ta_vfs::mods::replaced_claims(module);
         if !replaced.is_empty() { hash.update(serde_json::to_vec(&replaced).map_err(|e| e.to_string())?); }
+        // Its pictures as they are now (their presentation is checked): one changed is another
+        // report.
+        if module.kind == ModKind::Directory {
+            for named in module.manifest.media.files() {
+                let stamp = ta_vfs::mods::media_path(&module.path, named).and_then(|path| std::fs::metadata(path).ok())
+                    .map(|meta| (meta.len(), meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |t| t.as_nanos())));
+                hash.update(format!("{named}:{stamp:?}"));
+            }
+        }
     }
     for (layer, files) in snapshot {
         if Some(layer.as_str()) == without { continue; }
@@ -940,7 +959,7 @@ mod tests {
         ModInfo {
             manifest: ModManifest {
                 id: id.into(), name: format!("Mod {id}"), version: "1.0".into(), description: String::new(),
-                authors: vec![], depends: dependencies.iter().map(|s| s.to_string()).collect(), load_after: vec![], source: String::new(), rename: BTreeMap::new(), replaces: Vec::new(),
+                authors: vec![], depends: dependencies.iter().map(|s| s.to_string()).collect(), load_after: vec![], source: String::new(), rename: BTreeMap::new(), replaces: Vec::new(), ..Default::default()
             },
             path: root.into(), kind: ModKind::Directory,
         }

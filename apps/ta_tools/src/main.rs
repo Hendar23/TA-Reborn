@@ -337,6 +337,10 @@ fn validate_mod(path: &Path, json: bool, fail_on: &str, inherited: bool) -> Resu
     if opened {
         report.issues.extend(ta_vfs::mods::replaced_archives(&install, &[&module]).iter().map(|archive| validation::replaced_archive(&layer, archive)));
     }
+    // (How it presents itself in the launcher, its pictures and links: notes, as the launcher's.)
+    if path.is_dir() {
+        report.issues.extend(ta_data::presentation::check(path, &module.manifest, &layer));
+    }
     if !inherited { report.issues.retain(|i| i.affects_status); }
     if json { println!("{}", serde_json::to_string_pretty(&report)?); } else { print!("{}", report.to_text()); }
     // (`never`: whatever it found, an incomplete check too.)
@@ -405,7 +409,7 @@ fn mod_install(package: &Path, mods_dir: &Path, id: Option<String>, name: Option
         load_after: Vec::new(),
         source: String::new(),
         rename: Default::default(),
-        replaces: Vec::new(),
+        replaces: Vec::new(), ..Default::default()
     });
     if let Some(id) = id { manifest.id = id; }
     if let Some(name) = name { manifest.name = name; }
@@ -624,7 +628,7 @@ mod mod_plan_tests {
     fn m(id: &str, depends: &[&str]) -> ta_vfs::mods::ModInfo {
         let manifest = ta_vfs::mods::ModManifest {
             id: id.into(), name: id.into(), version: String::new(), description: String::new(), authors: Vec::new(),
-            depends: depends.iter().map(|d| d.to_string()).collect(), load_after: Vec::new(), source: String::new(), rename: Default::default(), replaces: Vec::new(),
+            depends: depends.iter().map(|d| d.to_string()).collect(), load_after: Vec::new(), source: String::new(), rename: Default::default(), replaces: Vec::new(), ..Default::default()
         };
         ta_vfs::mods::ModInfo { manifest, path: PathBuf::from(id), kind: ta_vfs::mods::ModKind::Directory }
     }

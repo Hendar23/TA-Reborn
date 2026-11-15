@@ -211,12 +211,21 @@ original game's).
 - **Packaging:** files where the game never reads them (an FBI outside `units/`, a model
   outside `objects3d/`…), archives in subfolders (only the top level's are opened), and a mod
   wrapped in a folder of its own (`My Mod/units/…`).
+- **Presentation** (notes, never counted in the badge): what the manifest's `media`, `links` and
+  `source` name that the launcher would not show or open as meant (`ta_data::presentation`): a
+  picture that is not in the mod's folder (`presentation.missing`) or names a place outside it
+  (`presentation.outside`), one that is not a PNG, JPEG or GIF (`presentation.format`), too heavy
+  or too large (`presentation.too_large`) or does not read (`presentation.unreadable`), a banner
+  or an icon too small (`presentation.small`) or of the wrong shape (`presentation.shape`), a
+  gameplay preview that does not move (`presentation.still`) or runs long
+  (`presentation.long`), more screenshots than are shown (`presentation.many`), a link that is no
+  web address (`presentation.link`). Editing a picture checks the mod again.
 - **Limits:** footprints (a footprint of none is an upgrade module's, which takes no ground: kept), texture frames and layers (the textures the models in `objects3d`
   paint with, as the game loads them: an entry no model names takes no room, and the rest fit
   two arrays of the reference card's 2,048 layers), the sprite atlas's room for explosions.
 
-Audio playback, external executables, arbitrary image formats and scripts' dynamic behaviour
-are outside these checks. A passing report is useful evidence, not a substitute for a real
+Audio playback, external executables, pictures other than those a manifest presents the mod
+with, and scripts' dynamic behaviour are outside these checks. A passing report is useful evidence, not a substitute for a real
 match and a look.
 
 ## Implementation

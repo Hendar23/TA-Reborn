@@ -567,3 +567,23 @@ lines in the nominative (KTOKOLWIEK TO CZYTA, NADAWCA NIEUSTALONY).
 | TA's later engines / the patched engines of later years | późniejsze silniki TA / załatane silniki z późniejszych lat |
 | a pixel count from a placeholder | px („o wysokości {height} px”: no plural form to choose) |
 | the campaign screen | ekran kampanii (as ekran potyczki) |
+
+## A mod's presentation in the MODS library (`pages/mods.rs`, `ta_data/src/presentation.rs`)
+
+A mod's banner, gameplay preview, icon, screenshots and links, and the mod check's notes on them
+(the report's group PRESENTATION). Manifest keys (`banner`, `preview`, `icon`, `screenshots`) and
+paths stay as written, anchored by a noun so they stay in the nominative: „Klucz {key} w mod.toml
+wskazuje plik {path}”, „Plik {path} waży {size}”, „Obraz {path} ma wymiary {width} × {height}”.
+
+| English | Polski |
+|---|---|
+| banner (the card and the top of the mod's page) | baner (banera, banerem) |
+| gameplay preview (an animated GIF of the mod in play) / PLAY PREVIEW | podgląd rozgrywki (as GAMEPLAY = ROZGRYWKA) / ODTWÓRZ PODGLĄD (as Play = Odtwórz) |
+| icon (a mod's) | ikona |
+| screenshot(s) / SCREENSHOTS / Screenshot {n} of {count} / {n} of {count} | zrzut(y) ekranu / ZRZUTY EKRANU / Zrzut ekranu {n} z {count} / {n} z {count} |
+| MOD PAGE (the link to the mod's web page) | STRONA MODA (as „strona moda”, WEBSITE = STRONA) |
+| PRESENTATION (the report's group heading) | PREZENTACJA |
+| names (a manifest naming a file) / web address | wskazuje / adres internetowy |
+| weighs / blurred / sharp | waży / rozmyty / ostry |
+| give it more pixels / at best | zwiększ rozdzielczość / najlepiej |
+| frames and seconds from placeholders | „klatki: {frames}, czas: {seconds} s” (count-safe); a count of screenshots: „Zrzuty ekranu w mod.toml: {count}” |

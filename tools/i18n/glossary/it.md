@@ -516,3 +516,27 @@ feminine (COME LA GIOCA). Straight apostrophes, as the validator's other strings
 | patch / the patched engines of later years / engine | patch (la patch, le patch) / i motori con le patch degli anni successivi / motore |
 | weapon ID / unit value (a script's) / cloak (unit value 111) | ID dell'arma (gli ID) / valore di unità / occultamento |
 | sides / campaigns of its own; TA's own computer players | fazioni / campagne proprie della mod; giocatori computer originali di TA |
+
+## A mod's presentation in the launcher (`pages/mods.rs`, `crates/ta_data/src/presentation.rs`)
+
+A mod's banner, gameplay preview, icon, screenshots and links in the MODS library, and the mod
+check's notes on them, under the report's group PRESENTAZIONE. Straight apostrophes, as the
+validator's other strings. `mod.toml`, `media/banner.png` and `{key}` (a manifest key: banner,
+preview, icon, screenshots) stay as they are: "La voce {key} di mod.toml punta a {path}". GIF is
+feminine (una GIF animata).
+
+| English | Italiano |
+|---|---|
+| PRESENTATION (the report's group of notes) | PRESENTAZIONE |
+| banner (the card and the top of the mod's page) | banner (il banner) |
+| gameplay preview (an animated GIF of the mod in play) | anteprima di gioco (as immagini di gioco) |
+| PLAY PREVIEW (the banner's button, with motion reduced) | AVVIA ANTEPRIMA (PLAY is AVVIA, as AVVIA LA CRONACA) |
+| icon (a mod's) | icona |
+| SCREENSHOTS / Screenshot {n} of {count} / {n} of {count} | SCREENSHOT (lo screenshot, gli screenshot) / Screenshot {n} di {count} / {n} di {count} |
+| MOD PAGE (a link to the mod's web page, beside its links) | PAGINA DELLA MOD (PAGINA MOD would read as the launcher's page Mod) |
+| the mod's media folder / a path from the mod's folder | la cartella media della mod / un percorso relativo alla cartella della mod |
+| frames (of a GIF) | fotogrammi |
+| shows blurred / shows sharp | appare sfocato / appare nitido |
+| … at best (the size to aim for) / Give it more pixels | l'ideale è … / Usa più pixel (no gender to agree) |
+| still picture / picture editor | immagine fissa / programma di grafica |
+| link / web address | link (il link) / indirizzo web |

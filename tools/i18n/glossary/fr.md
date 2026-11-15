@@ -565,3 +565,28 @@ spaces, as the report's other strings.
 | patch / the patched engines of later years / engine | correctif / les versions modifiées du moteur des années suivantes / moteur |
 | weapon ID / unit value (a script's) / cloak (unit value 111) | ID d’arme (les ID) / valeur d’unité / camouflage |
 | sides / campaigns of its own; TA's own computer players | camps / campagnes propres au mod; joueurs ordinateur d’origine de TA |
+
+## A mod's presentation in the launcher (`pages/mods.rs`, `crates/ta_data/src/presentation.rs`)
+
+A mod's banner, gameplay preview, icon, screenshots and links in the MODS library, and the mod
+check's notes on them, under the report's group PRÉSENTATION. The notes use curly ’ and no-break
+spaces, as the report's other strings; the mods page's strings keep straight apostrophes, as that
+page's earlier ones (LIRE L'APERÇU, CAPTURES D'ÉCRAN). `mod.toml`, `media/banner.png` and `{key}`
+(a manifest key: banner, preview, icon, screenshots) stay as they are: "L’entrée {key} de mod.toml
+désigne {path}".
+
+| English | Français |
+|---|---|
+| PRESENTATION (the report's group of notes) | PRÉSENTATION |
+| banner (the card and the top of the mod's page) | bannière |
+| gameplay preview (an animated GIF of the mod in play) | aperçu en jeu (as captures en jeu) |
+| PLAY PREVIEW (the banner's button, with motion reduced) | LIRE L'APERÇU (as LIRE LA CHRONIQUE) |
+| icon (a mod's) | icône |
+| SCREENSHOTS / Screenshot {n} of {count} / {n} of {count} | CAPTURES D'ÉCRAN / Capture d'écran {n} sur {count} / {n} sur {count} |
+| MOD PAGE (a link to the mod's web page, beside its links) | PAGE DU MOD |
+| the mod's media folder / a path from the mod's folder | le dossier media du mod / un chemin relatif au dossier du mod |
+| frames (of a GIF) | images |
+| shows blurred / shows sharp | paraît floue / reste nette |
+| … at best (the size to aim for) | … idéalement (au mieux would read as a grudging limit) |
+| still picture / picture editor | image fixe / éditeur d’images |
+| link / web address | lien / adresse web |

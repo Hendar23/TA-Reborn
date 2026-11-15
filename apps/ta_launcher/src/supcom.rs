@@ -427,7 +427,7 @@ fn import(game: &Install, own: &[PathBuf], maps: &[(PathBuf, bool, String)], ta_
         load_after: Vec::new(),
         source: String::new(),
         rename: BTreeMap::new(),
-        replaces: Vec::new(),
+        replaces: Vec::new(), ..Default::default()
     };
     ta_vfs::package::install(&ta_vfs::package::plan(&payload)?, &manifest, &mods_dir)?;
     Ok(outcome)
