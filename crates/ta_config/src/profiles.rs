@@ -1059,9 +1059,20 @@ impl ProfileStore {
                 Err(e) => return Err(e),
             }
         };
-        new_commander_settings(seed, &name).save_to(&dir.join(crate::CONFIG_FILE))?;
-        // (Legacy files go to the device's first profile only: one that cannot be read was it.)
-        let inherited_avatar = if profiles.is_empty() && unreadable.is_empty() { copy_legacy(&self.root, &dir)? } else { false };
+        // (Legacy files go to the device's first profile only: one that cannot be read was it.
+        // The first is the player who played before profiles, so their settings come whole, the
+        // games they joined and the advice they muted too; another commander starts without
+        // the last one's.)
+        let first = profiles.is_empty() && unreadable.is_empty();
+        let settings = if first {
+            let mut settings = seed.clone();
+            settings.gameplay.player_name = name.clone();
+            settings
+        } else {
+            new_commander_settings(seed, &name)
+        };
+        settings.save_to(&dir.join(crate::CONFIG_FILE))?;
+        let inherited_avatar = if first { copy_legacy(&self.root, &dir)? } else { false };
         if let Some(bytes) = &avatar { write_bytes(&dir.join("portrait.png"), bytes)?; }
         let profile = Profile { id, name, allegiance, has_avatar: avatar.is_some() || inherited_avatar, created_at: unix_time(), ..Default::default() };
         // Publish metadata last. Before this point, list() ignores incomplete folders.
@@ -1835,6 +1846,12 @@ mod tests {
         seed.gameplay.join_address = "10.0.0.2:7777".into();
         seed.gameplay.host_title = "Alex's battle".into();
         seed.gameplay.coach_muted = vec!["metal_dry".into()];
+        // The device's first profile is the player who played before profiles: all of it kept.
+        let first = store.create("Alex", Allegiance::Arm, None, &seed).unwrap();
+        let config = Config::try_load_from(&store.config_path(&first.id).unwrap()).unwrap();
+        assert_eq!((config.gameplay.player_name.as_str(), config.gameplay.recent_games.len(), config.gameplay.join_address.as_str()), ("Alex", 1, "10.0.0.2:7777"));
+        assert_eq!((config.gameplay.host_title.as_str(), config.gameplay.coach_muted.len()), ("Alex's battle", 1));
+        // Another commander: the settings, but not the last one's games and advice.
         let p = store.create("Sam", Allegiance::Core, None, &seed).unwrap();
         let config = Config::try_load_from(&store.config_path(&p.id).unwrap()).unwrap();
         assert_eq!((config.audio.music, config.gameplay.host_port, config.gameplay.player_name.as_str()), (0.3, 7000, "Sam"));

@@ -539,7 +539,8 @@ enum Loaded {
     Editing(Key),
     /// Reborn's models made for liveries (`set_skin_for_editing`), for liveries' thumbnails.
     Liveries(String),
-    /// A skin with images of its own, for its thumbnail.
+    /// A skin with images of its own, for its thumbnail: known by its content
+    /// (`thumb_key`), so that one replaced under the same id is uploaded again.
     Thumb(String),
 }
 
@@ -637,7 +638,9 @@ impl State {
         }
         let pack = load_skin(&thumb.skin, &thumb.root)?;
         let source_key = source_key(&thumb.reference);
-        let file = crate::library::cache_file(&thumb.cache, &thumb_key(&source_key, &pack));
+        // (The skin by its content: one replaced under the same id is another.)
+        let content = thumb_key(&source_key, &pack);
+        let file = crate::library::cache_file(&thumb.cache, &content);
         if let Some(cached) = crate::library::read_cached(&file) {
             // (Used: kept the longer.)
             let _ = std::fs::OpenOptions::new().write(true).open(&file).and_then(|written| written.set_modified(SystemTime::now()));
@@ -656,10 +659,10 @@ impl State {
                 self.loaded = Some(Loaded::Liveries(source_key));
             }
             on_device(|| studio.set_livery(pack.manifest.livery.as_ref()))?;
-        } else if self.loaded.as_ref() != Some(&Loaded::Thumb(thumb.skin.clone())) {
+        } else if self.loaded.as_ref() != Some(&Loaded::Thumb(content.clone())) {
             let (models, _, _) = subjects(source, &pack, &examples)?;
             on_device(|| studio.set_skin(&source.gafs, &source.palette, &pack, &models))?;
-            self.loaded = Some(Loaded::Thumb(thumb.skin.clone()));
+            self.loaded = Some(Loaded::Thumb(content));
         }
         let picture = compose(&on_device(|| studio.render(THUMB_YAW, THUMB_SIDE))?);
         crate::library::write_cached(&file, &picture);
