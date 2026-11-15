@@ -50,6 +50,10 @@
   editor, saving a map as a mod again, does the same and keeps the map's other authors.
 
 ### Fixed
+- In the classic camera, what lies on the ground (metal deposits laid as features, scorch marks,
+  painted shadows) was drawn over the lower part of what stood on it: a metal extractor or moho
+  mine built on one of the Supreme Commander maps' deposits showed only its arms, and a tank on a
+  scorch mark sank under it. There, as in TA, the ground and what lies on it are drawn first.
 - Installing a mod failed when its manifest named a file in one of TA's folders in other capitals
   than the disk's (`Fonts/hud.ttf` for `fonts/hud.ttf`), when its content folder was called `Base`
   or `Reborn`, when the package's file name made an id the launcher refuses (longer than 64
