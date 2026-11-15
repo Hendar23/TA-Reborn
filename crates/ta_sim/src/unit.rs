@@ -162,6 +162,9 @@ pub struct Unit {
     /// The last tick one of its own side's builders took work off it, reclaiming it: for a
     /// second after that it is being taken apart (`Sim::being_taken_apart`).
     pub taken_apart_at: Option<u64>,
+    /// The metal its side's reclaiming has taken off it so far, paid when it is gone: TA pays
+    /// reclaiming at the end, not as the work goes. Lost with it if it dies first.
+    pub reclaim_owed: Fx,
     /// The last tick a builder worked on it unfinished (or set it down to build): construction
     /// left with nobody at it un-builds after a while, its metal coming back
     /// (`Sim::decay_abandoned_frames`). None for one nobody has worked on (a scene's or a
@@ -179,6 +182,10 @@ pub struct Unit {
     pub armored: bool,
     pub busy: bool,
     pub fire_state: u8,
+    /// Fires at will on what its side has on radar or sonar as well as on what it sees: guns a
+    /// spotter directs, a scenario's (`radar_guided`: Iron Rain's battery, which a radar post
+    /// spots for). Every other unit's fire at will takes on only what its side sees.
+    pub radar_guided: bool,
     pub move_state: u8,
     pub orders: VecDeque<Order>,
     /// Remaining waypoints (anchor cells) of the current path.
@@ -363,6 +370,7 @@ impl Unit {
             repair_work: 0,
             finished: false,
             taken_apart_at: None,
+            reclaim_owed: Fx::ZERO,
             worked_at: None,
             activated: false,
             upkeep_paid: true,
@@ -371,6 +379,7 @@ impl Unit {
             armored: false,
             busy: false,
             fire_state: 2,
+            radar_guided: false,
             move_state: 1,
             orders: VecDeque::new(),
             path: Vec::new(),
@@ -593,10 +602,18 @@ pub struct Economy {
     pub(crate) energy_demand_next: Fx,
     /// Fraction (0..=1) of requested build resources granted this tick.
     pub build_factor: Fx,
+    /// What was asked for over the last tick, per second, paid or not: builders and stockpiles
+    /// at their full pace, upkeep, cloaking and shots. With a store empty only what comes in is
+    /// paid, so the expense equals the income; the interface shows this as the use instead, by
+    /// how much the asking outruns the income. Nothing in the battle reads it.
+    pub metal_wanted: Fx,
+    pub energy_wanted: Fx,
     pub(crate) tick_metal_in: Fx,
     pub(crate) tick_energy_in: Fx,
     pub(crate) tick_metal_out: Fx,
     pub(crate) tick_energy_out: Fx,
+    pub(crate) tick_metal_wanted: Fx,
+    pub(crate) tick_energy_wanted: Fx,
 }
 
 impl Economy {
@@ -607,6 +624,8 @@ impl Economy {
         let worth = |amount: Fx, work: u64| amount.share(before + work, total) - amount.share(before, total);
         self.metal_demand_next += worth(metal, full);
         self.energy_demand_next += worth(energy, full);
+        self.tick_metal_wanted += worth(metal, full);
+        self.tick_energy_wanted += worth(energy, full);
         let factor = factor.clamp(Fx::ZERO, Fx::ONE);
         let mut work = if factor > Fx::ZERO && full > 0 {
             ((full as u128 * factor.0 as u128) >> crate::fixed::FRAC_BITS).max(1) as u64

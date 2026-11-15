@@ -533,3 +533,79 @@ The chronicle told plainly and a little solemn; each archive document in its own
 | the CORE machine remembering (its sex unknown) | its "I" takes no gendered past tense ("у рідному місті", "Смерть наздоганяла мене", "Я триваю") |
 | mod check labels: feature / faction / wreckage / build option | об'єкт / сторона / уламки / варіант будівництва |
 | empty file (blanks out a file below) | порожній файл (затирає) |
+
+## A mod's presentation in the MODS library (`pages/mods.rs`, `ta_data/src/presentation.rs`)
+
+A mod's banner, gameplay preview, icon, screenshots and links, and the mod check's notes on them
+(the report's group PRESENTATION). Manifest keys (`banner`, `preview`, `icon`, `screenshots`) and
+paths stay as written: "Ключ {key} у mod.toml вказує на {path}"; sizes as "Розмір файлу {path} —
+{size}", "Розміри зображення {path} — {width} × {height}", "Розмір банера — {width} × {height}".
+No "виглядає" (the language file never uses it): "стає розмитим", "буде чітким".
+
+| English | Українська |
+|---|---|
+| banner (the card and the top of the mod's page) | банер (банера) |
+| gameplay preview (an animated GIF of the mod in play) / PLAY PREVIEW | ролик ігрового процесу (as ігровий процес for gameplay) / ДИВИТИСЯ РОЛИК (as WATCH = ДИВИТИСЯ) |
+| icon (a mod's) | значок (as СТРАТЕГІЧНІ ЗНАЧКИ) |
+| screenshot(s) / SCREENSHOTS / Screenshot {n} of {count} / {n} of {count} | знімок, знімки екрана / ЗНІМКИ ЕКРАНА / Знімок екрана {n} з {count} / {n} з {count} |
+| MOD PAGE (the link to the mod's web page) | САЙТ МОДУ (WEBSITE = САЙТ) |
+| PRESENTATION (the report's group heading) | ОФОРМЛЕННЯ |
+| web address | веб-адреса |
+| blurred / sharp | розмитий / чіткий |
+| give it more pixels / at best | збільште роздільність / найкраще |
+| frames and seconds from placeholders | "кадрів: {frames}, {seconds} с"; a count of screenshots: "Знімків екрана в mod.toml: {count}" |
+
+## A mod's interface theme (`pages/mods.rs`, `settings.rs`, `ta_data/src/presentation.rs`)
+
+A mod's `[theme]`: the battle's HUD in colours, pictures and a font of its own, previewed on the
+mod's page and checked under ОФОРМЛЕННЯ. HUD stays HUD, masculine, in the nominative ("HUD
+відображається", "власний HUD TA Reborn"). Manifest keys ({key}: `accent`, `text`,
+`panel_texture`, `font`...) stay as written, anchored by a noun: "Ключ {key} теми", "Значення ключа
+{key}", "Колір {key} теми". The fragments filling {extras} are instrumentals after "HUD
+відображається в цих кольорах, із …" (із: both fragments start with a consonant), joined by a comma
+("власним шрифтом, фоновими зображеннями панелей").
+
+| English | Українська |
+|---|---|
+| theme / INTERFACE THEME (the caption over the preview) | тема (as СЕЗОННА ТЕМА) / ТЕМА ІНТЕРФЕЙСУ |
+| MODS' INTERFACE THEMES (the game's Interface option) | ТЕМИ ІНТЕРФЕЙСУ МОДІВ ("у параметрах гри, категорія «Інтерфейс»", as «Гра») |
+| accent (the theme's main colour) | акцентний колір |
+| font / its own font | шрифт / власним шрифтом |
+| pictures behind its panels (the panels' tiled picture) | фонові зображення панелей |
+| its own metal (the panels' metal, drawn where a picture fails) | власна металева текстура ("HUD малює замість нього власну металеву текстуру"; not "метал": the resource) |
+| a tile (of a picture, repeated across the panels) | плитка ("досить плитки в кілька сотень пікселів") |
+| hexadecimal digits | шістнадцяткові цифри ("по дві на червоний, зелений і синій") |
+| contrast of {ratio}:1 / reads well | контраст {ratio}:1 / добре читається контраст від {least}:1 |
+| a side (in [theme.sides.arm]) | сторона ("стороні {side}", "Сторони гри: {sides}") |
+| TA Reborn's own (colour, font, HUD) | власний колір / шрифт / HUD TA Reborn |
+| search keywords | both колір and кольори (the search matches substrings, and колір is not in кольори) |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | Українська |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | Мод {name} не можна вмикати разом із модом {other}: вимкніть один із них / несумісний з {mods} |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn версії {version} або новішої / у вас {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | ПОТРІБЕН НОВІШИЙ TA REBORN |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / найстаріша версія TA Reborn, у якій працює мод (мод підключається) |
+
+## A mod's mod.toml as read, and the load order in the check (`presentation.rs`, `validation.rs`, `pages/mods.rs`, `mod_order.rs`)
+
+Keys, `[table]`, `[{table}]`, `depends`, `load_after`, `conflicts`, `panel_texture` and file names stay as written; "у mod.toml" after {key}, as before. мод's genitive is моду here (the validator's older lines also have мода).
+
+| English | Українська |
+|---|---|
+| key / value / table (TOML's) | ключ / значення / таблиця ("Ключ {key} у mod.toml", "Значення ключа {key} у mod.toml"); the key's name: назва ключа |
+| a [table] line / below it / at the top of mod.toml | рядок [table] / нижче рядка [table], "тож вважається частиною цієї таблиці" / на початку mod.toml, вище першого рядка [table] |
+| it belongs in [{table}] / move the line | його місце — у таблиці [{table}] / перенесіть рядок із ключем |
+| reads past (a key it does not know) / did you mean | пропускає під час читання / можливо, ви мали на увазі |
+| a key of a later TA Reborn's / a slip of the pen / kept as written | ключ новішої версії TA Reborn / описка / залишається у файлі незмінним |
+| value kinds ({found}, {expected}: nominative, after "—" and "а має бути") | текст у лапках / ціле число / число / true або false (TOML's literals) / дата / список у квадратних дужках / таблиця: "Значення ключа {key} у mod.toml — {found}, а має бути {expected}" |
+| leaves it out (a value of the wrong kind) | не враховує |
+| one text where a list is wanted / a list of that one | задано одним текстом, а потрібен список / список з одного елемента |
+| dependencies in a circle / nest more than 64 deep | залежать один від одного по колу / вкладено глибше ніж на 64 рівні |
+| the mods it needs (the check's fix) / archives it blanks (its replaces) | залежності цього моду / архіви, які він вимикає |
+| STOP PREVIEW (beside ДИВИТИСЯ РОЛИК) / TURN OFF {name} | ЗУПИНИТИ РОЛИК / ВИМКНУТИ {name} (as УВІМКНУТИ {name}) |
+| one frame in {stride} / choppier than it was made | один кадр із {stride} / менш плавно, ніж в оригіналі |
+| plates (the HUD's metal plates) / its plates' picture / the side's own metal plates | панелі / фонове зображення панелей / власні металеві панелі сторони |
+| line spacing / its letters show at {percent}% | міжрядковий інтервал / літери відображаються в масштабі {percent}% ("в {line} раза": раза after a fraction) |

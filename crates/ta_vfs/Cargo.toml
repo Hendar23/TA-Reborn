@@ -13,6 +13,8 @@ thiserror.workspace = true
 log.workspace = true
 serde.workspace = true
 toml.workspace = true
+# A mod.toml rewritten as written (`mods::write_manifest`), and where its keys are (`mods::manifest_notes`).
+toml_edit.workspace = true
 # What saved games and replays keep of a mod: the digest of its files (`mods::content_digest`).
 sha2.workspace = true
 # Heroic's record of its GOG installs (`install::heroic_install_path`), on Linux and macOS.

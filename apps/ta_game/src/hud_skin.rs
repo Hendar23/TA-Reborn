@@ -5,34 +5,114 @@
 //! On them: steel bezels around the pictures, gunmetal buttons, recessed bars. The tiles are
 //! quietened as they are read (see [`quieten`]) and drawn smoothly: as TA drew them, a texel to
 //! a pixel, their palette's dithering is metal's grain; enlarged, it showed as coloured specks.
+//! A mod's interface theme's pictures ([`ThemePictures`]) take the tiles' place: decoded once while
+//! their files do not change, the decoded pictures shared by the battle's HUD and the companion
+//! screen's, each of which keeps its textures of them.
 
-use egui::{Color32, Context, Rect, Shape, Stroke, TextureHandle, TextureOptions, TextureWrapMode, Vec2, pos2, vec2};
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::SystemTime;
+
+use egui::{Color32, ColorImage, Context, Rect, Shape, Stroke, TextureHandle, TextureOptions, TextureWrapMode, Vec2, pos2, vec2};
 use ta_formats::pcx::PcxImage;
 use ta_ui::metal;
+use crate::theme::pal;
 use ta_vfs::Vfs;
 
-/// A side's panel tiles, loaded when the side is first shown.
-#[derive(Default)]
-pub struct Skin {
-    side: String,
-    side_tile: Option<Tile>,
-    top_tile: Option<Tile>,
+/// A mod's interface theme's pictures for the side shown (`mod_theme`): behind the modern HUD's
+/// plates and its top bar, in place of the side's metal. Shared by the HUDs that draw them (the
+/// battle's and the companion screen's): a new one only when they change.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ThemePictures {
+    pub panel: Option<PathBuf>,
+    pub bar: Option<PathBuf>,
 }
 
+/// How many of a theme's pictures are kept made, decoded (shared by the HUDs) and as each HUD's
+/// textures: a theme's own two and its sides' (a spectator switching sides finds them again).
+const PICTURES_KEPT: usize = 8;
+
+/// A side's panel tiles, loaded when the side is first shown (a mod's interface theme's
+/// pictures in their place, where it gives them).
+#[derive(Default)]
+pub struct Skin {
+    /// Whether it has been loaded, for which side (lower case) and pictures.
+    loaded: bool,
+    side: String,
+    theme: Arc<ThemePictures>,
+    side_tile: Option<Tile>,
+    top_tile: Option<Tile>,
+    /// The sides' own tiles as made in this interface, by their path; and the theme's pictures,
+    /// by file and its stamp, the last used first: a side switched to and back to again, a
+    /// spectator's, is not read again.
+    tiles: Vec<(String, Option<Tile>)>,
+    pictures: Vec<(PathBuf, Stamp, Option<Tile>)>,
+}
+
+#[derive(Clone)]
 struct Tile {
     texture: TextureHandle,
     size: Vec2,
 }
 
 impl Skin {
-    /// The tiles of `side` (read again when the side changes).
-    pub fn load(&mut self, ctx: &Context, vfs: &Vfs, side: &str) {
-        let side = side.to_ascii_lowercase();
-        if self.side != side {
-            self.side_tile = tile(ctx, vfs, &format!("bitmaps/{side}guisidetile.pcx"), false);
-            self.top_tile = tile(ctx, vfs, &format!("bitmaps/{side}guitoptile.pcx"), true);
-            self.side = side;
+    /// The tiles of `side` (made again when the side or the pictures change; those made before
+    /// kept): `theme`'s pictures behind the plates and the top bar where a mod's interface theme
+    /// gives them (`mod_theme`), else the side's own.
+    pub fn load(&mut self, ctx: &Context, vfs: &Vfs, side: &str, theme: &Arc<ThemePictures>) {
+        // (Each frame: compared as they are, nothing made unless they changed.)
+        let same_theme = Arc::ptr_eq(&self.theme, theme) || *self.theme == **theme;
+        if self.loaded && same_theme && self.side.eq_ignore_ascii_case(side) {
+            return;
         }
+        self.loaded = true;
+        if theme.panel.is_none() && theme.bar.is_none() {
+            // (No theme: its pictures go.)
+            self.pictures.clear();
+        }
+        let side = side.to_ascii_lowercase();
+        self.side_tile = match theme.panel.as_deref().and_then(|path| self.picture(ctx, path)) {
+            Some(tile) => Some(tile),
+            None => self.own_tile(ctx, vfs, format!("bitmaps/{side}guisidetile.pcx"), false),
+        };
+        self.top_tile = match theme.bar.as_deref().and_then(|path| self.picture(ctx, path)) {
+            Some(tile) => Some(tile),
+            None => self.own_tile(ctx, vfs, format!("bitmaps/{side}guitoptile.pcx"), true),
+        };
+        self.side = side;
+        self.theme = theme.clone();
+    }
+
+    /// One of TA's tile sheets made a tile in this interface ([`tile`]), once.
+    fn own_tile(&mut self, ctx: &Context, vfs: &Vfs, path: String, bevelled: bool) -> Option<Tile> {
+        if let Some((_, made)) = self.tiles.iter().find(|(p, _)| *p == path) {
+            return made.clone();
+        }
+        let made = tile(ctx, vfs, &path, bevelled);
+        self.tiles.push((path, made.clone()));
+        made
+    }
+
+    /// A theme's picture as a texture in this interface: made once while its file does not
+    /// change, from the picture decoded once for every interface ([`decoded`]).
+    fn picture(&mut self, ctx: &Context, path: &Path) -> Option<Tile> {
+        let stamp = stamp(path);
+        if let Some(at) = self.pictures.iter().position(|(p, s, _)| p == path && *s == stamp) {
+            let hit = self.pictures.remove(at);
+            let tile = hit.2.clone();
+            self.pictures.insert(0, hit);
+            return tile;
+        }
+        let tile = decoded(path, stamp).map(|image| {
+            let [w, h] = image.size;
+            let options = TextureOptions { wrap_mode: TextureWrapMode::Repeat, ..TextureOptions::LINEAR };
+            Tile { texture: ctx.load_texture(format!("theme:{}", path.display()), image, options), size: vec2(w as f32, h as f32) }
+        });
+        self.pictures.retain(|(p, _, _)| p != path);
+        self.pictures.insert(0, (path.to_path_buf(), stamp, tile.clone()));
+        self.pictures.truncate(PICTURES_KEPT);
+        tile
     }
 
     /// One of the command deck's plates over `rect`: TA's metal, lit along its top and left
@@ -78,8 +158,57 @@ fn tiled(ctx: &Context, tile: Option<&Tile>, rect: Rect, repeat_down: bool) -> S
             let uv = Rect::from_min_max(pos2(rect.min.x / t.size.x, v0), pos2(rect.max.x / t.size.x, v1));
             Shape::image(t.texture.id(), rect, uv, Color32::WHITE)
         }
-        None => metal::plate(ctx, rect, crate::theme::PANEL),
+        None => metal::plate(ctx, rect, pal().panel),
     }
+}
+
+/// A file's stamp, when it was last written and its length: a picture changed on disk (a modder
+/// at work on it) is read again.
+type Stamp = Option<(SystemTime, u64)>;
+
+fn stamp(path: &Path) -> Stamp {
+    std::fs::metadata(path).ok().map(|m| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len()))
+}
+
+/// The theme's pictures decoded, by file and its stamp (none: it does not read), the last used
+/// first.
+type Decoded = Vec<(PathBuf, Stamp, Option<Arc<ColorImage>>)>;
+
+thread_local! {
+    /// Shared by the interfaces that draw them, the battle's HUD and the companion screen's (both
+    /// drawn on the thread that runs the windows).
+    static DECODED: RefCell<Decoded> = const { RefCell::new(Vec::new()) };
+}
+
+/// A theme's picture (a PNG or a JPEG of at most 16 MB and 2048 pixels a side) as it is, decoded
+/// once while its file does not change: none where it does not read.
+fn decoded(path: &Path, stamp: Stamp) -> Option<Arc<ColorImage>> {
+    DECODED.with_borrow_mut(|decoded| {
+        if let Some(at) = decoded.iter().position(|(p, s, _)| p == path && *s == stamp) {
+            let hit = decoded.remove(at);
+            let image = hit.2.clone();
+            decoded.insert(0, hit);
+            return image;
+        }
+        // (As the mod check reads it: a picture it passes is one drawn here.)
+        let image = match ta_data::presentation::read_theme_picture(path) {
+            Ok(picture) => Some(Arc::new(ColorImage::from_rgba_unmultiplied([picture.width() as usize, picture.height() as usize], picture.as_raw()))),
+            Err(error) => {
+                log::warn!("the interface theme's picture {}: {error}", path.display());
+                None
+            }
+        };
+        decoded.retain(|(p, _, _)| p != path);
+        decoded.insert(0, (path.to_path_buf(), stamp, image.clone()));
+        decoded.truncate(PICTURES_KEPT);
+        image
+    })
+}
+
+/// The theme's pictures decoded go (no theme is drawn now: off the battlefield); each HUD's
+/// textures go as it is next given no theme.
+pub fn forget_theme_pictures() {
+    DECODED.with_borrow_mut(Vec::clear);
 }
 
 /// The tile on one of TA's tile sheets: the pixels that are not the sheet's backdrop colour
@@ -178,7 +307,7 @@ pub fn bezel(rect: Rect, width: f32, rivets: bool) -> Shape {
 /// A recessed bar filled to `fraction` in `color` (lighter above, darker below), with a
 /// tick every `ticks`-th of it.
 pub fn gauge(rect: Rect, fraction: f32, color: Color32, ticks: u32) -> Shape {
-    let mut shapes = vec![metal::well(rect, crate::theme::INSET)];
+    let mut shapes = vec![metal::well(rect, pal().inset)];
     let fill = Rect::from_min_size(rect.min, vec2(rect.width() * fraction.clamp(0.0, 1.0), rect.height())).shrink(2.0);
     if fill.width() > 0.0 {
         shapes.push(metal::vgrad(fill, color.lerp_to_gamma(Color32::WHITE, 0.25), color.lerp_to_gamma(Color32::BLACK, 0.35)));
@@ -191,13 +320,14 @@ pub fn gauge(rect: Rect, fraction: f32, color: Color32, ticks: u32) -> Shape {
     Shape::Vec(shapes)
 }
 
-/// The colour of a health bar at `fraction`: TA's green, through yellow, to red.
+/// The colour of a health bar at `fraction`: TA's green, through yellow, to red (a theme's `good`
+/// and `bad` at its ends; the yellow between them stays, as caution reads in any theme).
 pub fn health_color(fraction: f32) -> Color32 {
     let f = fraction.clamp(0.0, 1.0);
     if f > 0.5 {
-        Color32::from_rgb(214, 196, 60).lerp_to_gamma(crate::theme::GREEN, (f - 0.5) * 2.0)
+        Color32::from_rgb(214, 196, 60).lerp_to_gamma(pal().good, (f - 0.5) * 2.0)
     } else {
-        crate::theme::RED.lerp_to_gamma(Color32::from_rgb(214, 196, 60), f * 2.0)
+        pal().bad.lerp_to_gamma(Color32::from_rgb(214, 196, 60), f * 2.0)
     }
 }
 
@@ -241,9 +371,98 @@ mod tests {
 
     #[test]
     fn health_runs_green_to_red() {
-        assert_eq!(health_color(1.0), crate::theme::GREEN);
-        assert_eq!(health_color(0.0), crate::theme::RED);
+        assert_eq!(health_color(1.0), pal().good);
+        assert_eq!(health_color(0.0), pal().bad);
         let half = health_color(0.5);
         assert!(half.r() > 150 && half.g() > 150, "yellow halfway: {half:?}");
+    }
+
+    /// A folder of the test's own for pictures.
+    fn folder(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ta_hud_skin_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn picture(path: &Path, size: u32) {
+        image::RgbaImage::from_pixel(size, size, image::Rgba([40, 60, 90, 255])).save(path).unwrap();
+    }
+
+    /// What a context's textures did handed to no renderer (a test's), none left pending.
+    fn settle(ctx: &Context) {
+        let mut output = ctx.run_ui(Default::default(), |_| {});
+        output.textures_delta.clear();
+    }
+
+    /// The texture a skin draws its plates with.
+    fn plates(skin: &Skin) -> Option<egui::TextureId> {
+        skin.side_tile.as_ref().map(|t| t.texture.id())
+    }
+
+    /// A theme's picture is decoded once while its file does not change, the decoded picture
+    /// shared by the interfaces that draw it (the battle's HUD and the companion screen's), each of
+    /// which makes its texture once: switching sides and back (a spectator) reads nothing again. A
+    /// picture changed on disk is read again; and without a theme, the pictures go.
+    #[test]
+    fn a_themes_pictures_are_read_once_and_shared() {
+        let dir = folder("pictures");
+        let (arm, core) = (dir.join("arm.png"), dir.join("core.png"));
+        picture(&arm, 16);
+        picture(&core, 16);
+        let vfs = Vfs::new();
+        let (battle, companion) = (Context::default(), Context::default());
+        let theme_of = |path: &Path| Arc::new(ThemePictures { panel: Some(path.to_path_buf()), bar: None });
+        let (arm_theme, core_theme) = (theme_of(&arm), theme_of(&core));
+        let mut skin = Skin::default();
+        skin.load(&battle, &vfs, "ARM", &arm_theme);
+        let first = plates(&skin).expect("the theme's picture behind the plates");
+        let decoded_once = decoded(&arm, stamp(&arm)).unwrap();
+        // The same side and pictures, frame after frame (any case): nothing made again.
+        skin.load(&battle, &vfs, "arm", &Arc::new((*arm_theme).clone()));
+        assert_eq!(plates(&skin), Some(first));
+        // Another side's picture, and back: the first texture again.
+        skin.load(&battle, &vfs, "CORE", &core_theme);
+        assert_ne!(plates(&skin), Some(first));
+        skin.load(&battle, &vfs, "ARM", &arm_theme);
+        assert_eq!(plates(&skin), Some(first), "its texture kept");
+        // The companion's HUD: a texture of its own, of the same decoded picture.
+        let mut other = Skin::default();
+        other.load(&companion, &vfs, "ARM", &arm_theme);
+        assert!(plates(&other).is_some());
+        assert!(Arc::ptr_eq(&decoded_once, &decoded(&arm, stamp(&arm)).unwrap()), "decoded once for both");
+        // Changed on disk: read again, at its new size.
+        picture(&arm, 32);
+        skin.load(&battle, &vfs, "CORE", &core_theme);
+        skin.load(&battle, &vfs, "ARM", &arm_theme);
+        assert_ne!(plates(&skin), Some(first));
+        assert_eq!(skin.side_tile.as_ref().map(|t| t.size), Some(vec2(32.0, 32.0)));
+        // Off the battlefield: they go.
+        forget_theme_pictures();
+        assert!(DECODED.with_borrow(Vec::is_empty));
+        skin.load(&battle, &vfs, "ARM", &Arc::default());
+        assert!(skin.pictures.is_empty() && plates(&skin).is_none(), "no theme, no side tiles: TA Reborn's plate");
+        drop((skin, other));
+        settle(&battle);
+        settle(&companion);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A picture that does not read is drawn as no picture (the side's metal), and not read again
+    /// frame after frame.
+    #[test]
+    fn a_picture_that_does_not_read_is_left_out_once() {
+        let dir = folder("broken");
+        let broken = dir.join("broken.png");
+        std::fs::write(&broken, b"not a picture").unwrap();
+        let ctx = Context::default();
+        let mut skin = Skin::default();
+        skin.load(&ctx, &Vfs::new(), "arm", &Arc::new(ThemePictures { panel: Some(broken.clone()), bar: None }));
+        assert!(skin.side_tile.is_none());
+        assert_eq!(skin.pictures.len(), 1, "kept as none");
+        assert!(DECODED.with_borrow(|d| d.iter().any(|(p, _, image)| *p == broken && image.is_none())));
+        drop(skin);
+        settle(&ctx);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

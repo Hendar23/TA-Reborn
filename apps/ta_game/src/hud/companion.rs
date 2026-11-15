@@ -19,7 +19,7 @@ use ta_ui::metal;
 use ta_vfs::Vfs;
 
 use super::deck::{force_list, section};
-use super::{ACCENT, Hud};
+use super::{Hud};
 use crate::game::Game;
 use crate::minimap::Minimap;
 use crate::theme::*;
@@ -46,8 +46,8 @@ impl Hud {
             waiting_card(ui, screen, key);
             return;
         }
-        let side = game.sim.players.get(game.hud_player() as usize).map_or_else(String::new, |p| p.side.clone());
-        self.skin.load(&ctx, vfs, &side);
+        let side = game.sim.players.get(game.hud_player() as usize).map_or("", |p| p.side.as_str());
+        self.skin.load(&ctx, vfs, side, &self.theme_pictures);
         self.trend.sample(game);
         let header = Rect::from_min_size(screen.min + vec2(MARGIN, MARGIN), vec2(screen.width() - 2.0 * MARGIN, HEADER));
         self.companion_plate(ui, header, false, |hud, ui| hud.companion_close |= header_line(ui, game));
@@ -74,7 +74,7 @@ impl Hud {
             let mut inner = ui.new_child(UiBuilder::new().max_rect(Rect::from_min_size(room.min, vec2(room.width(), room.height() - legend))));
             let drawn = minimap.draw(&mut inner, game, camera, room.width(), room.height() - legend);
             ui.painter().add(crate::hud_skin::bezel(drawn, 4.0, true));
-            ui.painter().text(pos2(room.center().x, room.bottom() - 2.0), Align2::CENTER_BOTTOM, t("Click: look · Right-click: send the selection · Alt+click: ping"), body(11.5), STEEL);
+            ui.painter().text(pos2(room.center().x, room.bottom() - 2.0), Align2::CENTER_BOTTOM, t("Click: look · Right-click: send the selection · Alt+click: ping"), body(11.5), pal().steel);
         });
         let watching = game.spectator || game.playback.is_some();
         // The columns of plates: (what, its share of its column's height).
@@ -145,8 +145,8 @@ impl Hud {
             let time = ctx.input(|i| i.time);
             let width = (ui.available_width() - 190.0).clamp(60.0, 260.0);
             ui.spacing_mut().item_spacing.y = 4.0;
-            super::resource_bar(ui, n("METAL"), super::Store::of(e.metal, e.metal_capacity, e.metal_income, e.metal_expense, rationed), super::METAL, width, time, false);
-            super::resource_bar(ui, n("ENERGY"), super::Store::of(e.energy, e.energy_capacity, e.energy_income, e.energy_expense, rationed), super::ENERGY, width, time, false);
+            super::resource_bar(ui, n("METAL"), super::Store::of(e.metal, e.metal_capacity, e.metal_income, e.metal_expense, e.metal_wanted, rationed), pal().metal_bar, width, time, false);
+            super::resource_bar(ui, n("ENERGY"), super::Store::of(e.energy, e.energy_capacity, e.energy_income, e.energy_expense, e.energy_wanted, rationed), pal().energy_bar, width, time, false);
             ui.add_space(6.0);
         }
         self.economy_charts(ui, &ctx, vfs, game, 96.0);
@@ -172,19 +172,19 @@ impl Hud {
             p.rect_filled(rect, 3.0, Color32::from_black_alpha(70));
             p.rect_filled(Rect::from_min_size(rect.min + vec2(0.0, 4.0), vec2(4.0, card - 8.0)), 1.5, s.colour);
             let top = rect.top() + 13.0;
-            let name_colour = if s.defeated { STEEL_DIM } else { super::cast::readable(s.colour) };
+            let name_colour = if s.defeated { pal().steel_dim } else { super::cast::readable(s.colour) };
             let name = p.layout_no_wrap(s.name.clone(), strong(13.5), name_colour);
             let name_width = name.size().x;
             p.galley(pos2(rect.left() + 12.0, top - name.size().y / 2.0), name, Color32::WHITE);
-            p.text(pos2(rect.left() + 18.0 + name_width, top + 1.0), Align2::LEFT_CENTER, &s.side, strong(10.0), STEEL);
-            p.text(pos2(rect.right() - 8.0, top), Align2::RIGHT_CENTER, grouped(s.army), strong(13.0), TEXT_BRIGHT);
+            p.text(pos2(rect.left() + 18.0 + name_width, top + 1.0), Align2::LEFT_CENTER, &s.side, strong(10.0), pal().steel);
+            p.text(pos2(rect.right() - 8.0, top), Align2::RIGHT_CENTER, grouped(s.army), strong(13.0), pal().text_bright);
             // The army's worth against the largest, under the name.
             let bar = Rect::from_min_max(pos2(rect.left() + 12.0, top + 9.0), pos2(rect.right() - 8.0, top + 12.0));
-            p.rect_filled(bar, 1.0, INSET);
+            p.rect_filled(bar, 1.0, pal().inset);
             p.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * (s.army / most).clamp(0.0, 1.0), bar.height())), 1.0, s.colour);
             let line = rect.bottom() - 11.0;
             let mut x = rect.left() + 12.0;
-            for (text, colour) in [(format!("+{:.1}", s.metal), super::METAL), (format!("+{:.0}", s.energy), super::ENERGY), (tf("{count} units", &[("count", &s.units)]), TEXT), (tf("{count} kills", &[("count", &s.kills)]), AMBER)] {
+            for (text, colour) in [(format!("+{:.1}", s.metal), pal().metal_bar), (format!("+{:.0}", s.energy), pal().energy_bar), (tf("{count} units", &[("count", &s.units)]), pal().text), (tf("{count} kills", &[("count", &s.kills)]), pal().accent)] {
                 let g = p.layout_no_wrap(text, strong(11.0), colour);
                 let w = g.size().x;
                 p.galley(pos2(x, line - g.size().y / 2.0), g, colour);
@@ -199,15 +199,15 @@ impl Hud {
                 match pic {
                     Some(pic) => pic.paint(p, r, Color32::WHITE),
                     None => {
-                        p.rect_filled(r, 2.0, INSET);
+                        p.rect_filled(r, 2.0, pal().inset);
                     }
                 }
-                p.rect_filled(Rect::from_min_size(pos2(r.left(), r.bottom() - 2.0), vec2(r.width() * done, 2.0)), 0.0, GREEN);
+                p.rect_filled(Rect::from_min_size(pos2(r.left(), r.bottom() - 2.0), vec2(r.width() * done, 2.0)), 0.0, pal().good);
                 px -= 21.0;
             }
         }
         if playing.len() > fit {
-            ui.label(RichText::new(tf("{count} more", &[("count", &(playing.len() - fit))])).font(body(11.5)).color(STEEL));
+            ui.label(RichText::new(tf("{count} more", &[("count", &(playing.len() - fit))])).font(body(11.5)).color(pal().steel));
         }
     }
 
@@ -242,7 +242,7 @@ impl Hud {
         let footer = 30.0;
         let fit = (((ui.available_height() - footer) / (ROW + 3.0)).floor().max(0.0)) as usize;
         if rows.is_empty() {
-            ui.label(RichText::new(t("No factories.")).font(body(12.5)).color(STEEL_DIM));
+            ui.label(RichText::new(t("No factories.")).font(body(12.5)).color(pal().steel_dim));
         }
         ui.spacing_mut().item_spacing.y = 3.0;
         let width = ui.available_width();
@@ -257,27 +257,27 @@ impl Hud {
             match factory {
                 Some(pic) => pic.paint(p, tile, Color32::WHITE),
                 None => {
-                    p.rect_filled(tile, 2.0, INSET);
+                    p.rect_filled(tile, 2.0, pal().inset);
                 }
             }
             let name = crate::chat::unit_label(&game.sim, row.kind);
-            let name = p.layout(name, strong(12.0), TEXT, (rect.width() * 0.45).max(40.0));
-            p.galley(pos2(tile.right() + 8.0, rect.center().y - name.size().y / 2.0), name, TEXT);
+            let name = p.layout(name, strong(12.0), pal().text, (rect.width() * 0.45).max(40.0));
+            p.galley(pos2(tile.right() + 8.0, rect.center().y - name.size().y / 2.0), name, pal().text);
             match row.making {
                 Some((_, done)) => {
                     let bar = Rect::from_min_size(pos2(rect.right() - 92.0, rect.center().y + 5.0), vec2(56.0, 4.0));
-                    p.add(metal::well(bar.expand(1.0), INSET));
-                    p.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * done, bar.height())), 1.0, GREEN);
+                    p.add(metal::well(bar.expand(1.0), pal().inset));
+                    p.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * done, bar.height())), 1.0, pal().good);
                     let tile = Rect::from_min_size(pos2(rect.right() - 92.0 + 17.0, rect.top() + 2.0), vec2(20.0, 16.0));
                     if let Some(pic) = making {
                         pic.paint(p, Rect::from_center_size(tile.center(), vec2(18.0, 18.0)), Color32::WHITE);
                     }
                     if row.queued > 1 {
-                        p.text(pos2(rect.right() - 6.0, rect.center().y), Align2::RIGHT_CENTER, format!("×{}", row.queued), strong(12.0), STEEL);
+                        p.text(pos2(rect.right() - 6.0, rect.center().y), Align2::RIGHT_CENTER, format!("×{}", row.queued), strong(12.0), pal().steel);
                     }
                 }
                 None => {
-                    p.text(pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, t("Idle"), strong(12.0), AMBER_BRIGHT);
+                    p.text(pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, t("Idle"), strong(12.0), pal().accent_bright);
                 }
             }
             if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -285,7 +285,7 @@ impl Hud {
             }
         }
         if rows.len() > shown {
-            ui.label(RichText::new(tf("{count} more", &[("count", &(rows.len() - shown))])).font(body(11.5)).color(STEEL));
+            ui.label(RichText::new(tf("{count} more", &[("count", &(rows.len() - shown))])).font(body(11.5)).color(pal().steel));
         }
         // The idle constructors: a click on the line selects the next one.
         let left = ui.available_height();
@@ -295,11 +295,11 @@ impl Hud {
         let some = idle_builders > 0;
         let (rect, response) = ui.allocate_exact_size(vec2(width, 26.0), if some { Sense::click() } else { Sense::hover() });
         let p = ui.painter();
-        p.rect_filled(rect, 3.0, if some && response.hovered() { Color32::from_rgb(70, 52, 30) } else { Color32::from_black_alpha(60) });
+        p.rect_filled(rect, 3.0, if some && response.hovered() { lit_brass(Color32::from_rgb(70, 52, 30)) } else { Color32::from_black_alpha(60) });
         if some {
-            p.rect_stroke(rect, 3.0, Stroke::new(1.0, AMBER.gamma_multiply(0.5)), StrokeKind::Inside);
+            p.rect_stroke(rect, 3.0, Stroke::new(1.0, pal().accent.gamma_multiply(0.5)), StrokeKind::Inside);
         }
-        let colour = if some { AMBER_BRIGHT } else { STEEL };
+        let colour = if some { pal().accent_bright } else { pal().steel };
         p.text(pos2(rect.left() + 8.0, rect.center().y), Align2::LEFT_CENTER, tf("Idle constructors: {count}", &[("count", &idle_builders)]), strong(12.0), colour);
         if some {
             let tip = pos2(rect.right() - 12.0, rect.center().y);
@@ -335,22 +335,22 @@ fn header_line(ui: &mut egui::Ui, game: &Game) -> bool {
     let rect = Rect::from_min_max(whole.min, pos2(close.left() - 16.0, whole.max.y));
     let p = ui.painter();
     let mid = rect.center().y;
-    p.text(pos2(rect.left(), mid - 7.0), Align2::LEFT_CENTER, t("COMPANION SCREEN"), strong(10.5), ACCENT);
-    p.text(pos2(rect.left(), mid + 8.0), Align2::LEFT_CENTER, &game.setup.map, strong(15.0), TEXT_BRIGHT);
+    p.text(pos2(rect.left(), mid - 7.0), Align2::LEFT_CENTER, t("COMPANION SCREEN"), strong(10.5), pal().accent);
+    p.text(pos2(rect.left(), mid + 8.0), Align2::LEFT_CENTER, &game.setup.map, strong(15.0), pal().text_bright);
     let s = game.sim.tick / 30;
     let clock = if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{:02}:{:02}", s / 60, s % 60) };
     // (The clock in the middle of the whole header.)
-    p.text(pos2(whole.center().x, mid), Align2::CENTER_CENTER, clock, display(22.0), TEXT_BRIGHT);
+    p.text(pos2(whole.center().x, mid), Align2::CENTER_CENTER, clock, display(22.0), pal().text_bright);
     let pace = if game.paused { t("PAUSED").to_string() } else if (game.speed - 1.0).abs() > 0.01 { format!("{:.2}×", game.speed).replace(".00", "") } else { String::new() };
     if !pace.is_empty() {
-        p.text(pos2(whole.center().x + 52.0, mid), Align2::LEFT_CENTER, pace, strong(12.0), if game.paused { AMBER_BRIGHT } else { STEEL });
+        p.text(pos2(whole.center().x + 52.0, mid), Align2::LEFT_CENTER, pace, strong(12.0), if game.paused { pal().accent_bright } else { pal().steel });
     }
     // Whose battle: their colour, name and side.
     let player = game.hud_player();
     if let Some(pl) = game.sim.players.get(player as usize) {
         let colour = crate::palette::team_color(pl.color);
         let name = p.layout_no_wrap(game.player_label(player), strong(14.0), colour.lerp_to_gamma(Color32::WHITE, 0.35));
-        let side = p.layout_no_wrap(pl.side.to_uppercase(), strong(10.5), STEEL);
+        let side = p.layout_no_wrap(pl.side.to_uppercase(), strong(10.5), pal().steel);
         let right = rect.right();
         let side_x = right - side.size().x;
         let name_x = side_x - 6.0 - name.size().x;
@@ -367,7 +367,7 @@ fn events(ui: &mut egui::Ui, game: &mut Game) {
     let fit = ((ui.available_height() / (EVENT_ROW + 2.0)).floor().max(1.0)) as usize;
     let entries: Vec<(u64, String, u32)> = game.event_history.entries().rev().take(fit).map(|e| (e.tick, e.text.clone(), e.repeats)).collect();
     if entries.is_empty() {
-        ui.label(RichText::new(t("Nothing yet.")).font(body(12.5)).color(STEEL_DIM));
+        ui.label(RichText::new(t("Nothing yet.")).font(body(12.5)).color(pal().steel_dim));
         return;
     }
     let now = game.sim.tick;
@@ -380,26 +380,31 @@ fn events(ui: &mut egui::Ui, game: &mut Game) {
         let fresh = now.saturating_sub(tick) < 30 * 10;
         let p = ui.painter();
         let s = tick / 30;
-        p.text(pos2(rect.left(), rect.center().y), Align2::LEFT_CENTER, format!("{:02}:{:02}", s / 60, s % 60), strong(11.0), if fresh { AMBER_BRIGHT } else { STEEL });
+        p.text(pos2(rect.left(), rect.center().y), Align2::LEFT_CENTER, format!("{:02}:{:02}", s / 60, s % 60), strong(11.0), if fresh { pal().accent_bright } else { pal().steel });
         let look = 44.0;
         let text = if repeats > 1 { format!("{text} ×{repeats}") } else { text };
         let room = rect.width() - 46.0 - if at.is_some() { look + 6.0 } else { 0.0 };
-        let galley = p.layout(text, body(12.0), if fresh { TEXT_BRIGHT } else { TEXT }, room.max(40.0));
+        let galley = p.layout(text, body(12.0), if fresh { pal().text_bright } else { pal().text }, room.max(40.0));
         // (One line: a longer one is cut short.)
         let clip = Rect::from_min_max(pos2(rect.left() + 44.0, rect.top()), pos2(rect.left() + 44.0 + room, rect.bottom()));
-        p.with_clip_rect(clip).galley(pos2(clip.left(), rect.center().y - galley.rows.first().map_or(galley.size().y, |r| r.height()) / 2.0), galley, TEXT);
+        p.with_clip_rect(clip).galley(pos2(clip.left(), rect.center().y - galley.rows.first().map_or(galley.size().y, |r| r.height()) / 2.0), galley, pal().text);
         if let Some(pos) = at {
             let button = Rect::from_min_size(pos2(rect.right() - look, rect.top() + 2.0), vec2(look, EVENT_ROW - 4.0));
             let response = ui.interact(button, ui.id().with(("look", tick)), Sense::click());
             let p = ui.painter();
-            p.rect_filled(button, 2.0, if response.hovered() { Color32::from_rgb(70, 52, 30) } else { Color32::from_rgb(48, 38, 24) });
-            p.rect_stroke(button, 2.0, Stroke::new(1.0, AMBER.gamma_multiply(0.6)), StrokeKind::Inside);
-            p.text(button.center(), Align2::CENTER_CENTER, t("LOOK"), strong(10.5), AMBER_BRIGHT);
+            p.rect_filled(button, 2.0, lit_brass(if response.hovered() { Color32::from_rgb(70, 52, 30) } else { Color32::from_rgb(48, 38, 24) }));
+            p.rect_stroke(button, 2.0, Stroke::new(1.0, pal().accent.gamma_multiply(0.6)), StrokeKind::Inside);
+            p.text(button.center(), Align2::CENTER_CENTER, t("LOOK"), strong(10.5), pal().accent_bright);
             if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 game.focus_request = Some(pos);
             }
         }
     }
+}
+
+/// A button's dark brass (TA Reborn's), as a theme moved the accent's darkest shade.
+fn lit_brass(colour: Color32) -> Color32 {
+    retinted(colour, AMBER_DEEP, pal().accent_deep)
 }
 
 /// Outside a battle: the emblem, the screen's name, and what will be there.
@@ -418,9 +423,9 @@ fn waiting_card(ui: &mut egui::Ui, screen: Rect, key: &str) {
     p.image(emblem.id(), Rect::from_center_size(pos2(mid.x, band.top() - 62.0), vec2(96.0, 96.0)), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     p.rect_filled(band, 0.0, Color32::from_rgb(18, 19, 20));
     for y in [band.top(), band.bottom()] {
-        p.hline((mid.x - 260.0)..=(mid.x + 260.0), y, Stroke::new(1.0, AMBER.gamma_multiply(0.5)));
+        p.hline((mid.x - 260.0)..=(mid.x + 260.0), y, Stroke::new(1.0, pal().accent.gamma_multiply(0.5)));
     }
-    p.text(pos2(mid.x, mid.y - 34.0), Align2::CENTER_CENTER, t("COMPANION SCREEN"), display(30.0), AMBER);
-    p.text(pos2(mid.x, mid.y + 10.0), Align2::CENTER_CENTER, t("The battle's map and intel appear here when a battle begins"), body(15.0), TEXT);
-    p.text(pos2(mid.x, mid.y + 40.0), Align2::CENTER_CENTER, tf("{key} opens and closes this screen", &[("key", &key)]), body(13.0), STEEL);
+    p.text(pos2(mid.x, mid.y - 34.0), Align2::CENTER_CENTER, t("COMPANION SCREEN"), display(30.0), pal().accent);
+    p.text(pos2(mid.x, mid.y + 10.0), Align2::CENTER_CENTER, t("The battle's map and intel appear here when a battle begins"), body(15.0), pal().text);
+    p.text(pos2(mid.x, mid.y + 40.0), Align2::CENTER_CENTER, tf("{key} opens and closes this screen", &[("key", &key)]), body(13.0), pal().steel);
 }

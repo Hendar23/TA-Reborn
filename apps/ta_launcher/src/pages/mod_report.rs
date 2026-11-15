@@ -46,15 +46,16 @@ enum ReportTab { Overview, Findings, Review }
 
 /// What the findings concern, in the order the report lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum Group { Check, Packaging, Files, Units, Weapons, Features, Maps, Scripts, Models, Animations, Sounds, Menus, Other }
+enum Group { Check, Packaging, Files, Units, Weapons, Features, Maps, Scripts, Models, Animations, Sounds, Menus, Presentation, Other }
 
 impl Group {
     fn of(issue: &Issue) -> Group {
         let code = issue.code.as_str();
-        if code.starts_with("validation.") || matches!(code, "DEPENDENCY" | "MANIFEST_CHANGED" | "BASE_MISSING" | "SOURCE_UNREADABLE" | "BASE_MOUNT" | "BUILTIN_MOUNT" | "MOD_MOUNT") {
+        if code.starts_with("validation.") || code.starts_with("DEPENDENCY") || matches!(code, "MANIFEST_CHANGED" | "BASE_MISSING" | "SOURCE_UNREADABLE" | "BASE_MOUNT" | "BUILTIN_MOUNT" | "MOD_MOUNT") {
             return Group::Check;
         }
-        if code.starts_with("packaging.") { return Group::Packaging; }
+        if code.starts_with("packaging.") || code.starts_with("manifest.") { return Group::Packaging; }
+        if code.starts_with("presentation.") || code.starts_with("theme.") { return Group::Presentation; }
         if code == "ARCHIVE_UNREADABLE" { return Group::Files; }
         if code.starts_with("render.sprite") { return Group::Animations; }
         if code.starts_with("render.texture") { return Group::Models; }
@@ -92,6 +93,7 @@ impl Group {
             Group::Animations => n("ANIMATIONS & EFFECTS"),
             Group::Sounds => n("SOUNDS"),
             Group::Menus => n("MENUS & SIDES"),
+            Group::Presentation => n("PRESENTATION"),
             Group::Other => n("OTHER"),
         }
     }

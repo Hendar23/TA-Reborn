@@ -1034,6 +1034,91 @@ fn ground_weapon_acquires_landed_aircraft_and_releases_on_takeoff() {
 }
 
 #[test]
+fn fire_at_will_takes_on_only_what_its_side_sees_and_a_radar_contact_by_order() {
+    let data = data_of(&[
+        unit("GUN", "Weapon1=GUN; SightDistance=100; RadarDistance=600;"),
+        unit("TARGET", "MaxDamage=100000;"),
+        unit("SPOTTER", "CanMove=1; MaxVelocity=10; Acceleration=10; BrakeRate=10; TurnRate=5000; SightDistance=200;"),
+        weapon_file("GUN", ""),
+    ]);
+    let mut sim = sim_of(data, 2);
+    let gun = sim.spawn_unit(sim.types.id("GUN").unwrap(), 0, FxVec3::from_ints(300, 0, 300), 0, true).unwrap();
+    // 250 px off: in the gun's reach (400) and its radar's, out of its sight (100).
+    let target = sim.spawn_unit(sim.types.id("TARGET").unwrap(), 1, FxVec3::from_ints(550, 0, 300), 0, true).unwrap();
+    sim.step(&[]);
+    assert_eq!(sim.seen_by(sim.unit(target).unwrap(), 0), Seen::Radar);
+    let fired = |sim: &mut Sim| sim.take_events().iter().any(|e| matches!(e, SimEvent::WeaponFired { unit, .. } if *unit == gun));
+    for _ in 0..30 { sim.step(&[]); }
+    assert!(!fired(&mut sim) && sim.unit(gun).unwrap().weapons[0].target.is_none(), "a radar contact in the fog is not fired on at will");
+    // A spotter of ours in sight of it (out of the line of fire): fired on at will.
+    let spotter = sim.spawn_unit(sim.types.id("SPOTTER").unwrap(), 0, FxVec3::from_ints(550, 0, 430), 0, true).unwrap();
+    for _ in 0..30 { sim.step(&[]); }
+    assert_eq!(sim.seen_by(sim.unit(target).unwrap(), 0), Seen::Visible);
+    assert!(fired(&mut sim), "seen by its side, it is fired on at will");
+    // The spotter gone: a radar contact again, let go.
+    sim.step(&[Command::Order { player: 0, units: vec![spotter], order: Order::Move(FxVec3::from_ints(550, 0, 900)), queue: false }]);
+    for _ in 0..150 { sim.step(&[]); }
+    assert_eq!(sim.seen_by(sim.unit(target).unwrap(), 0), Seen::Radar);
+    sim.take_events();
+    for _ in 0..30 { sim.step(&[]); }
+    assert!(!fired(&mut sim) && sim.unit(gun).unwrap().weapons[0].target.is_none(), "out of sight again, let go");
+    // An order fires on the radar contact.
+    sim.step(&[Command::Order { player: 0, units: vec![gun], order: Order::Attack(Target::Unit(target)), queue: false }]);
+    for _ in 0..30 { sim.step(&[]); }
+    assert!(fired(&mut sim), "an attack order fires on a radar contact");
+}
+
+#[test]
+fn a_spotters_guns_fire_at_will_on_what_radar_shows() {
+    let data = data_of(&[
+        unit("GUN", "Weapon1=GUN; SightDistance=100; RadarDistance=600;"),
+        unit("TARGET", "MaxDamage=100000;"),
+        weapon_file("GUN", ""),
+    ]);
+    let mut sim = sim_of(data, 2);
+    let gun = sim.spawn_unit(sim.types.id("GUN").unwrap(), 0, FxVec3::from_ints(300, 0, 300), 0, true).unwrap();
+    let target = sim.spawn_unit(sim.types.id("TARGET").unwrap(), 1, FxVec3::from_ints(550, 0, 300), 0, true).unwrap();
+    sim.set_radar_guided(gun, true);
+    sim.step(&[]);
+    assert_eq!(sim.seen_by(sim.unit(target).unwrap(), 0), Seen::Radar);
+    sim.take_events();
+    for _ in 0..30 { sim.step(&[]); }
+    assert!(
+        sim.take_events().iter().any(|e| matches!(e, SimEvent::WeaponFired { unit, .. } if *unit == gun)),
+        "a gun a spotter directs fires at will on a radar contact"
+    );
+}
+
+#[test]
+fn a_dropped_order_goes_from_the_queue_as_it_stands() {
+    let data = data_of(&[unit("WALKER", "CanMove=1; MaxVelocity=1;")]);
+    let mut sim = sim_of(data, 2);
+    let walker = sim.spawn_unit(sim.types.id("WALKER").unwrap(), 0, FxVec3::from_ints(200, 0, 200), 0, true).unwrap();
+    let [a, b, c] = [(600, 200), (600, 600), (200, 600)].map(|(x, z)| Order::Move(FxVec3::from_ints(x, 0, z)));
+    let order = |order: &Order, queue| Command::Order { player: 0, units: vec![walker], order: order.clone(), queue };
+    sim.step(&[order(&a, false), order(&b, true), order(&c, true)]);
+    let orders = |sim: &Sim| sim.unit(walker).unwrap().orders.iter().cloned().collect::<Vec<_>>();
+    let drop = |order: &Order, index| Command::DropOrder { player: 0, unit: walker, index, order: order.clone() };
+    sim.step(&[drop(&b, 1)]);
+    assert_eq!(orders(&sim), [a.clone(), c.clone()], "the second dropped, the rest kept in order");
+    sim.step(&[drop(&c, 5)]);
+    assert_eq!(orders(&sim), [a.clone()], "the queue moved on since the click: the nearest that is it");
+    sim.step(&[drop(&b, 0)]);
+    assert_eq!(orders(&sim), [a.clone()], "one not queued: nothing");
+    sim.step(&[Command::DropOrder { player: 1, unit: walker, index: 0, order: a.clone() }]);
+    assert_eq!(orders(&sim), [a.clone()], "another player's units are not theirs to change");
+    sim.step(&[drop(&a, 0)]);
+    assert!(orders(&sim).is_empty(), "the one under way, the last: it stops");
+    // A move and a patrol after it: the move dropped, the patrol stays as it was (given again,
+    // its return leg was added once more).
+    sim.step(&[order(&a, false), order(&Order::Patrol(FxVec3::from_ints(400, 0, 700)), true)]);
+    let patrol: Vec<Order> = orders(&sim).into_iter().skip(1).collect();
+    assert!(!patrol.is_empty() && patrol.iter().all(|o| matches!(o, Order::Patrol(_))), "{patrol:?}");
+    sim.step(&[drop(&a, 0)]);
+    assert_eq!(orders(&sim), patrol, "the patrol as it was, no leg added");
+}
+
+#[test]
 fn radar_contacts_accept_attacks_and_losing_contact_preserves_queued_orders() {
     let data = data_of(&[
         unit("SHOOTER", "CanMove=1; MaxVelocity=1; Weapon1=GUN; SightDistance=32; RadarDistance=500;"),
@@ -1056,6 +1141,26 @@ fn radar_contacts_accept_attacks_and_losing_contact_preserves_queued_orders() {
     assert_eq!(sim.unit(s).unwrap().orders.front(), Some(&Order::Move(retreat)));
     sim.step(&[]);
     assert_eq!(sim.unit(s).unwrap().move_request, Some(retreat));
+}
+
+#[test]
+fn a_shot_waiting_for_its_energy_asks_for_it_at_its_reload_pace() {
+    let data = data_of(&[
+        unit("GUN", "Weapon1=ZAP; SightDistance=500;"),
+        unit("DUMMY", "MaxDamage=100000;"),
+        weapon_file("ZAP", "energypershot=300;"),
+    ]);
+    let mut sim = sim_of(data, 2);
+    let gun = sim.spawn_unit(sim.types.id("GUN").unwrap(), 0, FxVec3::from_ints(300, 0, 300), 0, true).unwrap();
+    sim.spawn_unit(sim.types.id("DUMMY").unwrap(), 1, FxVec3::from_ints(400, 0, 300), 0, true).unwrap();
+    sim.set_starting_resources(0, Fx::ZERO, Fx::ZERO);
+    for _ in 0..40 { sim.step(&[]); }
+    let w = sim.weapon_types.get(sim.types.get(sim.unit(gun).unwrap().type_id).weapons[0].unwrap()).clone();
+    let e = &sim.players[0].economy;
+    assert_eq!(e.energy_expense, Fx::ZERO, "nothing paid with no energy");
+    // (Not its whole price every tick it tries again: its price over its reload.)
+    assert_eq!(e.energy_wanted, w.energy_per_shot / i64::from(w.reload_ticks.max(1)) * TICKS_PER_SECOND);
+    assert!(e.energy_wanted > Fx::ZERO);
 }
 
 /// A factory (a builder that does not move) takes the orders its weapons fire on, as TA's do, what

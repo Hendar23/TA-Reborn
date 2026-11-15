@@ -58,7 +58,8 @@ impl Hud {
         let max_height = ctx.data(|d| d.get_temp::<Rows>(rows_id)).map_or(max_height, |rows| rows.cut(max_height));
         let mut close = false;
         egui::Area::new(egui::Id::new("cheat_panel")).anchor(Align2::RIGHT_TOP, [-14.0, clear.top + clear.right_top + 12.0]).order(egui::Order::Foreground).show(ctx, |ui| {
-            let page = Panel::new("CHEATS").subtitle("SINGLE PLAYER · +HELP ON THE CHAT LINE").width(WIDTH).exit(Exit::Close).accent(RED);
+            // (A dialog on TA Reborn's plate, in its look whatever the HUD's theme: its red too.)
+            let page = Panel::new("CHEATS").subtitle("SINGLE PLAYER · +HELP ON THE CHAT LINE").width(WIDTH).exit(Exit::Close).accent(ta_ui::theme::RED);
             let response = page.show(ui, |ui| {
                 // (An area offers only the room it took last frame: ask for the height outright.)
                 let area = egui::ScrollArea::vertical().max_height(max_height).min_scrolled_height(max_height).auto_shrink([false, true]);
@@ -86,9 +87,9 @@ impl Hud {
         // What cheats cost: the battle's XP and achievements (taken back as one is used).
         rows.start(ui);
         let (note, colour) = if game.cheated() {
-            (t("Cheats used: this battle earns no XP or achievements"), RED)
+            (t("Cheats used: this battle earns no XP or achievements"), pal().bad)
         } else {
-            (t("A battle with cheats earns no XP or achievements, and what it has earned is taken back."), AMBER)
+            (t("A battle with cheats earns no XP or achievements, and what it has earned is taken back."), pal().accent)
         };
         ui.add(egui::Label::new(RichText::new(note).font(body(12.5)).color(colour)).wrap());
         rows.end(ui);
@@ -170,7 +171,7 @@ impl Hud {
         rows.end(ui);
         if n == 0 {
             rows.start(ui);
-            ui.label(RichText::new(t("Select units to mend, promote or destroy them.")).font(body(12.5)).color(STEEL_DIM));
+            ui.label(RichText::new(t("Select units to mend, promote or destroy them.")).font(body(12.5)).color(pal().steel_dim));
             rows.end(ui);
         }
         ui.add_space(12.0);
@@ -221,9 +222,9 @@ impl Hud {
                     let (rect, response) = ui.allocate_exact_size(EVec2::new(ui.available_width(), ROW), egui::Sense::click());
                     let painter = ui.painter();
                     if chosen {
-                        painter.rect_filled(rect, 2.0, AMBER_DEEP);
+                        painter.rect_filled(rect, 2.0, pal().accent_deep);
                     } else if response.hovered() {
-                        painter.rect_filled(rect, 2.0, PANEL_HI);
+                        painter.rect_filled(rect, 2.0, pal().panel_hi);
                     }
                     let icon = egui::Rect::from_min_size(rect.min + EVec2::new(3.0, 2.0), EVec2::splat(ROW - 4.0));
                     match pic {
@@ -231,12 +232,12 @@ impl Hud {
                             painter.image(tex.id(), icon, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
                         }
                         None => {
-                            painter.rect_filled(icon, 2.0, INSET);
+                            painter.rect_filled(icon, 2.0, pal().inset);
                         }
                     }
                     let x = icon.right() + 8.0;
-                    painter.text(egui::pos2(x, rect.top() + 3.0), Align2::LEFT_TOP, unit_label(&game.sim, type_id), strong(13.0), if chosen { AMBER_BRIGHT } else { TEXT_BRIGHT });
-                    painter.text(egui::pos2(x, rect.bottom() - 3.0), Align2::LEFT_BOTTOM, detail, body(11.0), STEEL_DIM);
+                    painter.text(egui::pos2(x, rect.top() + 3.0), Align2::LEFT_TOP, unit_label(&game.sim, type_id), strong(13.0), if chosen { pal().accent_bright } else { pal().text_bright });
+                    painter.text(egui::pos2(x, rect.bottom() - 3.0), Align2::LEFT_BOTTOM, detail, body(11.0), pal().steel_dim);
                     if response.on_hover_text(ty.def.description.clone()).clicked() {
                         self.cheats.chosen = Some(type_id);
                     }
@@ -244,7 +245,7 @@ impl Hud {
             });
         });
         if list.is_empty() {
-            ui.label(RichText::new(t("No unit by that name.")).font(body(12.5)).color(STEEL_DIM));
+            ui.label(RichText::new(t("No unit by that name.")).font(body(12.5)).color(pal().steel_dim));
         }
         rows.end(ui);
         ui.add_space(8.0);
@@ -297,6 +298,6 @@ fn spawn_hint(ctx: &egui::Context, game: &Game, clear: Clearance) {
         tf("Click the map to place {count} × {unit} for {player} · right-click to stop", &[("count", &tool.count), ("unit", &unit), ("player", &game.player_label(tool.owner))])
     };
     panel::strip(ctx, "spawn_hint", Align2::CENTER_BOTTOM, EVec2::new(clear.center, -clear.bottom - 60.0), |ui| {
-        ui.label(RichText::new(text).font(strong(13.5)).color(AMBER_BRIGHT));
+        ui.label(RichText::new(text).font(strong(13.5)).color(pal().accent_bright));
     });
 }

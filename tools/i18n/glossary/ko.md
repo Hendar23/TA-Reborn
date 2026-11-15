@@ -563,3 +563,72 @@ after them (ARM의 손실: [[수십억]]).
 | stamps RECOVERED, BY ORDER OF THE COUNCIL, TRANSMITTED ON ALL BANDS, RESTRICTED, FOR TRAINING USE | 회수됨, 평의회 명령, 전 대역 송신, 대외비, 훈련용 |
 | stamps UNDELIVERED, INTERCEPTED, FLAGGED FOR CORRECTION, SEALED UNTIL NEEDED, CLASSIFIED | 미배달, 감청됨, 수정 대상, 유사시까지 봉인, 기밀 |
 | FIGHT IT (caption before the campaigns that fight a chapter) | 참전 |
+
+## A mod's presentation in the launcher (`pages/mods.rs`, `ta_data/src/presentation.rs`)
+
+The check's notes are polite sentences, the English colon split into two sentences; what to do
+ends in 하세요. `mod.toml`, `media/banner.png`, PNG, JPEG, GIF, http:// and https:// stay as they
+are, the `media` folder keeps its name (모드의 media 폴더). A placeholder is followed by a noun
+({path} 파일은, {key} 항목이) or 입니다. JPEG is read 제이펙: "JPEG 형식으로", never "JPEG로".
+
+| English | 한국어 |
+|---|---|
+| banner (a mod's: its card and the top of its page) / icon | 배너 / 아이콘 |
+| preview / gameplay preview (an animated GIF) / PLAY PREVIEW | 미리 보기 (as the skins page's) / 게임플레이 미리 보기 / 미리 보기 재생 |
+| screenshot(s) / SCREENSHOTS / Screenshot {n} of {count}, {n} of {count} | 스크린샷 (pictures count in 장: {count}장) / 스크린샷 / 스크린샷 {n}/{count}, {n}/{count} |
+| MOD PAGE (a link to the mod's web page) / link / web address | 모드 페이지 / 링크 / 웹 주소 |
+| PRESENTATION (the report's group: how a mod shows in the library) | 라이브러리 표시 |
+| mod.toml's {key} names {path} / a path read from the mod's folder | mod.toml의 {key} 항목이 가리키는 {path} 경로 / 모드 폴더를 기준으로 한 경로 |
+| animated GIF / still picture / picture editor | 애니메이션 GIF / 정지 이미지 / 이미지 편집 프로그램 |
+| blurred / sharp / cut off (a picture) | 흐릿하게 보입니다 / 선명하게 보입니다 / 잘립니다 |
+| Give it more pixels: 1280 × 640 at best | 해상도를 높이세요. 1280 × 640이 가장 좋습니다. (a literal size, so the particle can agree) |
+
+## A mod's interface theme (`pages/mods.rs`, `settings.rs`, `ta_data/src/presentation.rs`)
+
+HUD stays HUD; read either way (허드, 에이치유디) it ends in a vowel: HUD가, HUD는, HUD를.
+{extras} (its own font, pictures behind its panels, joined by ", " in the code) takes the
+invariant 도: {extras}도 적용됩니다. The switch is quoted in sentences ('모드 인터페이스 테마'),
+its place 옵션 · 인터페이스. {most} (a size limit, "16.0 MB") is followed by a noun ({most} 제한,
+{most} 크기). The check's notes follow the presentation notes above (two sentences, 하세요).
+
+| English | 한국어 |
+|---|---|
+| interface theme / INTERFACE THEME (the mod page's caption) | 인터페이스 테마 |
+| MODS' INTERFACE THEMES (the switch) | 모드 인터페이스 테마 |
+| these colours / the mod's colours | 이 색상 / 모드의 색상 |
+| accent (colour) / text | 강조 색 (as Windows' own) / 텍스트 |
+| font / its own font / pictures behind its panels | 글꼴 / 고유 글꼴 / 패널 배경 이미지 |
+| the HUD draws its own metal there (the side's panel tiles in place of a picture) | HUD는 그 자리에 원래의 금속 질감을 그립니다 |
+| the HUD keeps TA Reborn's own | TA Reborn 고유의 색을 그대로 씁니다 / TA Reborn 고유의 글꼴을 유지합니다 |
+| the HUD does without it | HUD는 이 파일 없이 표시됩니다 |
+| a contrast of {ratio}:1 / {least}:1 reads well | 대비가 {ratio}:1이라 / {least}:1 이상이면 잘 읽힙니다 |
+| # and six hexadecimal digits | # 뒤에 16진수 여섯 자리 |
+| side (a theme's, named as sidedata.tdf names it) | 진영 ({side} 진영, 게임의 진영: {sides}) |
+| Off: TA Reborn's own always | 끄면 항상 TA Reborn 고유의 모습으로 표시됩니다 |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | 한국어 |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} 모드는 {other} 모드와 함께 켤 수 없습니다. 둘 중 하나를 끄세요 / 함께 켤 수 없음: {mods} (beside 필요: {mods}; not 충돌, which is a crash here) |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} 이상 (필요) / 현재 {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | TA REBORN 업데이트 필요 |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / 모드가 작동하는 가장 오래된 TA Reborn 버전 |
+
+## A mod's mod.toml as read, its load order (`presentation.rs`, `validation.rs`, `modlist.rs`)
+
+The notes follow the presentation notes above (two sentences, 하세요). `[table]`, `[{table}]`,
+`depends`, `load_after`, `conflicts`, `panel_texture` and `docs/MODDING.md` stay as they are; a
+manifest key is {key} 항목, and mod.toml takes a noun before a particle that depends on its sound
+(mod.toml 파일을). {found} and {expected} are followed by 형식: 항목 값이 {found} 형식입니다. 이 항목은
+{expected} 형식을 받으므로...
+
+| English | 한국어 |
+|---|---|
+| key (mod.toml's) / a [table] line / table | 키 ({key} 항목) / [table] 줄 / 테이블 |
+| reads past it (a key it does not know) / leaves it out (a value of another kind) | 읽지 않고 건너뜁니다 / 이 값을 빼고 읽습니다 |
+| text in quotes / a whole number / a number / true or false / a date / a list in square brackets / a table | 따옴표로 묶은 텍스트 / 정수 / 숫자 / true 또는 false / 날짜 / 대괄호로 묶은 목록 / 테이블 |
+| a later TA Reborn / older TA Reborns / a slip of the pen | 더 새로운 TA Reborn / 이전 버전의 TA Reborn / 오타 |
+| need each other in a circle / nest more than 64 deep (dependencies) | 순환하며 서로를 필요로 하다 / 64단계보다 깊게 중첩 (의존 관계) |
+| plates (the HUD's, panel_texture tiled on them; beside 패널, the panels' colour) / the side's own metal plates | 판 (판에 깔린 이미지) / 진영 고유의 금속판 |
+| TURN OFF {name} / STOP PREVIEW (beside ENABLE {name}, PLAY PREVIEW) | {name} 끄기 / 미리 보기 정지 |

@@ -20,6 +20,7 @@ use ta_vfs::Vfs;
 use winit::keyboard::KeyCode;
 
 use crate::game::{CommandMode, Game};
+use crate::theme::pal;
 use crate::hud_classic_art::{Art, Frames, Gadget, Gui, MenuPage, SideLayout, Sprite, TaFont};
 use crate::hud_classic_scale::Look;
 use crate::minimap::Minimap;
@@ -31,10 +32,6 @@ const TA_HEIGHT: f32 = 480.0;
 const SIDE_W: f32 = 128.0;
 const TOP_H: f32 = 32.0;
 const BOTTOM_H: f32 = 33.0;
-/// The lettering colour of TA's order buttons, for the buttons drawn without art.
-const BUTTON_TEXT: Color32 = Color32::from_rgb(223, 223, 183);
-const TEXT: Color32 = Color32::from_rgb(236, 236, 236);
-const DIM: Color32 = Color32::from_rgb(170, 170, 160);
 
 /// TA's layout on the window: `s` points per TA pixel from `origin`, `ppp` screen pixels to a
 /// point, the art enlarged as `look` has it.
@@ -569,7 +566,7 @@ impl ClassicHud {
             }
             None => {
                 if let Some(font) = &env.st.font {
-                    font.draw_shadowed(&painter, at(font.width("PAUSED")), env.ta.s, "PAUSED", TEXT, env.ta.look);
+                    font.draw_shadowed(&painter, at(font.width("PAUSED")), env.ta.s, "PAUSED", pal().classic_text, env.ta.look);
                 }
             }
         }
@@ -875,7 +872,7 @@ impl ClassicHud {
             None => {
                 painter.rect_filled(place, 0.0, Color32::from_gray(34));
                 if let Some(font) = &env.st.font_gui {
-                    text(&painter, font, ta, rect.min.x + 32.0, rect.min.y + 26.0, Align::Center, &name, DIM);
+                    text(&painter, font, ta, rect.min.x + 32.0, rect.min.y + 26.0, Align::Center, &name, pal().classic_dim);
                 }
             }
         }
@@ -978,9 +975,9 @@ impl ClassicHud {
             let color = if !enabled {
                 Color32::from_gray(110)
             } else if down {
-                Color32::from_rgb(255, 255, 215)
+                pal().classic_pressed
             } else {
-                BUTTON_TEXT
+                pal().classic_button
             };
             text(&painter, font, ta, face.center().x + nudge, face.center().y - font.height / 2.0 + nudge, Align::Center, label, color);
         }
@@ -1005,7 +1002,7 @@ impl ClassicHud {
         if let Some(font) = &env.st.font_button {
             let label = labels.iter().map(|l| t(l)).find(|l| font.width(l) <= x0 - 8.0).or(labels.last().map(|l| t(l))).unwrap_or("");
             let nudge = if resp.is_pointer_button_down_on() { 1.0 } else { 0.0 };
-            text(&painter, font, ta, rect.min.x + 5.0 + nudge, rect.center().y - font.height / 2.0 + nudge, Align::Left, label, BUTTON_TEXT);
+            text(&painter, font, ta, rect.min.x + 5.0 + nudge, rect.center().y - font.height / 2.0 + nudge, Align::Left, label, pal().classic_button);
         }
         resp
     }
@@ -1100,7 +1097,7 @@ impl ClassicHud {
                         _ => tf("Units: {n}", &[("n", &units)]),
                     };
                     if let Some(font) = &env.st.font_gui {
-                        text(&painter, font, env.ta, rect.min.x, rect.min.y, Align::Left, &line, BUTTON_TEXT);
+                        text(&painter, font, env.ta, rect.min.x, rect.min.y, Align::Left, &line, pal().classic_button);
                     }
                 }
                 (1, "ALLIES") => {
@@ -1155,8 +1152,8 @@ impl ClassicHud {
         }
         let e = &p.economy;
         let readouts = [
-            ("METAL", e.metal, e.metal_capacity, e.metal_income, e.metal_expense, env.st.metal),
-            ("ENERGY", e.energy, e.energy_capacity, e.energy_income, e.energy_expense, env.st.energy),
+            ("METAL", e.metal, e.metal_capacity, e.metal_income, e.metal_wanted, env.st.metal),
+            ("ENERGY", e.energy, e.energy_capacity, e.energy_income, e.energy_wanted, env.st.energy),
         ];
         for (name, amount, cap, income, expense, color) in readouts {
             if let Some(b) = l.get(&format!("{name}BAR")).map(inclusive) {
@@ -1164,21 +1161,21 @@ impl ClassicHud {
                 bar(&painter, ta, b, frac, &env.data.palette, color);
                 // The amount under the bar's middle, the storage over its ends.
                 if let Some(r) = l.get(&format!("{name}NUM")) {
-                    text(&painter, &font, ta, b.center().x, r.min.y, Align::Center, &format!("{:.0}", amount.to_f32()), TEXT);
+                    text(&painter, &font, ta, b.center().x, r.min.y, Align::Center, &format!("{:.0}", amount.to_f32()), pal().classic_text);
                 }
                 if let Some(r) = l.get(&format!("{name}0")) {
-                    text(&painter, &font, ta, r.min.x, r.min.y, Align::Left, "0", DIM);
+                    text(&painter, &font, ta, r.min.x, r.min.y, Align::Left, "0", pal().classic_dim);
                 }
                 // Its right end (the "+" of the art follows close behind).
                 if let Some(r) = l.get(&format!("{name}MAX")) {
-                    text(&painter, &font, ta, r.min.x, r.min.y, Align::Right, &format!("{:.0}", cap.to_f32()), DIM);
+                    text(&painter, &font, ta, r.min.x, r.min.y, Align::Right, &format!("{:.0}", cap.to_f32()), pal().classic_dim);
                 }
             }
             if let Some(r) = l.get(&format!("{name}PRODUCED")) {
-                text(&painter, &font, ta, r.min.x, r.min.y, Align::Left, &rate(income.to_f32()), TEXT);
+                text(&painter, &font, ta, r.min.x, r.min.y, Align::Left, &rate(income.to_f32()), pal().classic_text);
             }
             if let Some(r) = l.get(&format!("{name}CONSUMED")) {
-                text(&painter, &font, ta, r.min.x, r.min.y, Align::Left, &rate(expense.to_f32()), TEXT);
+                text(&painter, &font, ta, r.min.x, r.min.y, Align::Left, &rate(expense.to_f32()), pal().classic_text);
             }
         }
         self.top_extras(ui, env, game, &font, end);
@@ -1193,11 +1190,11 @@ impl ClassicHud {
         let p = game.sim.players.get(game.hud_player() as usize);
         let units = p.map_or(0, |p| p.unit_count);
         let limit = game.sim.unit_limit;
-        let mut items: Vec<(String, Color32, u8)> = vec![(format!("{:02}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60), TEXT, 0)];
+        let mut items: Vec<(String, Color32, u8)> = vec![(format!("{:02}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60), pal().classic_text, 0)];
         items.push(if limit < u32::MAX {
-            (tf("Units {n}/{limit}", &[("n", &units), ("limit", &limit)]), if units >= limit { Color32::from_rgb(255, 130, 90) } else { TEXT }, 0)
+            (tf("Units {n}/{limit}", &[("n", &units), ("limit", &limit)]), if units >= limit { Color32::from_rgb(255, 130, 90) } else { pal().classic_text }, 0)
         } else {
-            (tf("Units {n}", &[("n", &units)]), TEXT, 0)
+            (tf("Units {n}", &[("n", &units)]), pal().classic_text, 0)
         });
         let idle_factories = game.idle_factories().len();
         if idle_factories > 0 {
@@ -1209,7 +1206,7 @@ impl ClassicHud {
         }
         // (Pausing puts TA's own title over the battlefield.)
         if !game.paused && (game.speed - 1.0).abs() > 0.01 {
-            items.push((tf("Speed x{speed}", &[("speed", &format!("{:.2}", game.speed))]), TEXT, 0));
+            items.push((tf("Speed x{speed}", &[("speed", &format!("{:.2}", game.speed))]), pal().classic_text, 0));
         }
         let y = ((TOP_H - font.height) / 2.0).round();
         let mut x = end - 8.0;
@@ -1256,8 +1253,8 @@ impl ClassicHud {
             Some(Tip::Unit(id)) => {
                 let t = game.sim.types.get(id);
                 let (name, desc) = (at("NAME", 132.0, 452.0), at("DESCRIPTION", 132.0, 465.0));
-                text(&painter, &font, tb, name.x, name.y, Align::Left, &t.def.display_name, TEXT);
-                text(&painter, &font, tb, desc.x, desc.y, Align::Left, &t.def.description, DIM);
+                text(&painter, &font, tb, name.x, name.y, Align::Left, &t.def.display_name, pal().classic_text);
+                text(&painter, &font, tb, desc.x, desc.y, Align::Left, &t.def.description, pal().classic_dim);
                 // Costs where the hovered unit goes; the time with the selected builder.
                 let x = at("DAMAGEBAR2", 510.0, 463.0).x - 34.0;
                 let metal = format!("{}  ", tf("Metal {n}", &[("n", &format!("{:.0}", t.cost_metal.to_f32()))]));
@@ -1266,13 +1263,13 @@ impl ClassicHud {
                 let rate = game.selection.first().and_then(|&b| game.sim.unit(b)).map_or(Fx::ZERO, |b| game.sim.unit_type(b).worker_rate);
                 if rate > Fx::ZERO {
                     let secs = (t.build_time / rate).to_f32() / 30.0;
-                    text(&painter, &font, tb, x, desc.y, Align::Left, &tf("Build time {time}", &[("time", &crate::hud::duration(secs))]), DIM);
+                    text(&painter, &font, tb, x, desc.y, Align::Left, &tf("Build time {time}", &[("time", &crate::hud::duration(secs))]), pal().classic_dim);
                 }
             }
             Some(Tip::Text(name, what)) => {
                 let (n, d) = (at("NAME", 132.0, 452.0), at("DESCRIPTION", 132.0, 465.0));
-                text(&painter, &font, tb, n.x, n.y, Align::Left, t(&name), TEXT);
-                text(&painter, &font, tb, d.x, d.y, Align::Left, t(&what), DIM);
+                text(&painter, &font, tb, n.x, n.y, Align::Left, t(&name), pal().classic_text);
+                text(&painter, &font, tb, d.x, d.y, Align::Left, t(&what), pal().classic_dim);
             }
             None => self.selected_readout(&painter, env, game, &l, &font),
         }
@@ -1302,7 +1299,7 @@ impl ClassicHud {
             _ => tf("{name} +{n} more", &[("name", &t.def.display_name), ("n", &(n - 1))]),
         };
         let at = l.get("UNITNAME").map_or(pos2(245.0, 452.0), |r| r.min);
-        text(painter, font, tb, at.x, at.y, Align::Center, &name, TEXT);
+        text(painter, font, tb, at.x, at.y, Align::Center, &name, pal().classic_text);
         if let Some(b) = l.get("DAMAGEBAR").map(inclusive) {
             health(painter, env, b, u, t);
         }
@@ -1310,12 +1307,12 @@ impl ClassicHud {
         // health bar (where an unfinished unit's build progress goes).
         if u.is_complete() && let Some((line, _)) = crate::hud::stockpile(&game.sim, u) {
             let y = l.get("DAMAGEBAR").map_or(466.0, |r| inclusive(r).max.y) + 1.0;
-            text(painter, font, tb, at.x, y, Align::Center, &line, DIM);
+            text(painter, font, tb, at.x, y, Align::Center, &line, pal().classic_dim);
         }
         // A constructor on duty, there too (TA's panel has no button for it: the key gives one).
         if let Some(duty) = game.duty_of(u.id) {
             let y = l.get("DAMAGEBAR").map_or(466.0, |r| inclusive(r).max.y) + 1.0;
-            text(painter, font, tb, at.x, y, Align::Center, &tf("On duty: {duty}", &[("duty", &ta_ui::i18n::t(crate::game::duty::label(duty)))]), TEXT);
+            text(painter, font, tb, at.x, y, Align::Center, &tf("On duty: {duty}", &[("duty", &ta_ui::i18n::t(crate::game::duty::label(duty)))]), pal().classic_text);
         }
         let [mm, mu, em, eu] = flows(&game.sim, u);
         let (metal, energy) = (self.color(env, env.st.metal), self.color(env, env.st.energy));
@@ -1332,7 +1329,7 @@ impl ClassicHud {
         let at = l.get("UNITNAME2").map_or(pos2(555.0, 452.0), |r| r.min);
         if let Some(u) = game.hovered.and_then(|h| game.sim.unit(h)).filter(|u| game.seen(u) == ta_sim::Seen::Visible) {
             let t = game.sim.unit_type(u);
-            text(painter, font, tb, at.x, at.y, Align::Center, &t.def.display_name, TEXT);
+            text(painter, font, tb, at.x, at.y, Align::Center, &t.def.display_name, pal().classic_text);
             if let Some(b) = l.get("DAMAGEBAR2").map(inclusive) {
                 health(painter, env, b, u, t);
             }
@@ -1366,7 +1363,7 @@ impl ClassicHud {
         let def = &game.sim.data.features[feature.def];
         let left = (1.0 - feature.reclaimed.to_f32()).clamp(0.0, 1.0);
         let name = if def.description.is_empty() { def.name.clone() } else { def.description.clone() };
-        text(painter, font, tb, at.x, at.y, Align::Center, &name, TEXT);
+        text(painter, font, tb, at.x, at.y, Align::Center, &name, pal().classic_text);
         let mut worth = Vec::new();
         if def.metal > 0.0 {
             worth.push(tf("Metal {n}", &[("n", &format!("{:.0}", def.metal * left as f64))]));
@@ -1376,7 +1373,7 @@ impl ClassicHud {
         }
         if !worth.is_empty() {
             let y = l.get("DAMAGEBAR2").map_or(463.0, |r| r.min.y) + 1.0;
-            text(painter, font, tb, at.x, y, Align::Center, &worth.join("  "), DIM);
+            text(painter, font, tb, at.x, y, Align::Center, &worth.join("  "), pal().classic_dim);
         }
     }
 }

@@ -29,6 +29,14 @@ use crate::widgets::{self, caption};
 /// Width of the caption column in [`field`] rows.
 const FIELD_LABEL_WIDTH: f32 = 112.0;
 
+/// Names (of mods, of people) listed as the interface's language lists them: "A", "A and B",
+/// "A, B and C".
+pub(crate) fn listed<S: AsRef<str>>(names: &[S]) -> String {
+    use ta_data::words::{Fill, Words};
+    let names = Fill::List(names.iter().map(|name| Fill::name(name.as_ref())).collect());
+    Words { text: "{names}".into(), fills: vec![("names".into(), names)], raw: true }.render(&|text| t(text).to_string())
+}
+
 /// Large page title, lettered as TA's are, with a one-line description underneath.
 fn page_header(ui: &mut Ui, title: &str, subtitle: &str) {
     ta_ui::metal::embossed_label(ui, RichText::new(t(title)).font(display(32.0)).extra_letter_spacing(ta_ui::i18n::tracking(1.8)), TEXT_BRIGHT);

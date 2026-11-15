@@ -488,3 +488,76 @@ The chronicle told plainly and a little solemn; each archive document in its own
 | build option | вариант постройки |
 | wreckage | обломки |
 | feature (map object) | объект |
+
+## A mod's presentation in the MODS library (`pages/mods.rs`, `ta_data/src/presentation.rs`)
+
+A mod's banner, gameplay preview, icon, screenshots and links, and the mod check's notes on them
+(the report's group PRESENTATION). Manifest keys (`banner`, `preview`, `icon`, `screenshots`) and
+paths stay as written: "Ключ {key} в mod.toml указывает на {path}"; sizes as "Размер файла {path} —
+{size}", "Размеры изображения {path} — {width} × {height}", "Размер баннера — {width} × {height}".
+
+| English | Русский |
+|---|---|
+| banner (the card and the top of the mod's page) | баннер |
+| gameplay preview (an animated GIF of the mod in play) / PLAY PREVIEW | ролик игрового процесса (as игровой процесс for gameplay; not превью, which reads as a still thumbnail) / СМОТРЕТЬ РОЛИК (as WATCH: СМОТРЕТЬ) |
+| icon (a mod's) | значок (as СТРАТЕГИЧЕСКИЕ ЗНАЧКИ) |
+| screenshot(s) / SCREENSHOTS / Screenshot {n} of {count} / {n} of {count} | снимок, снимки экрана / СНИМКИ ЭКРАНА / Снимок экрана {n} из {count} / {n} из {count} |
+| MOD PAGE (the link to the mod's web page) | САЙТ МОДА (as "с сайта мода", WEBSITE: САЙТ) |
+| PRESENTATION (the report's group heading) | ОФОРМЛЕНИЕ (ПРЕЗЕНТАЦИЯ reads as a slideshow) |
+| web address | веб-адрес |
+| blurred / sharp | выглядит размытым / выглядит чётко |
+| give it more pixels / at best | увеличьте разрешение / лучше всего |
+| frames and seconds from placeholders | "кадров: {frames}, {seconds} с"; a count of screenshots: "Снимков экрана в mod.toml: {count}" |
+
+## A mod's interface theme (`pages/mods.rs`, `settings.rs`, `ta_data/src/presentation.rs`)
+
+A mod's `[theme]`: the battle's HUD in colours, pictures and a font of its own, previewed on the
+mod's page and checked under ОФОРМЛЕНИЕ. HUD stays HUD, masculine, in the nominative ("HUD
+отображается", "собственный HUD TA Reborn"). Manifest keys ({key}: `accent`, `text`,
+`panel_texture`, `font`...) stay as written, anchored by a noun: "Ключ {key} темы", "Значение ключа
+{key}", "Цвет {key} темы". The fragments filling {extras} are instrumentals after "HUD отображается в
+этих цветах, с …", joined by a comma ("собственным шрифтом, фоновыми изображениями панелей").
+
+| English | Русский |
+|---|---|
+| theme / INTERFACE THEME (the caption over the preview) | тема (as СЕЗОННАЯ ТЕМА) / ТЕМА ИНТЕРФЕЙСА |
+| MODS' INTERFACE THEMES (the game's Interface option) | ТЕМЫ ИНТЕРФЕЙСА МОДОВ ("в настройках игры, раздел «Интерфейс»", as «Игра») |
+| accent (the theme's main colour) | акцентный цвет |
+| font / its own font | шрифт / собственным шрифтом |
+| pictures behind its panels (the panels' tiled picture) | фоновые изображения панелей |
+| its own metal (the panels' metal, drawn where a picture fails) | собственная металлическая текстура ("HUD рисует вместо него собственную металлическую текстуру"; not "металл": the resource) |
+| a tile (of a picture, repeated across the panels) | тайл ("достаточно тайла в несколько сотен пикселей") |
+| hexadecimal digits | шестнадцатеричные цифры ("по две на красный, зелёный и синий") |
+| contrast of {ratio}:1 / reads well | контраст {ratio}:1 / хорошо читается контраст от {least}:1 |
+| a side (in [theme.sides.arm]) | сторона ("стороне {side}", "Стороны игры: {sides}") |
+| TA Reborn's own (colour, font, HUD) | собственный цвет / шрифт / HUD TA Reborn |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | Русский |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | Мод {name} нельзя включать вместе с модом {other}: выключите один из них / несовместим с {mods} |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} или новее ("Моду {name} нужен …", on the mod's page "требуется …") / у вас {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | НУЖЕН БОЛЕЕ НОВЫЙ TA REBORN |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / самая старая версия TA Reborn, в которой работает мод (мод подключается) |
+
+## A mod's mod.toml as read, and the load order in the check (`presentation.rs`, `validation.rs`, `pages/mods.rs`, `mod_order.rs`)
+
+Keys, `[table]`, `[{table}]`, `depends`, `load_after`, `conflicts`, `panel_texture` and file names stay as written. TA Reborn takes no pronoun here (its gender varies in the file): "TA Reborn не знает ключа…", "у вас {this}, а эта версия его не подключает".
+
+| English | Русский |
+|---|---|
+| key / value / table (TOML's) | ключ / значение / таблица ("Ключ {key} в mod.toml", "Значение ключа {key} в mod.toml") |
+| a [table] line / below it / at the top of mod.toml | строка [table] / ниже строки [table], "поэтому считается частью этой таблицы" / в начале mod.toml, выше первой строки [table] |
+| it belongs in [{table}] / move the line | его место — в таблице [{table}] / перенесите строку с ключом |
+| reads past (a key it does not know) / did you mean | пропускает при чтении / возможно, вы имели в виду |
+| a key of a later TA Reborn's / a slip of the pen / kept as written | ключ более новой версии TA Reborn / опечатка / остаётся в файле нетронутым |
+| value kinds ({found}, {expected}: nominative, after "—" and "а требуется") | текст в кавычках / целое число / число / true или false (TOML's literals) / дата / список в квадратных скобках / таблица: "Значение ключа {key} в mod.toml — {found}, а требуется {expected}" |
+| leaves it out (a value of the wrong kind) | не учитывает (not пропускает, which also reads as "lets through") |
+| one text where a list is wanted / a list of that one | задано одним текстом, а нужен список / список из одного элемента |
+| dependencies in a circle / nest more than 64 deep | зависят друг от друга по кругу / вложены глубже чем на 64 уровня |
+| the mods it needs (the check's fix) / archives it blanks (its replaces) | зависимости этого мода / архивы, которые он отключает |
+| STOP PREVIEW (beside СМОТРЕТЬ РОЛИК) / TURN OFF {name} | ОСТАНОВИТЬ РОЛИК / ВЫКЛЮЧИТЬ {name} (as ВКЛЮЧИТЬ {name}) |
+| one frame in {stride} / choppier than it was made | один кадр из {stride} / менее плавно, чем в оригинале |
+| plates (the HUD's metal plates) / its plates' picture / the side's own metal plates | панели / фоновое изображение панелей / собственные металлические панели стороны |
+| line spacing / its letters show at {percent}% | межстрочный интервал / буквы отображаются в масштабе {percent}% ("в {line} раза": раза after a fraction) |

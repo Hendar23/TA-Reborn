@@ -565,3 +565,80 @@ spaces, as the report's other strings.
 | patch / the patched engines of later years / engine | correctif / les versions modifiées du moteur des années suivantes / moteur |
 | weapon ID / unit value (a script's) / cloak (unit value 111) | ID d’arme (les ID) / valeur d’unité / camouflage |
 | sides / campaigns of its own; TA's own computer players | camps / campagnes propres au mod; joueurs ordinateur d’origine de TA |
+
+## A mod's presentation in the launcher (`pages/mods.rs`, `crates/ta_data/src/presentation.rs`)
+
+A mod's banner, gameplay preview, icon, screenshots and links in the MODS library, and the mod
+check's notes on them, under the report's group PRÉSENTATION. The notes use curly ’ and no-break
+spaces, as the report's other strings; the mods page's strings keep straight apostrophes, as that
+page's earlier ones (LIRE L'APERÇU, CAPTURES D'ÉCRAN). `mod.toml`, `media/banner.png` and `{key}`
+(a manifest key: banner, preview, icon, screenshots) stay as they are: "L’entrée {key} de mod.toml
+désigne {path}".
+
+| English | Français |
+|---|---|
+| PRESENTATION (the report's group of notes) | PRÉSENTATION |
+| banner (the card and the top of the mod's page) | bannière |
+| gameplay preview (an animated GIF of the mod in play) | aperçu en jeu (as captures en jeu) |
+| PLAY PREVIEW (the banner's button, with motion reduced) | LIRE L'APERÇU (as LIRE LA CHRONIQUE) |
+| icon (a mod's) | icône |
+| SCREENSHOTS / Screenshot {n} of {count} / {n} of {count} | CAPTURES D'ÉCRAN / Capture d'écran {n} sur {count} / {n} sur {count} |
+| MOD PAGE (a link to the mod's web page, beside its links) | PAGE DU MOD |
+| the mod's media folder / a path from the mod's folder | le dossier media du mod / un chemin relatif au dossier du mod |
+| frames (of a GIF) | images |
+| shows blurred / shows sharp | paraît floue / reste nette |
+| … at best (the size to aim for) | … idéalement (au mieux would read as a grudging limit) |
+| still picture / picture editor | image fixe / éditeur d’images |
+| link / web address | lien / adresse web |
+
+## A mod's interface theme (`pages/mods.rs`, `settings.rs`, `presentation.rs`)
+
+A mod's `[theme]` draws its battles' HUD in colours, pictures and a font of its own; the mod's page
+previews it under THÈME D'INTERFACE, the game's options Interface turn it off. HUD stays le HUD. The
+mods page's and the settings' strings keep straight apostrophes, the notes curly ’; all put a
+no-break space before the colon. The HUD's own metal (its side's tiles, where a picture would go)
+is son propre fond métallique, shown à la place: "métal" alone reads as the resource.
+
+| English | Français |
+|---|---|
+| interface theme / INTERFACE THEME (a mod page's caption) | thème d'interface / THÈME D'INTERFACE |
+| MODS' INTERFACE THEMES (the switch) / in the game's Interface options | THÈMES D'INTERFACE DES MODS / dans les options Interface du jeu |
+| HUD / panels | le HUD / panneaux |
+| accent (a theme's colour) | couleur d’accentuation (Windows' own) |
+| font / font file | police (as POLICE) / fichier de police |
+| the HUD draws its own metal there | le HUD affiche à la place son propre fond métallique |
+| the HUD keeps TA Reborn's own (colour, font) | le HUD utilise à la place la couleur de TA Reborn / garde la police de TA Reborn |
+| a tile (a picture repeated across the panels) | tuile |
+| a contrast of {ratio}:1 / {least}:1 reads well | un contraste de {ratio}:1 / Dès {least}:1, elle se lit bien |
+| the theme's {key} (a manifest key) / a colour key | l’entrée {key} du thème / la couleur {key} |
+| side ([theme.sides.arm]) | camp |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | Français |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} ne peut pas être activé en même temps que {other} (no-break space) : désactivez l'un des deux / incompatible avec {mods} (the problems keep straight apostrophes, as "qui n'est pas activé") |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} ou version ultérieure / vous avez la {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | NÉCESSITE UN TA REBORN PLUS RÉCENT |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / la plus ancienne version de TA Reborn où le mod fonctionne |
+
+## A mod's manifest as the check reads it, and its load order (`presentation.rs`, `validation.rs`, `mod_order.rs`)
+
+`mod.toml`, `[table]`, `[{table}]`, `depends`, `load_after`, `conflicts`, `panel_texture` and
+`tags = ["units"]` stay as written; a manifest key is une entrée (feminine: elle, la), as "L’entrée
+{key} de mod.toml". `{found}` and `{expected}` fill "L’entrée {key} de mod.toml est {found} alors
+qu’elle attend {expected}": noun phrases with their article. The check's notes use curly ’ and
+no-break spaces; the launcher's own lines (`modlist.rs`, `mods.rs`) keep straight apostrophes.
+
+| English | Français |
+|---|---|
+| key (of mod.toml) / value / table / [table] line / manifest | entrée / valeur / table / ligne [table] / manifeste |
+| text in quotes / a whole number / a number / true or false | du texte entre guillemets / un nombre entier / un nombre / true ou false (TOML's own words) |
+| a date / a list in square brackets / a table | une date / une liste entre crochets / une table |
+| an unknown key read past / a value of another kind left out | inconnue de TA Reborn, qui l’ignore / TA Reborn l’écarte |
+| a slip of the pen | une faute de frappe |
+| need each other in a circle / nest more than 64 deep | dépendent les uns des autres en boucle / s’imbriquent sur plus de 64 niveaux |
+| plates (the HUD's, a theme's picture behind them) / the side's own metal plates | plaques / les plaques métalliques propres au camp |
+| line spacing / its letters show at {percent}% of their size | hauteur de ligne, interligne / ses lettres s’affichent à {percent} % de leur taille |
+| one frame in {stride} (a preview played with fewer of its frames) / choppier | une sur {stride} / plus saccadé |
+| TURN OFF {name} (a mod, beside ENABLE {name}) / STOP PREVIEW (beside PLAY PREVIEW) | DÉSACTIVER {name} / ARRÊTER L'APERÇU |

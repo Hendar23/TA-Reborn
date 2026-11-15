@@ -3,28 +3,133 @@
 ## Unreleased
 
 ### Added
+- Mods present themselves in the launcher's library with pictures of their own, named in their
+  `mod.toml`'s new `[media]`: a banner (their card, and the top of their page), an animated GIF of
+  the mod in play (played in the banner on their page, and on their card while the pointer rests
+  on it), an icon beside their name, and screenshots on their page that open on the whole window.
+  A mod installed from a file or a folder now looks as one from the catalogue does. `tags` find a
+  mod in the library and show on its page, and `[links]` (and `source`) are links there. The
+  installer keeps a mod's `media` folder and the pictures its manifest names; the mod check tells
+  under PRESENTATION what would not show as meant (notes: a mod's badge is how it plays). See
+  [docs/MODDING.md](docs/MODDING.md#presenting-a-mod-in-the-launcher) and the
+  [example mod](docs/examples/example-mod).
+- Mods can theme the battle's interface: a `[theme]` in their `mod.toml` draws the HUD, modern
+  and classic, in colours of their own (an accent, text, panels, the metal and energy bars, health
+  and warnings, a side's own over the rest), with pictures of their own behind the modern HUD's
+  plates and top bar and a font for its titles (fitted to the HUD's lines); the classic HUD keeps
+  TA's art (a mod's interface files change it) and takes the theme's lettering. The battle's menus,
+  dialogs and result pages, the loading screens and the cockpit keep TA Reborn's own look. The
+  last mod in the load order with a theme gives it; MODS' INTERFACE THEMES in the Interface options
+  turns them off. The launcher shows a
+  mod's theme on its page, and the mod check tells what would not draw as meant. Without a theme
+  the HUD is drawn as before, to the pixel. See
+  [docs/MODDING.md](docs/MODDING.md#theming-the-interface).
+- A mod's `mod.toml` can name the mods it must not be on with (`conflicts`) and the oldest TA
+  Reborn it plays in (`requires_reborn`): with a conflicting mod on, or in an older TA Reborn, the
+  load order does not resolve, and the launcher and the game say why and what to do (its card
+  shows a red lamp when it needs a newer TA Reborn).
+- `ta-tools mod-new <folder>` makes a new mod's folder: a `mod.toml` naming it, every other key
+  written out and commented, a `media` folder and a read-me of what goes where.
+- The mod check reads a mod's `mod.toml` as TA Reborn reads it and tells what is read otherwise
+  than written: a key it does not know (with the key likely meant, `depends` for `depend`), a key
+  written below a `[table]` line, which TOML takes for that table's (a `requires_reborn` after
+  `[media]` is never read), a value of the wrong kind, one text where a list is wanted. A key that
+  decides what the game mounts, misplaced or mistyped, is a warning: the mod is mounted as if it
+  were not given.
+- When the load order does not resolve, LOAD ORDER offers to turn off what stops it: a mod that
+  needs one not installed or a newer TA Reborn, or either of two that cannot be on together.
+
+### Changed
+- A `mod.toml` is read more forgivingly: a value of the wrong kind in what only presents the mod
+  (its version, description, authors, tags, pictures, links or theme) is left out and the rest
+  read, where the whole mod was left out; one text where a list is wanted is a list of that one
+  (`tags = "units"`, `depends = "ship-hulls"`). What decides whether it is mounted is read as
+  strictly as before.
+- Installing a mod, the launcher and `ta-tools mod-install` keep its `mod.toml` as written,
+  comments and keys this TA Reborn does not know too, changing only what the install sets; the map
+  editor, saving a map as a mod again, does the same and keeps the map's other authors.
+
+### Fixed
+- Installing a mod failed when its manifest named a file in one of TA's folders in other capitals
+  than the disk's (`Fonts/hud.ttf` for `fonts/hud.ttf`), when its content folder was called `Base`
+  or `Reborn`, when the package's file name made an id the launcher refuses (longer than 64
+  letters, `base.zip`) though the package names its own, and when it held only a `mod.toml` that
+  blanks archives of the original game. A manifest that does not read is named by its place in the
+  package, with what TOML found.
+- The map editor saving a map as a mod: a save cut off between its two steps (by an antivirus, a
+  crash) could leave the map in a hidden backup folder; the launcher puts it back at its start,
+  and the editor at its next save. A `mod.toml` edited by hand that did not read made the editor
+  say the folder was not its own: it now says what does not read.
+- The launcher checked a mod again at every start when the check stopped at its own limits (a very
+  large mod) or found nothing of it to read: such a report is now kept for the same content, as a
+  complete one is (a cancelled check never is). The check of the original game without the mod is
+  no longer redone when a mod it depends on changes only its name, description, pictures or
+  theme.
+- A mod's check that could not mount the mod with what it needs said so in English only, with
+  advice that did not fit: mods needing each other in a circle, a mod that cannot be on with
+  another it is mounted with, and one that needs a newer TA Reborn each have words of their own,
+  in the player's language, and what to do, in the launcher and in `ta-tools validate-mod` alike.
+- `ta-tools validate-mod` lists its findings in the launcher's order.
+- Names listed together on the Mods page ("by …", "requires …") are joined as the player's
+  language joins them.
+- A turret whose target had moved just out of its reach kept it, held fire and passed over
+  another enemy it could hit; it now turns to one in reach, and fires on the first again the moment
+  it comes back. Units on attack-move or patrol kept stopping short of a target their weapons could
+  not reach yet: they now close until they can fire. An attack order keeps its target as before.
+
+## 1.0.6 — 2026-11-15
+
+NVIDIA's graphics driver has more room on the game's main thread, after crashes on some cards, and
+with orders on the right button a click no longer turns the 3D view. Orders on the minimap aim at
+the units marked there, Shift and a click on a queued reclaim or move takes it back, and the economy
+shows by how much you outspend your income. Reclaiming, the D-gun, fire at will and capturing work
+more as they do in TA, and edge scrolling keeps working once a battle has loaded.
+
+### Added
+- Shift and a click on an order already queued takes it back, as a building put down again on
+  its own plan does: a reclaim of a wreck, rock, tree or unit already queued for reclaiming, or a
+  move to within a waypoint's mark of one already set (a group's moves there go together).
 - A contributing guide, [CONTRIBUTING.md](CONTRIBUTING.md): the project's ground rules, which
   version to bump for which change, tests, the changelog, and how a pull request is written and
   reviewed. The pull request template follows it.
+- Orders on the minimap aim at the units marked on it. A right-click on an enemy's mark, in sight
+  or on radar, attacks it, and an armed command takes its own kind of unit there: Attack and
+  Capture an enemy, Guard, Repair, Load and Reclaim one of yours. A right-click among your own
+  units' marks still moves there.
 
 ### Fixed
-- Turrets stop tracking enemies beyond firing range and can switch to targets they can hit.
-  Units on attack-move or patrol keep advancing until their weapons are actually in range,
-  rather than stopping just short and holding fire. Explicit attack orders keep their targets.
+- With a store run dry, the metal or energy used showed only what came in (+8.4 / -8.4), however
+  much more was being asked for. The use shown is now what builders, upkeep, cloaks and weapons
+  ask for (+8.4 / -20), so you see by how much you outspend your income.
 - Edge scrolling stopped working once a battle had loaded, or the profile or career window had
   been open, until the cursor left the window and came back, which in full screen on a single
   display it never could. Any move of the cursor now brings it back. It no longer scrolls while a
   drag is carried out of the window, or while a slider or a scroll bar is dragged to the edge of
   the screen.
+- Units and defences on fire at will fired at enemies in the fog of war that radar or sonar
+  alone showed, which made long-range guns stronger than their cost. Fire at will, and return
+  fire, now takes on only what your side sees; radar and sonar contacts are fired on when you
+  order it. (Iron Rain's guns, which a radar post spots for, still shell what it shows.)
 - The Commanders' D-gun passed through almost everything: it harmed only what its shot went
   right through, and a shot aimed down at a unit or at the ground went on under the ground
   beyond it. It now runs on along the ground or the water to the end of its flight, destroying
   every unit within its area of effect of its way (sparing those beside the Commander as it
   fires) and the trees, rocks and wrecks in its path; trees catch fire as often as TA's weapon
   file says.
+- With orders on the right button, a right-click in the 3D view gave its order and turned the
+  view a little as well, whenever the pointer shook. The view now turns only once a right-drag
+  has gone further than a click's few pixels, and such a drag never gives an order.
+- Reclaiming paid its metal a little at a time as the work went, so its income came at once and
+  reclaiming was worth more than in TA. Now, as in TA, a wreck, rock or tree gives all of its
+  metal and energy when it is reclaimed whole, and one of your own units its metal when it is
+  gone.
 - Capturing the most costly units took far longer than meant: a Commander needed 51 minutes to
   capture the Core's Galactic Gate. Capturing a unit still takes four times its cost in work,
   but never more than two minutes of a Commander's.
+- The game could crash in the graphics driver on some NVIDIA cards ("the graphics driver
+  (nvoglv64.dll) failed", the main thread out of stack): the driver does its work on the
+  game's own threads, and Windows gives a program's main thread little room. The game's main
+  thread and the one that loads a battle now have 16 MiB.
 
 ## 1.0.5 — 2026-11-14
 

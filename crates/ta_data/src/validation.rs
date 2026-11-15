@@ -29,8 +29,14 @@ use crate::words::{en, enf, Fill, Words};
 /// kept for the launcher to show in the player's language, `Issue::words`, a file's reading
 /// error told in words of the check's own around the reader's; 13: what a mod uses of TA's later
 /// engines and how the game plays it, `Report::engine`; 14: a map's own features,
-/// `maps/<map>.features`, checked as definitions and known to its terrain).
-pub const SCHEMA_VERSION: u32 = 14;
+/// `maps/<map>.features`, checked as definitions and known to its terrain; 15: how a mod presents
+/// itself in the launcher, its pictures, gameplay preview and links, `presentation.*`; 16: its
+/// interface theme, `theme.*`; 17: a `requires_reborn` that is no version; 18: pictures, fonts
+/// and previews read by their content as the launcher and the game read them, a preview's length
+/// by the launcher's budget, a theme's contrast on every side and on what it is drawn over, a mod
+/// of its manifest alone complete, `validation.manifest_only`;
+/// a manifest's keys read otherwise than written, `manifest.*`).
+pub const SCHEMA_VERSION: u32 = 18;
 
 /// The keys of `gamedata/sound.tdf`'s categories the game plays (`ta_audio`'s sound events), each
 /// with or without a variant number (`select1`, `select2`…), with `count0` to `count9`; the
@@ -282,7 +288,9 @@ impl Report {
 
     /// Errors first, then warnings, then notes, what counts ahead of what does not, then by
     /// file and code: stable, so copied reports are diffable.
-    fn sort(&mut self) {
+    /// Its findings in the order every report lists them (the launcher's and `ta-tools
+    /// validate-mod`'s alike): what counts first, by severity, then where.
+    pub fn sort(&mut self) {
         self.issues.sort_by(|a, b| (!a.affects_status, severity_order(a.severity), a.origin, &a.path, a.line, &a.code, &a.message).cmp(&(!b.affects_status, severity_order(b.severity), b.origin, &b.path, b.line, &b.code, &b.message)));
     }
 }
@@ -445,6 +453,47 @@ pub fn content_unreadable(report: &mut Report, unreadable: &[Issue]) {
     if unreadable.iter().any(|i| i.affects_status && i.severity == Severity::Error) && report.issues.iter().any(|i| i.code == "validation.no_content") {
         report.issues.retain(|i| i.code != "validation.no_content");
         report.complete = true;
+    }
+}
+
+/// A folder mod of its manifest alone (no file but its mod.toml) whose manifest does something
+/// of its own: themes the interface, presents the mod in the library, or blanks archives of the
+/// original game's. Nothing of the game's data to check, and nothing wrong with that: a complete
+/// report that says so (`validation.manifest_only`), not a check that found nothing of it to read
+/// (`validation.no_content`, which it replaces).
+pub fn manifest_only(report: &mut Report, manifest: &ta_vfs::mods::ModManifest) {
+    let does = !manifest.theme.is_empty() || !manifest.media.is_empty() || !manifest.replaces.is_empty();
+    if !does || !report.issues.iter().any(|i| i.code == "validation.no_content") { return; }
+    report.issues.retain(|i| i.code != "validation.no_content");
+    report.complete = true;
+    report.empty = true;
+    let words = Words::text(en("This mod is its mod.toml alone: it holds no units, weapons, features, maps, models, scripts, animations or sounds for the data checks to read. What its mod.toml gives (an interface theme, its pictures in the library, archives it blanks) is checked on its own."));
+    report.issues.push(Issue {
+        severity: Severity::Info, code: "validation.manifest_only".into(), path: "mod.toml".into(), layer: report.target_layer.clone().unwrap_or_default(),
+        message: words.english(), words, suggestion: en("Nothing to do if that is what the mod is.").into(),
+        ..Issue::default()
+    });
+    report.sort();
+}
+
+/// What a check says when the mods it mounts would not load together (`resolve_load_order`'s
+/// error): its code, its words and what to do.
+pub fn load_order_failure(error: &ta_vfs::mods::ModError) -> (&'static str, Words, &'static str) {
+    use ta_vfs::mods::ModError;
+    match error {
+        ModError::Missing(id) => ("DEPENDENCY", enf("The mod {id} is not installed.", [("id", Fill::name(id))]),
+            en("Install the mods it needs, then check it again.")),
+        ModError::MissingDependency { module, dependency } => ("DEPENDENCY", enf("{module} needs {dependency}, which is not installed.", [("module", Fill::name(module)), ("dependency", Fill::name(dependency))]),
+            en("Install the mods it needs, then check it again.")),
+        ModError::Cycle(ids) => ("DEPENDENCY_CYCLE", enf("These mods need each other in a circle, so none of them can load first: {mods}.", [("mods", Fill::name(ids))]),
+            en("Take one of them out of another's depends in its mod.toml (load_after orders mods without needing them).")),
+        ModError::Depth(id) => ("DEPENDENCY_CYCLE", enf("The mods' dependencies nest more than 64 deep, at {id}.", [("id", Fill::name(id))]),
+            en("Make the chain of mods needing mods shorter.")),
+        ModError::Conflict { module, other } => ("DEPENDENCY_CONFLICT", enf("{module} cannot be on with {other}, and the check mounts them together: one of them needs the other, or a mod they need.", [("module", Fill::name(module)), ("other", Fill::name(other))]),
+            en("Correct the mods' mod.toml: a mod cannot need a mod it names in conflicts.")),
+        ModError::NeedsNewer { module, version } => ("DEPENDENCY_NEEDS_NEWER", enf("{module} needs TA Reborn {version} or later: this is {this}, which does not mount it.", [("module", Fill::name(module)), ("version", Fill::name(version)), ("this", Fill::name(ta_vfs::mods::REBORN_VERSION))]),
+            en("Update TA Reborn, then check the mod again.")),
+        other => ("DEPENDENCY", Words::raw(other.to_string()), en("Restore the required files or dependencies, then run validation again.")),
     }
 }
 
@@ -2660,6 +2709,24 @@ mod tests {
         let report = validate(&f.vfs(&["base", "mod"]), &options, |_| true);
         assert!(report.complete && report.empty);
         assert_eq!(report.status(), Status::Empty, "{}", report.to_text());
+    }
+
+    /// A folder mod of its mod.toml alone that themes the interface or presents itself is
+    /// complete, nothing of the data to check (not an incomplete check); one that does nothing is
+    /// still told there was nothing of it to read.
+    #[test]
+    fn a_mod_of_its_manifest_alone_is_complete() {
+        let stopped = || Report { complete: false, target_layer: Some("mod:m".into()), issues: vec![Issue { code: "validation.no_content".into(), ..Issue::default() }], ..Report::default() };
+        let themed: ta_vfs::mods::ModManifest = toml::from_str("id = \"m\"\nname = \"M\"\n[theme]\naccent = \"#5ab4ff\"\n").unwrap();
+        let mut report = stopped();
+        manifest_only(&mut report, &themed);
+        assert!(report.complete && report.empty && report.status() == Status::Empty, "{}", report.to_text());
+        assert_eq!(report.issues.iter().map(|i| i.code.as_str()).collect::<Vec<_>>(), ["validation.manifest_only"]);
+        assert!(report.issues[0].severity == Severity::Info && report.issues[0].layer == "mod:m");
+        let plain: ta_vfs::mods::ModManifest = toml::from_str("id = \"m\"\nname = \"M\"\n").unwrap();
+        let mut report = stopped();
+        manifest_only(&mut report, &plain);
+        assert!(!report.complete && report.issues[0].code == "validation.no_content");
     }
 
     #[test]

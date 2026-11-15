@@ -558,3 +558,76 @@ original». Las etiquetas sin concordancia de género (compatible, sin uso).
 | patch / the patched engines of later years / engine | parche / los motores parcheados de años posteriores / motor |
 | weapon ID / unit value (a script's) / cloak (unit value 111) | ID de arma (los ID) / valor de unidad / camuflaje |
 | sides / campaigns of its own; TA's own computer players | bandos / campañas propios del mod; jugadores IA del propio TA |
+
+## La presentación de un mod en el lanzador (`pages/mods.rs`, `crates/ta_data/src/presentation.rs`)
+
+El banner, la vista previa de juego, el icono, las capturas y los enlaces de un mod en la biblioteca
+de MODS, y las notas de la comprobación sobre ellos, en el grupo PRESENTACIÓN del informe.
+`mod.toml`, `media/banner.png` y `{key}` (una clave del manifiesto: banner, preview, icon,
+screenshots) no se traducen: "La entrada {key} de mod.toml apunta a {path}".
+
+| English | Español |
+|---|---|
+| PRESENTATION (grupo de notas del informe) | PRESENTACIÓN |
+| banner (la tarjeta y la parte superior de la página del mod) | banner (el banner) |
+| gameplay preview (un GIF animado del mod en partida) | vista previa de juego (como «imágenes de juego») |
+| PLAY PREVIEW (botón del banner con el movimiento reducido) | VER VISTA PREVIA |
+| icon (de un mod) | icono |
+| SCREENSHOTS / Screenshot {n} of {count} / {n} of {count} | CAPTURAS (como CAPTURA) / Captura {n} de {count} / {n} de {count} |
+| MOD PAGE (enlace a la página web del mod) | PÁGINA DEL MOD |
+| the mod's media folder / a path from the mod's folder | la carpeta media del mod / una ruta relativa a la carpeta del mod |
+| frames (de un GIF) | fotogramas |
+| shows blurred / shows sharp | se ve borroso / se ve nítido |
+| … at best (el tamaño ideal) | lo ideal es … |
+| still picture / picture editor | imagen fija / editor de imágenes |
+| link / web address | enlace / dirección web |
+
+## El tema de interfaz de un mod (`pages/mods.rs`, `settings.rs`, `presentation.rs`)
+
+El `[theme]` de un mod dibuja el HUD de sus batallas con colores, imágenes y fuente propios; la
+página del mod lo muestra bajo TEMA DE INTERFAZ y las opciones de Interfaz del juego lo desactivan.
+HUD se queda como está: el HUD. El metal propio del HUD (las texturas de su bando, donde iría la
+imagen) es su propio fondo metálico, que muestra en su lugar: «metal» a secas se leería como el
+recurso. Delante de o-: «TrueType u OpenType», «.ttf u .otf».
+
+| English | Español |
+|---|---|
+| interface theme / INTERFACE THEME (rótulo de la página del mod) | tema de interfaz / TEMA DE INTERFAZ |
+| MODS' INTERFACE THEMES (el interruptor) / in the game's Interface options | TEMAS DE INTERFAZ DE MODS / en las opciones de Interfaz del juego |
+| HUD / panels | el HUD / paneles |
+| accent (un color del tema) | color de énfasis (el de Windows) |
+| font / font file | fuente (como «las fuentes de Windows») / archivo de fuente |
+| the HUD draws its own metal there | en su lugar, el HUD muestra su propio fondo metálico |
+| the HUD keeps TA Reborn's own (color, fuente) | el HUD mantiene ahí el color de TA Reborn / mantiene la de TA Reborn |
+| a tile (una imagen repetida por los paneles) | tesela |
+| a contrast of {ratio}:1 / {least}:1 reads well | un contraste de {ratio}:1 / Con {least}:1 se lee bien |
+| the theme's {key} (una clave del manifiesto) / una clave de color | la entrada {key} del tema / el color {key} |
+| side ([theme.sides.arm]) | bando |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | Español |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} no puede estar activado junto con {other}: desactiva uno de los dos / incompatible con {mods} |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} o posterior / tienes la {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | REQUIERE UN TA REBORN MÁS NUEVO |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / la versión más antigua de TA Reborn en la que funciona el mod |
+
+## El manifiesto de un mod según la comprobación, y su orden de carga (`presentation.rs`, `validation.rs`, `mod_order.rs`)
+
+`mod.toml`, `[table]`, `[{table}]`, `depends`, `load_after`, `conflicts`, `panel_texture` y
+`tags = ["units"]` se quedan como están; una clave del manifiesto es una entrada (femenino: la omite,
+la pasa por alto), como «La entrada {key} de mod.toml». `{found}` y `{expected}` rellenan «La entrada
+{key} de mod.toml es {found} cuando debería ser {expected}»: sintagmas nominales.
+
+| English | Español |
+|---|---|
+| key (of mod.toml) / value / table / [table] line / manifest | entrada / valor / tabla / línea [table] / manifiesto |
+| text in quotes / a whole number / a number / true or false | texto entre comillas / un número entero / un número / true o false (las palabras de TOML) |
+| a date / a list in square brackets / a table | una fecha / una lista entre corchetes / una tabla |
+| reads past it (an unknown key) / leaves it out (a value of another kind) | la pasa por alto / la omite |
+| a slip of the pen | una errata |
+| need each other in a circle / nest more than 64 deep | se necesitan unos a otros en círculo / se anidan a más de 64 niveles |
+| plates (the HUD's, a theme's picture behind them) / the side's own metal plates | placas / las placas metálicas propias del bando |
+| line spacing / one frame in {stride} (a preview played with fewer frames) / choppier | interlineado / uno de cada {stride} / más entrecortada |
+| TURN OFF {name} (un mod, junto a ENABLE {name}) / STOP PREVIEW (junto a PLAY PREVIEW) | DESACTIVAR {name} / PARAR VISTA PREVIA (como STOP: PARAR) |

@@ -184,6 +184,10 @@ struct State {
     menu: Menu,
     minimap: Minimap,
     hud: Hud,
+    /// The battle's interface in its mod's theme, as drawn now (`mod_theme`), and the theme of
+    /// the mods in play (worked out again when they change: the editor's saved maps).
+    theme_applied: crate::mod_theme::Applied,
+    theme_of: Option<(usize, Option<crate::mod_theme::ModTheme>)>,
     dev: DevPanel,
     movie: Option<MoviePlayer>,
     /// Captures: `TA_ROOM_TUBE=<dir>` plays that folder's frames (`f_0.png`, `f_1.png`...) on the
@@ -937,6 +941,9 @@ impl App {
             // (What the screen showed went with it: no page or dialog of it goes out over the
             // next one.)
             ta_ui::panel::forget_exits(&state.egui.ctx);
+            // (Nor a battle's theme: the loading screen and what comes after it, the menu, a
+            // lobby, the next battle until its HUD takes its own, are TA Reborn's.)
+            state.leave_mod_theme();
         }
         // (The game's own start: a battlefield's or a benchmark pass's is checked before its
         // renderer is lent, in `draw`.)
@@ -964,7 +971,9 @@ impl App {
         let (tx, result) = std::sync::mpsc::channel();
         let (status, progress) = std::sync::mpsc::channel();
         let (ballast_device, ballast_queue, battle) = (host_device.clone(), host_queue.clone(), self.state.is_some());
-        std::thread::Builder::new().name("battlefield-loader".into()).spawn(move || {
+        // (It builds the battlefield's pipelines: the graphics driver compiles their shaders on
+        // it, with the room the main thread has, `build.rs`, not a thread's usual 2 MiB.)
+        std::thread::Builder::new().name("battlefield-loader".into()).stack_size(16 << 20).spawn(move || {
             let refused = ta_render::out_of_memory_events();
             hold_ballast(&ballast_device, &ballast_queue, battle, true);
             let loaded = work(status);
@@ -2249,6 +2258,8 @@ impl State {
             menu,
             minimap: Minimap::default(),
             hud: Hud::new(args.classic_ui),
+            theme_applied: Default::default(),
+            theme_of: None,
             dev: DevPanel {
                 visible: args.dev_panel,
                 fps: 0.0,
@@ -4239,7 +4250,9 @@ impl State {
         // (Ctrl+right-drag draws a formation when the right button gives orders.)
         let right_orders = self.game.order_button == ta_config::OrderButton::Right;
         let drawing = self.photo.is_none() && (self.game.formation.is_some() || right_orders && input.modifiers.control_key() && !self.game.selection.is_empty());
-        let orbiting = input.button_held(MouseButtonId::Right) && !drawing && self.game.radial.is_none() || (input.button_held(MouseButtonId::Middle) && input.modifiers.alt_key());
+        // (Past a click's few pixels: a click's order never turns it. Photo mode and the map
+        // editor turn it so too, though they take no orders.)
+        let orbiting = input.right_dragging() && !drawing && self.game.radial.is_none() || (input.button_held(MouseButtonId::Middle) && input.modifiers.alt_key());
         if orbiting && cam.mode == CameraMode::Perspective {
             cam.yaw += input.mouse_delta.x * 0.006;
             cam.pitch = (cam.pitch - input.mouse_delta.y * 0.004).clamp(min_pitch, max_pitch);
@@ -5129,6 +5142,33 @@ impl State {
         }
     }
 
+    /// The battle's interface in the theme of the mods in play, for the side of the player whose
+    /// interface is shown: TA Reborn's own off the battlefield, with MODS' INTERFACE THEMES off,
+    /// or (captures) with `TA_MOD_THEME=0`. (Each frame: nothing is made or copied unless the
+    /// theme or the side changed.)
+    fn apply_mod_theme(&mut self) {
+        let mods = self.assets.mods.mods();
+        let key = mods.as_ptr() as usize ^ mods.len();
+        if self.theme_of.as_ref().is_none_or(|(at, _)| *at != key) {
+            self.theme_of = Some((key, crate::mod_theme::of(mods)));
+        }
+        let allowed = self.settings.gameplay.mod_themes && crate::mod_theme::allowed_here();
+        let side = (allowed && self.screen == Screen::Playing)
+            .then(|| self.game.sim.players.get(self.game.hud_player() as usize).map(|p| p.side.as_str())).flatten();
+        let theme = self.theme_of.as_ref().and_then(|(_, theme)| theme.as_ref());
+        self.theme_applied.apply(&self.egui.ctx, theme, side);
+        if !Arc::ptr_eq(&self.hud.theme_pictures, &self.theme_applied.pictures) {
+            self.hud.theme_pictures = self.theme_applied.pictures.clone();
+        }
+    }
+
+    /// The battle's theme put away before a loading screen: the battle's window lettered and
+    /// coloured as TA Reborn's until the next battle draws its HUD (which takes its theme again).
+    fn leave_mod_theme(&mut self) {
+        self.theme_applied.apply(&self.egui.ctx, None, None);
+        self.hud.theme_pictures = self.theme_applied.pictures.clone();
+    }
+
     fn frame(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
         if self.backdrop_retry.is_some_and(|at| Instant::now() >= at) && self.pending.is_none() {
             self.backdrop_retry = None;
@@ -5139,6 +5179,7 @@ impl State {
         self.renderer.post.settings.reduced_flashes = self.settings.gameplay.reduced_flashes;
         ta_ui::motion::set_reduced(&self.egui.ctx, self.settings.gameplay.reduced_motion);
         ta_ui::motion::set_reduced_flashes(&self.egui.ctx, self.settings.gameplay.reduced_flashes);
+        self.apply_mod_theme();
         // (`TA_SOUND_LOG`: the sounds this frame starts are at its time on a capture's clock.)
         self.audio.set_frame(self.frames, self.capture_dt().is_some());
         self.audio.set_background(!self.focused() && self.screenshot_path.is_none());
@@ -5928,7 +5969,9 @@ impl State {
                 Screen::Playing => {
                     hud.accessibility.show(ui.ctx(), game, settings.gameplay.screen_reader_announcements);
                     game.menu_open = *in_game_menu;
-                    hud.draw(ui, &assets.vfs, game, camera, minimap);
+                    // The HUD in the battle's theme, where its mod has one; what comes after it, the
+                    // tutorial, the tips, the battle menu and its pages, is TA Reborn's own.
+                    ta_ui::theme::hud(ui, |ui| hud.draw(ui, &assets.vfs, game, camera, minimap));
                     if hud.take_open_menu() {
                         *in_game_menu = true;
                     }
@@ -7669,7 +7712,9 @@ impl State {
     fn companion_frame(&mut self) {
         let Some(companion) = self.companion.as_mut() else { return };
         // (Captures: `TA_COMPANION_SHOT=<file>` at `TA_COMPANION_AT=<frame>` saves its picture.)
-        let snapshot = std::env::var("TA_COMPANION_AT").ok().and_then(|v| v.parse::<u32>().ok()).filter(|&at| at == self.frames).and(std::env::var_os("TA_COMPANION_SHOT")).map(std::path::PathBuf::from);
+        static SHOT: std::sync::OnceLock<Option<(u32, std::path::PathBuf)>> = std::sync::OnceLock::new();
+        let shot = SHOT.get_or_init(|| std::env::var("TA_COMPANION_AT").ok().and_then(|v| v.parse::<u32>().ok()).zip(std::env::var_os("TA_COMPANION_SHOT").map(std::path::PathBuf::from)));
+        let snapshot = shot.as_ref().filter(|(at, _)| *at == self.frames).map(|(_, path)| path.clone());
         if !companion.due() && snapshot.is_none() {
             return;
         }
@@ -7690,10 +7735,16 @@ impl State {
         }
         let battle = self.screen == Screen::Playing;
         let key = self.game.keys.text("companion").to_string();
+        // (Its HUD a HUD of its own: the theme's pictures behind its plates too, or none, as the
+        // main one's are this frame; its palette is the battle's, and its font follows the battle
+        // window's, `Companion::frame`.)
+        if !Arc::ptr_eq(&companion.hud.theme_pictures, &self.theme_applied.pictures) {
+            companion.hud.theme_pictures = self.theme_applied.pictures.clone();
+        }
         let (game, camera, vfs) = (&mut self.game, &mut self.camera, &self.assets.vfs);
         companion.snapshot = snapshot;
         let waiting = (!battle).then_some(key.as_str());
-        if let Some(sound) = companion.frame(&self.renderer.gpu, |ui, hud, minimap| hud.companion_page(ui, vfs, game, camera, minimap, waiting)) {
+        if let Some(sound) = companion.frame(&self.renderer.gpu, &self.egui.ctx, |ui, hud, minimap| hud.companion_page(ui, vfs, game, camera, minimap, waiting)) {
             self.audio.play_interface(sound.event());
         }
         // (Its own close button.)
@@ -7940,8 +7991,11 @@ impl State {
         let cast = film.settings.scoreboard && film.clip.is_none();
         let armies = if film.clip.is_some() { crate::clips::armies(game) } else { Vec::new() };
         let shown: &crate::film::Film = film;
+        // (The cast's scoreboard and kill feed are the battle's HUD, in its theme as on the screen;
+        // the film's own titles are TA Reborn's.)
+        ta_ui::theme::follow_fonts(ctx, &self.egui.ctx);
         let output = ctx.run_ui(raw, |ui| {
-            hud.film_overlay(ui.ctx(), vfs, game, cast, seconds as f64);
+            ta_ui::theme::hud(ui, |ui| hud.film_overlay(ui.ctx(), vfs, game, cast, seconds as f64));
             shown.overlay(ui.ctx(), fade, tick, &armies);
         });
         let out_ppp = output.pixels_per_point;

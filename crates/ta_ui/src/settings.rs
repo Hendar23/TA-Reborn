@@ -837,6 +837,7 @@ fn interface(ui: &mut Ui, rows: &mut Rows, p: &mut Gameplay, launcher: &mut Laun
         let classic = p.classic_interface;
         ui.add_enabled_ui(classic, |ui| toggle_control(ui, &mut p.classic_pixels, "ORIGINAL PIXELS"));
     });
+    toggle_row(ui, rows, "MODS' INTERFACE THEMES", "Battles played with a mod that has an interface theme show the HUD in the mod's colours, pictures and font. Off: TA Reborn's own always.", "mod theme hud colours colors skin look interface style font", &mut p.mod_themes);
     toggle_row(ui, rows, "COMPANION SCREEN", "Every battle opens the companion screen on your second display: the map and intel beside the battle. Its key (Alt+C) opens and closes it at any time.", "second monitor display screen map intel window dual", &mut p.companion);
     setting_row(ui, rows, "MENU BACKDROP", "Behind the game's title menu: a film of short scenes staged on TA Reborn's worlds (the season's at Halloween, Christmas and the New Year), or a battle between computer players as it plays", "title main menu background scene film cinematic attract battle", |ui| {
         widgets::segmented_fill(ui, &mut p.menu_backdrop, &[(MenuBackdrop::Film, n("FILM")), (MenuBackdrop::Battle, n("BATTLE"))]);
@@ -1148,6 +1149,7 @@ fn restore(category: Category, config: &mut Config) {
             p.strategic_icons = d.gameplay.strategic_icons;
             p.classic_interface = d.gameplay.classic_interface;
             p.classic_pixels = d.gameplay.classic_pixels;
+            p.mod_themes = d.gameplay.mod_themes;
             p.companion = d.gameplay.companion;
             p.menu_backdrop = d.gameplay.menu_backdrop;
             config.launcher.seasonal_effects = d.launcher.seasonal_effects;

@@ -14,12 +14,19 @@
 //! and Korean, which both lack, come from the system's fonts (see [`cjk_faces`]). Every
 //! face's capitals are set in the middle of their line (see [`VMetrics::cap_centring`]), so
 //! text centred in a box or beside a lamp, a bullet or an arrow sits level with it.
+//!
+//! A battle's HUD alone may be drawn in a mod's interface theme: what is drawn inside [`hud`]
+//! takes the battle's palette ([`set_battle_palette`], through [`pal`]) and, in a context given
+//! one, its font ([`set_battle_font`], in the HUD's own families); everything else, and anything
+//! drawn in [`reborn`] inside it (a dialog's panel), is TA Reborn's own whatever the theme.
 
 use std::borrow::Cow;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use egui::epaint::text::VariationCoords;
+use ta_data::font::{VMetrics, has_face, vmetrics};
 use egui::style::{HandleShape, Selection, WidgetVisuals, Widgets};
 use egui::{
     Color32, CornerRadius, CursorIcon, FontData, FontDefinitions, FontFamily, FontId, FontTweak, Margin,
@@ -74,6 +81,416 @@ pub const SKY: Color32 = Color32::from_rgb(104, 184, 232);
 /// TA's button lettering: pale cream (its in-game buttons' stencil caps).
 pub const CREAM: Color32 = Color32::from_rgb(226, 222, 182);
 
+// ---- The battle's palette -----------------------------------------------------------------
+
+/// The colours the game draws its HUD with: the palette above ([`Palette::REBORN`]), unless a
+/// mod's interface theme gives a battle colours of its own ([`set_battle_palette`]; the game's
+/// `mod_theme`). They are drawn only inside [`hud`]: everything else, the launcher, the menus,
+/// the battle's dialogs and pages and the cockpit, is drawn in TA Reborn's own whatever the theme.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Palette {
+    pub bg_deep: Color32,
+    pub bg: Color32,
+    pub panel: Color32,
+    pub panel_hi: Color32,
+    pub inset: Color32,
+    pub line: Color32,
+    pub line_hi: Color32,
+    /// Secondary text and labels ([`STEEL`]), and its dimmer kind.
+    pub steel: Color32,
+    pub steel_dim: Color32,
+    pub text: Color32,
+    pub text_bright: Color32,
+    /// The accent ([`AMBER`]'s brass): titles, selection, the main action, focus.
+    pub accent: Color32,
+    pub accent_bright: Color32,
+    pub accent_dim: Color32,
+    pub accent_deep: Color32,
+    pub on_accent: Color32,
+    /// Health, success, lamps lit ([`GREEN`]); damage, errors ([`RED`]); radar and allies ([`SKY`]).
+    pub good: Color32,
+    pub good_deep: Color32,
+    pub bad: Color32,
+    pub bad_deep: Color32,
+    pub info: Color32,
+    /// Buttons' stencil lettering ([`CREAM`]).
+    pub button_text: Color32,
+    /// The resource bar's metal and energy.
+    pub metal_bar: Color32,
+    pub energy_bar: Color32,
+    /// egui's own shades: a faint background, a widget's fill and its fill hovered, a selection's.
+    pub faint_bg: Color32,
+    pub widget: Color32,
+    pub widget_hover: Color32,
+    pub selection: Color32,
+    /// The classic HUD's own lettering (its art is TA's or a mod's): text, its buttons', dimmed,
+    /// and a button's held down.
+    pub classic_text: Color32,
+    pub classic_button: Color32,
+    pub classic_dim: Color32,
+    pub classic_pressed: Color32,
+}
+
+impl Palette {
+    /// TA Reborn's own: the constants above.
+    pub const REBORN: Palette = Palette {
+        bg_deep: BG_DEEP, bg: BG, panel: PANEL, panel_hi: PANEL_HI, inset: INSET, line: LINE, line_hi: LINE_HI,
+        steel: STEEL, steel_dim: STEEL_DIM, text: TEXT, text_bright: TEXT_BRIGHT,
+        accent: AMBER, accent_bright: AMBER_BRIGHT, accent_dim: AMBER_DIM, accent_deep: AMBER_DEEP, on_accent: ON_AMBER,
+        good: GREEN, good_deep: GREEN_DEEP, bad: RED, bad_deep: RED_DEEP, info: SKY, button_text: CREAM,
+        metal_bar: Color32::from_rgb(170, 184, 196), energy_bar: Color32::from_rgb(242, 212, 60),
+        faint_bg: Color32::from_rgb(26, 25, 21), widget: Color32::from_rgb(40, 39, 34), widget_hover: Color32::from_rgb(54, 52, 45), selection: Color32::from_rgb(96, 78, 32),
+        classic_text: Color32::from_rgb(236, 236, 236), classic_button: Color32::from_rgb(223, 223, 183), classic_dim: Color32::from_rgb(170, 170, 160), classic_pressed: Color32::from_rgb(255, 255, 215),
+    };
+
+    /// This palette with a theme's colours (`colour` gives each by its key, `None` where the
+    /// theme leaves it): the shades a theme does not give are made from those it does, as
+    /// [`Palette::REBORN`]'s are from its own (`accent` lights `accent_bright` and darkens to
+    /// `accent_dim`, `accent_deep`; `panel` darkens to `bg`, `bg_deep`...).
+    pub fn themed(self, colour: &dyn Fn(&str) -> Option<Color32>) -> Palette {
+        let mut p = self;
+        let toward = |c: Color32, to: Color32, t: f32| c.lerp_to_gamma(to, t);
+        let (black, white) = (Color32::BLACK, Color32::WHITE);
+        if let Some(accent) = colour("accent") {
+            p.accent = accent;
+            p.accent_bright = brighter(accent);
+            p.accent_dim = toward(accent, black, 0.36);
+            p.accent_deep = toward(accent, black, 0.74);
+            p.on_accent = toward(accent, black, 0.88);
+            p.selection = toward(accent, black, 0.56);
+        }
+        if let Some(text) = colour("text") {
+            p.text = text;
+            p.text_bright = toward(text, white, 0.66);
+        }
+        if let Some(dim) = colour("dim") {
+            p.steel = dim;
+            p.steel_dim = toward(dim, black, 0.22);
+        }
+        if let Some(panel) = colour("panel") {
+            p.panel = panel;
+            p.bg = toward(panel, black, 0.35);
+            p.bg_deep = toward(panel, black, 0.55);
+            p.panel_hi = toward(panel, white, 0.06);
+            p.faint_bg = toward(p.bg, panel, 0.55);
+            p.widget = toward(panel, white, 0.04);
+            p.widget_hover = toward(panel, white, 0.1);
+            p.inset = toward(panel, black, 0.58);
+            p.line = toward(panel, white, 0.13);
+            p.line_hi = toward(p.line, white, 0.17);
+        }
+        if let Some(inset) = colour("inset") { p.inset = inset; }
+        if let Some(line) = colour("line") {
+            p.line = line;
+            p.line_hi = toward(line, white, 0.17);
+        }
+        if let Some(good) = colour("good") {
+            p.good = good;
+            p.good_deep = toward(good, black, 0.8);
+        }
+        if let Some(bad) = colour("bad") {
+            p.bad = bad;
+            p.bad_deep = toward(bad, black, 0.76);
+        }
+        let set = |field: &mut Color32, key: &str| if let Some(c) = colour(key) { *field = c; };
+        set(&mut p.accent_bright, "accent_bright");
+        set(&mut p.text_bright, "text_bright");
+        set(&mut p.info, "info");
+        set(&mut p.button_text, "button_text");
+        set(&mut p.metal_bar, "metal");
+        set(&mut p.energy_bar, "energy");
+        set(&mut p.classic_text, "classic.text");
+        set(&mut p.classic_button, "classic.button_text");
+        set(&mut p.classic_dim, "classic.dim");
+        set(&mut p.classic_pressed, "classic.pressed");
+        p
+    }
+}
+
+/// A colour lit as [`AMBER_BRIGHT`] is [`AMBER`]: brighter (value up an eighth) and a little
+/// paler (saturation down a fifth), its hue kept.
+fn brighter(c: Color32) -> Color32 {
+    let [r, g, b, a] = c.to_srgba_unmultiplied().map(|v| v as f32 / 255.0);
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let (v, chroma) = (max, max - min);
+    let s = if max > 0.0 { chroma / max } else { 0.0 };
+    let h = if chroma == 0.0 { 0.0 } else if max == r { ((g - b) / chroma).rem_euclid(6.0) } else if max == g { (b - r) / chroma + 2.0 } else { (r - g) / chroma + 4.0 };
+    let (v, s) = ((v * 1.12).min(1.0), s * 0.82);
+    let c2 = v * s;
+    let x = c2 * (1.0 - ((h % 2.0) - 1.0).abs());
+    let (r1, g1, b1) = match h as u32 { 0 => (c2, x, 0.0), 1 => (x, c2, 0.0), 2 => (0.0, c2, x), 3 => (0.0, x, c2), 4 => (x, 0.0, c2), _ => (c2, 0.0, x) };
+    let m = v - c2;
+    let byte = |v: f32| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgba_unmultiplied(byte(r1), byte(g1), byte(b1), (a * 255.0).round() as u8)
+}
+
+// ---- The battle's look --------------------------------------------------------------------
+
+/// The look of what is being drawn: TA Reborn's own, or the battle's HUD's ([`hud`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Look {
+    Reborn,
+    Hud,
+}
+
+thread_local! {
+    /// The battle's palette, the HUD's ([`set_battle_palette`]).
+    static BATTLE_PALETTE: Cell<Palette> = const { Cell::new(Palette::REBORN) };
+    /// The look of what is drawn now ([`hud`], [`reborn`]), and whether its lettering is a
+    /// themed battle's font (the HUD's, in a context that has one).
+    static LOOK: Cell<Look> = const { Cell::new(Look::Reborn) };
+    static HUD_FONT: Cell<bool> = const { Cell::new(false) };
+    /// Styles made for a look from others ([`styled`]), the last used first.
+    static STYLED: RefCell<Vec<Styled>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The palette of what is drawn now: the battle's ([`set_battle_palette`]) inside [`hud`], TA
+/// Reborn's own ([`Palette::REBORN`]) everywhere else.
+pub fn pal() -> Palette {
+    match LOOK.get() {
+        Look::Hud => BATTLE_PALETTE.get(),
+        Look::Reborn => Palette::REBORN,
+    }
+}
+
+/// The battle's palette, which [`hud`] draws in (TA Reborn's own unless a theme gave another).
+pub fn battle_palette() -> Palette {
+    BATTLE_PALETTE.get()
+}
+
+/// Sets the battle's palette: the colours [`hud`] draws the HUD in, egui's own widgets there with
+/// them. Nothing drawn outside it changes.
+pub fn set_battle_palette(palette: Palette) {
+    BATTLE_PALETTE.set(palette);
+}
+
+/// Whether what is drawn now is the battle's HUD ([`hud`]).
+pub fn in_hud() -> bool {
+    LOOK.get() == Look::Hud
+}
+
+/// Draws `add` as the battle's HUD: in the battle's palette ([`pal`]), its titles, numbers and
+/// buttons ([`strong`] and [`display`] text) in a theme's font where `ui`'s context has one
+/// ([`set_battle_font`]), and egui's own widgets, tooltips and drop-downs in them too. Everything
+/// drawn outside it is in TA Reborn's own look, whatever the theme; [`reborn`] gives that back
+/// inside it (the dialogs on TA Reborn's plates).
+pub fn hud<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    in_look(ui, Look::Hud, add)
+}
+
+/// Draws `add` in TA Reborn's own look wherever it is drawn, inside [`hud`] too: the dialogs and
+/// pages on TA Reborn's plates ([`crate::panel::Panel`] draws its contents so).
+pub fn reborn<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    in_look(ui, Look::Reborn, add)
+}
+
+/// [`reborn`] for what makes areas of its own on `ctx` (a dialog's window).
+pub fn reborn_on<R>(ctx: &egui::Context, add: impl FnOnce() -> R) -> R {
+    // (Outside the HUD, everything is in TA Reborn's own look already, as its makers styled it.)
+    if LOOK.get() == Look::Reborn {
+        return add();
+    }
+    let _look = InLook::enter(ctx, Look::Reborn);
+    add()
+}
+
+fn in_look<R>(ui: &mut egui::Ui, look: Look, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    // (Outside the HUD, everything is in TA Reborn's own look already, as its makers styled it: a
+    // launcher's or a menu's panel keeps its style as it is.)
+    if look == Look::Reborn && LOOK.get() == Look::Reborn {
+        return add(ui);
+    }
+    let _look = InLook::enter(ui.ctx(), look);
+    // (The ui's own style too: what it lays out takes its colours and lettering from it, as the
+    // uis made in it (a panel at the top of the screen) take theirs.)
+    let own = ui.style().clone();
+    let lent = styled(ui.ctx(), &own, look);
+    if let Some(style) = &lent {
+        ui.set_style(style.clone());
+    }
+    let inner = add(ui);
+    if lent.is_some() {
+        ui.set_style(own);
+    }
+    inner
+}
+
+/// A stretch of drawing in one look: the look before it, and the context's own style while
+/// another is lent it (what egui makes of itself meanwhile, areas, tooltips and drop-downs, takes
+/// the context's style), both put back when it ends.
+struct InLook {
+    ctx: egui::Context,
+    was: (Look, bool),
+    own: Option<Arc<Style>>,
+}
+
+impl InLook {
+    fn enter(ctx: &egui::Context, look: Look) -> InLook {
+        let was = (LOOK.replace(look), HUD_FONT.replace(look == Look::Hud && has_battle_font(ctx)));
+        let own = ctx.style_of(Theme::Dark);
+        let own = styled(ctx, &own, look).map(|lent| {
+            ctx.set_style_of(Theme::Dark, lent);
+            own
+        });
+        InLook { ctx: ctx.clone(), was, own }
+    }
+}
+
+impl Drop for InLook {
+    fn drop(&mut self) {
+        LOOK.set(self.was.0);
+        HUD_FONT.set(self.was.1);
+        if let Some(own) = self.own.take() {
+            self.ctx.set_style_of(Theme::Dark, own);
+        }
+    }
+}
+
+/// Runs `make` in TA Reborn's own look (the styles a context is installed with are).
+fn as_reborn<R>(make: impl FnOnce() -> R) -> R {
+    struct Back(Look, bool);
+    impl Drop for Back {
+        fn drop(&mut self) {
+            LOOK.set(self.0);
+            HUD_FONT.set(self.1);
+        }
+    }
+    let _back = Back(LOOK.replace(Look::Reborn), HUD_FONT.replace(false));
+    make()
+}
+
+/// A style made for a look from another ([`styled`]): `to` none where `from` is in it already.
+struct Styled {
+    from: Arc<Style>,
+    look: Look,
+    palette: Palette,
+    hud_font: bool,
+    to: Option<Arc<Style>>,
+}
+
+/// `style` in `look`, for `ctx` (whose battle font the HUD's lettering takes where it has one):
+/// egui's colours in the look's palette, its buttons' and headings' lettering in the look's
+/// families. None when it is so already. Made once, and kept while it is used: the next frames
+/// lend the same.
+fn styled(ctx: &egui::Context, style: &Arc<Style>, look: Look) -> Option<Arc<Style>> {
+    let palette = match look {
+        Look::Hud => BATTLE_PALETTE.get(),
+        Look::Reborn => Palette::REBORN,
+    };
+    let hud_font = look == Look::Hud && has_battle_font(ctx);
+    STYLED.with_borrow_mut(|made| {
+        if let Some(at) = made.iter().position(|s| Arc::ptr_eq(&s.from, style) && s.look == look && s.palette == palette && s.hud_font == hud_font) {
+            let hit = made.remove(at);
+            let to = hit.to.clone();
+            made.insert(0, hit);
+            return to;
+        }
+        let to = restyled(style, palette, hud_font).map(Arc::new);
+        // (The style it was made from kept with it: no other can take its place in memory.)
+        made.insert(0, Styled { from: style.clone(), look, palette, hud_font, to: to.clone() });
+        made.truncate(16);
+        to
+    })
+}
+
+/// `style` with egui's colours in `palette`, its lettering in TA Reborn's families or (`hud_font`)
+/// the HUD's; None when it is so already.
+fn restyled(style: &Style, palette: Palette, hud_font: bool) -> Option<Style> {
+    let visuals = visuals_of(palette);
+    let family = |family: &FontFamily| -> Option<FontFamily> {
+        let FontFamily::Name(name) = family else { return None };
+        let to = match (hud_font, &**name) {
+            (true, STRONG_FAMILY) => HUD_STRONG_FAMILY,
+            (true, DISPLAY_FAMILY) => HUD_DISPLAY_FAMILY,
+            (false, HUD_STRONG_FAMILY) => STRONG_FAMILY,
+            (false, HUD_DISPLAY_FAMILY) => DISPLAY_FAMILY,
+            _ => return None,
+        };
+        Some(FontFamily::Name(to.into()))
+    };
+    if style.visuals == visuals && style.text_styles.values().all(|font| family(&font.family).is_none()) {
+        return None;
+    }
+    let mut style = style.clone();
+    style.visuals = visuals;
+    for font in style.text_styles.values_mut() {
+        if let Some(to) = family(&font.family) {
+            font.family = to;
+        }
+    }
+    Some(style)
+}
+
+/// A colour TA Reborn's own look draws beside its palette's `reborn`, moved as a theme moved that
+/// colour (to `themed`): the colour itself where the theme leaves it, else as much lighter, darker
+/// or tinted, channel by channel. For the interface's fixed shades that go with a palette colour
+/// (the brass of a lit keycap, of the main action's button).
+pub fn retinted(colour: Color32, reborn: Color32, themed: Color32) -> Color32 {
+    if reborn == themed {
+        return colour;
+    }
+    let [r, g, b, a] = colour.to_srgba_unmultiplied();
+    let (from, to) = (reborn.to_srgba_unmultiplied(), themed.to_srgba_unmultiplied());
+    let channel = |c: u8, f: u8, t: u8| {
+        let (c, f, t) = (u32::from(c) + 1, u32::from(f) + 1, u32::from(t) + 1);
+        ((c * t + f / 2) / f).saturating_sub(1).min(255) as u8
+    };
+    Color32::from_rgba_unmultiplied(channel(r, from[0], to[0]), channel(g, from[1], to[1]), channel(b, from[2], to[2]), a)
+}
+
+/// A colour's relative luminance, as the Web's accessibility guidelines measure it (0 to 1).
+fn luminance(c: Color32) -> f32 {
+    let channel = |v: u8| {
+        let v = f32::from(v) / 255.0;
+        if v <= 0.039_28 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+}
+
+/// The contrast of two (opaque) colours, as the Web's accessibility guidelines measure it (1 to
+/// 21): 4.5 reads well as text, 3 as large or bold text.
+pub fn contrast(a: Color32, b: Color32) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// An opaque colour readable on `backdrop`: itself where its [`contrast`] with it is `least` or
+/// more (TA Reborn's own colours on its own plates are), else drawn towards white or black, away
+/// from the backdrop, until it is. For a theme's colours on the HUD's fixed dark backdrops, and
+/// fixed colours on a theme's plates.
+pub fn legible(colour: Color32, backdrop: Color32, least: f32) -> Color32 {
+    if contrast(colour, backdrop) >= least {
+        return colour;
+    }
+    // (Away from it: towards white on what is darker than the grey as far from both.)
+    let away = if luminance(backdrop) < 0.179 { Color32::WHITE } else { Color32::BLACK };
+    if contrast(away, backdrop) < least {
+        return away;
+    }
+    let (mut short, mut far) = (0.0f32, 1.0f32);
+    for _ in 0..12 {
+        let t = (short + far) / 2.0;
+        if contrast(colour.lerp_to_gamma(away, t), backdrop) >= least { far = t } else { short = t }
+    }
+    colour.lerp_to_gamma(away, far)
+}
+
+/// A colour as a theme writes it: `#rgb`, `#rrggbb` or `#rrggbbaa` (the `#` may be left out).
+pub fn parse_colour(text: &str) -> Option<Color32> {
+    let hex = text.trim().trim_start_matches('#');
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) { return None; }
+    let byte = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16).ok();
+    match hex.len() {
+        3 => {
+            let digit = |at: usize| u8::from_str_radix(&hex[at..at + 1], 16).ok().map(|d| d * 17);
+            Some(Color32::from_rgb(digit(0)?, digit(1)?, digit(2)?))
+        }
+        6 => Some(Color32::from_rgb(byte(0)?, byte(2)?, byte(4)?)),
+        8 => Some(Color32::from_rgba_unmultiplied(byte(0)?, byte(2)?, byte(4)?, byte(6)?)),
+        _ => None,
+    }
+}
+
 /// The spacing scale, in points: between the parts of one control (`XS`), related items
 /// (`S`), groups (`M`), a card's contents and its edge (`L`), cards (`XL`) and a page's
 /// regions (`XXL`).
@@ -92,15 +509,25 @@ pub mod space {
 pub const DISPLAY_FAMILY: &str = "ta-display";
 /// Semi-bold family for buttons, labels and navigation.
 pub const STRONG_FAMILY: &str = "ta-strong";
+/// The HUD's own [`STRONG_FAMILY`] and [`DISPLAY_FAMILY`]: their faces behind a themed battle's
+/// font, in a context that has one ([`set_battle_font`]); [`strong`] and [`display`] give them
+/// there inside [`hud`]. TA Reborn's own families never hold a theme's font.
+pub const HUD_STRONG_FAMILY: &str = "ta-hud-strong";
+pub const HUD_DISPLAY_FAMILY: &str = "ta-hud-display";
 
-/// Condensed bold display text.
-pub fn display(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name(DISPLAY_FAMILY.into()))
+/// Whether the lettering of what is drawn now is the HUD's in a themed battle's font.
+fn hud_lettering() -> bool {
+    LOOK.get() == Look::Hud && HUD_FONT.get()
 }
 
-/// Semi-bold text.
+/// Condensed bold display text (inside [`hud`], in a themed battle's font).
+pub fn display(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(if hud_lettering() { HUD_DISPLAY_FAMILY } else { DISPLAY_FAMILY }.into()))
+}
+
+/// Semi-bold text (inside [`hud`], in a themed battle's font).
 pub fn strong(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name(STRONG_FAMILY.into()))
+    FontId::new(size, FontFamily::Name(if hud_lettering() { HUD_STRONG_FAMILY } else { STRONG_FAMILY }.into()))
 }
 
 /// Regular body text.
@@ -165,7 +592,7 @@ pub fn install(ctx: &egui::Context) -> bool {
     follow_language(ctx);
     // A single, dark identity regardless of the OS theme.
     ctx.set_theme(Theme::Dark);
-    ctx.style_mut_of(Theme::Dark, apply_style);
+    as_reborn(|| ctx.style_mut_of(Theme::Dark, apply_style));
     system_font
 }
 
@@ -176,23 +603,127 @@ pub fn install_compact(ctx: &egui::Context) -> bool {
     let system_font = install_fonts(ctx);
     follow_language(ctx);
     ctx.set_theme(Theme::Dark);
-    ctx.style_mut_of(Theme::Dark, |style| {
-        apply_style(style);
-        compact(style);
+    as_reborn(|| {
+        ctx.style_mut_of(Theme::Dark, |style| {
+            apply_style(style);
+            compact(style);
+        })
     });
     system_font
 }
 
 fn install_fonts(ctx: &egui::Context) -> bool {
     let bahnschrift = bahnschrift();
-    ctx.set_fonts(definitions(bahnschrift, &crate::i18n::language()));
+    let battle = battle_font_of(ctx).map(|font| font.face);
+    ctx.set_fonts(definitions(bahnschrift, &crate::i18n::language(), battle.as_ref()));
     bahnschrift.is_some()
+}
+
+/// A mod's interface theme's font in a context ([`set_battle_font`]): its file, and the face made
+/// of it for the HUD's lettering ([`battle_face`]).
+#[derive(Clone)]
+struct BattleFont {
+    bytes: Arc<Vec<u8>>,
+    face: Arc<FontData>,
+}
+
+fn battle_font_id() -> egui::Id {
+    egui::Id::new("ta_ui::theme::battle_font")
+}
+
+fn battle_font_of(ctx: &egui::Context) -> Option<BattleFont> {
+    ctx.data(|d| d.get_temp::<BattleFont>(battle_font_id()))
+}
+
+/// Whether `ctx` letters its HUD in a mod's interface theme's font ([`set_battle_font`]).
+pub fn has_battle_font(ctx: &egui::Context) -> bool {
+    battle_font_of(ctx).is_some()
+}
+
+/// Whether a font file reads as egui reads it (it panics on one that does not): a face in it that
+/// `skrifa` opens, with the tables the interface sets it by (`ta_data::font`, the mod check's
+/// rule too).
+pub fn font_reads(bytes: &[u8]) -> bool {
+    ta_data::font::reads(bytes)
+}
+
+/// Sets the font of a mod's interface theme for `ctx`'s HUD (None: the interface's own): first in
+/// the HUD's families ([`HUD_STRONG_FAMILY`], [`HUD_DISPLAY_FAMILY`]), the interface's own faces
+/// after it for the letters it lacks, so [`hud`]'s titles, numbers and buttons are in it. Only
+/// `ctx` has it (the battle's window; the companion screen follows it, [`follow_fonts`]): another
+/// context, the loading screen's or the cockpit instruments', never does, and TA Reborn's own
+/// families never hold it. Its fonts are made again when it changes. A font that does not read
+/// ([`font_reads`]) is not set: false.
+pub fn set_battle_font(ctx: &egui::Context, font: Option<Arc<Vec<u8>>>) -> bool {
+    if font.as_ref().is_some_and(|bytes| !font_reads(bytes)) {
+        return false;
+    }
+    let same = match (battle_font_of(ctx), &font) {
+        (Some(a), Some(b)) => Arc::ptr_eq(&a.bytes, b) || *a.bytes == **b,
+        (None, None) => true,
+        _ => false,
+    };
+    if !same {
+        put_battle_font(ctx, font.map(|bytes| BattleFont { face: Arc::new(battle_face(&bytes)), bytes }));
+    }
+    true
+}
+
+/// Gives `ctx` the battle font `from` has (none where it has none), its fonts made again when that
+/// changed it: a window of the game's beside the battle's (the companion screen) lettered as the
+/// battle's HUD is.
+pub fn follow_fonts(ctx: &egui::Context, from: &egui::Context) {
+    let theirs = battle_font_of(from);
+    let same = match (battle_font_of(ctx), &theirs) {
+        (Some(a), Some(b)) => Arc::ptr_eq(&a.face, &b.face),
+        (None, None) => true,
+        _ => false,
+    };
+    if !same {
+        put_battle_font(ctx, theirs);
+    }
+}
+
+fn put_battle_font(ctx: &egui::Context, font: Option<BattleFont>) {
+    ctx.data_mut(|d| match font {
+        Some(font) => {
+            d.insert_temp(battle_font_id(), font);
+        }
+        None => d.remove::<BattleFont>(battle_font_id()),
+    });
+    install_fonts(ctx);
+    ctx.request_repaint();
+}
+
+/// A theme's font as the HUD letters with it: set on the interface's lines, its line as tall as
+/// theirs (egui sets a family's rows by its first face's, and the interface is laid out for its
+/// own: Bahnschrift's 1.2 em, Sofia Sans's the same), and its capitals in the middle of them (as
+/// the interface's own are, so its letters and those of the faces after it sit level).
+fn battle_face(bytes: &[u8]) -> FontData {
+    let own = vmetrics(bytes, 0);
+    let interface = vmetrics(face_of(bahnschrift(), Weight::Strong).bytes, 0);
+    FontData::from_owned(bytes.to_vec()).tweak(FontTweak {
+        scale: line_scale(own, interface),
+        y_offset_factor: own.map_or(0.0, |m| m.cap_centring()),
+        ..Default::default()
+    })
+}
+
+/// How much a face of metrics `own` is scaled to set it on the interface's lines (its face's
+/// metrics `interface`): to a line as tall as theirs. (Within a quarter and four times its size,
+/// for metrics that are nonsense.)
+fn line_scale(own: Option<VMetrics>, interface: Option<VMetrics>) -> f32 {
+    match (own, interface) {
+        (Some(own), Some(interface)) if own.row() > 0.0 && interface.row() > 0.0 => (interface.row() / own.row()).clamp(0.25, 4.0),
+        _ => 1.0,
+    }
 }
 
 /// The fonts of the interface in `language`: Bahnschrift's faces (from its bytes, else Sofia
 /// Sans's), egui's own behind them for what they lack, then the system's Chinese, Japanese and
-/// Korean faces, the language's own first.
-fn definitions(bahnschrift: Option<&'static [u8]>, language: &str) -> FontDefinitions {
+/// Korean faces, the language's own first. The HUD's families hold the same, behind `battle`, a
+/// themed battle's font ([`battle_face`]), where the context has one.
+fn definitions(bahnschrift: Option<&'static [u8]>, language: &str, battle: Option<&Arc<FontData>>) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let mut fallbacks = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     // Hack carries the arrows and geometric shapes (▲ ▼ → ●) that Ubuntu-Light lacks.
@@ -252,9 +783,18 @@ fn definitions(bahnschrift: Option<&'static [u8]>, language: &str) -> FontDefini
         family.extend(names(&bold));
         family.extend(names(&regular));
     }
+    // The HUD's: the same, a themed battle's font before them (they give the letters it lacks).
+    let (mut hud_strong, mut hud_display) = (strong.clone(), display.clone());
+    if let Some(face) = battle {
+        fonts.font_data.insert("battle".into(), face.clone());
+        hud_strong.insert(0, "battle".into());
+        hud_display.insert(0, "battle".into());
+    }
     // Named families must always be bound, or egui panics when they are used.
     fonts.families.insert(FontFamily::Name(STRONG_FAMILY.into()), strong);
     fonts.families.insert(FontFamily::Name(DISPLAY_FAMILY.into()), display);
+    fonts.families.insert(FontFamily::Name(HUD_STRONG_FAMILY.into()), hud_strong);
+    fonts.families.insert(FontFamily::Name(HUD_DISPLAY_FAMILY.into()), hud_display);
     fonts
 }
 
@@ -393,64 +933,6 @@ fn cjk_faces(language: &str, ui: Option<VMetrics>) -> (Faces, Faces) {
     (regular, bold)
 }
 
-/// A face's vertical metrics, in ems.
-#[derive(Clone, Copy, Debug)]
-struct VMetrics {
-    ascent: f32,
-    /// (Below the baseline: positive.)
-    descent: f32,
-    gap: f32,
-    /// The height of its capitals.
-    cap: f32,
-}
-
-impl VMetrics {
-    /// The height of a line of it.
-    fn row(&self) -> f32 {
-        self.ascent + self.descent + self.gap
-    }
-
-
-    /// How far down to move its glyphs (in ems) so its capitals sit in the middle of their
-    /// line: egui puts the baseline an ascent below the line's top and the whole line gap
-    /// under the text, which leaves capitals high (Bahnschrift's by 0.16 em), while
-    /// everything centres text by its line (buttons, fields, rows beside lamps and arrows).
-    fn cap_centring(&self) -> f32 {
-        self.row() / 2.0 - (self.ascent - self.cap / 2.0)
-    }
-}
-
-/// A face's vertical metrics as egui reads them: OS/2's typographic ones when the font asks
-/// for them, else hhea's (`skrifa`'s rule); its capitals' height from OS/2 (else an
-/// estimate).
-fn vmetrics(bytes: &[u8], index: u32) -> Option<VMetrics> {
-    let be16 = |at: usize| bytes.get(at..at + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
-    let be32 = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
-    let offset = if bytes.starts_with(b"ttcf") { be32(12 + 4 * index as usize)? as usize } else { 0 };
-    let tables = be16(offset + 4)? as usize;
-    let table = |tag: &[u8; 4]| {
-        (0..tables).find_map(|i| {
-            let record = offset + 12 + 16 * i;
-            if bytes.get(record..record + 4)? == tag { be32(record + 8).map(|o| o as usize) } else { None }
-        })
-    };
-    let units = be16(table(b"head")? + 18)? as f32;
-    let hhea = table(b"hhea")?;
-    let hhea = (be16(hhea + 4)? as i16, be16(hhea + 6)? as i16, be16(hhea + 8)? as i16);
-    let os2 = table(b"OS/2");
-    let typo = os2.and_then(|os2| Some((be16(os2 + 62)?, (be16(os2 + 68)? as i16, be16(os2 + 70)? as i16, be16(os2 + 72)? as i16))));
-    let (ascent, descent, gap) = match typo {
-        Some((selection, typo)) if selection & 0x80 != 0 => typo,
-        _ if hhea.0 != 0 || hhea.1 != 0 => hhea,
-        Some((_, typo)) => typo,
-        None => return None,
-    };
-    // (sCapHeight is in OS/2 from its version 2.)
-    let cap = os2.filter(|&os2| be16(os2).is_some_and(|version| version >= 2)).and_then(|os2| be16(os2 + 88)).map(|c| c as i16).filter(|&c| c > 0);
-    let em = |v: i16| v as f32 / units;
-    (units > 0.0).then(|| VMetrics { ascent: em(ascent), descent: em(descent).abs(), gap: em(gap).max(0.0), cap: cap.map_or(em(ascent) * 0.7, em) })
-}
-
 /// The system's font folder (Windows').
 fn windows_fonts() -> PathBuf {
     std::env::var_os("WINDIR").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from).join("Fonts")
@@ -467,25 +949,6 @@ fn font_file(path: &Path) -> Option<&'static [u8]> {
     let bytes = std::fs::read(path).ok().map(|b| &*Box::leak(b.into_boxed_slice()));
     files.push((path.to_path_buf(), bytes));
     bytes
-}
-
-/// Whether the font file has a face `index` with a table directory (egui panics on font
-/// data it cannot parse).
-fn has_face(bytes: &[u8], index: u32) -> bool {
-    let be32 = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
-    let be16 = |at: usize| bytes.get(at..at + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
-    let offset = if bytes.starts_with(b"ttcf") {
-        match be32(8) {
-            Some(count) if index < count => be32(12 + 4 * index as usize).map_or(usize::MAX, |o| o as usize),
-            _ => return false,
-        }
-    } else if index == 0 {
-        0
-    } else {
-        return false;
-    };
-    // TrueType, CFF ("OTTO") or Apple's "true", and the directory's records in the file.
-    matches!(be32(offset), Some(0x0001_0000 | 0x4F54_544F | 0x7472_7565)) && be16(offset + 4).is_some_and(|tables| bytes.len() >= offset + 12 + 16 * tables as usize)
 }
 
 /// The system's faces for the scripts Bahnschrift lacks (Chinese, Japanese and Korean), as font
@@ -528,7 +991,7 @@ fn bahnschrift() -> Option<&'static [u8]> {
 // ---- Style --------------------------------------------------------------------------------
 
 fn apply_style(style: &mut Style) {
-    style.visuals = visuals();
+    style.visuals = visuals_of(Palette::REBORN);
     roomy(style);
     style.animation_time = 0.12;
 }
@@ -586,36 +1049,37 @@ pub fn compact(style: &mut Style) {
     spacing.scroll = egui::style::ScrollStyle::default();
 }
 
-/// Custom dark visuals: brown-black metal, square-ish corners, brass focus.
-fn visuals() -> Visuals {
+/// Custom dark visuals: brown-black metal, square-ish corners, brass focus; in `p`'s colours (TA
+/// Reborn's own, or a theme's in the HUD).
+fn visuals_of(p: Palette) -> Visuals {
     let mut v = Visuals::dark();
-    v.weak_text_color = Some(STEEL);
-    v.hyperlink_color = AMBER_BRIGHT;
-    v.faint_bg_color = Color32::from_rgb(26, 25, 21);
-    v.extreme_bg_color = INSET;
-    v.text_edit_bg_color = Some(INSET);
-    v.code_bg_color = PANEL_HI;
-    v.warn_fg_color = AMBER;
-    v.error_fg_color = RED;
+    v.weak_text_color = Some(p.steel);
+    v.hyperlink_color = p.accent_bright;
+    v.faint_bg_color = p.faint_bg;
+    v.extreme_bg_color = p.inset;
+    v.text_edit_bg_color = Some(p.inset);
+    v.code_bg_color = p.panel_hi;
+    v.warn_fg_color = p.accent;
+    v.error_fg_color = p.bad;
 
     v.window_corner_radius = CornerRadius::same(3);
-    v.window_fill = PANEL;
-    v.window_stroke = Stroke::new(1.0, LINE_HI);
+    v.window_fill = p.panel;
+    v.window_stroke = Stroke::new(1.0, p.line_hi);
     v.window_shadow = Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(150) };
     v.menu_corner_radius = CornerRadius::same(2);
     v.popup_shadow = Shadow { offset: [0, 6], blur: 16, spread: 0, color: Color32::from_black_alpha(150) };
-    v.panel_fill = BG;
+    v.panel_fill = p.bg;
 
-    v.selection = Selection { bg_fill: Color32::from_rgb(96, 78, 32), stroke: Stroke::new(1.0, AMBER) };
-    v.widgets = widgets();
-    v.text_cursor.stroke = Stroke::new(2.0, AMBER);
+    v.selection = Selection { bg_fill: p.selection, stroke: Stroke::new(1.0, p.accent) };
+    v.widgets = widgets_of(p);
+    v.text_cursor.stroke = Stroke::new(2.0, p.accent);
     v.slider_trailing_fill = true;
     v.handle_shape = HandleShape::Rect { aspect_ratio: 0.55 };
     v.interact_cursor = Some(CursorIcon::PointingHand);
     v
 }
 
-fn widgets() -> Widgets {
+fn widgets_of(p: Palette) -> Widgets {
     let radius = CornerRadius::same(2);
     let visuals = |fill: Color32, border: Color32, text: Color32, text_width: f32| WidgetVisuals {
         bg_fill: fill,
@@ -627,11 +1091,11 @@ fn widgets() -> Widgets {
     };
     Widgets {
         // Labels, separators and frames.
-        noninteractive: visuals(PANEL, LINE, TEXT, 1.0),
-        inactive: visuals(Color32::from_rgb(40, 39, 34), LINE_HI, TEXT, 1.0),
-        hovered: visuals(Color32::from_rgb(54, 52, 45), AMBER_DIM, TEXT_BRIGHT, 1.5),
-        active: visuals(AMBER_DEEP, AMBER, AMBER_BRIGHT, 2.0),
-        open: visuals(PANEL_HI, AMBER_DIM, TEXT_BRIGHT, 1.0),
+        noninteractive: visuals(p.panel, p.line, p.text, 1.0),
+        inactive: visuals(p.widget, p.line_hi, p.text, 1.0),
+        hovered: visuals(p.widget_hover, p.accent_dim, p.text_bright, 1.5),
+        active: visuals(p.accent_deep, p.accent, p.accent_bright, 2.0),
+        open: visuals(p.panel_hi, p.accent_dim, p.text_bright, 1.0),
     }
 }
 
@@ -646,7 +1110,7 @@ mod tests {
         for bahnschrift in [bahnschrift(), None] {
             let ctx = egui::Context::default();
             install(&ctx);
-            ctx.set_fonts(definitions(bahnschrift, "en"));
+            ctx.set_fonts(definitions(bahnschrift, "en", None));
             ctx.run_ui(Default::default(), |ui| {
                 for font in [display(30.0), strong(12.0), body(14.5)] {
                     let galley = ui.painter().layout_no_wrap("H".to_owned(), font.clone(), Color32::WHITE);
@@ -681,7 +1145,7 @@ mod tests {
         let size = |bahnschrift: Option<&'static [u8]>, text: &str, font: FontId| {
             let ctx = egui::Context::default();
             install(&ctx);
-            ctx.set_fonts(definitions(bahnschrift, "en"));
+            ctx.set_fonts(definitions(bahnschrift, "en", None));
             let mut size = egui::Vec2::ZERO;
             ctx.run_ui(Default::default(), |ui| size = ui.painter().layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE).size()).drop_without_applying_deltas();
             size
@@ -707,7 +1171,7 @@ mod tests {
     fn sofia_sans_draws_cyrillic_in_the_forms_russian_and_ukrainian_use() {
         let ctx = egui::Context::default();
         install(&ctx);
-        ctx.set_fonts(definitions(None, "ru"));
+        ctx.set_fonts(definitions(None, "ru", None));
         ctx.run_ui(Default::default(), |ui| {
             for font in [body(40.0), display(40.0)] {
                 // The ink of a letter: its width and height.
@@ -784,5 +1248,225 @@ mod tests {
             let missing: String = letters.iter().filter(|&&c| !maps(font, c)).collect();
             assert!(missing.is_empty(), "{name} lacks {missing:?}");
         }
+    }
+
+    /// A battle's palette with a blue accent and a panel of its own.
+    fn blue() -> Palette {
+        Palette::REBORN.themed(&|key| match key {
+            "accent" => Some(Color32::from_rgb(90, 180, 255)),
+            "panel" => Some(Color32::from_rgb(24, 32, 43)),
+            _ => None,
+        })
+    }
+
+    /// The colour egui's widgets letter what is chosen in: the accent of the look they are in.
+    fn chosen(style: &Style) -> Color32 {
+        style.visuals.selection.stroke.color
+    }
+
+    /// The battle's palette is drawn inside the HUD and nowhere else: egui's own widgets there, and
+    /// what egui makes of itself (tooltips, drop-downs: the context's style), with it; outside it
+    /// and in a dialog inside it (TA Reborn's plates), TA Reborn's own, all put back as it ends.
+    #[test]
+    fn the_hud_alone_is_drawn_in_the_battles_palette() {
+        let ctx = egui::Context::default();
+        install_compact(&ctx);
+        let battle = blue();
+        set_battle_palette(battle);
+        assert_eq!(pal(), Palette::REBORN, "outside the HUD");
+        ctx.run_ui(Default::default(), |ui| {
+            hud(ui, |ui| {
+                assert!(in_hud());
+                assert_eq!(pal(), battle);
+                assert_eq!(chosen(ui.style()), battle.accent, "the HUD's widgets");
+                assert_eq!(chosen(&ui.ctx().global_style()), battle.accent, "what egui makes in it");
+                reborn(ui, |ui| {
+                    assert_eq!(pal(), Palette::REBORN);
+                    assert_eq!(chosen(ui.style()), AMBER);
+                    assert_eq!(chosen(&ui.ctx().global_style()), AMBER, "a dialog's hints");
+                });
+                assert_eq!(pal(), battle, "the HUD again after a dialog in it");
+                assert_eq!(chosen(&ui.ctx().global_style()), battle.accent);
+                // A panel (a dialog) is TA Reborn's within, wherever it is shown.
+                crate::panel::Panel::new("SHARE").show(ui, |ui| {
+                    assert_eq!(pal(), Palette::REBORN);
+                    assert_eq!(chosen(ui.style()), AMBER);
+                });
+                assert_eq!(pal(), battle);
+            });
+            assert!(!in_hud());
+            assert_eq!(pal(), Palette::REBORN);
+            assert_eq!(chosen(ui.style()), AMBER, "the window's own after the HUD");
+            assert_eq!(chosen(&ui.ctx().global_style()), AMBER);
+        })
+        .drop_without_applying_deltas();
+        set_battle_palette(Palette::REBORN);
+    }
+
+    /// The style lent to the HUD is made once: frame after frame, the same (no copy a frame), and
+    /// TA Reborn's own given back each time.
+    #[test]
+    fn the_huds_style_is_made_once() {
+        let ctx = egui::Context::default();
+        install_compact(&ctx);
+        set_battle_palette(blue());
+        let own = ctx.style_of(Theme::Dark);
+        let mut lent = Vec::new();
+        for _ in 0..3 {
+            ctx.run_ui(Default::default(), |ui| hud(ui, |ui| lent.push(ui.ctx().style_of(Theme::Dark)))).drop_without_applying_deltas();
+            assert!(Arc::ptr_eq(&ctx.style_of(Theme::Dark), &own), "the context's own put back");
+        }
+        assert!(!Arc::ptr_eq(&lent[0], &own));
+        assert!(lent.windows(2).all(|w| Arc::ptr_eq(&w[0], &w[1])), "the same style lent each frame");
+        // Without a theme there is nothing to lend.
+        set_battle_palette(Palette::REBORN);
+        ctx.run_ui(Default::default(), |ui| hud(ui, |ui| assert!(Arc::ptr_eq(&ui.ctx().style_of(Theme::Dark), &own)))).drop_without_applying_deltas();
+    }
+
+    /// The first family a context's fonts set `family` in.
+    fn first_face(ctx: &egui::Context, family: &str) -> String {
+        ctx.fonts(|fonts| fonts.definitions().families[&FontFamily::Name(family.into())][0].clone())
+    }
+
+    /// A theme's font is only in the contexts given it, the battle's window's and the companion
+    /// screen's that follows it: a context made afterwards (the loading screen's, the cockpit
+    /// instruments') never has it, nor do TA Reborn's own families anywhere. Only the HUD's
+    /// lettering is in it ([`strong`], [`display`] and egui's buttons and headings inside [`hud`]).
+    #[test]
+    fn a_themes_font_is_only_in_the_huds_of_the_contexts_given_it() {
+        let battle = egui::Context::default();
+        install_compact(&battle);
+        assert!(!set_battle_font(&battle, Some(Arc::new(b"not a font".to_vec()))), "a font that does not read is refused");
+        assert!(set_battle_font(&battle, Some(Arc::new(SOFIA_SANS_EXTRA_CONDENSED.to_vec()))));
+        let loading = egui::Context::default();
+        install_compact(&loading);
+        let companion = egui::Context::default();
+        install_compact(&companion);
+        follow_fonts(&companion, &battle);
+        for (ctx, has, name) in [(&battle, true, "the battle's"), (&loading, false, "a context made afterwards"), (&companion, true, "the companion's")] {
+            assert_eq!(has_battle_font(ctx), has, "{name}");
+            ctx.run_ui(Default::default(), |_| {}).drop_without_applying_deltas();
+            assert_eq!(first_face(ctx, STRONG_FAMILY), "ui-strong", "{name}: TA Reborn's own families never hold it");
+            assert_eq!(first_face(ctx, DISPLAY_FAMILY), "ui-display", "{name}");
+            assert_eq!(first_face(ctx, HUD_STRONG_FAMILY), if has { "battle" } else { "ui-strong" }, "{name}");
+            assert_eq!(first_face(ctx, HUD_DISPLAY_FAMILY), if has { "battle" } else { "ui-display" }, "{name}");
+        }
+        let family = |font: FontId| match font.family {
+            FontFamily::Name(name) => name.to_string(),
+            other => format!("{other:?}"),
+        };
+        battle
+            .run_ui(Default::default(), |ui| {
+                assert_eq!(family(strong(12.0)), STRONG_FAMILY, "outside the HUD");
+                hud(ui, |ui| {
+                    assert_eq!(family(strong(12.0)), HUD_STRONG_FAMILY);
+                    assert_eq!(family(display(20.0)), HUD_DISPLAY_FAMILY);
+                    assert_eq!(family(ui.style().text_styles[&TextStyle::Button].clone()), HUD_STRONG_FAMILY, "egui's buttons");
+                    assert_eq!(family(ui.style().text_styles[&TextStyle::Body].clone()), "Proportional", "body text stays the interface's");
+                    reborn(ui, |ui| {
+                        assert_eq!(family(strong(12.0)), STRONG_FAMILY, "a dialog in the HUD");
+                        assert_eq!(family(ui.style().text_styles[&TextStyle::Button].clone()), STRONG_FAMILY);
+                    });
+                });
+                assert_eq!(family(ui.style().text_styles[&TextStyle::Button].clone()), STRONG_FAMILY);
+            })
+            .drop_without_applying_deltas();
+        loading.run_ui(Default::default(), |ui| hud(ui, |_| assert_eq!(family(strong(12.0)), STRONG_FAMILY, "no theme's font in this context"))).drop_without_applying_deltas();
+        // Put away, and the companion follows.
+        assert!(set_battle_font(&battle, None));
+        follow_fonts(&companion, &battle);
+        assert!(!has_battle_font(&battle) && !has_battle_font(&companion));
+    }
+
+    /// `font` (a TrueType font) with `more` ems of line gap: its line that much taller, its letters
+    /// as they were.
+    fn line_gapped(font: &[u8], more: f32) -> Vec<u8> {
+        let mut font = font.to_vec();
+        let be16 = |font: &[u8], at: usize| u16::from_be_bytes([font[at], font[at + 1]]);
+        let units = f32::from(be16(&font, table(&font, b"head") + 18));
+        for at in [table(&font, b"hhea") + 8, table(&font, b"OS/2") + 72] {
+            let gap = be16(&font, at) as i16 as f32 + more * units;
+            font[at..at + 2].copy_from_slice(&(gap.round() as i16).to_be_bytes());
+        }
+        font
+    }
+
+    /// A theme's font with a taller line than the interface's (half an em more) is set on the
+    /// interface's lines: a row of the HUD's lettering in it as tall as one in the interface's own,
+    /// so the rows laid out for 1.2 em hold, its capitals in the middle of the row.
+    #[test]
+    fn a_themes_font_is_set_on_the_interfaces_lines() {
+        let tall = line_gapped(SOFIA_SANS_EXTRA_CONDENSED, 0.5);
+        let row = vmetrics(&tall, 0).unwrap().row();
+        assert!((row - 1.7).abs() < 0.01, "a line {row} em high");
+        assert!(font_reads(&tall));
+        let interface = vmetrics(face_of(bahnschrift(), Weight::Strong).bytes, 0);
+        assert!((line_scale(vmetrics(&tall, 0), interface) - 1.2 / 1.7).abs() < 0.01);
+        assert_eq!(line_scale(None, interface), 1.0, "metrics it has not: as it is");
+        let ctx = egui::Context::default();
+        install_compact(&ctx);
+        assert!(set_battle_font(&ctx, Some(Arc::new(tall))));
+        ctx.run_ui(Default::default(), |_| {}).drop_without_applying_deltas();
+        ctx.run_ui(Default::default(), |ui| {
+            for size in [12.0, 20.0, 31.0] {
+                let ours = ui.painter().layout_no_wrap("H".to_owned(), strong(size), Color32::WHITE);
+                let theirs = hud(ui, |ui| ui.painter().layout_no_wrap("H".to_owned(), strong(size), Color32::WHITE));
+                assert!((theirs.size().y - ours.size().y).abs() <= 1.0, "at {size}: a row of the theme's font {} high, of the interface's {}", theirs.size().y, ours.size().y);
+                let glyph = &theirs.rows[0].row.glyphs[0];
+                let ink = theirs.rows[0].pos.y + glyph.pos.y + glyph.uv_rect.offset.y + glyph.uv_rect.size.y / 2.0;
+                assert!((ink - theirs.size().y / 2.0).abs() < 1.0, "at {size}: its capitals centred at {ink}, the row's middle {}", theirs.size().y / 2.0);
+            }
+        })
+        .drop_without_applying_deltas();
+    }
+
+    /// The interface's titles and buttons are as tall a line in their two faces (the theme's font
+    /// is set to one: [`battle_face`]).
+    #[test]
+    fn the_interfaces_strong_and_display_faces_have_lines_as_tall() {
+        for bahnschrift in [bahnschrift(), None] {
+            let row = |weight| vmetrics(face_of(bahnschrift, weight).bytes, 0).unwrap().row();
+            assert!((row(Weight::Strong) - row(Weight::Display)).abs() < 0.01);
+        }
+    }
+
+    /// A colour that goes with a palette colour is itself where a theme leaves that colour, to the
+    /// unit, channel by channel; and moves with it where a theme moves it.
+    #[test]
+    fn a_fixed_shade_follows_its_palette_colour() {
+        let brass = Color32::from_rgb(230, 196, 110);
+        assert_eq!(retinted(brass, AMBER, AMBER), brass);
+        // (Its arithmetic, not only its shortcut: red and green as they were, only blue moved.)
+        for c in 0..=255u8 {
+            let colour = Color32::from_rgb(c, 255 - c, 9);
+            let moved = retinted(colour, AMBER, Color32::from_rgb(AMBER.r(), AMBER.g(), 200));
+            assert_eq!((moved.r(), moved.g()), (c, 255 - c));
+            assert!(moved.b() > 9);
+        }
+        let blue = retinted(brass, AMBER, Color32::from_rgb(90, 180, 255));
+        assert!(blue.b() > blue.g() && blue.g() > blue.r(), "{blue:?}");
+        let darker = retinted(brass, AMBER, Color32::from_rgb(108, 90, 43));
+        assert!(darker.r() < brass.r() && darker.g() < brass.g() && darker.b() < brass.b());
+    }
+
+    /// What reads on its backdrop is left as it is (TA Reborn's own colours on its dark plates and
+    /// frames); what does not is lit or darkened, away from the backdrop, just enough.
+    #[test]
+    fn legible_colours_read_on_their_backdrop() {
+        let frame = Color32::from_rgb(43, 43, 43);
+        for colour in [AMBER_BRIGHT, GREEN, TEXT, Color32::from_rgb(255, 90, 70), Color32::from_rgb(255, 132, 112)] {
+            assert_eq!(legible(colour, frame, 3.0), colour, "{colour:?}");
+        }
+        for colour in [TEXT, STEEL, AMBER, GREEN] {
+            assert_eq!(legible(colour, PANEL, 4.5), colour, "{colour:?} on TA Reborn's panel");
+        }
+        let navy = Color32::from_rgb(31, 95, 191);
+        let lit = legible(navy, frame, 3.0);
+        assert!((3.0..3.3).contains(&contrast(lit, frame)), "lit just enough: {lit:?}");
+        let light_panel = Color32::from_rgb(228, 232, 238);
+        let green = Color32::from_rgb(120, 220, 140);
+        let darker = legible(green, light_panel, 4.5);
+        assert!(contrast(darker, light_panel) >= 4.5 && luminance(darker) < luminance(green), "{darker:?}");
+        assert_eq!(legible(Color32::from_gray(128), Color32::from_gray(128), 30.0), Color32::BLACK, "as far as it goes");
     }
 }

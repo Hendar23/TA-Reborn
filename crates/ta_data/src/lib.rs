@@ -9,11 +9,13 @@ mod compatibility;
 pub use compatibility::Compatibility;
 
 pub mod feature;
+pub mod font;
 pub mod map;
 pub mod mission;
 pub mod unit;
 pub mod weapon;
 pub mod validation;
+pub mod presentation;
 pub mod words;
 mod skin_catalogue;
 pub use skin_catalogue::skin_catalogue;
@@ -89,6 +91,15 @@ pub struct GameData {
     move_index: FxHashMap<String, usize>,
     /// How many of `features` are the game's own (the rest are maps' own).
     game_features: usize,
+}
+
+/// The names of the sides `gamedata/sidedata.tdf` gives (as written there, in capitals): ARM, CORE,
+/// a mod's own.
+pub fn side_names(vfs: &Vfs) -> Vec<String> {
+    read_tdf(vfs, "gamedata/sidedata.tdf").map_or_else(Vec::new, |doc| {
+        doc.sections.iter().filter(|s| s.name.to_ascii_uppercase().starts_with("SIDE"))
+            .map(|s| s.get_str("name", "").trim().to_ascii_uppercase()).filter(|name| !name.is_empty()).collect()
+    })
 }
 
 fn read_tdf(vfs: &Vfs, path: &str) -> Option<TdfDocument> {

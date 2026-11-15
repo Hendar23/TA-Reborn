@@ -330,6 +330,15 @@ pub struct LauncherApp {
     reset_activity_scroll: bool,
     pub(crate) installer: crate::getmods::Installer,
     pub(crate) media: crate::getmods::Media,
+    /// The mods' own pictures and gameplay previews (`mod_media`), read as the Mods page shows
+    /// them (painted from within the library's grid, which holds the app as it draws).
+    pub(crate) mod_media: std::cell::RefCell<crate::mod_media::ModMedia>,
+    /// A mod's screenshots on the whole window (a dialog over the Mods library).
+    pub(crate) mod_lightbox: Option<crate::mod_media::Lightbox>,
+    /// The mod whose gameplay preview, in its details, the player started (true: with motion
+    /// reduced, where it waits to be asked) or stopped (false), until another mod is chosen or the
+    /// library is left.
+    pub(crate) preview_choice: Option<(String, bool)>,
     pub(crate) celebrate: Option<(String, f64)>,
     /// A mod the player asked to remove, awaiting confirmation (by id).
     pub(crate) confirm_uninstall: Option<String>,
@@ -575,6 +584,9 @@ impl LauncherApp {
             reset_activity_scroll: false,
             installer,
             media: crate::getmods::Media::new(),
+            mod_media: Default::default(),
+            mod_lightbox: None,
+            preview_choice: None,
             celebrate: None,
             offline,
             first_run,
@@ -690,6 +702,12 @@ impl LauncherApp {
             ("shortcuts", _) => self.show_shortcuts = true,
             ("mod-folders", _) => self.show_mod_folders = true,
             ("mod-details", id) => self.show_mod_details(id),
+            // A mod's screenshots on the whole window (`mod-screenshot:<id>[:<n>]`, from 1).
+            ("mod-screenshot", rest) => {
+                let (id, n) = rest.split_once(':').unwrap_or((rest, "1"));
+                self.show_mod_details(id);
+                self.mod_lightbox = Some(crate::mod_media::Lightbox::new(id, n.parse::<usize>().unwrap_or(1).saturating_sub(1), None));
+            }
             // The mods the player hid, listed (`hidden:<id>,<id>` hides those first).
             ("hidden", ids) => {
                 for id in ids.split(',').filter(|id| !id.trim().is_empty()) {
@@ -940,6 +958,9 @@ impl LauncherApp {
         self.installer.set_installed(self.mods.mods.iter().map(|m| m.info.manifest.id.clone()));
         self.sync_mod_validation();
         self.mod_library.changes.clear();
+        // (The mods' pictures looked for again, and those that could not be read tried again: one
+        // read as it was being written, or locked a moment, is put right.)
+        self.mod_media.get_mut().forget_failures();
     }
 
     /// After an install, a removal or a game: the mods looked through again, and only those
@@ -1064,7 +1085,7 @@ impl LauncherApp {
                 let (_, on) = self.mods.needed_by(&id, &self.config.mods.enabled);
                 if !on.is_empty() {
                     let name = self.mods.get(&id).map_or(id.clone(), |m| m.info.manifest.name.clone());
-                    self.notify(ta_ui::i18n::tf("{mods} need {name}: they are not loaded without it.", &[("mods", &on.join(", ")), ("name", &name)]), AMBER);
+                    self.notify(ta_ui::i18n::tf("{mods} need {name}: they are not loaded without it.", &[("mods", &crate::pages::listed(&on)), ("name", &name)]), AMBER);
                 }
             }
             Action::HideMod(id, hidden) => self.set_mod_hidden(&id, hidden),
@@ -2618,6 +2639,11 @@ impl eframe::App for LauncherApp {
         self.banner_picture(&ctx);
         self.dropped_files(&ctx);
         self.shortcuts(&ctx);
+        // (Away from the Mods library: its screenshots on the whole window close, the preview the
+        // player started or stopped is forgotten, and what only the library shows is let go.)
+        if self.page != Page::Mods || self.mods_tab != ModsTab::Library {
+            self.leave_mod_library();
+        }
         self.mods.refresh(&self.config.mods.enabled);
         if compact_layout(ctx.content_rect().size()) {
             self.compact_header(ui);
@@ -2703,7 +2729,7 @@ impl eframe::App for LauncherApp {
         }
         let bundled_pictures_ready = self.page != Page::Mods || self.mods_tab != ModsTab::Library || crate::catalogue::MODS.iter()
             .filter(|entry| entry.bundled_image().is_some()).all(|entry| self.media.pictures.contains_key(entry.id))
-            && (self.page != Page::Mods || self.mod_library.changes.idle());
+            && (self.page != Page::Mods || self.mod_library.changes.idle() && self.mod_media.borrow().idle());
         if let Some(capture) = &mut self.capture {
             capture.tick(&ctx, !self.battles.loading() && !self.hero.loading() && !self.worlds.loading() && !self.skins.busy() && self.mod_validation.selected.as_ref().is_none_or(|id| !matches!(self.mod_validation.status(id), crate::validation::ValidationStatus::Queued | crate::validation::ValidationStatus::Checking)) && (self.page != Page::Skins || self.skins.preview_ready()) && (self.page != Page::Maps || self.maps.ready()) && self.profiles.capture_ready(self.page == Page::Profile) && bundled_pictures_ready && self.supcom.capture_ready());
         }

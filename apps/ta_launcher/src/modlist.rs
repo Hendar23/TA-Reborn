@@ -43,6 +43,31 @@ pub enum Resolution {
     Err(String),
 }
 
+/// What keeps the load order from resolving, as its quick fixes need it (by the mods' ids;
+/// [`Resolution::Err`] says it in words).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Blocker {
+    /// `module` needs `dependency`, which is off (or installed nowhere).
+    Dependency { module: String, dependency: String },
+    /// `module` cannot be on with `other`, which is on.
+    Conflict { module: String, other: String },
+    /// `module` needs a newer TA Reborn than this.
+    Newer { module: String },
+    /// Anything else (a mod on that is not installed, dependencies in a circle...).
+    Other,
+}
+
+impl Blocker {
+    fn of(e: &ModError) -> Blocker {
+        match e {
+            ModError::MissingDependency { module, dependency } => Blocker::Dependency { module: module.clone(), dependency: dependency.clone() },
+            ModError::Conflict { module, other } => Blocker::Conflict { module: module.clone(), other: other.clone() },
+            ModError::NeedsNewer { module, .. } => Blocker::Newer { module: module.clone() },
+            _ => Blocker::Other,
+        }
+    }
+}
+
 /// The mods found on disk plus the resolved load order of the enabled ones.
 #[derive(Debug)]
 pub struct ModList {
@@ -53,6 +78,8 @@ pub struct ModList {
     /// The scan's manifests that do not read, as found (a mod "not installed" may be one).
     broken: Vec<ModError>,
     pub resolution: Resolution,
+    /// What keeps [`Self::resolution`] from resolving, where it does not.
+    pub blocker: Option<Blocker>,
     /// The enabled list [`Self::resolution`] was computed for, and in which of the interface's
     /// languages (its problem is told in it: [`ta_ui::i18n::generation`]).
     resolved_for: Vec<String>,
@@ -68,21 +95,31 @@ pub fn mod_folders(app_dir: Option<&Path>, user_config_dir: &Path, extra: Option
         .collect()
 }
 
-/// A mod's problem in the player's words (and language): `name` names a mod by its id, and
-/// `broken` holds the scan's problems (a manifest that does not read tells why a mod is not
-/// found).
-fn problem_words(e: &ModError, broken: &[ModError], name: &dyn Fn(&str) -> String) -> String {
+/// A mod's problem in the player's words (and language): `name` names a mod by its id (`None`
+/// when it is installed nowhere), and `broken` holds the scan's problems (a manifest that does
+/// not read tells why a mod is not found).
+fn problem_words(e: &ModError, broken: &[ModError], name: &dyn Fn(&str) -> Option<String>) -> String {
+    let named = |id: &str| name(id).unwrap_or_else(|| id.to_string());
     match e {
         ModError::Missing(id) => match mods::broken_manifest(id, broken) {
-            Some(ModError::Manifest { path, message }) => tf("{name} is on, but its manifest {file} does not read: {error}", &[("name", &name(id)), ("file", &mods::shown_path(path)), ("error", &message.trim())]),
-            _ => tf("{name} is on, but it is not installed", &[("name", &name(id))]),
+            Some(ModError::Manifest { path, message }) => tf("{name} is on, but its manifest {file} does not read: {error}", &[("name", &named(id)), ("file", &mods::shown_path(path)), ("error", &message.trim())]),
+            _ => tf("{name} is on, but it is not installed", &[("name", &named(id))]),
         },
-        ModError::MissingDependency { module, dependency } => tf("{name} needs {other}, which is not on", &[("name", &name(module)), ("other", &name(dependency))]),
+        // (One installed nowhere has nothing to turn on: it is to be installed, or the mod off.)
+        ModError::MissingDependency { module, dependency } => match name(dependency) {
+            Some(other) => tf("{name} needs {other}, which is not on", &[("name", &named(module)), ("other", &other)]),
+            None => {
+                let other = crate::catalogue::get(dependency).map_or_else(|| dependency.clone(), |entry| entry.name.to_string());
+                tf("{name} needs {other}, which is not installed", &[("name", &named(module)), ("other", &other)])
+            }
+        },
         ModError::Cycle(ids) => tf("These mods each need another loaded before them: {mods}", &[("mods", ids)]),
         ModError::Depth(ids) => tf("These mods need one another more than 64 deep: {mods}", &[("mods", ids)]),
-        ModError::Unreadable { id, message } => tf("{name} could not be read: {error}", &[("name", &name(id)), ("error", message)]),
+        ModError::Unreadable { id, message } => tf("{name} could not be read: {error}", &[("name", &named(id)), ("error", message)]),
         ModError::Manifest { path, message } => tf("The manifest {file} does not read: {error}", &[("file", &mods::shown_path(path)), ("error", &message.trim())]),
         ModError::Duplicate { id, path } => tf("Two mods in one folder are called {id}: {ignored} is left out", &[("id", id), ("ignored", &path.display())]),
+        ModError::Conflict { module, other } => tf("{name} cannot be on with {other}: turn one of them off", &[("name", &named(module)), ("other", &named(other))]),
+        ModError::NeedsNewer { module, version } => tf("{name} needs TA Reborn {version} or later: update TA Reborn, or turn the mod off", &[("name", &named(module)), ("version", version)]),
     }
 }
 
@@ -98,7 +135,7 @@ impl ModList {
             }
             let (found, errors) = mods::scan(&folder.path);
             // (The mods by their ids: their names are not known yet.)
-            problems.extend(errors.iter().map(|e| problem_words(e, &[], &|id| id.to_string())));
+            problems.extend(errors.iter().map(|e| problem_words(e, &[], &|id| Some(id.to_string()))));
             broken.extend(errors);
             for info in found {
                 if let Some(first) = mods.iter().find(|m| m.info.manifest.id == info.manifest.id) {
@@ -112,7 +149,7 @@ impl ModList {
             }
         }
         mods.sort_by_cached_key(|m| m.info.manifest.name.to_lowercase());
-        let mut list = ModList { folders, mods, problems, broken, resolution: Resolution::Ok(Vec::new()), resolved_for: Vec::new(), resolved_in: 0 };
+        let mut list = ModList { folders, mods, problems, broken, resolution: Resolution::Ok(Vec::new()), blocker: None, resolved_for: Vec::new(), resolved_in: 0 };
         list.resolve(enabled);
         list
     }
@@ -172,9 +209,9 @@ impl ModList {
 
     fn resolve(&mut self, enabled: &[String]) {
         let infos: Vec<ModInfo> = self.mods.iter().map(|m| m.info.clone()).collect();
-        self.resolution = match mods::resolve_load_order(enabled, &infos) {
-            Ok(order) => Resolution::Ok(order.iter().map(|m| m.manifest.id.clone()).collect()),
-            Err(e) => Resolution::Err(self.describe(&e)),
+        (self.resolution, self.blocker) = match mods::resolve_load_order(enabled, &infos) {
+            Ok(order) => (Resolution::Ok(order.iter().map(|m| m.manifest.id.clone()).collect()), None),
+            Err(e) => (Resolution::Err(self.describe(&e)), Some(Blocker::of(&e))),
         };
         self.resolved_for = enabled.to_vec();
         self.resolved_in = ta_ui::i18n::generation();
@@ -182,7 +219,7 @@ impl ModList {
 
     /// A load order's problem in the player's words (and language), the mods by their names.
     fn describe(&self, e: &ModError) -> String {
-        problem_words(e, &self.broken, &|id| self.get(id).map_or(id.to_string(), |m| m.info.manifest.name.clone()))
+        problem_words(e, &self.broken, &|id| self.get(id).map(|m| m.info.manifest.name.clone()))
     }
 
     /// Dependencies of `id` that are installed but not enabled (candidates for a quick fix).
@@ -329,19 +366,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// What keeps a load order from resolving is known by the mods it concerns, for its quick
+    /// fixes: a dependency off (said so) or installed nowhere (said so: nothing to turn on), two
+    /// mods that cannot be on together, a mod that needs a newer TA Reborn.
+    #[test]
+    fn what_keeps_the_order_from_resolving_is_known_by_its_mods() {
+        let root = std::env::temp_dir().join(format!("ta_launcher_mods_blockers_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (id, more) in [("basics", ""), ("addon", "depends = [\"basics\"]\n"), ("lonely", "depends = [\"ghost\"]\n"), ("clash-a", "conflicts = [\"clash-b\"]\n"),
+            ("clash-b", ""), ("future", "requires_reborn = \"99.0\"\n")] {
+            std::fs::create_dir_all(root.join(id)).unwrap();
+            std::fs::write(root.join(id).join("mod.toml"), format!("id = \"{id}\"\nname = \"{id} mod\"\n{more}")).unwrap();
+        }
+        let folders = vec![ModFolder { label: "User folder", path: root.clone(), exists: true }];
+        let mut list = ModList::scan(folders, &ids(&["addon"]));
+        assert_eq!(list.blocker, Some(Blocker::Dependency { module: "addon".into(), dependency: "basics".into() }));
+        assert_eq!(list.resolution, Resolution::Err("addon mod needs basics mod, which is not on".into()));
+        list.refresh(&ids(&["lonely"]));
+        assert_eq!(list.blocker, Some(Blocker::Dependency { module: "lonely".into(), dependency: "ghost".into() }));
+        assert_eq!(list.resolution, Resolution::Err("lonely mod needs ghost, which is not installed".into()), "nothing to turn on");
+        list.refresh(&ids(&["clash-b", "clash-a"]));
+        assert_eq!(list.blocker, Some(Blocker::Conflict { module: "clash-a".into(), other: "clash-b".into() }));
+        list.refresh(&ids(&["future"]));
+        assert_eq!(list.blocker, Some(Blocker::Newer { module: "future".into() }));
+        list.refresh(&ids(&["gone"]));
+        assert_eq!(list.blocker, Some(Blocker::Other));
+        list.refresh(&ids(&["basics", "addon"]));
+        assert_eq!((list.blocker.clone(), list.resolution.clone()), (None, Resolution::Ok(ids(&["basics", "addon"]))));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// A mod that is on and whose manifest no longer reads is told as that, not as missing.
     #[test]
     fn a_mod_whose_manifest_does_not_read_is_told_so() {
         let root = std::env::temp_dir().join(format!("ta_launcher_mods_broken_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("mymod")).unwrap();
-        std::fs::write(root.join("mymod/mod.toml"), "id = \"mymod\"\nname = \"Mine\"\nversion = 1.0\n").unwrap();
+        // (A wrong kind where it decides whether the mod is mounted: what it needs.)
+        std::fs::write(root.join("mymod/mod.toml"), "id = \"mymod\"\nname = \"Mine\"\ndepends = 1.0\n").unwrap();
         let folders = vec![ModFolder { label: "User folder", path: root.clone(), exists: true }];
-        let list = ModList::scan(folders, &ids(&["mymod"]));
+        let list = ModList::scan(folders.clone(), &ids(&["mymod"]));
         match &list.resolution {
             Resolution::Err(e) => assert!(e.contains("mod.toml") && e.contains("does not read"), "{e}"),
             other => panic!("{other:?}"),
         }
+        // (One where it only presents the mod reads, without it: its version written as a number.)
+        std::fs::write(root.join("mymod/mod.toml"), "id = \"mymod\"\nname = \"Mine\"\nversion = 1.0\n").unwrap();
+        let list = ModList::scan(folders, &ids(&["mymod"]));
+        assert!(!matches!(&list.resolution, Resolution::Err(_)), "{:?}", list.resolution);
         let _ = std::fs::remove_dir_all(root);
     }
 

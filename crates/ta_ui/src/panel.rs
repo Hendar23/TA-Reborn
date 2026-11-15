@@ -104,7 +104,15 @@ impl<'a> Panel<'a> {
 
     /// [`Panel::show`] with a footer under the body (a dialog's buttons), `footer_height` tall:
     /// with [`Panel::max_height`] the body scrolls over it and the footer stays in sight.
+    ///
+    /// A panel is TA Reborn's plate, and its contents are drawn in TA Reborn's own look wherever
+    /// it is shown ([`crate::theme::reborn`]): a dialog the battle's HUD opens too, in a battle
+    /// whose mod themes the HUD.
     pub fn show_with_footer<R, F>(self, ui: &mut Ui, footer_height: f32, add_contents: impl FnOnce(&mut Ui) -> R, add_footer: impl FnOnce(&mut Ui) -> F) -> PanelResponse<(R, F)> {
+        crate::theme::reborn(ui, |ui| self.show_in(ui, footer_height, add_contents, add_footer))
+    }
+
+    fn show_in<R, F>(self, ui: &mut Ui, footer_height: f32, add_contents: impl FnOnce(&mut Ui) -> R, add_footer: impl FnOnce(&mut Ui) -> F) -> PanelResponse<(R, F)> {
         let background = ui.painter().add(Shape::Noop);
         let mut exit = false;
         // Inside the pipes, a gap as wide as the cards' (the title a little closer to the top).
@@ -552,7 +560,11 @@ fn panel_shapes(ctx: &Context, rect: Rect) -> Shape {
 /// A panel centred on the screen over what is behind it (front-end pages): it slides in
 /// from the side the player came from ([`set_direction`]) as it fades in.
 pub fn page<R>(ctx: &egui::Context, id: impl Hash + std::fmt::Debug, panel: Panel<'_>, add_contents: impl FnOnce(&mut Ui) -> R) -> PanelResponse<R> {
-    let id = Id::new(id);
+    // (TA Reborn's own look, its window's too, wherever it is shown: see `Panel::show_with_footer`.)
+    crate::theme::reborn_on(ctx, || page_shown(ctx, Id::new(id), panel, add_contents))
+}
+
+fn page_shown<R>(ctx: &egui::Context, id: Id, panel: Panel<'_>, add_contents: impl FnOnce(&mut Ui) -> R) -> PanelResponse<R> {
     let (t, direction) = entrance_held(ctx, id, PAGE_TIME, exits_run(ctx) && !settled(ctx, id));
     let slide = if direction == Direction::Back { -PAGE_SLIDE } else { PAGE_SLIDE };
     let shown = Area::new(id)
@@ -622,9 +634,13 @@ pub fn modal_with_footer<R, F>(
     modal_shown(ctx, id, dismissable, ctx.content_rect(), |ui| panel.show_with_footer(ui, footer_height, add_contents, add_footer))
 }
 
-/// A modal dialog in the middle of `room`, `show` drawing its panel.
+/// A modal dialog in the middle of `room`, `show` drawing its panel (in TA Reborn's own look, its
+/// window's too, wherever it is shown: see [`Panel::show_with_footer`]).
 fn modal_shown<R>(ctx: &egui::Context, id: impl Hash + std::fmt::Debug, dismissable: bool, room: Rect, show: impl FnOnce(&mut Ui) -> PanelResponse<R>) -> PanelResponse<R> {
-    let id = Id::new(id);
+    crate::theme::reborn_on(ctx, || modal_in(ctx, Id::new(id), dismissable, room, show))
+}
+
+fn modal_in<R>(ctx: &egui::Context, id: Id, dismissable: bool, room: Rect, show: impl FnOnce(&mut Ui) -> PanelResponse<R>) -> PanelResponse<R> {
     // (Opening, as TA's panels did, with a servo's whirr: on the first frame shown.)
     let key = id.with("ta_ui::panel::opened");
     let pass = ctx.cumulative_pass_nr();
@@ -697,7 +713,8 @@ pub fn strip_in<R>(ctx: &egui::Context, id: impl Hash + std::fmt::Debug, slot: R
 }
 
 /// The plate of a strip in `area`, round `add_contents`: `t` (0 to 1) of the way into view,
-/// faded and dropping into place.
+/// faded and dropping into place. Its metal is the palette's panel: the HUD's strips (the replay
+/// bar, the chat, the goals) take a theme's, as their lettering does ([`crate::theme::hud`]).
 fn strip_area<R>(area: Area, ctx: &egui::Context, t: f32, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
     area.order(Order::Foreground)
         .show(ctx, |ui| {
@@ -709,7 +726,7 @@ fn strip_area<R>(area: Area, ctx: &egui::Context, t: f32, add_contents: impl FnO
                 let shapes = vec![
                     Shape::Rect(Shadow { offset: [0, 6], blur: 18, spread: 0, color: Color32::from_black_alpha(140) }.as_shape(rect, CornerRadius::same(2))),
                     Shape::rect_filled(rect.expand(1.0), CornerRadius::same(3), metal::STEEL_EDGE),
-                    metal::plate(ui.ctx(), rect, PANEL),
+                    metal::plate(ui.ctx(), rect, pal().panel),
                     metal::pipe_frame(rect, STRIP_PIPE),
                 ];
                 ui.painter().set(background, Shape::Vec(shapes));
@@ -1536,5 +1553,44 @@ mod tests {
         assert_eq!(frame(1.51, true), Some((1.0, Direction::Forward)), "the current animation finishes immediately");
         frame(1.6, false);
         assert_eq!(frame(1.7, true), Some((1.0, Direction::Forward)), "new pages appear without an entrance");
+    }
+
+    /// Whether `shape` (or a shape in it) is a rectangle filled with `fill`.
+    fn fills(shape: &Shape, fill: Color32) -> bool {
+        match shape {
+            Shape::Vec(shapes) => shapes.iter().any(|s| fills(s, fill)),
+            Shape::Rect(rect) => rect.fill == fill,
+            _ => false,
+        }
+    }
+
+    /// A floating strip takes the palette's panel for its plate, as its lettering takes its colours:
+    /// a theme's in the HUD (the replay bar, the chat), TA Reborn's anywhere else. A dialog keeps
+    /// TA Reborn's own plate and look in the HUD too.
+    #[test]
+    fn strips_take_the_huds_panel_and_dialogs_keep_reborns() {
+        let ctx = Context::default();
+        crate::theme::install(&ctx);
+        let themed = Palette::REBORN.themed(&|key| (key == "panel").then_some(Color32::from_rgb(1, 2, 3)));
+        set_battle_palette(themed);
+        let plates = |in_hud: bool| {
+            // (Areas new to the screen are laid out unseen first: the third frame is seen.)
+            let mut shapes = Vec::new();
+            for time in [0.0, 0.5, 1.0] {
+                let mut output = ctx.run_ui(egui::RawInput { time: Some(time), ..Default::default() }, |ui| {
+                    let draw = |ui: &mut Ui| {
+                        strip(ui.ctx(), "strip", Align2::CENTER_TOP, Vec2::ZERO, |ui| ui.label("REPLAY"));
+                        modal(ui.ctx(), "dialog", Panel::new("SHARE"), false, |_| assert_eq!(pal(), Palette::REBORN, "a dialog's contents"));
+                    };
+                    if in_hud { crate::theme::hud(ui, draw) } else { draw(ui) }
+                });
+                output.textures_delta.clear();
+                shapes = output.shapes.iter().map(|clipped| clipped.shape.clone()).collect::<Vec<Shape>>();
+            }
+            (shapes.iter().any(|s| fills(s, themed.panel)), shapes.iter().any(|s| fills(s, PANEL)))
+        };
+        assert_eq!(plates(true), (true, true), "in the HUD: the strip the theme's panel, the dialog TA Reborn's");
+        assert_eq!(plates(false), (false, true), "outside it: TA Reborn's");
+        set_battle_palette(Palette::REBORN);
     }
 }

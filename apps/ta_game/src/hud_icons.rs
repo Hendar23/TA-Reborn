@@ -114,9 +114,10 @@ fn stamped(painter: &Painter, r: Rect, glyph: Glyph, color: Color32) {
     paint(painter, r, glyph, color);
 }
 
-/// The colour a glyph is lettered in on a steel or rust button.
+/// The colour a glyph is lettered in on a steel or rust button: lit, the buttons' lettering made
+/// brighter (TA Reborn's cream, or a theme's `button_text`).
 fn ink(kind: Slab, hot: f32, active: bool) -> Color32 {
-    if active { Color32::from_rgb(255, 246, 204) } else { kind.text(hot) }
+    if active { retinted(Color32::from_rgb(255, 246, 204), CREAM, pal().button_text) } else { kind.text(hot) }
 }
 
 /// An order button `width` wide (`compact`: a little lower): its glyph above, and below it the
@@ -135,7 +136,7 @@ pub fn order_button(ui: &mut Ui, glyph: Glyph, active: bool, key: &str, width: f
         stamped(painter, Rect::from_center_size(pos2(rect.center().x, rect.top() + size / 2.0 + 4.5 + dy), vec2(size, size)), glyph, color);
         keycap(painter, pos2(rect.center().x, rect.bottom() - 7.5 + dy), key, active, rect.width() - 3.0);
         if active {
-            painter.add(metal::lamp(rect.right_top() + vec2(-5.5, 5.5), 2.2, GREEN, 1.0));
+            painter.add(metal::lamp(rect.right_top() + vec2(-5.5, 5.5), 2.2, pal().good, 1.0));
         }
     }
     if response.clicked() {
@@ -152,9 +153,12 @@ fn keycap(painter: &Painter, at: Pos2, key: &str, lit: bool, room: f32) {
     if last.chars().count() > 4 {
         return;
     }
-    let bright = if lit { Color32::from_rgb(255, 238, 180) } else { Color32::from_rgb(222, 214, 188) };
+    // (Lit, in the accent's brass; else in the buttons' lettering: TA Reborn's, or as a theme moved
+    // those colours.)
+    let p = pal();
+    let bright = if lit { retinted(Color32::from_rgb(255, 238, 180), AMBER_BRIGHT, p.accent_bright) } else { retinted(Color32::from_rgb(222, 214, 188), CREAM, p.button_text) };
     // (The modifier in a size and tone to read at a glance: Alt+F is not F.)
-    let dim = if lit { Color32::from_rgb(226, 200, 128) } else { Color32::from_rgb(192, 184, 160) };
+    let dim = if lit { retinted(Color32::from_rgb(226, 200, 128), AMBER, p.accent) } else { retinted(Color32::from_rgb(192, 184, 160), CREAM, p.button_text) };
     let main = painter.layout_no_wrap(last, strong(9.5), bright);
     let mods = (!parts.is_empty()).then(|| painter.layout_no_wrap(parts.join(" "), strong(7.5), dim));
     let gap = 2.0;
@@ -164,7 +168,7 @@ fn keycap(painter: &Painter, at: Pos2, key: &str, lit: bool, room: f32) {
     let cap = Rect::from_center_size(at, vec2(w, 11.0));
     // A dark recess with a lighter lip below, as a key sunk into the plate.
     painter.rect_filled(cap.translate(vec2(0.0, 1.0)), 2.5, Color32::from_white_alpha(14));
-    painter.rect_filled(cap, 2.5, if lit { Color32::from_rgb(52, 42, 18) } else { Color32::from_black_alpha(150) });
+    painter.rect_filled(cap, 2.5, if lit { retinted(Color32::from_rgb(52, 42, 18), AMBER_DEEP, p.accent_deep) } else { Color32::from_black_alpha(150) });
     painter.rect_stroke(cap, 2.5, egui::Stroke::new(1.0, Color32::from_black_alpha(200)), egui::StrokeKind::Inside);
     let mut x = cap.left() + (w - (width(mods.as_ref()) - 6.0)) / 2.0;
     if let Some(m) = mods {
@@ -194,10 +198,10 @@ pub fn state_icon_button(ui: &mut Ui, glyph: Glyph, size: Vec2, lit: bool, warn:
             let spacing = ((rect.height() - 8.0) / f32::from(of.max(1))).min(6.0);
             let first = rect.center().y - spacing * f32::from(of.saturating_sub(1)) / 2.0;
             for k in 0..of {
-                painter.add(metal::lamp(pos2(rect.right() - 5.0, first + spacing * f32::from(k)), 1.7, AMBER, if k == at { 1.0 } else { 0.0 }));
+                painter.add(metal::lamp(pos2(rect.right() - 5.0, first + spacing * f32::from(k)), 1.7, pal().accent, if k == at { 1.0 } else { 0.0 }));
             }
         } else if lit {
-            painter.add(metal::lamp(rect.right_top() + vec2(-5.5, 5.5), 2.2, GREEN, 1.0));
+            painter.add(metal::lamp(rect.right_top() + vec2(-5.5, 5.5), 2.2, pal().good, 1.0));
         }
     }
     if response.clicked() {
@@ -229,11 +233,11 @@ pub fn stance_button(ui: &mut Ui, glyph: Glyph, label: &str, size: Vec2, lit: bo
         let mut edge = rect.right() - 5.0;
         if let Some((at, of)) = steps {
             for k in (0..of).rev() {
-                painter.add(metal::lamp(pos2(edge - 2.0, rect.center().y + dy), 1.9, AMBER, if k == at { 1.0 } else { 0.0 }));
+                painter.add(metal::lamp(pos2(edge - 2.0, rect.center().y + dy), 1.9, pal().accent, if k == at { 1.0 } else { 0.0 }));
                 edge -= 6.0;
             }
         } else if lit {
-            painter.add(metal::lamp(pos2(edge - 2.5, rect.center().y + dy), 2.3, GREEN, 1.0));
+            painter.add(metal::lamp(pos2(edge - 2.5, rect.center().y + dy), 2.3, pal().good, 1.0));
             edge -= 8.0;
         }
         let left = glyph_at.x + side / 2.0 + 5.0;
@@ -278,6 +282,25 @@ mod tests {
     use super::*;
 
     const GLYPHS: u32 = Glyph::ALL.len() as u32;
+
+    /// A lit order's glyph is TA Reborn's bright cream outside a theme, and the theme's buttons'
+    /// lettering, as bright, in its HUD.
+    #[test]
+    fn a_lit_glyph_follows_the_buttons_lettering() {
+        assert_eq!(ink(Slab::Steel, 0.0, true), Color32::from_rgb(255, 246, 204));
+        let ctx = Context::default();
+        crate::theme::install_compact(&ctx);
+        let blue = Palette::REBORN.themed(&|key| (key == "button_text").then_some(Color32::from_rgb(150, 200, 255)));
+        set_battle_palette(blue);
+        ctx.run_ui(Default::default(), |ui| {
+            hud(ui, |_| {
+                let lit = ink(Slab::Steel, 0.0, true);
+                assert!(lit.b() > lit.r() && lit.b() >= blue.button_text.b(), "{lit:?}");
+            });
+        })
+        .drop_without_applying_deltas();
+        set_battle_palette(Palette::REBORN);
+    }
 
     #[test]
     fn the_atlas_is_laid_out_as_the_tool_draws_it() {

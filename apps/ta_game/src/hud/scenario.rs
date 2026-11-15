@@ -43,20 +43,20 @@ impl Hud {
             ui.set_width(WIDTH);
             ui.spacing_mut().item_spacing.y = 3.0;
             ui.horizontal(|ui| {
-                ui.label(RichText::new(t("CEASEFIRE")).font(strong(13.0)).color(AMBER_BRIGHT).extra_letter_spacing(ta_ui::i18n::tracking(1.0)));
+                ui.label(RichText::new(t("CEASEFIRE")).font(strong(13.0)).color(pal().accent_bright).extra_letter_spacing(ta_ui::i18n::tracking(1.0)));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // (The last ten seconds stand out.)
                     let soon = left < 10 * 30;
-                    ui.label(RichText::new(clock(left)).font(mono(14.0)).color(if soon { AMBER_BRIGHT } else { TEXT_BRIGHT }));
+                    ui.label(RichText::new(clock(left)).font(mono(14.0)).color(if soon { pal().accent_bright } else { pal().text_bright }));
                 });
             });
-            ui.label(RichText::new(t("Weapons do enemies no harm, and nobody builds near an enemy base.")).font(body(12.5)).color(TEXT));
+            ui.label(RichText::new(t("Weapons do enemies no harm, and nobody builds near an enemy base.")).font(body(12.5)).color(pal().text));
             let (rect, _) = ui.allocate_exact_size(EVec2::new(WIDTH, 5.0), egui::Sense::hover());
             let painter = ui.painter();
-            painter.rect_filled(rect, CornerRadius::same(1), INSET);
+            painter.rect_filled(rect, CornerRadius::same(1), pal().inset);
             let mut fill = rect;
             fill.set_width(rect.width() * (left as f32 / whole as f32).clamp(0.0, 1.0));
-            painter.rect_filled(fill, CornerRadius::same(1), AMBER.gamma_multiply(0.85));
+            painter.rect_filled(fill, CornerRadius::same(1), pal().accent.gamma_multiply(0.85));
         });
     }
 
@@ -76,8 +76,8 @@ impl Hud {
             ui.set_width(WIDTH);
             ui.spacing_mut().item_spacing.y = 3.0;
             ui.horizontal(|ui| {
-                ui.label(RichText::new(ta_ui::i18n::upper(ta_ui::i18n::t(&run.title))).font(strong(13.0)).color(AMBER_BRIGHT).extra_letter_spacing(ta_ui::i18n::tracking(1.0)));
-                ui.label(RichText::new(difficulty).font(strong(11.0)).color(STEEL));
+                ui.label(RichText::new(ta_ui::i18n::upper(ta_ui::i18n::t(&run.title))).font(strong(13.0)).color(pal().accent_bright).extra_letter_spacing(ta_ui::i18n::tracking(1.0)));
+                ui.label(RichText::new(difficulty).font(strong(11.0)).color(pal().steel));
             });
             let me = game.local_player as usize;
             let mine = game.sim.players.get(me).map_or(0.0, |p| p.stats.metal_produced.to_f32());
@@ -85,7 +85,7 @@ impl Hud {
             for ((goal, winning), objective) in run.victory.iter().map(|g| (g, true)).chain(run.defeat.iter().map(|g| (g, false)))
                 .zip(rules.victory.iter().chain(&rules.defeat))
             {
-                let color = if winning { GREEN } else { RED };
+                let color = if winning { pal().good } else { pal().bad };
                 let held = rules.hold_time(objective);
                 let (text, value, bar): (String, String, Option<f32>) = match goal {
                     GoalView::Survive { ticks } => (t("Survive").into(), clock(ticks.saturating_sub(now)), None),
@@ -110,18 +110,18 @@ impl Hud {
                     ui.painter().circle_filled(dot.center(), 3.0, color);
                     ui.vertical(|ui| {
                         ui.set_width(WIDTH - 16.0);
-                        ui.add(egui::Label::new(RichText::new(text).font(body(13.0)).color(TEXT_BRIGHT)).wrap());
+                        ui.add(egui::Label::new(RichText::new(text).font(body(13.0)).color(pal().text_bright)).wrap());
                         if !value.is_empty() {
                             // A clock running out goes red in its last minute.
                             let urgent = matches!(goal, GoalView::Time { ticks } if ticks.saturating_sub(now) < 60 * 30);
-                            ui.add(egui::Label::new(RichText::new(value).font(mono(13.0)).color(if urgent { RED } else { TEXT })).wrap());
+                            ui.add(egui::Label::new(RichText::new(value).font(mono(13.0)).color(if urgent { pal().bad } else { pal().text })).wrap());
                         }
                     });
                 });
                 if let Some(f) = bar {
                     let (rect, _) = ui.allocate_exact_size(EVec2::new(WIDTH, 5.0), egui::Sense::hover());
                     let painter = ui.painter();
-                    painter.rect_filled(rect, CornerRadius::same(1), INSET);
+                    painter.rect_filled(rect, CornerRadius::same(1), pal().inset);
                     let mut fill = rect;
                     fill.set_width(rect.width() * f.clamp(0.0, 1.0));
                     painter.rect_filled(fill, CornerRadius::same(1), color.gamma_multiply(0.85));
@@ -134,12 +134,12 @@ impl Hud {
                 let next = rules.next_wave().map(|w| w.tick.saturating_sub(now));
                 ui.horizontal(|ui| {
                     let (dot, _) = ui.allocate_exact_size(EVec2::new(8.0, 14.0), egui::Sense::hover());
-                    ui.painter().circle_filled(dot.center(), 3.0, AMBER);
-                    ui.label(RichText::new(text).font(body(13.0)).color(TEXT_BRIGHT));
+                    ui.painter().circle_filled(dot.center(), 3.0, pal().accent);
+                    ui.label(RichText::new(text).font(body(13.0)).color(pal().text_bright));
                     if let Some(next) = next {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let soon = next < 10 * 30;
-                            ui.label(RichText::new(tf("next {clock}", &[("clock", &clock(next))])).font(mono(12.5)).color(if soon { AMBER_BRIGHT } else { STEEL }));
+                            ui.label(RichText::new(tf("next {clock}", &[("clock", &clock(next))])).font(mono(12.5)).color(if soon { pal().accent_bright } else { pal().steel }));
                         });
                     }
                 });
@@ -148,9 +148,9 @@ impl Hud {
                 ui.horizontal(|ui| {
                     let (dot, _) = ui.allocate_exact_size(EVec2::new(8.0, 14.0), egui::Sense::hover());
                     ui.painter().circle_filled(dot.center(), 3.0, Color32::from_rgb(120, 180, 230));
-                    ui.label(RichText::new(t("Held out for")).font(body(13.0)).color(TEXT_BRIGHT));
+                    ui.label(RichText::new(t("Held out for")).font(body(13.0)).color(pal().text_bright));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new(clock(now)).font(mono(13.0)).color(TEXT));
+                        ui.label(RichText::new(clock(now)).font(mono(13.0)).color(pal().text));
                     });
                 });
             }

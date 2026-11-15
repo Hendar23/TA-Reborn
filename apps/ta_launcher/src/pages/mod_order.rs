@@ -8,7 +8,7 @@ use ta_ui::tooltip::TooltipExt as _;
 
 use super::sentence;
 use crate::app::{Action, LauncherApp, ModsTab};
-use crate::modlist::{self, Resolution};
+use crate::modlist::{self, Blocker, Resolution};
 use crate::theme::*;
 use crate::widgets::{self, Glyph, Mark};
 
@@ -224,6 +224,13 @@ impl LauncherApp {
                         }
                     }
                 }
+                // (What to turn off: the mod that needs another, or a newer TA Reborn; either of two
+                // that cannot be on together.)
+                let off: Vec<String> = match &self.mods.blocker {
+                    Some(Blocker::Dependency { module, .. }) | Some(Blocker::Newer { module }) => vec![module.clone()],
+                    Some(Blocker::Conflict { module, other }) => vec![module.clone(), other.clone()],
+                    Some(Blocker::Other) | None => Vec::new(),
+                };
                 ui.horizontal_wrapped(|ui| {
                     for dependency in fixes {
                         let name = self.mods.get(&dependency).map_or(dependency.clone(), |m| m.info.manifest.name.clone());
@@ -237,6 +244,12 @@ impl LauncherApp {
                         let button = if self.offline { button.disabled_tip(t("The launcher is offline.")) } else { button.hover_tip(t("Download and install it, then turn it on")) };
                         if button.clicked() {
                             self.push(Action::GetMod(entry.id));
+                        }
+                    }
+                    for id in off.into_iter().filter(|id| enabled.contains(id)) {
+                        let name = self.mods.get(&id).map_or(id.clone(), |m| m.info.manifest.name.clone());
+                        if ui.add(widgets::ActionButton::secondary(&tf("TURN OFF {name}", &[("name", &ta_ui::i18n::upper(&name))])).height(28.0)).clicked() {
+                            self.push(Action::DisableMod(id));
                         }
                     }
                 });

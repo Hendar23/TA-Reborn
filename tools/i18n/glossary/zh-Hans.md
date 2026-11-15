@@ -260,6 +260,42 @@ rendering of a foreign rank otherwise; every title distinct.
 | sides / campaigns of its own; programs (a mod brings) | 自有阵营 / 自有战役；程序 |
 | the map library | 地图库 (as 模组库, 皮肤库) |
 
+## A mod's pictures and links in the launcher (`pages/mods.rs`, the check's PRESENTATION, `presentation.rs`)
+
+| English | 简体中文 |
+|---|---|
+| PRESENTATION (the mod check's group: its pictures and links) | 展示 |
+| banner / icon / screenshot(s), SCREENSHOTS (a mod's pictures) | 横幅 / 图标 / 截图 |
+| gameplay preview (an animated GIF of the mod in play) / PLAY PREVIEW | 实机预览 / 播放预览 (the early-release tag PREVIEW stays 预览版) |
+| animated GIF / still picture | GIF 动图 / 静态图片 |
+| MOD PAGE (a link to the mod's web page) | 模组主页 (not 模组页面: that is the launcher's Mods page) |
+| link / web address | 链接 / 网址 |
+| Screenshot {n} of {count} (screen reader) / {n} of {count} (over a screenshot on the whole window) | 第 {n} 张截图，共 {count} 张 / {n}/{count} |
+| is {w} × {h} (a picture's size in a sentence) | 尺寸为 {w} × {h} |
+| shows blurred / shows sharp | 显示模糊 / 显示清晰 |
+| Give it more pixels / at best (the ideal size) | 请提高分辨率 / 最好为 |
+| named from the mod's folder (a path) | 相对于模组文件夹的路径 |
+| the launcher shows the mod without it | 启动器显示此模组时将略去它 |
+| picture editor | 图片编辑软件 |
+
+## A mod's interface theme (`pages/mods.rs`, the setting MODS' INTERFACE THEMES, the check's notes in `presentation.rs`)
+
+| English | 简体中文 |
+|---|---|
+| HUD (the battle's interface) | HUD (kept: HUD 会以这些颜色显示) |
+| interface theme / INTERFACE THEME (the mod page's caption) / MODS' INTERFACE THEMES (the switch) | 界面主题 / 界面主题 / 模组界面主题 |
+| the game's Interface options | 游戏内的“选项 · 界面” (as “选项 · 游戏”) |
+| Off: TA Reborn's own always / keeps TA Reborn's own (a colour, the font) | 关闭后：始终使用 TA Reborn 自己的外观 / 沿用 TA Reborn 自己的颜色、字体 |
+| its own font / pictures behind its panels (the {extras}; the code joins them with ", ") | 专属字体 / 面板背景图片 |
+| accent (colour) / panel(s) / a contrast of {ratio}:1 | 强调色 / 面板 / 对比度为 {ratio}:1 |
+| font / font file (.ttf, .otf) / a font's makers | 字体 / 字体文件 / 字体制作者 |
+| (the HUD) draws its own metal there (the side's metal tiles in place of the picture) | （HUD）在此处改用自己的金属底纹 |
+| a tile repeated across the panels | 在面板上重复平铺 |
+| # and six hexadecimal digits, red, green and blue | # 加六位十六进制数字，依次表示红、绿、蓝 |
+| not a colour as a theme writes them | 不符合主题的颜色写法 |
+| the HUD does without it | HUD 将略去它 (as the launcher's 略去) |
+| colours of its own (a side's) / Its sides: {sides} (the game's) | 专属颜色 / 游戏中的阵营：{sides} |
+
 ## Conquest (the galaxy campaign: briefing, galaxy map, side panel, debrief, in-battle strip)
 
 | English | 简体中文 |
@@ -477,3 +513,28 @@ its brackets round the translated words, no spaces: ARM 已损失[[数十亿]], 
 | stamps RECOVERED / BY ORDER OF THE COUNCIL / TRANSMITTED ON ALL BANDS / RESTRICTED / FOR TRAINING USE | 已寻获 / 奉议会之命 / 全频段广播 / 内部资料 / 训练专用 |
 | stamps UNDELIVERED / INTERCEPTED / FLAGGED FOR CORRECTION / SEALED UNTIL NEEDED / CLASSIFIED | 未送达 / 已截获 / 标记待修正 / 必要时启封 / 机密 |
 | FIGHT IT (caption before the campaigns that fight a chapter) | 亲身参战 |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | 简体中文 |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} 不能与 {other} 同时启用：请停用其中一个 / 不能与 {mods} 同时启用 |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} 或更高版本 / 当前为 {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | 需要更高版本的 TA REBORN |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / 此模组可运行的最低 TA Reborn 版本 (not a version: 不是版本号) |
+
+## A mod's mod.toml as read, its load order (`presentation.rs`, `validation.rs`, `modlist.rs`)
+
+`[table]`, `[{table}]`, `depends`, `load_after`, `conflicts`, `panel_texture` and `docs/MODDING.md`
+stay as they are. {found} and {expected} hold Chinese words, so no space around them: mod.toml 的
+{key} 的值是{found}，但该键需要的是{expected}.
+
+| English | 简体中文 |
+|---|---|
+| key (mod.toml's) / the key's name / a [table] line / table | 键 / 键名 / [table] 行 / 表 |
+| reads past it (a key it does not know) / leaves it out (a value of another kind) | 会被跳过 / 会略去此值 |
+| text in quotes / a whole number / a number / true or false / a date / a list in square brackets / a table | 带引号的文本 / 整数 / 数字 / 布尔值（true 或 false） / 日期 / 用方括号括起的列表 / 表 |
+| a later TA Reborn / older TA Reborns / a slip of the pen | 更高版本 TA Reborn / 旧版 TA Reborn / 笔误 |
+| need each other in a circle / nest more than 64 deep (dependencies) | 互相需要、形成循环 / 嵌套超过 64 层（依赖关系） |
+| plates (the HUD's, panel_texture tiled on them; beside 面板, the panels' colour) / the side's own metal plates | 底板（底板图片） / 阵营自己的金属底板 |
+| TURN OFF {name} / STOP PREVIEW (beside 启用 {name}, 播放预览) | 停用 {name} / 停止预览 |

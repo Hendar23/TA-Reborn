@@ -311,8 +311,12 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   when they are the first weapon (bombers; the Phoenix and Hurricane carry an anti-air
   laser beside their bombs, and used to fire only that) or nothing else the unit carries
   can hit the target; the Commanders' D-gun is their third weapon and waits for manual
-  fire. A plane's bombs also find their own targets on patrol and attack-move with fire at will
-  (TA's bombers stand on hold fire, `StandingFireOrder=0`): what its side sees or has on radar
+  fire. Fire at will (and return fire) takes on only what its side sees: a radar or sonar
+  contact in the fog of war is fired on by an order alone (players: long-range guns firing at
+  will on radar alone, never spotted, outdid their cost), but for guns a scenario sets to be
+  directed by a spotter (`Unit::radar_guided`, a placement's `radar_guided = true`). A plane's
+  bombs also find their own targets on patrol and attack-move with fire at will
+  (TA's bombers stand on hold fire, `StandingFireOrder=0`): what its side sees
   within its bombs' lead plus 160 px (`Sim::bomber_lookout`; the lead is 460 to 565 px for
   TA's bombers, beyond their 350 px sight), the nearest first. It keeps the target for its runs
   (not cleared after a drop; a building through the turn out of its sight as well,
@@ -499,7 +503,9 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
 * **Reclaim and resurrection**: features give their metal and energy; own units are taken
   apart like construction in reverse, refunding metal, and vanish without a wreck, in time by
   their metal as a feature is (twenty times it in worker time: a metal maker, which costs none,
-  at once). A unit is
+  at once). Either pays when it is done, as TA's reclaiming does: a feature's metal and energy
+  when it is reclaimed whole (the work stays on it if left), a unit's metal when it is gone
+  (`Unit::reclaim_owed`, kept across goes, lost with it if it dies first). A unit is
   finished once (`Unit::finished`: its `UnitCompleted`, its count in the stats, switched on and
   set to hold fire as it is finished): while its side takes it apart (`Sim::being_taken_apart`,
   a builder took work off it in the last second), other builders' work on it only mends what is
@@ -2719,8 +2725,12 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   plans never stand in the way of one building put down (`Game::own_plans_under`): put down
   again on one of them (the same building, the same footprint) it undoes it, with
   `Command::EditQueue`; another over them takes their place (with Shift they are taken out of
-  the queue, the rest kept; without, the new order replaces the queue anyway). A row dragged out
-  with Shift keeps clear of them. A right-click ends the placing; with Shift it also gives the
+  the queue, the rest kept; without, the new order replaces the queue anyway). Other orders are
+  taken back as plans are, with Shift: a reclaim of what the selection already has queued for
+  reclaim (`Game::take_back_queued`), and a move clicked within 48 px of a waypoint it already
+  has (`Game::take_back_move`: each unit drops its own move nearest that waypoint, so a group's
+  moves to their places round it go together), with `Command::DropOrder`, matched as the queue
+  stands when it runs. A row dragged out with Shift keeps clear of them. A right-click ends the placing; with Shift it also gives the
   right-click's order, queued (a Commander told to build a plant, then sent on). While placing,
   every constructor's queued buildings show as faint ghosts; the ghosts, and the one being
   placed, are drawn where the building will stand (`Sim::resting_pos`, as `Sim::spawn_unit`
@@ -2765,7 +2775,7 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   battle; the duties themselves are client state, kept beside the commands in a saved game
   (`Record::duties`, from `RECORD_VERSION` 44, `Record::with_duties` at the three places that
   save: autosave, quick save, Save game) and put back by `Game::restore_duties` when the save has
-  caught up (`Playback::duties`); replays have none. Any `Command::Order`, `Formation` or `EditQueue` that comes through `Game::issue`
+  caught up (`Playback::duties`); replays have none. Any `Command::Order`, `Formation`, `EditQueue` or `DropOrder` that comes through `Game::issue`
   takes the units it names off duty (`Game::release_from_duty`: clicks, keys, buttons, the build
   menu, Stop); a Commander on duty that an enemy hits, or that has armed enemies in sight close by
   (`DutyEvent::Danger`, told by `DutyOfficer::take_events`), leaves it at once. Units on duty are left
@@ -3047,8 +3057,13 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   other keys). A library lock covers destination checks and publication. Existing targets
   must be ordinary editor-owned folders; a disabled unrelated mod cannot be overwritten.
   The complete replacement, including retained extra assets/documents, is prepared in a
-  private `.installing` folder before the old directory is moved aside. A failed publish
-  restores the old directory, or reports the retained backup if restoration also fails.
+  private `.installing` folder before the old directory is moved aside (to
+  `.editor-<pid>-<n>-<folder>.old`; each rename retried a few seconds where Windows refuses it
+  for a file held open). A failed publish restores the old directory, or reports the retained
+  backup if restoration also fails; a save stopped between the two renames is put right by the
+  next save and by the launcher's start (`ta_vfs::package::restore_editor_backups`). The
+  `mod.toml` is written over the earlier one (`ta_vfs::mods::write_manifest`): what was added by
+  hand (co-authors, keys TA Reborn does not know, comments) is kept.
   Copying rejects links and bounds depth, entry count and total bytes. The save then enables
   the mod in settings and mounts it over the running game's data (a new VFS with the same
   layers), so the skirmish page lists the map at once. Settings failure remains a save error;
@@ -3591,9 +3606,9 @@ menu's briefing replays the narration through `MusicRequest::Narration`.
   ground units (the Commander's laser, the towers) never at aircraft, and `NoAutoFire` guns
   start on hold fire, which a computer player sets going, or a placement's `hold = true`
   (Iron Rain's Intimidators are their battery's, a second Core force nobody plays: set going
-  with `hold`, on stores of their own, they fire at what a radar post in the canyon sees of
-  the Arm base, every eight seconds each, as its briefing says; the post falls and they see
-  only what the Core's own units see). A wave's gunships go for whatever of the player's they
+  with `hold`, on stores of their own, and `radar_guided`, they fire at what a radar post in the
+  canyon sees of the Arm base, every eight seconds each, as its briefing says; the post falls
+  and they see only what the Core's own units see). A wave's gunships go for whatever of the player's they
   meet first, the Commander too; a wave's bombers go for the nearest of the player's units
   their side sees (above). Bombers that bomb left the autopilot's win rates as they were (21
   seeds a scenario and difficulty, Last Stand 42): the Defenders and the player's other

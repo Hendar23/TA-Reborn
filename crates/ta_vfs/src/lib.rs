@@ -514,10 +514,45 @@ pub(crate) fn is_link(metadata: &std::fs::Metadata) -> bool {
 }
 
 /// TA archives made for tests (this crate's and others'): their files stored as they are, no
-/// compression.
+/// compression. And mods' packages ([`test_archive::zip`]).
 #[doc(hidden)]
 pub mod test_archive {
     use std::collections::BTreeMap;
+
+    /// A ZIP of `files` (paths with `/` between folders), stored as they are: a mod's package, as
+    /// 7-Zip and tar unpack it.
+    pub fn zip(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let crc32 = |content: &[u8]| {
+            let mut crc = !0u32;
+            for byte in content {
+                crc ^= *byte as u32;
+                for _ in 0..8 { crc = (crc >> 1) ^ (0xedb8_8320 & 0u32.wrapping_sub(crc & 1)); }
+            }
+            !crc
+        };
+        let word = |out: &mut Vec<u8>, n: u16| out.extend_from_slice(&n.to_le_bytes());
+        let long = |out: &mut Vec<u8>, n: u32| out.extend_from_slice(&n.to_le_bytes());
+        let (mut out, mut central) = (Vec::new(), Vec::new());
+        for (name, content) in files {
+            let (name, crc, offset) = (name.as_bytes(), crc32(content), out.len() as u32);
+            long(&mut out, 0x0403_4b50);
+            for n in [20, 0, 0, 0, 0] { word(&mut out, n); }
+            long(&mut out, crc); long(&mut out, content.len() as u32); long(&mut out, content.len() as u32);
+            word(&mut out, name.len() as u16); word(&mut out, 0);
+            out.extend_from_slice(name); out.extend_from_slice(content);
+            long(&mut central, 0x0201_4b50);
+            for n in [20, 20, 0, 0, 0, 0] { word(&mut central, n); }
+            long(&mut central, crc); long(&mut central, content.len() as u32); long(&mut central, content.len() as u32);
+            for n in [name.len() as u16, 0, 0, 0, 0] { word(&mut central, n); }
+            long(&mut central, 0); long(&mut central, offset); central.extend_from_slice(name);
+        }
+        let (start, size) = (out.len() as u32, central.len() as u32);
+        out.extend_from_slice(&central);
+        long(&mut out, 0x0605_4b50);
+        for n in [0, 0, files.len() as u16, files.len() as u16] { word(&mut out, n); }
+        long(&mut out, size); long(&mut out, start); word(&mut out, 0);
+        out
+    }
 
     enum Node {
         Folder(BTreeMap<String, Node>),

@@ -9,6 +9,7 @@ mod brand;
 mod i18n;
 mod inspect;
 mod mapgen;
+mod mod_new;
 mod notices;
 mod sprites;
 mod supcom;
@@ -147,6 +148,17 @@ enum Cmd {
         #[arg(long)]
         name: Option<String>,
     },
+    /// Make a new mod's folder: a mod.toml naming it (every other key written out, commented),
+    /// a media folder and a read-me of what goes where.
+    ModNew {
+        folder: PathBuf,
+        /// The mod's id (default: made from its name).
+        #[arg(long)]
+        id: Option<String>,
+        /// Its name (default: the folder's).
+        #[arg(long)]
+        name: Option<String>,
+    },
     /// Write the notices of the third-party libraries compiled into the game and the
     /// launcher, with their licence texts (run from the repository root).
     Notices {
@@ -195,8 +207,8 @@ struct ModPlan {
     /// What the mod needs, however indirectly (what its dependencies need too), not given.
     missing: Vec<String>,
     /// Why the game would not load them together, all being given (a cycle, nesting too deep, a
-    /// given mod lacking one of its own).
-    problem: Option<String>,
+    /// given mod lacking one of its own, a conflict, a newer TA Reborn needed).
+    problem: Option<ta_vfs::mods::ModError>,
 }
 
 fn mod_plan(target: &ta_vfs::mods::ModInfo, given: &[ta_vfs::mods::ModInfo]) -> ModPlan {
@@ -222,7 +234,7 @@ fn mod_plan(target: &ta_vfs::mods::ModInfo, given: &[ta_vfs::mods::ModInfo]) -> 
     let enabled: Vec<String> = mods.iter().map(|m| m.manifest.id.clone()).collect();
     match ta_vfs::mods::resolve_load_order(&enabled, &mods) {
         Ok(order) => ModPlan { order: order.into_iter().cloned().collect(), missing: Vec::new(), problem: None },
-        Err(error) => ModPlan { order: mods, missing: Vec::new(), problem: Some(error.to_string()) },
+        Err(error) => ModPlan { order: mods, missing: Vec::new(), problem: Some(error) },
     }
 }
 
@@ -311,8 +323,10 @@ fn validate_mod(path: &Path, json: bool, fail_on: &str, inherited: bool) -> Resu
             validation::validate(&vfs, &Options { target_layer: Some(layer.clone()), ..Options::default() }, |_| true)
         }
     };
-    // (A folder whose content is all in archives the game cannot open: those are its findings.)
+    // (A folder whose content is all in archives the game cannot open: those are its findings.
+    // One of its manifest alone, a theme or pictures: complete, nothing of the data to check.)
     validation::content_unreadable(&mut report, &archives);
+    if path.is_dir() { validation::manifest_only(&mut report, &module.manifest); }
     report.issues.extend(archives);
     for dependency in &plan.missing {
         report.complete = false;
@@ -323,11 +337,13 @@ fn validate_mod(path: &Path, json: bool, fail_on: &str, inherited: bool) -> Resu
         });
     }
     if let Some(problem) = &plan.problem {
+        // (In the launcher's words: a missing mod, a circle, a conflict, a newer TA Reborn.)
+        let (code, words, suggestion) = validation::load_order_failure(problem);
         report.complete = false;
         report.issues.push(validation::Issue {
-            severity: Severity::Error, code: "DEPENDENCY".into(), layer: layer.clone(),
-            message: format!("The game would not load these mods together: {problem}"),
-            suggestion: "Give every mod the others need with --mod, and break any circle of mods needing each other, then check again.".into(), ..Default::default()
+            severity: Severity::Error, code: code.into(), layer: layer.clone(),
+            message: words.english(), words,
+            suggestion: suggestion.into(), ..Default::default()
         });
     }
     // (Told apart only from a whole check of the content without it: against part of one,
@@ -337,7 +353,13 @@ fn validate_mod(path: &Path, json: bool, fail_on: &str, inherited: bool) -> Resu
     if opened {
         report.issues.extend(ta_vfs::mods::replaced_archives(&install, &[&module]).iter().map(|archive| validation::replaced_archive(&layer, archive)));
     }
+    // (How it presents itself in the launcher, its pictures and links: notes, as the launcher's.)
+    if path.is_dir() {
+        report.issues.extend(ta_data::presentation::check(path, &module.manifest, &layer, Some(&ta_data::side_names(&vfs))));
+    }
     if !inherited { report.issues.retain(|i| i.affects_status); }
+    // (In the order the launcher lists them.)
+    report.sort();
     if json { println!("{}", serde_json::to_string_pretty(&report)?); } else { print!("{}", report.to_text()); }
     // (`never`: whatever it found, an incomplete check too.)
     let failed = fail.is_some_and(|worst| !report.complete || report.issues.iter().any(|i| i.affects_status && match worst {
@@ -370,7 +392,7 @@ fn mod_install(package: &Path, mods_dir: &Path, id: Option<String>, name: Option
     let t0 = std::time::Instant::now();
     unpacker.unpack(package, &temp)?;
     println!("unpacked with {} in {:.1} s", unpacker.name(), t0.elapsed().as_secs_f32());
-    let plan = ta_vfs::package::plan(&temp)?;
+    let mut plan = ta_vfs::package::plan(&temp)?;
     println!("content in: {}", plan.root.strip_prefix(&temp).unwrap_or(&plan.root).display());
     for a in &plan.archives {
         println!("  archive {} ({} KB)", a.file_name().unwrap_or_default().to_string_lossy(), std::fs::metadata(a).map_or(0, |m| m.len()) / 1024);
@@ -381,6 +403,10 @@ fn mod_install(package: &Path, mods_dir: &Path, id: Option<String>, name: Option
     for d in &plan.docs {
         println!("  doc     {}", d.file_name().unwrap_or_default().to_string_lossy());
     }
+    // (The launcher's pictures of it and its theme's files.)
+    for (_, to) in &plan.media {
+        println!("  media   {to}");
+    }
     for (from, to) in &plan.rename {
         println!("  rename  {from}/ -> {to}/");
     }
@@ -390,13 +416,22 @@ fn mod_install(package: &Path, mods_dir: &Path, id: Option<String>, name: Option
     println!("  {} units, {} maps; skipped {}: {}", plan.units, plan.maps, plan.skipped.len(), plan.skipped.join(", "));
     // A package laid out as a mod already keeps its own manifest (its id, what it needs), as the
     // launcher installs it; --id and --name still choose. One that does not read is refused, as
-    // the launcher refuses it: its author meant it.
-    let own = match [plan.root.as_path(), temp.as_path()].into_iter().find(|dir| ta_vfs::mods::manifest_path(dir).is_file()) {
-        Some(dir) => ta_vfs::mods::read_mod(dir).map_err(|error| anyhow::anyhow!("{error}"))?.map(|m| m.manifest),
+    // the launcher refuses it: its author meant it. (The installed copy's is written over it, its
+    // comments and the keys this TA Reborn does not know kept: one at the package's top, over its
+    // content's folder, too.)
+    let own = match [plan.root.clone(), temp.clone()].into_iter().find(|dir| ta_vfs::mods::manifest_path(dir).is_file()) {
+        Some(dir) => {
+            let own = ta_vfs::mods::read_mod(&dir).map_err(|error| anyhow::anyhow!("{error}"))?.map(|m| m.manifest);
+            if own.is_some() && plan.authored_text.is_none() {
+                plan.authored_text = std::fs::read_to_string(ta_vfs::mods::manifest_path(&dir)).ok();
+            }
+            own
+        }
         None => None,
     };
     let mut manifest = own.unwrap_or_else(|| ta_vfs::mods::ModManifest {
-        id: stem.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect(),
+        // (As the launcher names it: the first 64 letters and digits, `-mod` after an id no mod may take.)
+        id: ta_vfs::mods::package_id(&stem).unwrap_or_default(),
         name: stem.clone(),
         version: String::new(),
         description: String::new(),
@@ -405,7 +440,7 @@ fn mod_install(package: &Path, mods_dir: &Path, id: Option<String>, name: Option
         load_after: Vec::new(),
         source: String::new(),
         rename: Default::default(),
-        replaces: Vec::new(),
+        replaces: Vec::new(), ..Default::default()
     });
     if let Some(id) = id { manifest.id = id; }
     if let Some(name) = name { manifest.name = name; }
@@ -420,6 +455,7 @@ fn main() -> Result<()> {
     let _ = MODS.set(cli.mods);
     match cli.cmd {
         Cmd::ModInstall { package, mods_dir, id, name } => mod_install(&package, &mods_dir, id, name)?,
+        Cmd::ModNew { folder, id, name } => mod_new::run(&folder, id, name)?,
         Cmd::Brand { out } => brand::run(&out)?,
         Cmd::Mapgen { id, out, preview } => {
             let (_, vfs) = open_vfs()?;
@@ -624,7 +660,7 @@ mod mod_plan_tests {
     fn m(id: &str, depends: &[&str]) -> ta_vfs::mods::ModInfo {
         let manifest = ta_vfs::mods::ModManifest {
             id: id.into(), name: id.into(), version: String::new(), description: String::new(), authors: Vec::new(),
-            depends: depends.iter().map(|d| d.to_string()).collect(), load_after: Vec::new(), source: String::new(), rename: Default::default(), replaces: Vec::new(),
+            depends: depends.iter().map(|d| d.to_string()).collect(), load_after: Vec::new(), source: String::new(), rename: Default::default(), replaces: Vec::new(), ..Default::default()
         };
         ta_vfs::mods::ModInfo { manifest, path: PathBuf::from(id), kind: ta_vfs::mods::ModKind::Directory }
     }
@@ -643,7 +679,7 @@ mod mod_plan_tests {
         assert_eq!(ids(&plan), ["c", "b", "t"]);
         // Mods needing each other: no order the game can make.
         let plan = mod_plan(&m("t", &["b"]), &[m("b", &["t"])]);
-        assert!(plan.problem.as_deref().is_some_and(|p| p.contains("cycle")), "{plan:?}");
+        assert!(matches!(plan.problem, Some(ta_vfs::mods::ModError::Cycle(_))), "{plan:?}");
         // A given mod lacking one of its own: the game would not load them together either.
         let plan = mod_plan(&m("t", &[]), &[m("x", &["y"])]);
         assert!(plan.problem.is_some(), "{plan:?}");
@@ -662,6 +698,36 @@ mod extraction_tests {
             let result = mod_install(Path::new("nonexistent.zip"), Path::new("unused"), Some(id.into()), None);
             assert!(result.unwrap_err().to_string().contains("mod id"), "{id}");
         }
+    }
+
+    /// A package is named as the launcher names it: without a manifest of its own, by the first
+    /// 64 letters and digits of its file's name, `-mod` after one no mod may take (`base.zip` is
+    /// `base-mod`, not refused); with one, as that names it, whatever its file is called. The
+    /// installed manifest is written over the package's own, its comments and the keys this TA
+    /// Reborn does not know kept. (Where an unpacker is installed.)
+    #[test]
+    fn mod_install_names_a_package_as_the_launcher_does() {
+        if ta_vfs::package::Unpacker::find().is_none() { return; }
+        let root = std::env::temp_dir().join(format!("ta_tools_mod_install_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mods = root.join("mods");
+        let unit: &[u8] = b"[UNITINFO]{UnitName=A;}";
+        std::fs::write(root.join("base.zip"), ta_vfs::test_archive::zip(&[("units/a.fbi", unit)])).unwrap();
+        mod_install(&root.join("base.zip"), &mods, None, None).unwrap();
+        let long = format!("{}.zip", "x".repeat(80));
+        std::fs::write(root.join(&long), ta_vfs::test_archive::zip(&[("units/a.fbi", unit)])).unwrap();
+        mod_install(&root.join(&long), &mods, None, None).unwrap();
+        let manifest: &[u8] = b"# Mine.\nid = \"own-id\"\nname = \"Own\"\nfuture_key = 1\n";
+        let files: [(&str, &[u8]); 2] = [("units/a.fbi", unit), ("mod.toml", manifest)];
+        std::fs::write(root.join("reborn.zip"), ta_vfs::test_archive::zip(&files)).unwrap();
+        mod_install(&root.join("reborn.zip"), &mods, None, None).unwrap();
+        let mut ids: Vec<String> = ta_vfs::mods::scan(&mods).0.into_iter().map(|m| m.manifest.id).collect();
+        ids.sort();
+        assert_eq!(ids, ["base-mod".to_string(), "own-id".to_string(), "x".repeat(64)]);
+        let text = std::fs::read_to_string(mods.join("own-id").join("mod.toml")).unwrap();
+        assert!(text.starts_with("# Mine.") && text.contains("future_key = 1"), "{text}");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

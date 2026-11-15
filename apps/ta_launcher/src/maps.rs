@@ -882,7 +882,7 @@ fn install_map_data(vfs: &Vfs, mods_dir: &Path, workspace: &Path, name: &str) ->
     }
     let id = format!("map-pack-{:x}", hash.finalize());
     let manifest = ModManifest { id: id.clone(), name: name.to_string(), version: String::new(),
-        description: "Imported map pack".into(), authors: Vec::new(), depends: Vec::new(), load_after: Vec::new(), source: String::new(), rename: BTreeMap::new(), replaces: Vec::new() };
+        description: "Imported map pack".into(), authors: Vec::new(), depends: Vec::new(), load_after: Vec::new(), source: String::new(), rename: BTreeMap::new(), replaces: Vec::new(), ..Default::default() };
     // The existing package transaction validates paths, locks the pack, stages files,
     // and rolls back a failed replacement. Only the private copy is moved.
     package::install(&package::plan(&payload)?, &manifest, mods_dir)?;
@@ -969,7 +969,7 @@ pub(crate) mod tests {
     fn info(root: PathBuf, id: &str) -> ModInfo {
         ModInfo { path: root, kind: ModKind::Directory, manifest: ModManifest {
             id: id.into(), name: format!("Source {id}"), version: "1".into(), description: String::new(), authors: Vec::new(),
-            depends: Vec::new(), load_after: Vec::new(), source: String::new(), rename: BTreeMap::new(), replaces: Vec::new(),
+            depends: Vec::new(), load_after: Vec::new(), source: String::new(), rename: BTreeMap::new(), replaces: Vec::new(), ..Default::default()
         } }
     }
 

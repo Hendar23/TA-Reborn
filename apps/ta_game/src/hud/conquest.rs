@@ -17,10 +17,10 @@ fn line(ui: &mut egui::Ui, dot: Color32, text: String, value: Option<String>) ->
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(EVec2::new(8.0, 14.0), egui::Sense::hover());
         ui.painter().circle_filled(rect.center(), 3.0, dot);
-        ui.label(RichText::new(text).font(body(13.0)).color(TEXT_BRIGHT));
+        ui.label(RichText::new(text).font(body(13.0)).color(pal().text_bright));
         if let Some(value) = value {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(value).font(mono(13.0)).color(TEXT));
+                ui.label(RichText::new(value).font(mono(13.0)).color(pal().text));
             });
         }
     })
@@ -56,12 +56,12 @@ impl Hud {
             ui.spacing_mut().item_spacing.y = 3.0;
             let name = ta_ui::i18n::upper(&game.map_title);
             let title = if cs.defence { tf("DEFENCE OF {name}", &[("name", &name)]) } else { tf("BATTLE FOR {name}", &[("name", &name)]) };
-            ui.label(RichText::new(title).font(strong(13.0)).color(if cs.defence { RED } else { AMBER_BRIGHT }).extra_letter_spacing(ta_ui::i18n::tracking(1.0)));
+            ui.label(RichText::new(title).font(strong(13.0)).color(if cs.defence { pal().bad } else { pal().accent_bright }).extra_letter_spacing(ta_ui::i18n::tracking(1.0)));
             // (Every enemy of a Conquest battle plays as well as the others.)
             let strength = enemies.first().map_or_else(String::new, |&d| crate::conquest_ui::strength_text(enemies.len(), d));
-            ui.label(RichText::new(tf("CONQUEST · BATTLE {n}", &[("n", &(cs.battle + 1))])).font(strong(11.0)).color(STEEL));
+            ui.label(RichText::new(tf("CONQUEST · BATTLE {n}", &[("n", &(cs.battle + 1))])).font(strong(11.0)).color(pal().steel));
             if !strength.is_empty() {
-                ui.label(RichText::new(strength).font(body(12.5)).color(TEXT));
+                ui.label(RichText::new(strength).font(body(12.5)).color(pal().text));
             }
             ui.add_space(2.0);
             if rules.commander_ends_game {
@@ -70,18 +70,18 @@ impl Hud {
                     (false, true) => t("Destroy the enemy Commanders"),
                     (false, false) => t("Destroy the enemy Commander"),
                 };
-                line(ui, GREEN, destroy.into(), None);
-                line(ui, RED, t("Don't lose your Commander").into(), None);
+                line(ui, pal().good, destroy.into(), None);
+                line(ui, pal().bad, t("Don't lose your Commander").into(), None);
             } else {
-                line(ui, GREEN, t("Destroy every enemy unit").into(), None);
+                line(ui, pal().good, t("Destroy every enemy unit").into(), None);
             }
             // The Commander's perks, their names and what they do on hover.
             let perks: Vec<crate::conquest::Perk> = cs.perks.iter().filter_map(|id| crate::conquest::Perk::from_id(id)).collect();
             if !perks.is_empty() {
                 ui.horizontal(|ui| {
                     let (dot, _) = ui.allocate_exact_size(EVec2::new(8.0, 14.0), egui::Sense::hover());
-                    ui.painter().circle_filled(dot.center(), 3.0, AMBER);
-                    ui.label(RichText::new(t("Commander's perks")).font(body(13.0)).color(TEXT_BRIGHT));
+                    ui.painter().circle_filled(dot.center(), 3.0, pal().accent);
+                    ui.label(RichText::new(t("Commander's perks")).font(body(13.0)).color(pal().text_bright));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         for &perk in perks.iter().rev() {
@@ -89,8 +89,8 @@ impl Hud {
                             crate::conquest_ui::paint_perk(ui.painter(), rect.center(), 15.0, perk);
                             // (Its name over what it does: no punctuation between them to translate.)
                             response.on_hover_ui(|ui| {
-                                ui.label(RichText::new(t(perk.label())).font(strong(12.0)).color(AMBER_BRIGHT));
-                                ui.label(RichText::new(t(perk.effect())).color(TEXT));
+                                ui.label(RichText::new(t(perk.label())).font(strong(12.0)).color(pal().accent_bright));
+                                ui.label(RichText::new(t(perk.effect())).color(pal().text));
                             });
                         }
                     });
@@ -102,7 +102,7 @@ impl Hud {
                 .on_hover_text(t("Ranked units still standing when the battle is won join your veterans."));
             if stayed > 0 {
                 let text = if stayed > 1 { tf("{n} veterans could not land here and wait at home", &[("n", &stayed)]) } else { t("A veteran could not land here and waits at home").into() };
-                ui.label(RichText::new(text).font(body(12.0)).color(STEEL));
+                ui.label(RichText::new(text).font(body(12.0)).color(pal().steel));
             }
         });
     }

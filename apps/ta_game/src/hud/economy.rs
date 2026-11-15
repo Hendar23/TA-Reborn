@@ -10,7 +10,7 @@ use ta_ui::i18n::{n, t, tf};
 use ta_ui::metal;
 use ta_vfs::Vfs;
 
-use super::{ENERGY, Hud, METAL, Store, StoreState};
+use super::{Hud, Store, StoreState};
 use crate::game::Game;
 use crate::hud_skin;
 use crate::theme::*;
@@ -74,30 +74,30 @@ fn readout(ui: &mut egui::Ui, name: &str, s: &Store, color: Color32, spark: Opti
         ui.painter().add(hud_skin::gauge(rect, frac, color, 4));
         if s.state == StoreState::Stalling {
             let pulse = (0.55 + 0.45 * (time * 5.0).sin()) as f32;
-            ui.painter().rect_stroke(rect.expand(1.5), CornerRadius::same(2), Stroke::new(1.5, RED.gamma_multiply(pulse)), egui::StrokeKind::Outside);
+            ui.painter().rect_stroke(rect.expand(1.5), CornerRadius::same(2), Stroke::new(1.5, pal().bad.gamma_multiply(pulse)), egui::StrokeKind::Outside);
             ui.ctx().request_repaint();
         }
         let amount = ta_ui::widgets::galley(ui, RichText::new(format!("{:.0}", s.amount)).font(strong(12.5)));
-        metal::slab_text(ui.painter(), rect.center(), amount, true, TEXT_BRIGHT, false);
+        metal::slab_text(ui.painter(), rect.center(), amount, true, pal().text_bright, false);
         // What comes in, and what goes out: the one that wins in its colour.
-        let short = s.income < s.expense - 0.05;
-        ui.label(RichText::new(format!("+{:.1}", s.income)).font(strong(12.0)).color(if s.income > 0.05 { GREEN } else { STEEL }));
+        let short = s.income < s.wanted - 0.05;
+        ui.label(RichText::new(format!("+{:.1}", s.income)).font(strong(12.0)).color(if s.income > 0.05 { pal().good } else { pal().steel }));
         let spend = match s.state {
-            StoreState::Stalling => RED,
-            StoreState::Draining(secs) if secs < 20 => RED,
-            _ if short => AMBER_BRIGHT,
-            _ => STEEL,
+            StoreState::Stalling => pal().bad,
+            StoreState::Draining(secs) if secs < 20 => pal().bad,
+            _ if short => pal().accent_bright,
+            _ => pal().steel,
         };
-        ui.label(RichText::new(if s.expense > 0.05 { format!("-{:.1}", s.expense) } else { "0.0".to_string() }).font(strong(12.0)).color(spend));
+        ui.label(RichText::new(if s.wanted > 0.05 { format!("-{:.1}", s.wanted) } else { "0.0".to_string() }).font(strong(12.0)).color(spend));
         match s.state {
             StoreState::Stalling => {
-                ta_ui::widgets::tag(ui, n("STALLING"), RED);
+                ta_ui::widgets::tag(ui, n("STALLING"), pal().bad);
             }
             StoreState::Full if tier >= Tier::Medium => {
-                ta_ui::widgets::tag(ui, n("FULL"), STEEL);
+                ta_ui::widgets::tag(ui, n("FULL"), pal().steel);
             }
             StoreState::Draining(secs) if secs < 20 => {
-                ta_ui::widgets::tag(ui, &tf("EMPTY IN {secs} S", &[("secs", &secs)]), RED);
+                ta_ui::widgets::tag(ui, &tf("EMPTY IN {secs} S", &[("secs", &secs)]), pal().bad);
             }
             _ => {}
         }
@@ -112,7 +112,7 @@ fn readout(ui: &mut egui::Ui, name: &str, s: &Store, color: Color32, spark: Opti
 /// The income (filled) and the spending (a red line) over the last three minutes, small, in a
 /// recessed well: what the economy's chart shows, to see at a glance which way it is going.
 fn sparkline(painter: &egui::Painter, rect: Rect, spark: &Spark, color: Color32) {
-    painter.add(metal::well(rect, INSET));
+    painter.add(metal::well(rect, pal().inset));
     let inner = rect.shrink(2.5);
     let (i, o) = (spark.index, spark.index + 1);
     let top = spark.readings.iter().map(|(_, s)| s[i].max(s[o])).fold(1.0f32, f32::max) * 1.15;
@@ -133,7 +133,7 @@ fn sparkline(painter: &egui::Painter, rect: Rect, spark: &Spark, color: Color32)
     painter.add(egui::Shape::mesh(fill));
     painter.add(egui::Shape::line(made, Stroke::new(1.2, color)));
     let spent: Vec<Pos2> = spark.readings.iter().map(|(t, s)| Pos2::new(x(*t), y(s[o]))).collect();
-    painter.add(egui::Shape::line(spent, Stroke::new(1.0, RED)));
+    painter.add(egui::Shape::line(spent, Stroke::new(1.0, pal().bad)));
 }
 
 impl Hud {
@@ -146,11 +146,11 @@ impl Hud {
         let (readings, span) = if tier == Tier::Wide { self.trend.readings() } else { (Vec::new(), 1.0) };
         let spark = |index| (tier == Tier::Wide).then_some(Spark { readings: &readings, span, index });
         let gap = if tier == Tier::Tight { 12.0 } else { 20.0 };
-        let metal_store = Store::of(e.metal, e.metal_capacity, e.metal_income, e.metal_expense, rationed);
-        let energy_store = Store::of(e.energy, e.energy_capacity, e.energy_income, e.energy_expense, rationed);
-        let metal = readout(ui, n("METAL"), &metal_store, METAL, spark(0).as_ref(), tier, time);
+        let metal_store = Store::of(e.metal, e.metal_capacity, e.metal_income, e.metal_expense, e.metal_wanted, rationed);
+        let energy_store = Store::of(e.energy, e.energy_capacity, e.energy_income, e.energy_expense, e.energy_wanted, rationed);
+        let metal = readout(ui, n("METAL"), &metal_store, pal().metal_bar, spark(0).as_ref(), tier, time);
         ui.add_space(gap);
-        let energy = readout(ui, n("ENERGY"), &energy_store, ENERGY, spark(2).as_ref(), tier, time);
+        let energy = readout(ui, n("ENERGY"), &energy_store, pal().energy_bar, spark(2).as_ref(), tier, time);
         self.economy_rect = Some(metal.union(energy));
         for (rect, name, store) in [(metal, "metal", &metal_store), (energy, "energy", &energy_store)] {
             let resp = ui.interact(rect, egui::Id::new(("economy_readout", name)), egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -196,9 +196,9 @@ impl Hud {
 
     /// The panel's charts, and under them the battle's tally and what is being built.
     fn economy_contents(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, vfs: &Vfs, game: &mut Game) {
-        self.trend_chart(ui, n("METAL"), METAL, 0, 58.0);
+        self.trend_chart(ui, n("METAL"), pal().metal_bar, 0, 58.0);
         ui.add_space(4.0);
-        self.trend_chart(ui, n("ENERGY"), ENERGY, 2, 58.0);
+        self.trend_chart(ui, n("ENERGY"), pal().energy_bar, 2, 58.0);
         ui.add_space(4.0);
         let owner = game.hud_player();
         if let Some(p) = game.sim.players.get(owner as usize) {
@@ -207,8 +207,8 @@ impl Hud {
             let third = rect.width() / 3.0;
             for (i, (label, value)) in [(n("BUILT"), p.stats.built), (n("LOST"), p.stats.lost), (n("KILLS"), p.stats.kills)].into_iter().enumerate() {
                 let x = rect.left() + third * (i as f32 + 0.5);
-                painter.text(Pos2::new(x, rect.top()), Align2::CENTER_TOP, value.to_string(), display(16.0), TEXT_BRIGHT);
-                painter.text(Pos2::new(x, rect.bottom()), Align2::CENTER_BOTTOM, t(label), strong(9.5), STEEL);
+                painter.text(Pos2::new(x, rect.top()), Align2::CENTER_TOP, value.to_string(), display(16.0), pal().text_bright);
+                painter.text(Pos2::new(x, rect.bottom()), Align2::CENTER_BOTTOM, t(label), strong(9.5), pal().steel);
                 if i > 0 {
                     painter.add(metal::seam_down((rect.left() + third * i as f32).round(), rect.y_range().shrink(3.0)));
                 }
