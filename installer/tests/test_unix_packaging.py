@@ -302,6 +302,30 @@ class PackagingTests(unittest.TestCase):
                 # A busy try's partial image is removed before the next.
                 self.assertEqual(dmg.exists(), calls == 1)
 
+    def test_disk_image_is_verified_again_while_it_is_held(self):
+        held = subprocess.CompletedProcess([], 1, "", "hdiutil: verify failed - Resource temporarily unavailable\n")
+        good = subprocess.CompletedProcess([], 0, "checksum is VALID\n", "")
+        bad = subprocess.CompletedProcess([], 1, "", "hdiutil: verify failed - checksum is INVALID\n")
+        dmg = self.root / "TA.dmg"
+        quiet = (mock.patch.object(pkg.sys, "stdout"), mock.patch.object(pkg.sys, "stderr"))
+        for outcomes, attempts, calls, raises in (([held, held, good], 5, 3, False),  # held, then verified
+                                                  ([bad], 5, 1, True),  # a bad image: at once
+                                                  ([held] * 2, 2, 2, True)):  # held to the last
+            with self.subTest(calls=calls, raises=raises), quiet[0], quiet[1], \
+                    mock.patch.object(pkg.subprocess, "run", side_effect=outcomes) as command, \
+                    mock.patch.object(pkg.time, "sleep") as pause:
+                dmg.write_bytes(b"image")
+                if raises:
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        pkg.verify_disk_image(dmg, attempts=attempts)
+                else:
+                    pkg.verify_disk_image(dmg, attempts=attempts)
+                self.assertEqual(command.call_count, calls)
+                self.assertEqual(pause.call_count, calls - 1)
+                self.assertEqual(command.call_args.args[0], ["hdiutil", "verify", str(dmg)])
+                # The image being verified is never removed.
+                self.assertTrue(dmg.exists())
+
     @unittest.skipUnless(pkg.platform.system() == "Darwin", "Native macOS signing is checked before Cargo on both Mac runners")
     def test_native_macos_signs_unsigned_helper_before_main_executable(self):
         pkg.require_tools(["clang", "codesign"])
