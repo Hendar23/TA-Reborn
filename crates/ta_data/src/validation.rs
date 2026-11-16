@@ -1414,7 +1414,7 @@ impl<'a> Scan<'a> {
                 self.record(key("sounds", &s.name), Record { path: path.into(), refs, ..Default::default() });
                 if self.halted { break; }
             }
-        } else if path == "gamedata/sidedata.tdf" {
+        } else if path == "gamedata/sidedata.tdf" || path.strip_prefix("gamedata/").is_some_and(|f| f.starts_with("sidedata_") && f.ends_with(".tdf") && !f.contains('/')) {
             let own = self.own(path);
             if own && let Some(can_build) = doc.section("CANBUILD") {
                 self.engine.ai_builders += can_build.sections.len();

@@ -118,6 +118,56 @@ Each unit's first level of detail becomes `objects3d/<id>.3do` with its surface
 
 The 348 units' models come to 46 MB and their paint to 352 MB, made in about five seconds.
 
+## Gameplay
+
+Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::factions::units`,
+`script`, `faction`, made whole by `make`), its numbers Forged Alliance's at TA's scale:
+
+- **Health, costs, sight:** `Defense.Health`, `Economy.BuildCostMass` and `BuildCostEnergy`
+  as they are; intel radii × 32 pixels.
+- **Build time:** FA builds in `BuildTime / BuildRate` seconds, TA in `BuildTime /
+  WorkerTime`: both taken ten times (`units::WORK`), so a unit takes as long as in FA and
+  its builders' work stands beside TA's (a commander's 100 against TA's 300).
+- **Movement:** speeds × 32 / 30 (pixels a tick), turn rates in degrees a second to TA's
+  angle units a tick, TA's movement classes by how it moves and its footprint, and the fields
+  TA reads beside the class (hovercraft hover, ships float, submarines keep to deep water,
+  amphibians go to the sea bed). Mobile units take square footprints, as TA's do.
+- **Economy:** power generators make energy as in FA; extractors switch on when built, cover a
+  metal spot (three cells a side, as TA's) and extract as TA's (0.001), three times that at T2
+  and nine times at T3 (FA's 2, 6 and 18 mass a second); fabricators make metal from energy
+  while on.
+- **Weapons** (`weapons/supcom_<faction>.tdf`): TA's three slots. A commander's main gun goes
+  first and its Overcharge second, as TA's D-gun (`commandfire`); otherwise the most damaging
+  go first, an anti-air one kept where there is one. Weapons an enhancement brings, dummies
+  and anti-torpedo defences are left out; a death weapon is what the unit explodes as. Ranges ×
+  32, reloads 1 / rate of fire, muzzle velocities × 32, splash diameters twice the damage
+  radius × 32, salvos as bursts, damage as it is (a nuke's inner damage over its outer
+  radius). Each looks and sounds as TA's weapons of its kind (lasers, shells, artillery,
+  missiles, torpedoes, bombs, anti-air, the D-gun, nukes, anti-missiles), TA's own art.
+- **Scripts:** made by an assembler (`ta_formats::cob::Assembler`). A turret turns its yaw bone
+  to the target's heading less the heading it rests at, and pitches its pitch bone about the
+  axis square to the way it rests (an x turn and a z turn: exact for guns resting ahead,
+  behind or to a side, close for the rest; 71 of the 259 turrets rest turned), less the pitch it
+  rests at; muzzles take turns, racks kick back along their barrels, turrets turn back to rest
+  twice the longest reload after their last aim. Engineers and commanders lift their build
+  stance and spray from their build effect bones; factories open their yards and build on the
+  bone their blueprint attaches units to. Fresh units hide what their enhancements show.
+- **Builds:** each builder's build lists matched against the units' categories. A commander
+  builds its own tier (`BUILTBYCOMMANDER`: its engineering enhancements, which bring the others,
+  are not yet in TA Reborn); a factory builds units (the buildings its lists name are its own
+  upgrades, in place, as are a building's: later). The menus (`download/supcom_<faction>.tdf`)
+  put buildings before units, the lower tech first, economy, factories, defences, then the
+  rest; the same lists are the computer players' (`[CANBUILD]`).
+- **Sides:** `gamedata/sidedata_supcom.tdf` adds UEF, CYBRAN, AEON and SERAPHIM to the game's
+  sides (a side add-on: docs/MODDING.md), each with its commander.
+- **Wrecks** (`features/corpses/supcom_<faction>.tdf`): the unit's own model where it fell,
+  worth its `Wreckage` share of its cost.
+
+The computer players play them: UEF against Cybran on Coast To Coast, twelve minutes (`cargo test
+--release -p ta_ai --test skirmish` with `TA_TEST_MOD` and `TA_TEST_SIDES=UEF,CYBRAN`), each
+builds an economy, land, air and naval factories, engineers, tanks, artillery, anti-air,
+bombers, interceptors and frigates and fights.
+
 ## Animations (`.sca`, version 5)
 
 | Bytes | What |

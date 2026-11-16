@@ -12,8 +12,13 @@
   [docs/MODDING.md](docs/MODDING.md#models-with-surfaces-of-their-own).
 - Groundwork for playing Supreme Commander: Forged Alliance's four factions: their units' meshes are
   made into TA models with surfaces, painted with the game's own textures in each player's colour,
-  and their build icons into TA's build pictures (docs/SUPCOM_UNITS.md). Making them from the
-  launcher, and their gameplay, come next.
+  their build icons into TA's build pictures, and their blueprints into TA units with Forged
+  Alliance's own numbers, scripts that aim their turrets and build, and the four factions'
+  sides, build menus and wrecks; the computer players build and fight with them
+  (docs/SUPCOM_UNITS.md). Making them from the launcher comes next.
+- A mod adds a side without replacing the game's side data: `gamedata/sidedata_<name>.tdf` adds
+  its sides and computer players' build lists to the game's. See
+  [docs/MODDING.md](docs/MODDING.md#sides-of-a-mods-own).
 
 ## 1.0.7 — 2026-11-16
 

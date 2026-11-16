@@ -11,7 +11,7 @@ pub mod kit;
 pub mod land;
 pub mod paint;
 pub mod place;
-mod trig;
+pub mod trig;
 
 use ta_formats::image::Palette;
 use ta_formats::tdf::{TdfDocument, TdfSection};

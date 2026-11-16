@@ -477,7 +477,7 @@ Paths are read in any case.
 | `unitpics/` | `<unitname>.pcx` build pictures | |
 | `weapons/` | `*.tdf` weapon definitions, any number to a file | Top level only |
 | `features/` | `*.tdf` feature definitions | Any depth; a subfolder names the world (`features/<world>/`) |
-| `gamedata/` | `sidedata.tdf` (sides, `[CANBUILD]`), `moveinfo.tdf` (movement classes), `sound.tdf` (sound categories) | |
+| `gamedata/` | `sidedata.tdf` (sides, `[CANBUILD]`), `sidedata_<name>.tdf` ([side add-ons](#sides-of-a-mods-own)), `moveinfo.tdf` (movement classes), `sound.tdf` (sound categories) | |
 | `guis/` | `*.gui` pages: builders' menus (`<builder><n>.gui`), the side panel's | Top level only |
 | `download/` | `*.tdf` entries putting units on builders' menus | Top level only |
 | `anims/` | `*.gaf`: effects, explosions, build buttons' art | |
@@ -842,6 +842,16 @@ details. What mod makers ask about most:
   `FootprintX=0` or `FootprintZ=0`, or one that does not fly and gives a `MaxVelocity` with an
   explicit `Acceleration=0`, takes no ground: it stands where it was made ([upgrade
   modules](#buildings-that-build-their-own-upgrade-modules)).
+
+#### Sides of a mod's own
+
+A mod adds sides without replacing the game's side data, which would take another mod's sides
+away: a `gamedata/sidedata_<name>.tdf` (any name after `sidedata_`) adds its `[SIDE<n>]`
+sections after the game's sides (and any other add-on's, in order of their paths), and joins
+its `[CANBUILD]` lists to the game's. A side named as one before it is passed over. The sides
+are numbered on from the game's; the classic interface lays out a side its file does not with
+the first side's layout. The Supreme Commander factions add theirs so
+(`gamedata/sidedata_supcom.tdf`).
 
 #### Models with surfaces of their own
 

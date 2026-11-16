@@ -19,6 +19,12 @@ pub enum Faction {
     Other(String),
 }
 
+impl Default for Faction {
+    fn default() -> Faction {
+        Faction::Other(String::new())
+    }
+}
+
 impl Faction {
     pub const PLAYABLE: [Faction; 4] = [Faction::Uef, Faction::Cybran, Faction::Aeon, Faction::Seraphim];
 
@@ -45,9 +51,10 @@ impl Faction {
 }
 
 /// How a unit moves (`Physics.MotionType`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Motion {
     /// Structures.
+    #[default]
     None,
     Land,
     /// Walks on land and the sea bed (`RULEUMT_Amphibious`, and the frigate-legged
@@ -213,7 +220,7 @@ pub struct Wreckage {
 }
 
 /// A unit's blueprint.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct UnitBlueprint {
     /// Its folder's name (`UEL0201`), as the archive writes it.
     pub id: String,

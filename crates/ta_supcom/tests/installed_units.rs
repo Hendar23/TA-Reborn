@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use ta_supcom::files::Files;
 use ta_supcom::install::{self, Install, Store};
 use ta_formats::surface::Material;
-use ta_supcom::factions::{model, pictures, textures};
+use ta_supcom::factions::{make, model, pictures, textures};
 use ta_supcom::unit::{self, Faction, Tech};
 use ta_supcom::{sca, scm};
 
@@ -261,3 +261,45 @@ fn every_unit_is_made_a_model_the_same_twice() {
     eprintln!("{} units made twice the same, {} MB each time", playable.len(), bytes >> 20);
 }
 
+
+
+/// The whole mod, as `ta-tools supcom-units` and the launcher make it, made twice from the
+/// player's copy: every unit made, every file the same both times (each file's path, size and
+/// hash compared in the order they come), each unit with its model, surface, paint, picture,
+/// unit file and script, and its factions' side, menus, wrecks and weapons.
+#[test]
+#[ignore]
+fn the_mod_is_made_the_same_twice() {
+    use std::hash::{Hash, Hasher};
+    let Some(game) = the_game() else {
+        eprintln!("no copy of Forged Alliance found: nothing to read");
+        return;
+    };
+    let files = Files::own(&game).unwrap();
+    let units: Vec<_> = unit::catalogue(&files).unwrap().into_iter().filter(|u| u.playable()).collect();
+    let run = || {
+        let mut out: Vec<(String, usize, u64)> = Vec::new();
+        let made = make::make(&files, &units, "test", &mut |path, bytes| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            bytes.hash(&mut h);
+            out.push((path.to_string(), bytes.len(), h.finish()));
+            Ok(())
+        })
+        .unwrap();
+        (made, out)
+    };
+    let (made, first) = run();
+    assert_eq!(made.units, units.len(), "every unit made: {:?}", made.skipped);
+    let (_, second) = run();
+    assert!(first == second, "made again, the same files");
+    for u in &units {
+        let id = u.id.to_ascii_lowercase();
+        for path in [format!("objects3d/{id}.3do"), format!("objects3d/{id}.surface"), format!("units/{id}.fbi"), format!("scripts/{id}.cob"), format!("unitpics/{id}.pcx")] {
+            assert!(first.iter().any(|(p, ..)| *p == path), "{path}");
+        }
+    }
+    for path in ["gamedata/sidedata_supcom.tdf", "download/supcom_uef.tdf", "features/corpses/supcom_cybran.tdf", "weapons/supcom_seraphim.tdf", "mod.toml"] {
+        assert!(first.iter().any(|(p, ..)| p == path), "{path}");
+    }
+    eprintln!("{} files, {} MB, the same twice", first.len(), first.iter().map(|f| f.1).sum::<usize>() >> 20);
+}
