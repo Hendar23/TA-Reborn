@@ -88,10 +88,13 @@ pub use transport::{Client, Host, HostEvent};
 /// reclaiming pays when it is done; 101: a scenario's spotter-directed guns fire at will on radar;
 /// 102: `Command::DropOrder`, a queued order taken back; 103: an automatic target past firing
 /// reach is looked past for one in reach, and attack-move stops for a target only in reach; 104:
-/// up to eight weapons a unit.)
+/// up to eight weapons a unit; 105: targeting facilities direct their players' fire at will onto
+/// radar contacts, torpedoes and surface weapons meet units where they meet the water, nothing
+/// but torpedoes takes on underwater buildings, weapons past the first keep to their own
+/// targets on attack orders.)
 /// [`Msg::Hello`] and [`Refusal::Version`] keep their layout, so builds of other protocols are
 /// still told why they cannot meet.
-pub const PROTOCOL: u32 = 104;
+pub const PROTOCOL: u32 = 105;
 pub const DEFAULT_PORT: u16 = 7890;
 /// Ticks between state hash reports (which double as progress reports).
 pub const HASH_INTERVAL: u64 = 15;

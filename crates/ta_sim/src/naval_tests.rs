@@ -35,6 +35,95 @@ fn put(sim: &mut Sim, name: &str, owner: u8, x: i64, z: i64) -> UnitId {
     sim.spawn_unit(sim.types.id(name).unwrap(), owner, FxVec3::from_ints(x, 20, z), 0, true).unwrap()
 }
 
+/// A sea 100 px deep, with a shelf 20 px deep from x = 640 on; a boat armed as TA's Skeeter (a
+/// laser, anti-air missiles), a torpedo boat, an underwater building (as TA's: water under it,
+/// no `WaterLine`, no `Floater`) and an amphibious crawler, the last two 42 px tall (the Arm's
+/// underwater metal extractor's height: out of the shelf's 20 px of water).
+fn shallows() -> Sim {
+    let data = data_of(&[
+        unit("SKEETER", "CanMove=1; Floater=1; MinWaterDepth=6; MaxVelocity=3; Acceleration=1; BrakeRate=1; TurnRate=4096; FootprintX=2; FootprintZ=2; Weapon1=LASER; Weapon2=MISSILE; wsec_badTargetCategory=NOTAIR; Category=SHIP NOTAIR;"),
+        unit("TORPEDOBOAT", "CanMove=1; Floater=1; MinWaterDepth=5; MaxVelocity=3; FootprintX=2; FootprintZ=2; Weapon1=TORPEDO;"),
+        unit("UWMEX", "MinWaterDepth=19; FootprintX=3; FootprintZ=3; ExtractsMetal=0.001; MaxDamage=100000; Category=METAL NOTAIR NOTSUB;"),
+        unit("CRAWLER", "CanMove=1; MaxVelocity=1; MaxWaterDepth=255; FootprintX=3; FootprintZ=3; MaxDamage=100000; Category=KBOT NOTAIR;"),
+        weapon_file("LASER", "rendertype=0; beamweapon=1; turret=1;"),
+        weapon_file("MISSILE", "rendertype=1; guidance=1; tracks=1; selfprop=1; turnrate=30000; turret=1;"),
+        weapon_file("TORPEDO", "waterweapon=1; selfprop=1; guidance=1; tracks=1; turnrate=30000; turret=1; weaponvelocity=120;"),
+    ]);
+    let mut map = flat_map();
+    map.sea_level = 120;
+    map.heights.fill(20);
+    for z in 0..64 { for x in 40..64 { map.heights[z * 64 + x] = 100; } }
+    let mut sim = sim_on_map(data, 2, &map);
+    sim.los_enabled = false;
+    let types = Arc::get_mut(&mut sim.types).unwrap();
+    for name in ["UWMEX", "CRAWLER"] {
+        let kind = types.id(name).unwrap();
+        types.types[kind].model = Arc::new(crate::defs::ModelDef { height: Fx::from_int(42), ..Default::default() });
+    }
+    sim
+}
+
+/// Whether `shooter` fires within `ticks`, and whether `victim` loses health meanwhile.
+fn fires_and_hurts(sim: &mut Sim, shooter: UnitId, victim: UnitId, ticks: u32) -> (bool, bool) {
+    let start = sim.unit(victim).unwrap().health;
+    let mut fired = false;
+    for _ in 0..ticks {
+        sim.step(&[]);
+        fired |= sim.take_events().iter().any(|e| matches!(e, SimEvent::WeaponFired { unit, .. } if *unit == shooter));
+    }
+    (fired, sim.unit(victim).is_none_or(|u| u.health < start))
+}
+
+/// What is wholly under the water only weapons that go under it (`waterweapon`) reach, of their
+/// own accord or by an order (TA's Skeeter never fires on an underwater metal extractor); what
+/// reaches out of it surface weapons and torpedoes alike. TA's underwater buildings (water under
+/// them, no `WaterLine`, no `Floater`) are wholly under it however tall their models: the Arm's
+/// extractor, 42 px tall, stands in 19 px of water and up.
+#[test]
+fn surface_weapons_never_take_on_what_is_wholly_under_the_water() {
+    let calm = |sim: &mut Sim, id: UnitId| {
+        let u = sim.unit_mut(id).unwrap();
+        u.fire_state = 0;
+        u.move_state = 0;
+    };
+    // An underwater building on the shelf, its model 22 px out of the water.
+    let mut sim = shallows();
+    let mex = put(&mut sim, "UWMEX", 1, 800, 300);
+    let u = sim.unit(mex).unwrap();
+    assert!(u.pos.y + sim.unit_type(u).model.height > sim.world.sea_level, "its model reaches out of the water");
+    assert!(sim.submerged(u) && sim.in_water(u), "an underwater building is wholly under the water");
+    let skeeter = put(&mut sim, "SKEETER", 0, 600, 300);
+    assert_eq!(fires_and_hurts(&mut sim, skeeter, mex, 90), (false, false), "the Skeeter never fires on it at will");
+    sim.step(&[Command::Order { player: 0, units: vec![skeeter], order: Order::Attack(Target::Unit(mex)), queue: false }]);
+    assert_eq!(fires_and_hurts(&mut sim, skeeter, mex, 60), (false, false), "nor by an order");
+    assert!(sim.unit(skeeter).unwrap().orders.is_empty() && sim.unit(skeeter).unwrap().weapons.iter().all(|w| w.target.is_none()), "the order ends: nothing it carries reaches the target");
+    let torpedoes = put(&mut sim, "TORPEDOBOAT", 0, 600, 420);
+    assert_eq!(fires_and_hurts(&mut sim, torpedoes, mex, 150), (true, true), "a torpedo boat sinks it");
+
+    // An amphibious crawler on the shelf, its model 22 px out of the water: partly under it.
+    let mut sim = shallows();
+    let crawler = put(&mut sim, "CRAWLER", 1, 800, 300);
+    calm(&mut sim, crawler);
+    assert!(!sim.submerged(sim.unit(crawler).unwrap()) && sim.in_water(sim.unit(crawler).unwrap()));
+    let skeeter = put(&mut sim, "SKEETER", 0, 600, 300);
+    assert_eq!(fires_and_hurts(&mut sim, skeeter, crawler, 90), (true, true), "partly out of the water: the Skeeter hits it");
+    let mut sim = shallows();
+    let crawler = put(&mut sim, "CRAWLER", 1, 800, 300);
+    calm(&mut sim, crawler);
+    let torpedoes = put(&mut sim, "TORPEDOBOAT", 0, 600, 300);
+    assert_eq!(fires_and_hurts(&mut sim, torpedoes, crawler, 150), (true, true), "and so does a torpedo boat");
+
+    // The crawler in the deep, 100 px of water over its 42: wholly under it.
+    let mut sim = shallows();
+    let crawler = put(&mut sim, "CRAWLER", 1, 400, 300);
+    calm(&mut sim, crawler);
+    assert!(sim.submerged(sim.unit(crawler).unwrap()));
+    let skeeter = put(&mut sim, "SKEETER", 0, 200, 300);
+    assert_eq!(fires_and_hurts(&mut sim, skeeter, crawler, 90), (false, false), "wholly under the water: the Skeeter never fires on it");
+    let torpedoes = put(&mut sim, "TORPEDOBOAT", 0, 200, 420);
+    assert_eq!(fires_and_hurts(&mut sim, torpedoes, crawler, 150), (true, true), "a torpedo boat does, and hits");
+}
+
 #[test]
 fn submerged_contacts_need_sonar_even_inside_optical_sight() {
     let mut sim = sea();

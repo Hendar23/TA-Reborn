@@ -49,6 +49,34 @@
   repair or load.
 
 ### Fixed
+- The Targeting Facility (Arm and Core, "Automatic Radar Targeting") did nothing. While one of
+  yours is finished and switched on, your units set to fire at will now shoot at what your radar
+  shows of the enemy as well as at what they see: a Big Bertha shells a radar contact across the
+  map. It works as a radar does: short of the energy it uses (1,250 a second), it stops. Units set
+  to hold fire (a Big Bertha as it is built) still hold it, and an ally's facility directs its own
+  units only.
+- Submarines fired at the floating missile towers, the Defender - NS and the Stinger, without ever
+  hitting them: their torpedoes ran under the towers. Torpedoes now hit whatever reaches into the
+  water where it meets the water (ships, towers and other buildings on the water, units wading or
+  standing on the sea bed), climb to their target's depth as they leave the tube instead of
+  running into the sea bed rising to the shallows, and run as far as their weapon's range (most
+  gave out after 300 px, the advanced torpedo launchers' long before their 600 and 650).
+- Skeeters, Searchers and every other unit whose weapons cannot go under the water shot at
+  underwater metal extractors (and other underwater buildings) whose tops stood out of shallow
+  water, and an order to attack something wholly under the water had them follow it for nothing.
+  What is wholly under the water, underwater buildings wherever they stand, is now left to
+  torpedoes and depth charges: other weapons never fire at it, and an attack order on it ends at
+  once. Like submarines, an enemy's underwater buildings are seen only where sonar reaches them. A
+  destroyer sent at a submarine closes to its depth charges' reach instead of stopping at
+  its guns'. Units partly out of the water, such as an amphibious K-bot in the shallows, are shot
+  where they stand out of it and hit, where the shot used to go off on the water in front of them.
+- On an attack order, the Skeeter's and the Searcher's missiles followed the order on to boats
+  they are meant to leave for last. A second or third weapon whose own target list puts the
+  ordered target last (these missiles, the Panther's and the missile ships' anti-air missiles, the
+  Phoenix's and the Hurricane's anti-air lasers, the Doomsday Machine's light laser, the
+  destroyers' and cruisers' depth charges and others) now keeps choosing its own targets, aircraft
+  first (submarines for depth charges), else the nearest enemy, while the main weapon fires as
+  ordered; a Skeeter sent at a boat closes to its laser's reach to do so.
 - Orders given while the battle was paused did not show until it went on. Routes, waypoints and
   targets, a constructor's plans, a factory's queue and the route its units take, standing orders
   and switches now show the moment they are given, in multiplayer too, and the interface goes by

@@ -31,20 +31,18 @@ impl SkirmishAi {
     }
 
     /// Maximum compatible automatic ground-weapon reach, using known type/position
-    /// data without looking up a hidden live target.
+    /// data without looking up a hidden live target: of the weapons that reach it where it
+    /// stands (the simulation's `Sim::submerged_at` and `Sim::in_water_at`) and take an attack
+    /// order on it (not a second weapon keeping to its own targets: `Sim::keeps_to_own_targets`).
     pub(crate) fn ground_target_range(&self, sim: &Sim, attacker: &Unit, target: usize, pos: FxVec3) -> Option<Fx> {
-        let t = sim.types.get(target);
-        let wet = pos.y - t.waterline <= sim.world.sea_level && sim.world.depth_at(pos.x, pos.z) > Fx::ZERO;
-        let submerged = match t.locomotion {
-            Locomotion::Naval => t.waterline > Fx::ZERO && wet,
-            Locomotion::Air | Locomotion::Hover => false,
-            _ => pos.y + t.model.height.max(fx(8)) < sim.world.sea_level,
-        };
-        sim.unit_type(attacker).weapons.iter().flatten().map(|&id| sim.weapon_types.get(id)).filter(|w| {
+        let (wet, submerged) = (sim.in_water_at(target, pos), sim.submerged_at(target, pos));
+        let t = sim.unit_type(attacker);
+        t.weapons.iter().enumerate().filter_map(|(slot, w)| Some((slot, sim.weapon_types.get((*w)?)))).filter(|&(slot, w)| {
             crate::info::hits_ground(w)
                 && (w.def.fire_submersed || !sim.submerged(attacker))
                 && (w.water || !submerged) && (!w.torpedo || wet)
-        }).map(|w| w.range).max()
+                && !sim.keeps_to_own_targets(t, slot, w, target, attacker.owner)
+        }).map(|(_, w)| w.range).max()
     }
 
     /// Open water for the yard's usable products, in their respective seas and

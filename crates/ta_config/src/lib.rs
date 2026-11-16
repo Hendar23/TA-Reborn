@@ -162,8 +162,14 @@ pub const RECORD_VERSION: u32 = 46;
 /// will on radar and sonar contacts as well; 98, an automatic target past a weapon's firing reach
 /// no longer holds it: it looks round for one in reach and turns to it (an ordered one is kept),
 /// and attack-move and patrol stop for a target only once a weapon can fire on it; 99, a unit
-/// carries up to eight weapons (a mod's `Weapon4` to `Weapon8`, its script's `AimWeapon4`...).
-pub const SIMULATION_VERSION: u32 = 99;
+/// carries up to eight weapons (a mod's `Weapon4` to `Weapon8`, its script's `AimWeapon4`...);
+/// 100, a player's Targeting Facility at work (`IsTargetingUpgrade`) has its units fire at will
+/// on radar contacts; torpedoes hit what reaches into the water where it meets the water, run at
+/// their target's depth and as far as their range; surface weapons aim at the part of a unit out
+/// of the water, and never take on what is wholly under it (TA's underwater buildings, however
+/// tall), by an order either (the order ends); a weapon past the first whose own bad targets name
+/// an attack order's target keeps to its own targets.
+pub const SIMULATION_VERSION: u32 = 100;
 /// Records shorter than one year of simulated time are supported. Shared with the
 /// launcher's metadata reader so impossible durations cannot start endless save catch-up.
 pub const MAX_RECORD_TICKS: u64 = 30 * 3600 * 24 * 365;

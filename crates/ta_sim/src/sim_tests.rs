@@ -1121,6 +1121,65 @@ fn a_spotters_guns_fire_at_will_on_what_radar_shows() {
     );
 }
 
+/// Core Contingency's Targeting Facility (`istargetingupgrade=1`, "Automatic Radar Targeting"):
+/// while one of a player's is at work, that player's guns fire at will on what radar shows as on
+/// what is seen. Not an ally's facility, not one switched off or short of the energy it uses, and
+/// never a gun set to hold fire.
+#[test]
+fn a_targeting_facility_lets_its_players_guns_fire_at_will_on_radar_contacts() {
+    let data = data_of(&[
+        unit("GUN", "Weapon1=GUN; SightDistance=100; RadarDistance=600;"),
+        unit("TARGET", "MaxDamage=100000;"),
+        // As Core Contingency's files have it.
+        unit("TARG", "istargetingupgrade=1; onoffable=1; ActivateWhenBuilt=1; EnergyUse=1250; SightDistance=210; FootprintX=5; FootprintZ=4;"),
+        weapon_file("GUN", ""),
+    ]);
+    let mut sim = sim_of(data, 3);
+    // Player 2 is player 0's ally.
+    sim.set_team(2, 0);
+    for p in 0..3 {
+        sim.set_starting_resources(p, Fx::from_int(1000), Fx::from_int(1_000_000));
+    }
+    let gun = sim.spawn_unit(sim.types.id("GUN").unwrap(), 0, FxVec3::from_ints(300, 0, 300), 0, true).unwrap();
+    // 250 px off: in the gun's reach (400) and its radar's (600), out of its sight (100).
+    let target = sim.spawn_unit(sim.types.id("TARGET").unwrap(), 1, FxVec3::from_ints(550, 0, 300), 0, true).unwrap();
+    // An ally's facility, far from the target (none of ours yet).
+    sim.spawn_unit(sim.types.id("TARG").unwrap(), 2, FxVec3::from_ints(150, 0, 850), 0, true).unwrap();
+    let fired = |sim: &mut Sim| sim.take_events().iter().any(|e| matches!(e, SimEvent::WeaponFired { unit, .. } if *unit == gun));
+    // Some ticks to settle (the facility's state is set at the economy's end), then whether the
+    // gun fired in a second.
+    let fires = |sim: &mut Sim, commands: &[Command]| {
+        sim.step(commands);
+        for _ in 0..3 { sim.step(&[]); }
+        sim.take_events();
+        (0..30).any(|_| {
+            sim.step(&[]);
+            fired(sim)
+        })
+    };
+    sim.step(&[]);
+    assert_eq!(sim.seen_by(sim.unit(target).unwrap(), 0), Seen::Radar);
+    assert!(!fires(&mut sim, &[]), "no facility of ours (an ally's directs its own guns): a radar contact is not fired on at will");
+    assert!(sim.players[2].radar_targeting && !sim.players[0].radar_targeting);
+    // Our own.
+    let facility = sim.spawn_unit(sim.types.id("TARG").unwrap(), 0, FxVec3::from_ints(150, 0, 700), 0, true).unwrap();
+    assert!(fires(&mut sim, &[]), "with a facility at work, a radar contact is fired on at will");
+    assert!(sim.players[0].radar_targeting);
+    assert_eq!(sim.seen_by(sim.unit(target).unwrap(), 0), Seen::Radar, "still a radar contact");
+    // Held fire holds.
+    let fire = |state: u8| Command::SetStates { player: 0, units: vec![gun], fire: Some(state), movement: None };
+    assert!(!fires(&mut sim, &[fire(0)]), "held fire holds");
+    assert!(fires(&mut sim, &[fire(2)]), "and fire at will again");
+    // Switched off: no more.
+    assert!(!fires(&mut sim, &[Command::SetActive { player: 0, units: vec![facility], on: false }]), "the facility switched off");
+    assert!(!sim.players[0].radar_targeting && sim.unit(gun).unwrap().weapons[0].target.is_none(), "the contact let go");
+    assert!(fires(&mut sim, &[Command::SetActive { player: 0, units: vec![facility], on: true }]), "switched on again");
+    // Short of the energy it uses (1,250 a second): as a radar, it is not at work.
+    sim.set_starting_resources(0, Fx::from_int(1000), Fx::ZERO);
+    assert!(!fires(&mut sim, &[]), "its upkeep unpaid, the facility is not at work");
+    assert!(!sim.players[0].radar_targeting);
+}
+
 #[test]
 fn a_dropped_order_goes_from_the_queue_as_it_stands() {
     let data = data_of(&[unit("WALKER", "CanMove=1; MaxVelocity=1;")]);

@@ -677,6 +677,7 @@ impl Sim {
                 sharing: Default::default(),
                 perks: Default::default(),
                 shoot_all: false,
+                radar_targeting: false,
             })
             .collect();
         let pathfinder = Pathfinder::new(world.width, world.height);
@@ -915,17 +916,32 @@ impl Sim {
         if flags & vision::RADAR != 0 && jammed & vision::RADAR_JAM == 0 { Seen::Radar } else { Seen::Hidden }
     }
 
-    /// Whether a unit is under the water: a submarine (a ship with a `WaterLine`: the
-    /// simulation keeps ships at the surface, the client draws submarines that far under it),
-    /// or one on the sea bed with the water over its top (an amphibious kbot crossing; a tank
-    /// in the shallows is not). As in TA, only weapons that go under the water (torpedoes,
-    /// depth charges: `waterweapon`) reach it, and radar doesn't see it; sonar does.
+    /// Whether a unit is wholly under the water ([`Sim::submerged_at`]). As in TA, only weapons
+    /// that go under the water (torpedoes, depth charges: `waterweapon`) reach it, by an order
+    /// or of their own accord, by shot or blast, and radar doesn't see it; sonar does.
     pub fn submerged(&self, u: &Unit) -> bool {
-        let t = self.types.get(u.type_id);
+        self.submerged_at(u.type_id, u.pos)
+    }
+
+    /// Whether a unit of `type_id` standing at `pos` is wholly under the water, nothing of it over
+    /// the surface: a submarine (a ship with a `WaterLine`: the simulation keeps ships at the
+    /// surface, the client draws submarines that far under it) under the surface; one of TA's
+    /// underwater buildings (`UnitDef::stands_on_sea_bed`: its underwater metal extractors,
+    /// storages and fusion plants) with the water over its base, however tall its model (the
+    /// Arm's extractor reaches 42 px over its base and may stand in 19 px of water, its fusion
+    /// plant 42 in 34: TA's surface weapons never fired on one); anything else with the water over
+    /// the top of its model (an amphibious kbot crossing the sea bed; a tank in the shallows is
+    /// not). Hovercraft and aircraft never are. Whether a unit reaches into the water at all is
+    /// [`Sim::in_water_at`].
+    pub fn submerged_at(&self, type_id: usize, pos: FxVec3) -> bool {
+        let t = self.types.get(type_id);
+        let sea = self.world.sea_level;
+        let wet = || self.world.depth_at(pos.x, pos.z) > Fx::ZERO;
         match t.locomotion {
-            Locomotion::Naval => t.waterline > Fx::ZERO && u.model_pos(t).y < self.world.sea_level && self.world.depth_at(u.pos.x, u.pos.z) > Fx::ZERO,
+            Locomotion::Naval => t.waterline > Fx::ZERO && pos.y - t.waterline < sea && wet(),
             Locomotion::Air | Locomotion::Hover => false,
-            _ => u.pos.y + t.model.height.max(Fx::from_int(8)) < self.world.sea_level,
+            Locomotion::Static if t.on_sea_bed => pos.y < sea && wet(),
+            _ => pos.y + t.model.height.max(Fx::from_int(8)) < sea,
         }
     }
 
@@ -5290,6 +5306,8 @@ impl Sim {
             .filter(|(_, u)| u.as_ref().and_then(|u| u.carried_by).is_some_and(|c| self.unit(c).is_none_or(|c| types.get(c.type_id).transport_capacity > 0)))
             .map(|(slot, _)| slot)
             .collect();
+        // The players with a targeting facility at work, its upkeep paid (`Player::radar_targeting`).
+        let mut targeting = 0u64;
         for (slot, u) in self.units.iter_mut().enumerate() {
             let Some(u) = u else { continue };
             if !u.is_complete() || u.dead {
@@ -5336,6 +5354,10 @@ impl Sim {
                 e.energy -= upkeep;
                 e.tick_energy_out += upkeep;
             }
+            // (At work as `Sim::working` has it: switched on or not switchable, its upkeep paid.)
+            if t.def.is_targeting_upgrade && paid && (u.activated || !t.def.on_offable) {
+                targeting |= player_bit(u.owner);
+            }
             if active && paid {
                 if t.extracts_metal > Fx::ZERO && let Some(origin) = u.occupied_origin {
                     let under = self.world.metal_under(origin, t.footprint);
@@ -5351,6 +5373,9 @@ impl Sim {
             e.metal += metal_in;
             e.tick_energy_in += energy_in;
             e.tick_metal_in += metal_in;
+        }
+        for (i, p) in self.players.iter_mut().enumerate() {
+            p.radar_targeting = targeting & player_bit(i as u8) != 0;
         }
         // What a player shares (by default what full storage would waste) goes to allies with
         // room, in player order (see `Sharing`).
@@ -5839,6 +5864,7 @@ impl Sim {
             mix(p.sharing.keep_metal.map_or(-1, |k| k.0));
             mix(p.sharing.keep_energy.map_or(-1, |k| k.0));
             mix(p.shoot_all as i64);
+            mix(p.radar_targeting as i64);
         }
         mix(self.mission.is_some() as i64);
         if let Some(mission) = &self.mission {

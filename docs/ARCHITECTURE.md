@@ -311,10 +311,20 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   when they are the first weapon (bombers; the Phoenix and Hurricane carry an anti-air
   laser beside their bombs, and used to fire only that) or nothing else the unit carries
   can hit the target; the Commanders' D-gun is their third weapon and waits for manual
-  fire. Fire at will (and return fire) takes on only what its side sees: a radar or sonar
-  contact in the fog of war is fired on by an order alone (players: long-range guns firing at
-  will on radar alone, never spotted, outdid their cost), but for guns a scenario sets to be
-  directed by a spotter (`Unit::radar_guided`, a placement's `radar_guided = true`). A plane's
+  fire. A second or third weapon whose own bad targets (`wsec_`/`wspe_badTargetCategory`, not the
+  unit's `BadTargetCategory`: `UnitType::own_bad_targets`) name an attack order's target leaves it
+  to the others and keeps choosing its own targets as with no order (`Sim::takes_order`,
+  `Sim::keeps_to_own_targets`; not a command-fire weapon, nor with `+shootall`): the Skeeter
+  lasers the boat it is sent at, its anti-air missiles go for the aircraft about, else the nearest
+  enemy, and it closes to its laser's reach. Fire at will (and return fire) takes on only what its
+  side sees: a radar or sonar contact in the fog of war is fired on by an order alone (players:
+  long-range guns firing at will on radar alone, never spotted, outdid their cost), but for guns
+  directed by radar (`Sim::fires_on_radar`): those a scenario sets to be directed by a spotter
+  (`Unit::radar_guided`, a placement's `radar_guided = true`), and all of a player with a targeting
+  facility at work (`IsTargetingUpgrade`: Core Contingency's Targeting Facility,
+  `Player::radar_targeting`, set at the economy's end from the facilities finished, switched on,
+  their upkeep paid and not paralysed, as radars count: `Sim::working`; its owner's units only,
+  not its allies', though they fire on what the team's radar shows). A plane's
   bombs also find their own targets on patrol and attack-move with fire at will
   (TA's bombers stand on hold fire, `StandingFireOrder=0`): what its side sees
   within its bombs' lead plus 160 px (`Sim::bomber_lookout`; the lead is 460 to 565 px for
@@ -329,8 +339,18 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   aircraft hit them in flight: bombs fall past the other bombers of a strike (ten Thunders
   over one target used to shoot each other down) and shells pass under planes overhead; no
   shot strikes a friendly plane in flight, and a plane shot down in the air blows up without
-  touching the aircraft flying round it. Only `waterweapon`s reach what is under the water
-  (`Sim::submerged`: submarines, units on the sea bed covered by it), by shot or blast.
+  touching the aircraft flying round it. Only `waterweapon`s reach what is wholly under the water
+  (`Sim::submerged`, `Sim::submerged_at`: submarines, TA's underwater buildings standing on the sea
+  bed whatever their height, other units on the sea bed covered by it), by shot or blast, of their
+  own accord or by an order (an attack order none of a unit's weapons can reach ends at once; a
+  destroyer sent at a submarine closes to its depth charges' reach, not its guns'). Torpedoes reach
+  only what reaches into the water (`Sim::in_water`). A unit partly in the water is met where it
+  meets the water (`reach_sphere`): by torpedoes at its collision sphere with the middle no higher
+  than the surface, by other weapons no lower, which aim at its part out of the water (aimed at its
+  middle under the surface, a laser went off on the water in front of an amphibious K-bot). A
+  torpedo fired under its target's depth rises to it over its first 48 px and runs level at it
+  (`projectiles::torpedo_aim`), as one sent along the straight line up from a submarine ran into
+  the sea bed rising to the shallows, and runs at least as far as its range.
   `toairweapon` weapons engage only aircraft, other direct-fire and guided weapons both,
   shells and bombs only the ground. A weapon takes its bad targets on last, only when no other
   enemy is in reach, and turns to a better one coming into reach (`Sim::bad_target`,
@@ -409,7 +429,9 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
 * **Vision** (`vision.rs`): per-player line of sight, radar, sonar and jamming on 32 px
   cells, rebuilt from precomputed disc spans every 6 ticks, plus sticky "explored" bits.
   `Sim::seen_by` gives Visible / Radar / Hidden; automatic targeting ignores hidden units
-  (radar contacts can be engaged). Radar doesn't see what is under the water; sonar does.
+  (radar contacts are engaged by an order, or at will by guns directed by radar). Radar doesn't
+  see what is wholly under the water (`Sim::submerged`: submarines, underwater buildings); sonar
+  does.
   Deterministic, so the AI and targeting may use it.
   TA's "true" line of sight (`GameRules::true_sight`, `Sim::set_true_sight`): hills hide
   what is behind them. The ground's height at each cell's centre (the sea's surface over
@@ -1624,7 +1646,10 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   rally point and a builder off factory duty repairs them (free in TA; hurt warships go
   back off the shipyard, where a naval constructor kept for it mends them), and fire is
   concentrated on the enemy in reach whose loss costs the most firepower per point of
-  damage, just enough guns on each for a quick kill.
+  damage, just enough guns on each for a quick kill. In reach by the weapons that would take
+  the order (`SkirmishAi::ground_target_range`): those that reach the target where it stands, as
+  the simulation has it (`Sim::submerged_at`, `Sim::in_water_at`), and not a second weapon
+  keeping to its own targets (`Sim::keeps_to_own_targets`: a Skeeter's missiles on a boat).
 * `navy.rs`: when the sea reaches within gun range of an enemy base, a shipyard (early if
   the land army is stranded, first of all when there is no room on land), and a second and
   a third where the war is at sea (the ground army can't get across) once the economy
