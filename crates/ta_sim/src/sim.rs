@@ -1793,6 +1793,16 @@ impl Sim {
         queue_order(&mut u.orders, order, queue, pos);
     }
 
+    /// `command` done now, as the next tick will do it, without the tick: for the interface's
+    /// copy of the game that shows the player's orders before they are in it (given while the
+    /// battle is paused, or on their way to a multiplayer host), so that what they tell units shows
+    /// at once. Never on the game itself, which takes its commands at the start of a tick
+    /// ([`Sim::step`]) as every other copy of it does: one that took a command so would play on
+    /// differently from them.
+    pub fn preview(&mut self, command: &Command) {
+        self.apply(command);
+    }
+
     fn apply(&mut self, c: &Command) {
         let valid = match c {
             Command::Order { order, .. } => valid_order_position(order),

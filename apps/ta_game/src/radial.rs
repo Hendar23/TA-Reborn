@@ -737,10 +737,9 @@ fn cloak_entry(game: &Game) -> Entry {
 }
 
 fn power_entry(game: &Game) -> Entry {
-    let active = game.selection.iter().filter_map(|&id| game.sim.unit(id)).find(|u| game.sim.unit_type(u).def.on_offable).is_some_and(|u| u.activated);
-    let key = game.keys.text("on_off");
-    let hint = if active { tf("On: click to turn off ({key})", &[("key", &key)]) } else { tf("Off: click to turn on ({key})", &[("key", &key)]) };
-    Entry::new(Id::Power, Glyph::Power, if active { t("ON") } else { t("OFF") }, hint).keyed(game, "on_off").lit(active)
+    let power = game.selection_power().unwrap_or(crate::game::Power::Off);
+    let (label, hint) = crate::hud::power_words(power, &game.keys.text("on_off"));
+    Entry::new(Id::Power, Glyph::Power, label, hint).keyed(game, "on_off").lit(power == crate::game::Power::On)
 }
 
 fn repeat_entry(u: &Unit) -> Entry {
@@ -1131,8 +1130,9 @@ impl Game {
             Id::Movement(k) => self.set_states(None, Some(k)),
             Id::Cloak => self.toggle_cloak(),
             Id::Power => {
-                let on = self.selection.iter().filter_map(|&id| self.sim.unit(id)).find(|u| self.sim.unit_type(u).def.on_offable).is_some_and(|u| u.activated);
-                self.set_active(!on);
+                if let Some(power) = self.selection_power() {
+                    self.set_active(power.pressed());
+                }
             }
             Id::Repeat => {
                 let on = self.sim.unit(radial.unit).is_some_and(|u| u.factory_repeat);

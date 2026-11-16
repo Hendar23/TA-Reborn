@@ -32,6 +32,33 @@
   battleships among them (make the factions again in the launcher: it offers UPDATE). See
   [docs/MODDING.md](docs/MODDING.md#units-weapons-and-features).
 
+### Changed
+- The modern interface's DETAILS tell what the selection makes and uses of metal and energy a
+  second, as the classic interface's unit bar does: a metal extractor the metal it mines, a power
+  plant its energy, the Commander both, a factory at work what it spends; several selected, all of
+  them together. A factory with a queue or a constructor with plans shows them under its queue.
+- While a building is being placed, the ground it will take shows as TA's grid of the cells it
+  snaps to, under its ghost and under each site of a row or block being dragged out: green where it
+  can go and red where it cannot (blue and orange with the colour-blind marks), in both interfaces
+  and both cameras, laid over the ground and the sea, and gone once the building is put down. The
+  squares round the plans that Shift shows follow the ground the same way.
+- Over the minimap the cursor says what an order given there would do: over an enemy's mark that
+  the selection would attack with a right-click, or that the order waiting for its click would aim
+  at, it turns into the attack sight (the air-strike sight for bombers), as over the battlefield,
+  and the mark is lit and ringed in red round the sight; the same for a unit of ours to guard,
+  repair or load.
+
+### Fixed
+- Orders given while the battle was paused did not show until it went on. Routes, waypoints and
+  targets, a constructor's plans, a factory's queue and the route its units take, standing orders
+  and switches now show the moment they are given, in multiplayer too, and the interface goes by
+  them (a second building queued after the first, Shift taking one back). The battle still takes
+  them at its next tick, so replays, saved games and every player's game play them as before.
+- The modern interface's ON/OFF button said ON for a selection of metal makers (or radar towers,
+  or solar collectors) some on and some off. It now says ON/OFF, its lamp half lit, as the classic
+  interface shows both, and a press turns them all off when the first is on and all on otherwise,
+  as the classic button and the X key do.
+
 ## 1.0.7 — 2026-11-16
 
 Mods can present themselves in the launcher with a banner, an animated preview, an icon and

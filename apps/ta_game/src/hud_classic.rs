@@ -221,7 +221,8 @@ impl Selection {
         Selection {
             fire: agree(units.iter().filter(|(_, t)| armed(t)).map(|(u, _)| u.fire_state)),
             movement: agree(units.iter().filter(|(_, t)| armed(t) && t.locomotion != ta_sim::Locomotion::Static).map(|(u, _)| u.move_state)),
-            active: agree(units.iter().filter(|(_, t)| t.def.on_offable).map(|(u, _)| u.activated)),
+            // (As the modern interface's button has it: frames not counted beside finished units.)
+            active: game.selection_power().map(|p| (p.first_on(), !matches!(p, crate::game::Power::Mixed { .. }))),
             cloak: agree(units.iter().filter(|(_, t)| t.def.cloak_cost > 0.0).map(|(u, _)| u.cloak_on)),
             transport: units.iter().any(|(_, t)| t.transport_capacity > 0),
             repeat: first.filter(|(_, t)| t.is_factory).map(|(u, _)| u.factory_repeat),
