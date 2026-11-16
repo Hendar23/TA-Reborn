@@ -775,6 +775,49 @@ refined once by least squares) use plain arithmetic in a fixed order: the same b
   20; category `UNDERWATER`); surface ships have none. Only `waterweapon=1` weapons
   (torpedoes, depth charges) reach a submarine, or a unit on the sea bed with the water over
   its top; no stock weapon sets `firesubmersed`.
+* TA's buildings in the water come in two kinds. Those on the water give a `WaterLine`, how deep
+  the model's base sits (the floating towers ARMFRT 0.3 and CORFRT 4, the floating heavy lasers 3,
+  metal makers 4 and 22 and dragon's teeth 6 and 1, the torpedo launchers 10, the advanced ones 30
+  and 10, tidal generators 8 and 10, sonar stations, shipyards). Its underwater buildings give
+  `MinWaterDepth` with no `WaterLine` and no `Floater` and stand on the sea bed: the underwater
+  metal extractors (ARMUWMEX, CORUWMEX), storages (ARMUWES, ARMUWMS, CORUWES, CORUWMS) and
+  fusion plants (ARMUWFUS, CORUWFUS). Their models are
+  taller than the shallowest water they may stand in (ARMUWMEX 42 px in `MinWaterDepth=19`,
+  CORUWMEX 19 in 10, CORUWFUS 30 in 15, CORUWMS 57 in 40), yet TA's surface weapons never fire on
+  them (players: a Skeeter never shoots an underwater metal extractor; only torpedoes and depth
+  charges take them on). TA Reborn holds them wholly under the water wherever the water covers
+  their base (`UnitDef::stands_on_sea_bed`, `Sim::submerged_at`), and sonar, not radar, shows
+  them. The advanced torpedo launchers' tops come within a fraction of a pixel of the surface
+  (ARMATL 30.3 px tall at `WaterLine=30`, CORATL 10.04 at 10) and count as out of it.
+* Torpedoes and depth charges say `weapontimer=3` (5 for the seaplanes' and torpedo bombers') at
+  85 to 110 px a second, against ranges of 375 to 650: ARM_TORPEDO and CORE_TORPEDO 300 px in
+  3 s against a range of 400, the depth charges 300 and 330 against 400 and 410, CORSSUB_WEAPON 300
+  against 500, the advanced torpedo launchers' ARMATL_TORPEDO 270 against 650 and CORATL_TORPEDO
+  255 against 600. So `weapontimer` cannot have been their lifetime in TA; TA Reborn runs a
+  torpedo at least as far as its range (as far as a projectile without a timer flies). (Two weapons
+  besides fly shorter than their range by their `weapontimer`, neither self-propelled: `MINDGUN`
+  and `VTOL_EMG2`.)
+* Targeting facilities: Core Contingency's ARMTARG and CORTARG ("Targeting Facility", described
+  "Automatic Radar Targeting") say `istargetingupgrade=1`, `onoffable=1`, `ActivateWhenBuilt=1`
+  and `EnergyUse` 1,250 and 1,300 a second; no other unit says it. As their description says,
+  with one at work a player's units firing at will take on what radar shows as well as what is
+  seen, which they otherwise leave to orders. TA Reborn counts one at work as it counts a radar:
+  finished, switched on, its upkeep paid (short of the energy, it stops) and not paralysed; it
+  directs its owner's units only (allies share radar, so they fire on contacts any ally's radar
+  shows). TA Reborn has no radar error (contacts are where the units are), so a facility has none
+  to take away.
+* A second or third weapon's own bad targets (`wsec_`, `wspe_badTargetCategory`) set its role
+  apart from its unit's: TA gives them to the Skeeter's and the Searcher's anti-air missiles
+  (`NOTAIR`, ARMPT and CORPT, which players know to pick their own targets, the nearest enemy,
+  whatever the boat is sent at), the Panther's (ARMLATNK) and the missile ships' (ARMMSHIP, CORMSHIP),
+  the Phoenix's and the Hurricane's anti-air lasers (ARMPNIX, CORHURC), the Doomsday Machine's
+  light laser (CORDOOM), the stealth fighters' second missiles (ARMHAWK, CORVAMP), the anti-air
+  ships' second weapons (ARMAAS, CORARCH), the destroyers' and cruisers' depth charges (`NOTSUB`:
+  ARMROY, CORROY, ARMCRUS, CORCRUS), and `VTOL` to the Arm battleship's second gun (ARMBATS) and the
+  seaplanes' second torpedoes (ARMSEAP, CORSEAP). Such a weapon leaves an attack order on one of
+  them to its unit's other weapons and keeps choosing its own targets (`Sim::keeps_to_own_targets`);
+  a weapon whose bad targets come from its unit's `BadTargetCategory` (most units' `VTOL`) takes
+  the order as the first does. No third weapon of TA's has one of its own.
 * Aircraft have no `Corpse`, their `Killed` scripts only burst their pieces, and their
   `ExplodeAs` is a ground unit's (`SMALL_UNITEX`, `BIG_UNITEX`: shells, AOE 30 and 110,
   damage 30 and 50; the Thunder's `LIGHTNING`): nothing in the data makes a plane crash. TA
