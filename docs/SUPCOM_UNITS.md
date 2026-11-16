@@ -167,7 +167,9 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
   radius). Each looks and sounds as TA's weapons of its kind (lasers, shells, artillery,
   missiles, torpedoes, bombs, anti-air, the D-gun, nukes, anti-missiles), TA's own art. A
   missile flies long enough to reach as far as its range (a nuke's, the whole map) half again,
-  with its climb to speed.
+  with its climb to speed; a nuke at TA's nukes' 350 pixels a second at least (Forged
+  Alliance's leave their silo at 5 ogrids a second and speed up on the way, which a TA missile
+  cannot: at that crawl one took a minute to cross a 20 km map).
 - **Scripts:** made by an assembler (`ta_formats::cob::Assembler`). A turret turns its yaw bone
   to the target's heading less the heading it rests at, and pitches its pitch bone about the
   axis square to the way it rests (an x turn and a z turn: exact for guns resting ahead,
@@ -189,7 +191,8 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
 - **Sides:** `gamedata/sidedata_supcom.tdf` adds UEF, CYBRAN, AEON and SERAPHIM to the game's
   sides (a side add-on: docs/MODDING.md), each with its commander.
 - **Wrecks** (`features/corpses/supcom_<faction>.tdf`): the unit's own model where it fell,
-  worth its `Wreckage` share of its cost.
+  worth its `Wreckage` share of its cost, drawn burnt out (sooted, its player's colour gone to
+  dark grey, its lights dead: TA's wrecks are painted so, these are the units' own paint).
 - **Animations** (`objects3d/<id>.anims`, ta_formats' `anims`, made by `factions::anims`): a unit's
   `AnimationWalk` as its `walk` clip and its `AnimationDeath` ones as `death`, `death2`... A frame's
   bones are composed down the skeleton (a bone the animation leaves alone keeps its rest under its
@@ -202,7 +205,14 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
 The computer players play them: UEF against Cybran on Coast To Coast, twelve minutes (`cargo test
 --release -p ta_ai --test skirmish` with `TA_TEST_MOD` and `TA_TEST_SIDES=UEF,CYBRAN`), each
 builds an economy, land, air and naval factories, engineers, tanks, artillery, anti-air,
-bombers, interceptors and frigates and fights.
+bombers, interceptors and frigates and fights. All four play so: in twenty-minute runs the Aeon
+beat the Seraphim on Sherwood and the Cybran on Coast To Coast (the Seraphim's extractors raided,
+it was short of metal three quarters of the time).
+
+Not yet in TA Reborn: the units' own sounds (TA's of their kinds play), the commanders'
+enhancements and the buildings' upgrades in place, teleporting, stealth fields and shields, and
+tactical missile defences stopping tactical missiles (TA's interceptors take on only what is
+`targetable`, the nukes).
 
 ## Animations (`.sca`, version 5)
 
