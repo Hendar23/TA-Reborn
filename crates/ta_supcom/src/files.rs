@@ -42,10 +42,30 @@ impl Files {
         Ok(Files { map_dirs, archives, root: Some(install.root.clone()) })
     }
 
+    /// The game's own files alone (its `gamedata/*.scd` and its folder): what its units are, as
+    /// Forged Alliance plays them (Forged Alliance Forever's archives, which rebalance them, are
+    /// not read).
+    pub fn own(install: &Install) -> Result<Files> {
+        let gamedata = install.gamedata();
+        let archives = open_all(&gamedata, "scd");
+        if archives.is_empty() {
+            return Err(Error::Missing(format!("{}: none of the game's archives", gamedata.display())));
+        }
+        Ok(Files { map_dirs: Vec::new(), archives, root: Some(install.root.clone()) })
+    }
+
     /// Files from the archives and folders given, for the tests.
     #[cfg(test)]
     pub(crate) fn of(map_dirs: Vec<PathBuf>, archives: Vec<Scd>) -> Files {
         Files { map_dirs, archives, root: None }
+    }
+
+    /// The archives' files under `prefix` (normalised paths, in order, each once).
+    pub fn list(&self, prefix: &str) -> Vec<String> {
+        let mut all: Vec<String> = self.archives.iter().flat_map(|a| a.list(prefix).map(str::to_string)).collect();
+        all.sort();
+        all.dedup();
+        all
     }
 
     /// The bytes of `path` (a path as a map names it), or `None` where the game has none.
