@@ -3345,6 +3345,7 @@ name = "简体中文"
 # apps/ta_launcher/src/app/profile_page.rs
 "Close the game first: commanders are switched between games." = "请先关闭游戏：指挥官只能在两局游戏之间切换。"
 "Wait for the maps being imported" = "请等待地图导入完成"
+"Wait for the Supreme Commander factions being made, then try again." = "请等 Supreme Commander 阵营制作完成，然后再试一次。"
 "Save or close the skin you are editing first" = "请先保存或关闭正在编辑的皮肤"
 "PROFILE" = "档案"
 "Your service record, your achievements and the commanders who play on this device." = "你的战绩与成就，以及在本设备上游玩的指挥官。"

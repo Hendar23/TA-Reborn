@@ -3345,6 +3345,7 @@ name = ""
 # apps/ta_launcher/src/app/profile_page.rs
 "Close the game first: commanders are switched between games." = ""
 "Wait for the maps being imported" = ""
+"Wait for the Supreme Commander factions being made, then try again." = ""
 "Save or close the skin you are editing first" = ""
 "PROFILE" = ""
 "Your service record, your achievements and the commanders who play on this device." = ""

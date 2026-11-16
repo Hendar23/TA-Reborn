@@ -3345,6 +3345,7 @@ name = "Português (Brasil)"
 # apps/ta_launcher/src/app/profile_page.rs
 "Close the game first: commanders are switched between games." = "Feche o jogo primeiro: a troca de comandante é feita entre partidas."
 "Wait for the maps being imported" = "Aguarde a importação dos mapas"
+"Wait for the Supreme Commander factions being made, then try again." = "Espere as facções do Supreme Commander ficarem prontas e depois tente de novo."
 "Save or close the skin you are editing first" = "Salve ou feche primeiro a skin que você está editando"
 "PROFILE" = "PERFIL"
 "Your service record, your achievements and the commanders who play on this device." = "Seu registro de serviço, suas conquistas e os comandantes que jogam neste dispositivo."

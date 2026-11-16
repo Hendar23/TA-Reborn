@@ -124,6 +124,64 @@ mod tests {
     use clap::Parser;
     use ta_config::profiles::{Allegiance, ProfileStore};
 
+    /// While Supreme Commander's maps or factions are made, the commander is not switched: what
+    /// they make is turned on for the one who asked for it. Once they are done, it is.
+    #[test]
+    fn a_supreme_commander_import_keeps_its_commander() {
+        let root = std::env::temp_dir().join(format!("ta-supcom-profile-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = std::fs::canonicalize(root).unwrap();
+        let profiles = ProfileStore::open(root.clone()).unwrap();
+        let first = profiles.create("First", Allegiance::Arm, None, &Default::default()).unwrap();
+        let second = profiles.create("Second", Allegiance::Core, None, &Default::default()).unwrap();
+        profiles.select(&first.id).unwrap();
+        let ctx = egui::Context::default();
+        let args = crate::Args::parse_from(["ta-launcher", "--offline", "--pretend-missing", "--config", root.join("config.toml").to_str().unwrap()]);
+        let mut app = LauncherApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()), args);
+        app.skins.shutdown();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        app.supcom.factions.pretend_importing();
+        assert!(!app.switch_profile(&second.id), "the factions are turned on for the commander who asked");
+        app.supcom.factions.stop();
+        while app.supcom.factions.importing() && std::time::Instant::now() < deadline {
+            app.supcom.factions.poll(&ctx, false);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        app.supcom.pretend_importing(&[]);
+        assert!(!app.switch_profile(&second.id), "nor while the maps are made");
+        app.supcom.stop();
+        while app.supcom.importing() && std::time::Instant::now() < deadline {
+            app.supcom.poll(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        while app.maps.busy() && std::time::Instant::now() < deadline {
+            app.maps_tick(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(app.switch_profile(&second.id), "done, the commander is switched");
+        app.skins.shutdown(); drop(app); drop(profiles);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A copy of the factions in TA Reborn's program folder comes before the mods folder, where an
+    /// import makes them: none is made behind it.
+    #[test]
+    fn the_factions_are_not_made_behind_the_program_folders_copy() {
+        let root = std::env::temp_dir().join(format!("ta-supcom-shadow-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let game = root.join("program").join(crate::supcom_factions::MOD_ID);
+        std::fs::create_dir_all(&game).unwrap();
+        std::fs::write(game.join("mod.toml"), format!("id = \"{}\"\nname = \"Supreme Commander factions\"\nversion = \"1\"\n", crate::supcom_factions::MOD_ID)).unwrap();
+        let args = crate::Args::parse_from(["ta-launcher", "--offline", "--pretend-missing", "--config", root.join("config.toml").to_str().unwrap()]);
+        let mut app = LauncherApp::new(&eframe::CreationContext::_new_kittest(egui::Context::default()), args);
+        app.skins.shutdown();
+        assert!(app.factions_blocked().is_none());
+        let folders = vec![crate::modlist::ModFolder { label: crate::modlist::APP_FOLDER_LABEL, path: root.join("program"), exists: true }];
+        app.mods = crate::modlist::ModList::scan(folders, &[]);
+        assert!(app.factions_blocked().is_some_and(|why| why.contains("program folder")), "{:?}", app.factions_blocked());
+        app.skins.shutdown(); drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn imported_map_pack_is_enabled_and_persisted_only_for_the_pinned_profile() {
         let root = std::env::temp_dir().join(format!("ta-map-profile-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));

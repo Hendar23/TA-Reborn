@@ -438,6 +438,14 @@ fn import(game: &Install, sides: &BTreeSet<String>, store_dir: &Path, progress: 
         p.current = names.get(id).cloned().unwrap_or_else(|| id.to_string());
         !stop.load(Ordering::Relaxed)
     })?;
+    let factions: Vec<String> = Faction::PLAYABLE.iter().map(made_units::side).filter(|s| sides.contains(*s)).map(str::to_string).collect();
+    conclude(made, factions, units.len(), progress, stop, || install_made(&payload, &store_dir.join("mods")).map(|_| ()))
+}
+
+/// What a making of `total` units came to: the mod made installed (by `install`), unless it was
+/// stopped, before a unit or while the last was made (`stop` asked for meanwhile: nothing is
+/// installed either). Once installing, it finishes: STOP is gone by then.
+fn conclude(made: make::Made, factions: Vec<String>, total: usize, progress: &Mutex<Progress>, stop: &AtomicBool, install: impl FnOnce() -> Result<()>) -> Result<Outcome> {
     if made.stopped {
         return Ok(Outcome { stopped: true, ..Default::default() });
     }
@@ -446,11 +454,13 @@ fn import(game: &Install, sides: &BTreeSet<String>, store_dir: &Path, progress: 
     }
     {
         let mut p = progress.lock().unwrap();
-        p.done = units.len();
+        p.done = total;
         p.installing = true;
     }
-    install_made(&payload, &store_dir.join("mods"))?;
-    let factions: Vec<String> = Faction::PLAYABLE.iter().map(made_units::side).filter(|s| sides.contains(*s)).map(str::to_string).collect();
+    if stop.load(Ordering::Relaxed) {
+        return Ok(Outcome { stopped: true, ..Default::default() });
+    }
+    install()?;
     Ok(Outcome { factions, units: made.units, skipped: made.skipped, ..Default::default() })
 }
 
@@ -550,6 +560,26 @@ mod tests {
         held.auto_start = Some(vec!["cybran".into()]);
         assert!(held.take_auto_start());
         assert_eq!(held.chosen_entries().iter().map(Entry::side).collect::<Vec<_>>(), ["CYBRAN"]);
+    }
+
+    /// A stop asked for while the last unit was made installs nothing, as one before a unit does;
+    /// without one the mod is installed, and told of.
+    #[test]
+    fn a_stop_while_the_last_unit_is_made_installs_nothing() {
+        let made = || make::Made { units: 2, files: 9, ..Default::default() };
+        let progress = Mutex::new(Progress::default());
+        let installed = std::cell::Cell::new(false);
+        let install = || {
+            installed.set(true);
+            Ok(())
+        };
+        let outcome = conclude(made(), vec!["UEF".into()], 2, &progress, &AtomicBool::new(true), install).unwrap();
+        assert!(outcome.stopped && outcome.factions.is_empty() && !installed.get(), "{outcome:?}");
+        let outcome = conclude(made(), vec!["UEF".into()], 2, &progress, &AtomicBool::new(false), install).unwrap();
+        assert!(!outcome.stopped && outcome.factions == ["UEF"] && outcome.units == 2 && installed.get(), "{outcome:?}");
+        assert!(progress.lock().unwrap().installing);
+        let outcome = conclude(make::Made { stopped: true, ..made() }, vec!["UEF".into()], 2, &progress, &AtomicBool::new(false), || panic!("installed")).unwrap();
+        assert!(outcome.stopped, "stopped before a unit");
     }
 
     /// An import is told as it went: every unit made, some not (amber), failed (red), stopped (no

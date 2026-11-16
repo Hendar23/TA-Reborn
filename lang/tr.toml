@@ -3345,6 +3345,7 @@ name = "Türkçe"
 # apps/ta_launcher/src/app/profile_page.rs
 "Close the game first: commanders are switched between games." = "Önce oyunu kapat: komutan değişikliği oyunlar arasında yapılır."
 "Wait for the maps being imported" = "Haritaların içe aktarılmasının bitmesini bekle"
+"Wait for the Supreme Commander factions being made, then try again." = "Supreme Commander taraflarının hazırlanmasını bekle, ardından yeniden dene."
 "Save or close the skin you are editing first" = "Önce düzenlediğin görünümü kaydet ya da kapat"
 "PROFILE" = "PROFİL"
 "Your service record, your achievements and the commanders who play on this device." = "Hizmet kaydın, başarımların ve bu cihazda oynayan komutanlar."

@@ -3345,6 +3345,7 @@ name = "Русский"
 # apps/ta_launcher/src/app/profile_page.rs
 "Close the game first: commanders are switched between games." = "Сначала закройте игру: сменить командира можно только между играми."
 "Wait for the maps being imported" = "Дождитесь окончания импорта карт"
+"Wait for the Supreme Commander factions being made, then try again." = "Дождитесь, пока фракции Supreme Commander будут созданы, затем попробуйте снова."
 "Save or close the skin you are editing first" = "Сначала сохраните или закройте облик, который вы редактируете"
 "PROFILE" = "ПРОФИЛЬ"
 "Your service record, your achievements and the commanders who play on this device." = "Ваш послужной список, ваши достижения и командиры, играющие на этом устройстве."

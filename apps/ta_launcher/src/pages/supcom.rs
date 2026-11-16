@@ -101,6 +101,10 @@ impl LauncherApp {
             Some(t("Close the game first: the factions cannot be imported while it runs."))
         } else if self.installer.busy() || self.maps.importing() || self.supcom.importing() {
             Some(t("Wait for the mod or the maps being installed, then import these."))
+        } else if self.mods.in_game_folder(supcom_factions::MOD_ID) {
+            // (A copy in TA Reborn's program folder comes before the mods folder, where the mod is
+            // made: made there it would change nothing.)
+            Some(t("This copy is in TA Reborn's program folder, which comes before your mods folder: replace it there to update it."))
         } else {
             None
         }

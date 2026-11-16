@@ -36,6 +36,12 @@ impl LauncherApp {
             Some(t("Wait for the mod being installed"))
         } else if self.maps.busy() {
             Some(t("Wait for the maps being imported"))
+        } else if self.supcom.importing() {
+            // (What a Supreme Commander import makes is turned on for the commander who asked for
+            // it, once made.)
+            Some(t("Wait for the Supreme Commander maps being made, then try again."))
+        } else if self.supcom.factions.importing() {
+            Some(t("Wait for the Supreme Commander factions being made, then try again."))
         } else if self.skins.busy() {
             Some(t("Wait for the current skin operation to finish, then try again."))
         } else if self.skins.editor.as_ref().is_some_and(|e| e.changed()) {
