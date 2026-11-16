@@ -14,8 +14,9 @@ gameplay and the import come next, phase by phase.
   there, the conventions below held over all of them, and every unit made a model twice, the same:
   `cargo test --release -p ta_supcom --test installed_units -- --ignored --nocapture`
   (`TA_SUPCOM_DIR=<folder>` another copy). `ta-tools supcom-units <mod folder> [--only UEL0201,..]
-  [--game <folder>]` makes the units' models, surfaces and paint, with first unit files, into a
-  folder to mount as a mod (`--demo gallery TA_GALLERY_UNITS=UEL0201` shows them).
+  [--faction uef] [--game <folder>] [--preview <dir>]` makes the units' models, surfaces, paint
+  and build pictures, with first unit files, into a folder to mount as a mod (`--demo gallery
+  TA_GALLERY_UNITS=UEL0201` shows them).
 
 ## What the game holds
 
@@ -109,6 +110,7 @@ Each unit's first level of detail becomes `objects3d/<id>.3do` with its surface
   the others have it. Their dark paint mirrors the sky over most of it (the specular map's red):
   TA Reborn draws strong mirroring as polished metal. The normal maps are Direct3D's (x along u, y
   along v, down the picture), as the panel seams of a factory's roof show under a low sun.
+- **Pictures:** a unit's build picture (`unitpics/<id>.pcx`, 64 × 64, 24-bit) is its icon (`textures/ui/common/icons/units/<id>_icon.dds`, every unit has one) laid over the frame of its kind (`land_up.dds`, `amph_`, `air_`, `sea_`, by `General.Icon`), as Forged Alliance's build buttons show it. `--preview <dir>` draws a sheet of them a faction.
 - **Far off:** the second level of detail (323 units; 687,000 vertices in all against 104,000)
   keeps a few bones of the first's skeleton, its root renamed `lod1_<id>`: it is laid onto the
   first's pieces (a bone the piece of its name, or of the nearest of its parents with one), painted

@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use ta_supcom::files::Files;
 use ta_supcom::install::{self, Install, Store};
 use ta_formats::surface::Material;
-use ta_supcom::factions::{model, textures};
+use ta_supcom::factions::{model, pictures, textures};
 use ta_supcom::unit::{self, Faction, Tech};
 use ta_supcom::{sca, scm};
 
@@ -214,10 +214,11 @@ fn the_meshes_are_as_the_conversion_takes_them() {
     assert!(place("UEL0201", "Turret_Muzzle")[2] > 0.0 && place("UEL0201", "Exhaust_Left")[2] < 0.0);
 }
 
-/// Every unit a player can make made a TA model with its surface, its paint and its model for
-/// far off, as `ta-tools supcom-units` makes them: each surface fits its model as written and
-/// read back, the far model has the near one's pieces, and making them again gives the same
-/// bytes (a mod of units is compared byte for byte before a multiplayer battle).
+/// Every unit a player can make made a TA model with its surface, its paint, its model for far
+/// off and its build picture, as `ta-tools supcom-units` makes them: each surface fits its model
+/// as written and read back, the far model has the near one's pieces, every unit has its icon,
+/// and making them again gives the same bytes (a mod of units is compared byte for byte before a
+/// multiplayer battle).
 #[test]
 #[ignore]
 fn every_unit_is_made_a_model_the_same_twice() {
@@ -244,6 +245,10 @@ fn every_unit_is_made_a_model_the_same_twice() {
             out.extend([far.model.to_bytes(), far.surface.to_bytes()]);
         }
         out.extend(paint);
+        let icon = files.read(&pictures::icon_path(u)).unwrap().unwrap_or_else(|| panic!("{}: no icon", u.id));
+        let frame = pictures::frame_path(u).and_then(|p| files.read(&p).unwrap());
+        assert!(frame.is_some(), "{}: no frame for its kind", u.id);
+        out.push(pictures::picture(&icon, frame.as_deref()).unwrap());
         out
     };
     let playable: Vec<_> = all.iter().filter(|u| u.playable() && !u.display.lods.is_empty()).collect();
@@ -255,3 +260,4 @@ fn every_unit_is_made_a_model_the_same_twice() {
     }
     eprintln!("{} units made twice the same, {} MB each time", playable.len(), bytes >> 20);
 }
+

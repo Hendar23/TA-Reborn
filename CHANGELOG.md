@@ -11,8 +11,9 @@
   off. The mod check reads surfaces and DDS textures. See
   [docs/MODDING.md](docs/MODDING.md#models-with-surfaces-of-their-own).
 - Groundwork for playing Supreme Commander: Forged Alliance's four factions: their units' meshes are
-  made into TA models with surfaces, painted with the game's own textures in each player's colour
-  (docs/SUPCOM_UNITS.md). Making them from the launcher, and their gameplay, come next.
+  made into TA models with surfaces, painted with the game's own textures in each player's colour,
+  and their build icons into TA's build pictures (docs/SUPCOM_UNITS.md). Making them from the
+  launcher, and their gameplay, come next.
 
 ## 1.0.7 — 2026-11-16
 
