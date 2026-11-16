@@ -3,7 +3,8 @@
 //! with the game's own pictures of them, and those chosen made into TA maps, one after another
 //! on a worker, into one map pack (`map-pack-supreme-commander`), which then shows in the map
 //! library and in skirmish. Nothing of the game's is shipped: each player's maps are made from
-//! their own copy, the same on every computer.
+//! their own copy, the same on every computer. The dialog's other tab imports the game's
+//! factions (`crate::supcom_factions`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -38,10 +39,22 @@ pub fn pack_name() -> &'static str {
     t(PACK_NAME)
 }
 
-/// A mod's name as the interface shows it: this pack's in the language in use (its manifest keeps
-/// it in English), any other's as its manifest has it.
+/// A mod's name as the interface shows it: this pack's and the factions' in the language in use
+/// (their manifests keep them in English), any other's as its manifest has it.
 pub fn mod_name(manifest: &ModManifest) -> &str {
-    if manifest.id == PACK_ID { pack_name() } else { &manifest.name }
+    match manifest.id.as_str() {
+        PACK_ID => pack_name(),
+        crate::supcom_factions::MOD_ID => crate::supcom_factions::mod_name(),
+        _ => &manifest.name,
+    }
+}
+
+/// The dialog's tabs: the game's maps, or its factions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Tab {
+    #[default]
+    Maps,
+    Factions,
 }
 
 /// A map that can be imported.
@@ -214,6 +227,9 @@ pub struct Import {
     /// Maps to choose and import as soon as the game's maps are listed (their folders' names, in
     /// lower case): a capture's (`--show supcom:<folder>,<folder>`).
     pub auto_start: Option<Vec<String>>,
+    pub tab: Tab,
+    /// The game's factions, the other tab's.
+    pub factions: crate::supcom_factions::Factions,
 }
 
 impl Import {
@@ -229,8 +245,30 @@ impl Import {
     /// closed. (An import under way goes on meanwhile.)
     pub fn show(&mut self, mods_dir: &Path) {
         self.open = true;
+        self.tab = Tab::Maps;
         if !self.scanning() {
             self.rescan(mods_dir);
+        }
+    }
+
+    /// Opens the dialog at its factions and looks for the game's units (again).
+    pub fn show_factions(&mut self, mods_dir: &Path) {
+        self.open = true;
+        self.tab = Tab::Factions;
+        if !self.factions.scanning() {
+            self.factions.rescan(self.picked.clone(), mods_dir);
+        }
+    }
+
+    /// Shows the tab `tab`: the maps' looked for where they have not been yet, the factions' each
+    /// time (a second or so: what the mods folder holds may have changed, and their pictures were
+    /// let go of with the dialog).
+    pub fn set_tab(&mut self, tab: Tab, mods_dir: &Path) {
+        self.tab = tab;
+        match tab {
+            Tab::Maps if self.found.is_none() && !self.scanning() => self.rescan(mods_dir),
+            Tab::Factions if !self.factions.scanning() && !self.factions.importing() => self.factions.rescan(self.picked.clone(), mods_dir),
+            _ => {}
         }
     }
 
@@ -285,11 +323,17 @@ impl Import {
     }
 
     /// Uses the game in folder `picked` (or one level down in it); false when it is not there.
+    /// Both tabs list that copy's then (the factions' where they have been looked at).
     pub fn pick(&mut self, picked: &Path, mods_dir: &Path) -> bool {
         match install::validate_picked(picked) {
             Some(root) => {
                 self.picked = Some(root);
-                self.rescan(mods_dir);
+                if self.found.is_some() || self.tab == Tab::Maps {
+                    self.rescan(mods_dir);
+                }
+                if self.factions.found.is_some() || self.tab == Tab::Factions {
+                    self.factions.rescan(self.picked.clone(), mods_dir);
+                }
                 true
             }
             None => false,
@@ -340,7 +384,7 @@ impl Import {
     /// (or, with `TA_SUPCOM_SHOT_IMPORTING=1`, while they are).
     pub fn capture_ready(&self) -> bool {
         let during = std::env::var_os("TA_SUPCOM_SHOT_IMPORTING").is_some_and(|v| v == "1");
-        !self.open || (!self.scanning() && self.auto_start.is_none() && (during || !self.importing()))
+        !self.open || (!self.scanning() && self.auto_start.is_none() && (during || !self.importing()) && self.factions.capture_ready())
     }
 
     /// Stops the import after the map being made.
@@ -456,10 +500,15 @@ fn first_choice(found: &Found) -> BTreeSet<PathBuf> {
     found.maps.iter().filter(|e| !e.players_own && e.state != State::Imported).map(|e| e.folder.clone()).collect()
 }
 
-/// The folder the pack is installed in, found by its id (where its name was taken the installer
-/// named it `<id>-2`...), if it is.
+/// The folder the pack is installed in, if it is.
 fn pack_dir(mods_dir: &Path) -> Option<PathBuf> {
-    ta_vfs::mods::scan(mods_dir).0.into_iter().find(|m| m.manifest.id == PACK_ID && m.kind == ta_vfs::mods::ModKind::Directory).map(|m| m.path)
+    mod_dir(mods_dir, PACK_ID)
+}
+
+/// The folder the mod `id` is installed in, found by its id (where its name was taken the
+/// installer named it `<id>-2`...), if it is.
+pub(crate) fn mod_dir(mods_dir: &Path, id: &str) -> Option<PathBuf> {
+    ta_vfs::mods::scan(mods_dir).0.into_iter().find(|m| m.manifest.id == id && m.kind == ta_vfs::mods::ModKind::Directory).map(|m| m.path)
 }
 
 /// The game, the player's own map folders and every map that can be imported, with which are in
@@ -577,7 +626,7 @@ fn shrink(image: &ta_supcom::dds::Image, side: u32) -> egui::ColorImage {
 
 /// The copy of the game in use: the folder picked (named by its store when it is one of the
 /// `copies` found, GOG's or Steam's), else the first found.
-fn in_use(copies: &[Install], picked: Option<&Path>) -> Option<Install> {
+pub(crate) fn in_use(copies: &[Install], picked: Option<&Path>) -> Option<Install> {
     match picked {
         Some(root) => Some(copies.iter().find(|copy| install::same_folder(&copy.root, root)).cloned().unwrap_or_else(|| Install { root: root.to_path_buf(), store: install::Store::Folder })),
         None => copies.first().cloned(),

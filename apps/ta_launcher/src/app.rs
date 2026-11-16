@@ -149,6 +149,12 @@ pub enum Action {
     SupcomImport,
     /// Stops the import after the map being made.
     SupcomStop,
+    /// Opens the same dialog at the game's factions (and looks for its units).
+    SupcomFactionsOpen,
+    /// Makes the chosen factions into the mod `supcom-factions`.
+    SupcomFactionsImport,
+    /// Stops the factions' import: nothing is installed.
+    SupcomFactionsStop,
     Rescan,
     BrowseInstall,
     /// Forgets the configured game folder and detects the install automatically.
@@ -734,6 +740,14 @@ impl LauncherApp {
                     if let Some(capture) = &mut self.capture { capture.wait_for_validation(); }
                 }
             }
+            // (The same dialog at the game's factions; those named imported once listed: `all`.)
+            ("supcom-factions", sides) => {
+                self.supcom.show_factions(&self.store.dir().join("mods"));
+                if !sides.is_empty() {
+                    self.supcom.factions.auto_start = Some(sides.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect());
+                    if let Some(capture) = &mut self.capture { capture.wait_for_validation(); }
+                }
+            }
             ("maps-details", _) => self.maps.details_open = true,
             ("progress", _) => self.show_progress = true,
             ("search", query) => match self.page {
@@ -1047,7 +1061,7 @@ impl LauncherApp {
                 }
             }
             Action::SupcomUse(root) => {
-                if !self.supcom.importing() {
+                if !self.supcom.importing() && !self.supcom.factions.importing() {
                     self.supcom.pick(&root, &self.store.dir().join("mods"));
                 }
             }
@@ -1056,6 +1070,12 @@ impl LauncherApp {
                 (why, _) => self.notify(why.unwrap_or_else(|| ta_ui::i18n::t("Find your Total Annihilation install on the Play page first.")), AMBER),
             },
             Action::SupcomStop => self.supcom.stop(),
+            Action::SupcomFactionsOpen => self.supcom.show_factions(&self.store.dir().join("mods")),
+            Action::SupcomFactionsImport => match self.factions_blocked() {
+                None => self.supcom.factions.start(self.store.dir()),
+                Some(why) => self.notify(why, AMBER),
+            },
+            Action::SupcomFactionsStop => self.supcom.factions.stop(),
             Action::ShowModReport(id) => self.mod_validation.selected = Some(id),
             Action::ValidateMod(id) => {
                 // Mod authors may have just changed a manifest or added a dependency.
@@ -1444,9 +1464,13 @@ impl LauncherApp {
             return;
         }
         // (The pack of Supreme Commander's maps is replaced when they are made: not while the game
-        // reads it.)
+        // reads it. Nor the factions' mod.)
         if self.supcom.importing() {
             self.notify("Wait for the Supreme Commander maps being made, then start the game.", AMBER);
+            return;
+        }
+        if self.supcom.factions.importing() {
+            self.notify("Wait for the Supreme Commander factions being made, then start the game.", AMBER);
             return;
         }
         // The game reads config.toml when it starts, so write pending edits first.
@@ -1825,6 +1849,9 @@ impl LauncherApp {
         if self.supcom.importing() {
             risks.push(n("Supreme Commander maps are still being made: closing keeps the maps made so far, and leaves out the one in hand."));
         }
+        if self.supcom.factions.importing() {
+            risks.push(n("Supreme Commander factions are still being made: closing stops them, and the factions stay as they were."));
+        }
         if self.pretend_at_risk && risks.is_empty() {
             risks.push(n("A mod is still downloading or installing: it would start over."));
         }
@@ -1906,8 +1933,13 @@ impl LauncherApp {
         self.confirm_close = false;
         if self.supcom.importing() {
             self.supcom.abandon();
+            self.supcom.factions.stop();
             self.close_after_import = true;
             self.notify("Closing once the Supreme Commander maps made so far are installed.", AMBER);
+        } else if self.supcom.factions.importing() {
+            self.supcom.factions.stop();
+            self.close_after_import = true;
+            self.notify("Closing once the Supreme Commander factions have stopped.", AMBER);
         } else {
             self.close_confirmed = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -2719,14 +2751,29 @@ impl eframe::App for LauncherApp {
                 self.notify(text, outcome.went().colour());
             }
         }
+        if let Some(outcome) = self.supcom.factions.poll(ctx, self.supcom.open) {
+            if !outcome.factions.is_empty() {
+                modlist::set_enabled(&mut self.config.mods.enabled, crate::supcom_factions::MOD_ID, true);
+                self.refresh_mods();
+            }
+            // (The dialog says what it came to and looks again; closed, a notice says it.)
+            if self.supcom.open {
+                self.supcom.factions.rescan(self.supcom.picked.clone(), &self.store.dir().join("mods"));
+            } else if let Some(text) = outcome.notice() {
+                self.notify(text, outcome.went().colour());
+            }
+        }
         // CLOSE ANYWAY during the import: closed now it has stopped (its maps turned on above).
-        if self.close_after_import && !self.supcom.importing() {
+        if self.close_after_import && !self.supcom.importing() && !self.supcom.factions.importing() {
             self.close_after_import = false;
             self.close_confirmed = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if self.supcom_blocked().is_none() && self.supcom.take_auto_start() {
             self.actions.push(Action::SupcomImport);
+        }
+        if self.factions_blocked().is_none() && self.supcom.factions.take_auto_start() {
+            self.actions.push(Action::SupcomFactionsImport);
         }
         if self.skins.poll() {
             if let Some((side, id)) = self.skins.take_selected() {
@@ -2914,6 +2961,10 @@ impl eframe::App for LauncherApp {
         // (An import under way installs the maps it made: they are turned on, as in logic().)
         if self.supcom.finish_on_exit().is_some_and(|outcome| !outcome.imported.is_empty()) {
             modlist::set_enabled(&mut self.config.mods.enabled, crate::supcom::PACK_ID, true);
+        }
+        // (The factions' import stops at the unit in hand, or ends its install once begun.)
+        if self.supcom.factions.finish_on_exit().is_some_and(|outcome| !outcome.factions.is_empty()) {
+            modlist::set_enabled(&mut self.config.mods.enabled, crate::supcom_factions::MOD_ID, true);
         }
         self.installer.shutdown();
         // A publication may finish after the final UI frame or while shutdown waits.
@@ -4296,6 +4347,41 @@ name = \"{}\"
         assert!(sent(&output, &egui::ViewportCommand::Close), "closed once the import stopped");
         assert!(app.close_confirmed && !app.supcom.importing());
         assert!(app.config.mods.enabled.iter().any(|id| id == crate::supcom::PACK_ID), "the maps made are turned on");
+        drop(app);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Closing while the Supreme Commander factions are made: asked first; CLOSE ANYWAY stops the
+    /// making (nothing installed) and closes once it has, the window answering meanwhile; the
+    /// game does not start meanwhile.
+    #[test]
+    fn closing_during_a_factions_import_closes_once_it_has_stopped() {
+        let dir = temp_dir("close_factions_import");
+        let (ctx, mut app) = launcher(&dir.join("config.toml"), &["--pretend-missing"]);
+        app.skins.shutdown();
+        let close = || {
+            let mut input = RawInput::default();
+            input.viewports.insert(egui::ViewportId::ROOT, egui::ViewportInfo { events: vec![egui::ViewportEvent::Close], ..Default::default() });
+            input
+        };
+        let sent = |output: &egui::FullOutput, command: &egui::ViewportCommand| output.viewport_output.get(&egui::ViewportId::ROOT)
+            .is_some_and(|viewport| viewport.commands.contains(command));
+        app.supcom.factions.pretend_importing();
+        assert!(app.supcom_blocked().is_some(), "no maps made meanwhile");
+        assert_eq!(app.work_at_risk().len(), 1);
+        let output = frame(&ctx, &mut app, close());
+        assert!(sent(&output, &egui::ViewportCommand::CancelClose) && app.confirm_close, "the close waits for an answer");
+        app.close_anyway(&ctx);
+        assert!(!app.close_confirmed && app.close_after_import, "not closed before the making has stopped");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut output = frame(&ctx, &mut app, RawInput::default());
+        while !sent(&output, &egui::ViewportCommand::Close) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+            output = frame(&ctx, &mut app, RawInput::default());
+        }
+        assert!(sent(&output, &egui::ViewportCommand::Close), "closed once the making stopped");
+        assert!(app.close_confirmed && !app.supcom.factions.importing());
+        assert!(!app.config.mods.enabled.iter().any(|id| id == crate::supcom_factions::MOD_ID), "nothing was installed, nothing turned on");
         drop(app);
         let _ = std::fs::remove_dir_all(dir);
     }

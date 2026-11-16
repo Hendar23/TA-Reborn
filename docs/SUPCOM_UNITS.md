@@ -1,22 +1,33 @@
 # Supreme Commander units
 
-TA Reborn is to make the factions of **Supreme Commander: Forged Alliance** (the UEF, the Cybran
+TA Reborn makes the factions of **Supreme Commander: Forged Alliance** (the UEF, the Cybran
 Nation, the Aeon Illuminate and the Seraphim) into a mod of TA units, to play in skirmish beside or
 against ARM and CORE. As with the maps (docs/SUPCOM_MAPS.md), they are made on the player's
 computer from their own copy of the game into their mods folder: nothing of Supreme Commander's is
 shipped with TA Reborn or kept in this repository.
 
 This page records what the game's units are made of (`crates/ta_supcom`: [`unit`], [`scm`],
-[`sca`]) and how they are made into TA's ([`factions`]): their models and paint so far; their
-gameplay and the import come next, phase by phase.
+[`sca`]) and how they are made into TA's ([`factions`]): their models, paint, build pictures and
+gameplay. Their animations, sounds and more weapons a unit come next, phase by phase.
 
+- **Players:** the launcher's Mods page, **SUPREME COMMANDER…** (or the Maps page's, its
+  FACTIONS tab). The dialog finds the game (as for its maps: GOG's or Steam's copy, or a folder
+  chosen), counts each faction's units by kind, with its commander's build picture, and makes the
+  factions chosen into the mod **Supreme Commander factions** (`supcom-factions`), turned on, a
+  side each in skirmish. All four take about 400 MB and, on a fast computer, ten seconds; a stop
+  installs nothing, and the mod is made whole each time, of the factions chosen (those left out
+  are taken out of it). The mod keeps the version of the converter that made it
+  (`factions::make::VERSION`, its manifest's `version`): a mod made by an older one is marked
+  UPDATE. It needs the TA Reborn that made it, or newer (`requires_reborn`).
 - **Developers:** every unit of the player's copy read, with what its blueprints name that is not
   there, the conventions below held over all of them, and every unit made a model twice, the same:
   `cargo test --release -p ta_supcom --test installed_units -- --ignored --nocapture`
   (`TA_SUPCOM_DIR=<folder>` another copy). `ta-tools supcom-units <mod folder> [--only UEL0201,..]
   [--faction uef] [--game <folder>] [--preview <dir>]` makes the units' models, surfaces, paint
   and build pictures, with first unit files, into a folder to mount as a mod (`--demo gallery
-  TA_GALLERY_UNITS=UEL0201` shows them).
+  TA_GALLERY_UNITS=UEL0201` shows them). The launcher's dialog for captures: `--page mods --show
+  supcom-factions` (`supcom-factions:uef,cybran`, or `:all`, imports those once the units are
+  listed; `TA_SUPCOM_SHOT_IMPORTING=1` takes the picture while they are made).
 
 ## What the game holds
 

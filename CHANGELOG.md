@@ -15,7 +15,13 @@
   their build icons into TA's build pictures, and their blueprints into TA units with Forged
   Alliance's own numbers, scripts that aim their turrets and build, and the four factions'
   sides, build menus and wrecks; the computer players build and fight with them
-  (docs/SUPCOM_UNITS.md). Making them from the launcher comes next.
+  (docs/SUPCOM_UNITS.md).
+- Supreme Commander: Forged Alliance's four factions in TA Reborn. With the game installed (GOG's or
+  Steam's, or in a folder you choose), the Mods page's SUPREME COMMANDER… (or the FACTIONS tab of
+  the Maps page's) counts the UEF's, the Cybran's, the Aeon's and the Seraphim's units and makes
+  those of the factions you choose into the mod Supreme Commander factions, turned on: a side each
+  to play in skirmish, against each other, the Arm and the Core. Their walking animations, their
+  own sounds and more than three weapons a unit come later.
 - A mod adds a side without replacing the game's side data: `gamedata/sidedata_<name>.tdf` adds
   its sides and computer players' build lists to the game's. See
   [docs/MODDING.md](docs/MODDING.md#sides-of-a-mods-own).

@@ -33,6 +33,7 @@ mod news;
 mod pad;
 mod pages;
 mod supcom;
+mod supcom_factions;
 mod persist;
 mod theme;
 mod sounds;
