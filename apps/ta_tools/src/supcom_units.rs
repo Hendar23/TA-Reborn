@@ -34,7 +34,7 @@ pub fn run(out: &Path, only: Option<&str>, faction: Option<&str>, game: Option<&
             std::fs::create_dir_all(dir).map_err(|e| ta_supcom::Error::Format(format!("{}: {e}", dir.display())))?;
         }
         std::fs::write(&at, bytes).map_err(|e| ta_supcom::Error::Format(format!("{}: {e}", at.display())))
-    })?;
+    }, &mut |_, _| true)?;
     eprintln!("{} of {} units made into {}: {} files, {} MB, in {:.1} s", made.units, units.len(), out.display(), made.files, made.bytes >> 20, started.elapsed().as_secs_f32());
     for (id, why) in &made.skipped {
         eprintln!("  {id} left out: {why}");

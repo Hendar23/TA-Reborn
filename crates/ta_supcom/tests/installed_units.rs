@@ -284,7 +284,7 @@ fn the_mod_is_made_the_same_twice() {
             bytes.hash(&mut h);
             out.push((path.to_string(), bytes.len(), h.finish()));
             Ok(())
-        })
+        }, &mut |_, _| true)
         .unwrap();
         (made, out)
     };
@@ -292,6 +292,9 @@ fn the_mod_is_made_the_same_twice() {
     assert_eq!(made.units, units.len(), "every unit made: {:?}", made.skipped);
     let (_, second) = run();
     assert!(first == second, "made again, the same files");
+    // Stopped by its watch before the third unit: two made, and said so.
+    let stopped = make::make(&files, &units, "test", &mut |_, _| Ok(()), &mut |i, _| i < 2).unwrap();
+    assert!(stopped.stopped && stopped.units == 2, "{stopped:?}");
     for u in &units {
         let id = u.id.to_ascii_lowercase();
         for path in [format!("objects3d/{id}.3do"), format!("objects3d/{id}.surface"), format!("units/{id}.fbi"), format!("scripts/{id}.cob"), format!("unitpics/{id}.pcx")] {

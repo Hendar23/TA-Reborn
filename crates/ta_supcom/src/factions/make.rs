@@ -13,6 +13,12 @@ use crate::Result;
 /// The mod's id and name.
 pub const MOD_ID: &str = "supcom-factions";
 pub const MOD_NAME: &str = "Supreme Commander factions";
+/// The mod's words and tags as its manifest keeps them, in English.
+pub const DESCRIPTION: &str = "Supreme Commander: Forged Alliance's four factions, their units and buildings, made from your own copy of the game.";
+pub const TAGS: [&str; 3] = ["units", "factions", "supreme commander"];
+/// The converter's version, the mod's own (its manifest's `version`): a mod made by an older one
+/// is offered to be made again. Raised whenever what is made changes.
+pub const VERSION: u32 = 1;
 
 /// What was made.
 #[derive(Clone, Debug, Default)]
@@ -22,28 +28,39 @@ pub struct Made {
     pub bytes: u64,
     /// Units left out, and why.
     pub skipped: Vec<(String, String)>,
+    /// Stopped before every unit was made (the watch said so): the files written are no whole mod.
+    pub stopped: bool,
 }
 
-/// The mod's manifest: it needs a TA Reborn as new as the one that made it (models with surfaces
-/// of their own, side add-ons).
-pub fn manifest(version: &str) -> String {
+/// The mod's manifest: it needs a TA Reborn as new as the one that made it, `reborn` (models with
+/// surfaces of their own, side add-ons).
+pub fn manifest(reborn: &str) -> String {
+    let tags: Vec<String> = TAGS.iter().map(|t| format!("\"{t}\"")).collect();
     format!(
-        "id = \"{MOD_ID}\"\nname = \"{MOD_NAME}\"\nversion = \"{version}\"\nrequires_reborn = \"{version}\"\ndescription = \"Supreme Commander: Forged Alliance's four factions, made from the player's own copy of the game.\"\ntags = [\"units\", \"factions\", \"supreme commander\"]\n"
+        "id = \"{MOD_ID}\"\nname = \"{MOD_NAME}\"\nversion = \"{VERSION}\"\nrequires_reborn = \"{reborn}\"\ndescription = \"{DESCRIPTION}\"\ntags = [{}]\n",
+        tags.join(", ")
     )
 }
 
-/// Makes the mod of `units` (the playable ones of the player's copy), writing each file through
-/// `write` (a path in the mod, its bytes), in a fixed order: the same bytes on every computer.
-pub fn make(files: &Files, units: &[UnitBlueprint], version: &str, write: &mut dyn FnMut(&str, &[u8]) -> Result<()>) -> Result<Made> {
+/// Makes the mod of `units` (the playable ones of the player's copy), for TA Reborn `reborn` and
+/// newer, writing each file through `write` (a path in the mod, its bytes), in a fixed order: the
+/// same bytes on every computer. `watch` is told before each unit how many are made and the
+/// unit's id: false from it stops the making there ([`Made::stopped`]).
+pub fn make(files: &Files, units: &[UnitBlueprint], reborn: &str, write: &mut dyn FnMut(&str, &[u8]) -> Result<()>, watch: &mut dyn FnMut(usize, &str) -> bool) -> Result<Made> {
     let mut made = Made::default();
     let mut put = |path: &str, bytes: &[u8], made: &mut Made| -> Result<()> {
         made.files += 1;
         made.bytes += bytes.len() as u64;
         write(path, bytes)
     };
-    put("mod.toml", manifest(version).as_bytes(), &mut made)?;
+    put("mod.toml", manifest(reborn).as_bytes(), &mut made)?;
     let mut done: Vec<&UnitBlueprint> = Vec::new();
-    for u in units {
+    for (i, u) in units.iter().enumerate() {
+        if !watch(i, &u.id) {
+            made.stopped = true;
+            made.units = done.len();
+            return Ok(made);
+        }
         match unit(files, u, &mut |path, bytes| put(path, bytes, &mut made))? {
             Ok(()) => done.push(u),
             Err(why) => made.skipped.push((u.id.clone(), why)),

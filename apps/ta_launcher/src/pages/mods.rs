@@ -82,9 +82,13 @@ impl LauncherApp {
 
     fn mods_header(&mut self, ui: &mut Ui, short: bool) {
         super::library_header(ui, n("MODS"), n("Mods change Total Annihilation's units, maps and look. Lower in the load order wins."), short,
-            &["INSTALL FROM FILE…", "MOD FOLDERS…", "RESCAN"], |ui, height| {
+            &["INSTALL FROM FILE…", "SUPREME COMMANDER…", "MOD FOLDERS…", "RESCAN"], |ui, height| {
             if ui.add(ActionButton::primary("INSTALL FROM FILE…").height(height)).hover_tip(t("Install a mod you have downloaded (or drop it on this window)")).clicked() {
                 self.push(Action::BrowsePackage);
+            }
+            if ui.add(ActionButton::secondary("SUPREME COMMANDER…").height(height))
+                .hover_tip(t("Import the factions of Supreme Commander: Forged Alliance from your own copy of the game (GOG's or Steam's): their units and buildings, to play in skirmish.")).clicked() {
+                self.push(Action::SupcomFactionsOpen);
             }
             if ui.add(ActionButton::secondary("MOD FOLDERS…").height(height)).hover_tip(t("The folders mods are looked for in")).clicked() {
                 self.show_mod_folders = true;

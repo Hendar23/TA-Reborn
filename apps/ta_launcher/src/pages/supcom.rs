@@ -1,7 +1,9 @@
-//! The dialog that imports Supreme Commander: Forged Alliance's maps (`crate::supcom`): where the
-//! game is, its maps (and the player's own) with the game's pictures of them to choose from, and
-//! the import under way, map by map. The list draws only the rows in sight (each map's picture
-//! uploaded once), and the buttons stay in sight under it however small the window.
+//! The dialog that imports Supreme Commander: Forged Alliance's maps (`crate::supcom`) and its
+//! factions (`crate::supcom_factions`), a tab each: where the game is, its maps (and the player's
+//! own) with the game's pictures of them to choose from, or its four factions with their units
+//! counted and their commanders' pictures, and the import under way. The maps' list draws only
+//! the rows in sight (each map's picture uploaded once), and the buttons stay in sight under the
+//! body however small the window.
 
 use egui::{Color32, CornerRadius, RichText, Sense, Stroke, StrokeKind, Ui, vec2};
 use ta_ui::i18n::{n, t, tf};
@@ -10,7 +12,8 @@ use ta_ui::tooltip::TooltipExt as _;
 
 use super::path_label;
 use crate::app::{Action, LauncherApp};
-use crate::supcom::{self, State};
+use crate::supcom::{self, State, Tab};
+use crate::supcom_factions;
 use crate::theme::*;
 use crate::widgets::{self, ActionButton};
 
@@ -27,6 +30,11 @@ const FOOTER: f32 = 44.0;
 const FAILED_HEIGHT: f32 = 96.0;
 /// The tallest the list of what could not be read grows (it scrolls beyond).
 const SKIPPED_HEIGHT: f32 = 120.0;
+/// A faction's commander's picture (its build picture, as the game shows it) and its card.
+const PORTRAIT: f32 = 64.0;
+const FACTION_ROW: f32 = PORTRAIT + 8.0;
+/// The narrowest a faction's card is: two stand in a row where they fit.
+const FACTION_CARD: f32 = 330.0;
 
 /// What the dialog's footer shows, taken before it is drawn (apart from the body, which the
 /// dialog draws first).
@@ -38,6 +46,31 @@ struct Footer {
     listed: bool,
     chosen: usize,
     blocked: Option<&'static str>,
+}
+
+/// What the factions' footer shows.
+struct FactionsFooter {
+    importing: bool,
+    progress: supcom_factions::Progress,
+    outcome: Option<supcom_factions::Outcome>,
+    /// There are factions to choose from: the game found, its units listed.
+    listed: bool,
+    chosen: usize,
+    blocked: Option<&'static str>,
+}
+
+/// The footer of the tab shown.
+enum Footers {
+    Maps(Footer),
+    Factions(FactionsFooter),
+}
+
+/// Where the game is, as a tab's look found it.
+#[derive(Default)]
+struct Source {
+    copies: Vec<ta_supcom::install::Install>,
+    install: Option<ta_supcom::install::Install>,
+    error: Option<String>,
 }
 
 /// What the footer was asked to do.
@@ -54,8 +87,24 @@ impl LauncherApp {
             Some(t("Find your Total Annihilation install on the Play page first."))
         } else if self.game_running() {
             Some(t("Close the game first: maps cannot be imported while it runs."))
-        } else if self.installer.busy() || self.maps.importing() {
+        } else if self.installer.busy() || self.maps.importing() || self.supcom.factions.importing() {
             Some(t("Wait for the mod or the maps being installed, then import these."))
+        } else {
+            None
+        }
+    }
+
+    /// Why the chosen factions cannot be imported now, if they cannot. (They need nothing of TA's:
+    /// the game is found to play them.)
+    pub(crate) fn factions_blocked(&self) -> Option<&'static str> {
+        if self.game_running() {
+            Some(t("Close the game first: the factions cannot be imported while it runs."))
+        } else if self.installer.busy() || self.maps.importing() || self.supcom.importing() {
+            Some(t("Wait for the mod or the maps being installed, then import these."))
+        } else if self.mods.in_game_folder(supcom_factions::MOD_ID) {
+            // (A copy in TA Reborn's program folder comes before the mods folder, where the mod is
+            // made: made there it would change nothing.)
+            Some(t("This copy is in TA Reborn's program folder, which comes before your mods folder: replace it there to update it."))
         } else {
             None
         }
@@ -67,16 +116,30 @@ impl LauncherApp {
         }
         let width = (ctx.content_rect().width() - 80.0).clamp(1.0, 880.0);
         let height = (ctx.content_rect().height() - 24.0).max(1.0);
-        let title = t("SUPREME COMMANDER MAPS").to_string();
-        let importing = self.supcom.importing();
-        let found = self.supcom.found.clone();
-        let footer = Footer {
-            importing,
-            progress: self.supcom.progress.lock().unwrap().clone(),
-            outcome: self.supcom.outcome.clone(),
-            listed: found.as_ref().is_some_and(|found| found.install.is_some() && !found.maps.is_empty()),
-            chosen: found.as_ref().map_or(0, |found| found.maps.iter().filter(|e| self.supcom.is_chosen(&e.folder)).count()),
-            blocked: self.supcom_blocked(),
+        let title = t("SUPREME COMMANDER").to_string();
+        let footer = match self.supcom.tab {
+            Tab::Maps => {
+                let found = self.supcom.found.clone();
+                Footers::Maps(Footer {
+                    importing: self.supcom.importing(),
+                    progress: self.supcom.progress.lock().unwrap().clone(),
+                    outcome: self.supcom.outcome.clone(),
+                    listed: found.as_ref().is_some_and(|found| found.install.is_some() && !found.maps.is_empty()),
+                    chosen: found.as_ref().map_or(0, |found| found.maps.iter().filter(|e| self.supcom.is_chosen(&e.folder)).count()),
+                    blocked: self.supcom_blocked(),
+                })
+            }
+            Tab::Factions => {
+                let factions = &self.supcom.factions;
+                Footers::Factions(FactionsFooter {
+                    importing: factions.importing(),
+                    progress: factions.progress.lock().unwrap().clone(),
+                    outcome: factions.outcome.clone(),
+                    listed: factions.found.as_ref().is_some_and(|found| found.install.is_some() && !found.factions.is_empty()),
+                    chosen: factions.chosen_entries().len(),
+                    blocked: self.factions_blocked(),
+                })
+            }
         };
         // (The footer as tall as it came out last frame: its buttons stay in sight under a body
         // that scrolls.)
@@ -85,8 +148,11 @@ impl LauncherApp {
         let mut actions = Vec::new();
         let mut asked = Asked::default();
         let panel = Panel::new(&title).exit(Exit::Close).width(width).max_height(height);
-        let response = ta_ui::panel::modal_with_footer(ctx, "launcher_supcom", panel, true, footer_height, |ui| self.supcom_body(ui, importing, &mut actions), |ui| {
-            let laid = ui.scope(|ui| supcom_footer(ui, &footer, &mut asked)).response.rect.height();
+        let response = ta_ui::panel::modal_with_footer(ctx, "launcher_supcom", panel, true, footer_height, |ui| self.supcom_body(ui, &mut actions), |ui| {
+            let laid = ui.scope(|ui| match &footer {
+                Footers::Maps(footer) => supcom_footer(ui, footer, &mut asked),
+                Footers::Factions(footer) => factions_footer(ui, footer, &mut asked),
+            }).response.rect.height();
             if (laid - footer_height).abs() > 0.5 {
                 ui.ctx().data_mut(|d| d.insert_temp(footer_id, laid));
                 ui.ctx().request_discard("the Supreme Commander dialog's footer changed its height");
@@ -100,9 +166,23 @@ impl LauncherApp {
         }
     }
 
-    /// The dialog's body: what it does, where the game is, and its maps to choose from.
-    fn supcom_body(&mut self, ui: &mut Ui, importing: bool, actions: &mut Vec<Action>) {
+    /// The dialog's body: its tabs, and the one shown.
+    fn supcom_body(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         ui.spacing_mut().item_spacing.y = 6.0;
+        let mut tab = self.supcom.tab;
+        if widgets::segmented(ui, &mut tab, &[(Tab::Maps, n("MAPS")), (Tab::Factions, n("FACTIONS"))]).changed() {
+            self.supcom.set_tab(tab, &self.store.dir().join("mods"));
+        }
+        ui.add_space(space::XS);
+        match self.supcom.tab {
+            Tab::Maps => self.maps_body(ui, actions),
+            Tab::Factions => self.factions_body(ui, actions),
+        }
+    }
+
+    /// The maps' tab: what it does, where the game is, and its maps to choose from.
+    fn maps_body(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        let importing = self.supcom.importing();
         ui.add(egui::Label::new(RichText::new(t("Supreme Commander: Forged Alliance's maps, made into TA Reborn maps from your own copy of the game to play in skirmish: their land and ground, forests and rocks, mass points and starting places come with them.")).color(TEXT)).wrap());
         ui.add_space(space::S);
         self.supcom_source(ui, importing, actions);
@@ -141,13 +221,117 @@ impl LauncherApp {
         self.supcom_list(ui, &found, importing, room);
     }
 
-    /// Where the game is (or that it was not found), and the player's own maps' folders.
-    fn supcom_source(&mut self, ui: &mut Ui, importing: bool, actions: &mut Vec<Action>) {
-        if self.supcom.scanning() && self.supcom.found.is_none() {
-            widgets::busy_line(ui, t("Looking for Supreme Commander: Forged Alliance…"));
+    /// The factions' tab: what it does, where the game is, and its four factions to choose from.
+    fn factions_body(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        let importing = self.supcom.factions.importing();
+        ui.add(egui::Label::new(RichText::new(t("Supreme Commander: Forged Alliance's four factions, made into TA Reborn units from your own copy of the game to play in skirmish, against each other and TA's own: every unit and building with the game's own model, paint and numbers, in its faction's build menus.")).color(TEXT)).wrap());
+        ui.add_space(space::S);
+        self.supcom_source(ui, importing, actions);
+        let Some(found) = self.supcom.factions.found.clone() else { return };
+        if found.install.is_none() || found.factions.is_empty() {
             return;
         }
-        let found = self.supcom.found.clone().unwrap_or_default();
+        ui.add_space(space::S);
+        let chosen = self.supcom.factions.chosen_entries();
+        let units: usize = chosen.iter().map(supcom_factions::Entry::units).sum();
+        let gb = supcom_factions::size_estimate(&chosen) as f64 / 1e9;
+        ui.label(RichText::new(tf("{n} of {total} factions chosen, {units} units, about {size} GB on the disk", &[("n", &chosen.len()), ("total", &found.factions.len()), ("units", &units), ("size", &one_decimal(gb))])).color(STEEL));
+        ui.add_space(space::XS);
+        // The factions, two to a row where they fit.
+        let width = ui.available_width();
+        let columns = (((width + GAP) / (FACTION_CARD + GAP)).floor() as usize).clamp(1, 2);
+        let card = ((width - GAP * (columns - 1) as f32) / columns as f32).max(1.0);
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing = vec2(GAP, GAP);
+            for row in found.factions.chunks(columns) {
+                ui.horizontal(|ui| {
+                    for entry in row {
+                        self.faction_card(ui, entry, importing, card);
+                    }
+                });
+            }
+        });
+        // (Made again, the mod holds the factions chosen only.)
+        if found.factions.iter().any(|e| e.state != State::New && !self.supcom.factions.is_chosen(e.side())) {
+            ui.add(egui::Label::new(RichText::new(t("The factions not chosen are taken out of the mod when it is made again.")).color(AMBER)).wrap());
+        }
+        ui.add_space(space::XS);
+        ui.add(egui::Label::new(RichText::new(t("Still to come: their walking and death animations, Forged Alliance's own sounds and weapon effects, the commanders' enhancements, and more than three weapons a unit.")).color(STEEL)).wrap());
+    }
+
+    /// A faction: its box, its commander's picture, its name, its units by kind, and whether it
+    /// was imported before. A click anywhere on it ticks its box; only the box takes the keys,
+    /// named with all the card says.
+    fn faction_card(&mut self, ui: &mut Ui, entry: &supcom_factions::Entry, importing: bool, width: f32) {
+        let side = entry.side();
+        let mut chosen = self.supcom.factions.is_chosen(side);
+        let (rect, response) = ui.allocate_exact_size(vec2(width, FACTION_ROW), Sense::CLICK);
+        let hovered = response.hovered() && !importing;
+        let painter = ui.painter_at(rect);
+        if hovered || chosen {
+            painter.rect(rect, CornerRadius::same(3), if chosen { Color32::from_rgba_unmultiplied(196, 160, 82, 18) } else { Color32::from_white_alpha(6) }, Stroke::new(1.0, if chosen { AMBER.gamma_multiply(0.5) } else { STEEL.gamma_multiply(0.3) }), StrokeKind::Inside);
+        }
+        let units = tf("{n} units", &[("n", &entry.units())]).to_string();
+        let kinds = tf("{buildings} buildings · {land} land · {air} air · {naval} naval", &[("buildings", &entry.buildings), ("land", &entry.land), ("air", &entry.air), ("naval", &entry.naval)]).to_string();
+        let mark = entry.state.label().map(|label| (t(label), if entry.state == State::Imported { GREEN } else { AMBER }));
+        let spoken = match mark {
+            Some((mark, _)) => format!("{side}, {units}, {kinds}, {mark}"),
+            None => format!("{side}, {units}, {kinds}"),
+        };
+        // The box.
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(rect.min + vec2(8.0, (rect.height() - 20.0) / 2.0), vec2(20.0, 20.0))));
+        let toggled = child.add_enabled_ui(!importing, |ui| widgets::check_box_named(ui, &mut chosen, &spoken)).inner.changed();
+        // The commander's picture.
+        let portrait = egui::Rect::from_min_size(rect.min + vec2(38.0, 4.0), vec2(PORTRAIT, PORTRAIT));
+        match self.supcom.factions.texture(ui.ctx(), side) {
+            Some(texture) => painter.image(texture.id(), portrait, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE),
+            None => painter.rect_filled(portrait, CornerRadius::same(2), Color32::from_black_alpha(120)),
+        };
+        painter.rect_stroke(portrait, CornerRadius::same(2), Stroke::new(1.0, STEEL.gamma_multiply(0.5)), StrokeKind::Inside);
+        // Its mark at the top right; its name beside it, its units under them.
+        let text_x = portrait.right() + 12.0;
+        let room = (rect.right() - text_x - 8.0).max(1.0);
+        let mark = mark.map(|(label, color)| {
+            let galley = egui::WidgetText::from(RichText::new(label).font(strong(9.5)).color(color)).into_galley(ui, Some(egui::TextWrapMode::Truncate), room, egui::TextStyle::Body);
+            (galley, color)
+        });
+        let title_room = mark.as_ref().map_or(room, |(galley, _)| (room - galley.size().x - 8.0).max(1.0));
+        let title = egui::WidgetText::from(RichText::new(side).font(strong(15.0)).color(TEXT_BRIGHT)).into_galley(ui, Some(egui::TextWrapMode::Truncate), title_room, egui::TextStyle::Body);
+        painter.galley(egui::pos2(text_x, rect.top() + 8.0), title, TEXT_BRIGHT);
+        let line = egui::WidgetText::from(RichText::new(units).font(body(12.5)).color(TEXT)).into_galley(ui, Some(egui::TextWrapMode::Truncate), room, egui::TextStyle::Body);
+        painter.galley(egui::pos2(text_x, rect.top() + 31.0), line, TEXT);
+        let line = egui::WidgetText::from(RichText::new(kinds).font(body(12.5)).color(STEEL)).into_galley(ui, Some(egui::TextWrapMode::Truncate), room, egui::TextStyle::Body);
+        painter.galley(egui::pos2(text_x, rect.top() + 49.0), line, STEEL);
+        if let Some((galley, color)) = mark {
+            let at = egui::pos2(rect.right() - galley.size().x - 8.0, rect.top() + 6.0);
+            painter.galley(at, galley, color);
+        }
+        if (response.clicked() && !importing) || toggled {
+            if response.clicked() {
+                chosen = !chosen;
+            }
+            self.supcom.factions.choose(side, chosen);
+        }
+    }
+
+    /// Where the game is (or that it was not found) as the tab shown found it, and on the maps'
+    /// tab the player's own maps' folders.
+    fn supcom_source(&mut self, ui: &mut Ui, importing: bool, actions: &mut Vec<Action>) {
+        let maps = self.supcom.tab == Tab::Maps;
+        let (looking, source) = if maps {
+            let found = self.supcom.found.clone().unwrap_or_default();
+            (self.supcom.scanning() && self.supcom.found.is_none(), Source { copies: found.copies.clone(), install: found.install.clone(), error: found.error.clone() })
+        } else {
+            let found = self.supcom.factions.found.clone().unwrap_or_default();
+            (self.supcom.factions.scanning() && self.supcom.factions.found.is_none(), Source { copies: found.copies.clone(), install: found.install.clone(), error: found.error.clone() })
+        };
+        if looking {
+            widgets::busy_line(ui, if maps { t("Looking for Supreme Commander: Forged Alliance…") } else { t("Looking for Supreme Commander: Forged Alliance and its units…") });
+            return;
+        }
+        let found = &source;
+        // (The copy in use is not changed while either tab's import reads it.)
+        let importing = importing || self.supcom.importing() || self.supcom.factions.importing();
         ui.horizontal_wrapped(|ui| {
             ui.label(widgets::caption("FORGED ALLIANCE"));
             if found.copies.len() > 1 {
@@ -179,6 +363,10 @@ impl LauncherApp {
         if let Some(error) = &found.error {
             ui.add(egui::Label::new(RichText::new(error).color(RED)).wrap());
         }
+        if !maps {
+            return;
+        }
+        let found = self.supcom.found.clone().unwrap_or_default();
         if found.install.is_some() {
             ui.add_space(space::XS);
             ui.label(widgets::caption("YOUR OWN MAPS"));
@@ -319,6 +507,56 @@ fn supcom_footer(ui: &mut Ui, footer: &Footer, asked: &mut Asked) {
             let can = footer.chosen > 0 && footer.blocked.is_none();
             if ui.add_enabled(can, ActionButton::primary(&label)).hover_tip(t("Makes the chosen maps into TA Reborn maps, in a map pack of their own. Most take seconds, the largest a few minutes.")).disabled_tip(footer.blocked.unwrap_or_else(|| t("Choose the maps to import."))).clicked() {
                 asked.actions.push(Action::SupcomImport);
+            }
+        }
+        if ui.add(ActionButton::secondary("CLOSE")).clicked() {
+            asked.close = true;
+        }
+    });
+}
+
+/// The factions' import under way (unit by unit), or the button to start one; what the last came
+/// to.
+fn factions_footer(ui: &mut Ui, footer: &FactionsFooter, asked: &mut Asked) {
+    ui.spacing_mut().item_spacing.y = 6.0;
+    if footer.importing {
+        let p = &footer.progress;
+        let fraction = if p.installing || p.total == 0 { None } else { Some((p.done as f32 / p.total as f32).clamp(0.0, 1.0)) };
+        let label = if p.installing {
+            t("Installing the factions…").to_string()
+        } else if p.total == 0 {
+            t("Reading the game's units…").to_string()
+        } else {
+            tf("Making {unit} ({i} of {n})…", &[("unit", &p.current), ("i", &(p.done + 1).min(p.total)), ("n", &p.total)])
+        };
+        let width = ui.available_width();
+        let (rect, _) = ui.allocate_exact_size(vec2(width, 10.0), Sense::hover());
+        ta_ui::progress::paint(ui, rect, fraction, true);
+        ui.label(RichText::new(label).color(TEXT));
+        if ui.add_enabled(!p.installing, ActionButton::secondary("STOP")).hover_tip(t("Nothing is installed: the factions stay as they were.")).clicked() {
+            asked.actions.push(Action::SupcomFactionsStop);
+        }
+        return;
+    }
+    if let Some(outcome) = &footer.outcome {
+        ui.add(egui::Label::new(RichText::new(outcome.summary()).color(outcome.went().colour())).wrap());
+        if !outcome.skipped.is_empty() {
+            ui.collapsing(tf("Units that could not be made: {n}", &[("n", &outcome.skipped.len())]), |ui| {
+                egui::ScrollArea::vertical().id_salt("supcom_factions_skipped").max_height(FAILED_HEIGHT).auto_shrink([false, true]).show(ui, |ui| {
+                    for (unit, why) in &outcome.skipped {
+                        ui.label(RichText::new(unit).font(strong(12.5)).color(TEXT));
+                        ui.add(egui::Label::new(RichText::new(why).color(AMBER)).wrap());
+                    }
+                });
+            });
+        }
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        if footer.listed {
+            let can = footer.chosen > 0 && footer.blocked.is_none();
+            if ui.add_enabled(can, ActionButton::primary("IMPORT FACTIONS")).hover_tip(t("Makes the chosen factions into a mod of TA Reborn units, turned on once made. It takes a minute or so.")).disabled_tip(footer.blocked.unwrap_or_else(|| t("Choose the factions to import."))).clicked() {
+                asked.actions.push(Action::SupcomFactionsImport);
             }
         }
         if ui.add(ActionButton::secondary("CLOSE")).clicked() {
@@ -487,6 +725,58 @@ mod tests {
         assert_eq!(boxes.len(), 6, "{boxes:?}");
         assert!(boxes.iter().any(|label| label.starts_with("A Very Long Name For A Map Of The Game, 10 km · 2 players, IMPORTED")), "{boxes:?}");
         assert!(boxes.iter().any(|label| label == "Map 001, 10 km · 2 players"), "{boxes:?}");
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The factions' tab: the four factions, a card each with its units by kind and whether the
+    /// mod holds it, a stop for the keys at each box named with all its card says; the buttons in
+    /// sight under them in a small window; and a faction unticked leaves it out.
+    #[test]
+    fn the_factions_tab_lists_each_faction_with_its_buttons_in_sight() {
+        use ta_supcom::unit::Faction;
+        let (root, ctx, mut app) = launcher("factions");
+        app.supcom.open = true;
+        app.supcom.tab = Tab::Factions;
+        let states = [State::Imported, State::New, State::Outdated, State::New];
+        let factions = Faction::PLAYABLE.into_iter().zip(states).map(|(faction, state)| supcom_factions::Entry { faction, buildings: 47, land: 20, air: 12, naval: 10, state }).collect();
+        let install = ta_supcom::install::Install { root: PathBuf::from("C:/Game"), store: ta_supcom::install::Store::Gog };
+        let pictures = [("UEF", egui::ColorImage::filled([64, 64], Color32::BLUE))].into_iter().collect();
+        app.supcom.factions.pretend_found(supcom_factions::Found { install: Some(install.clone()), copies: vec![install], factions, ..Default::default() }, pictures);
+        let poll = |ctx: &egui::Context, app: &mut LauncherApp| { app.supcom.factions.poll(ctx, true); };
+        let size = egui::vec2(723.0, 461.0);
+        let screen = Rect::from_min_size(Pos2::ZERO, size);
+        for _ in 0..4 { poll(&ctx, &mut app); frame(&ctx, &mut app, size, Vec::new()); }
+        let (_, texts) = frame(&ctx, &mut app, size, Vec::new());
+        for words in ["IMPORT FACTIONS", "CLOSE"] {
+            let (_, rect, clip) = texts.iter().find(|(text, _, _)| text == words).unwrap_or_else(|| panic!("{words}: {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>()));
+            assert!(screen.contains_rect(*rect) && clip.contains_rect(*rect), "{words} in sight: {rect:?}, clipped to {clip:?}");
+        }
+        // (The mod holds the UEF and the Aeon: those are chosen at first.)
+        assert!(texts.iter().any(|(text, _, _)| text == "2 of 4 factions chosen, 178 units, about 0.2 GB on the disk"), "{:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>());
+        // A taller window shows every card; the keys stop at each faction's box once.
+        let size = egui::vec2(900.0, 900.0);
+        let tab = egui::Event::Key { key: egui::Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        let mut boxes = Vec::new();
+        for _ in 0..20 {
+            let (output, _) = frame(&ctx, &mut app, size, vec![tab.clone()]);
+            for event in &output.platform_output.events {
+                if let egui::output::OutputEvent::FocusGained(info) = event
+                    && info.typ == egui::WidgetType::Checkbox
+                    && let Some(label) = &info.label
+                    && !boxes.contains(label)
+                {
+                    boxes.push(label.clone());
+                }
+            }
+        }
+        assert_eq!(boxes.len(), 4, "{boxes:?}");
+        assert!(boxes.contains(&"UEF, 89 units, 47 buildings · 20 land · 12 air · 10 naval, IMPORTED".to_string()), "{boxes:?}");
+        assert!(boxes.contains(&"CYBRAN, 89 units, 47 buildings · 20 land · 12 air · 10 naval".to_string()), "{boxes:?}");
+        // Unticked, a faction the mod holds is said to be left out when it is made again.
+        app.supcom.factions.choose("AEON", false);
+        let (_, texts) = frame(&ctx, &mut app, size, Vec::new());
+        assert!(texts.iter().any(|(text, _, _)| text.starts_with("The factions not chosen are taken out of the mod")), "{:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>());
         drop(app);
         let _ = std::fs::remove_dir_all(root);
     }

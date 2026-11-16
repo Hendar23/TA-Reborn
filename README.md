@@ -527,10 +527,13 @@ https://github.com/user-attachments/assets/0c29747c-1139-4f19-877a-3661836a55c5
   Steam's), the Maps page's SUPREME COMMANDER… makes its skirmish maps (and your own downloaded and
   Forged Alliance Forever ones) into TA Reborn maps from your copy: their land and painted ground,
   cliffs that still stop tanks, forests, rocks, mass points as metal, hydrocarbons as vents, and
-  starts, for skirmish ([SUPCOM_MAPS.md](docs/SUPCOM_MAPS.md)).
+  starts, for skirmish ([SUPCOM_MAPS.md](docs/SUPCOM_MAPS.md)). The Mods page's SUPREME COMMANDER…
+  makes its four factions into a mod: the UEF, the Cybran, the Aeon and the Seraphim, every unit
+  and building with the game's own model, paint and numbers, a side each in skirmish
+  ([SUPCOM_UNITS.md](docs/SUPCOM_UNITS.md)).
 - **`ta-tools`** inspects, converts and validates TA's data files (`validate`, `map`, `gaf`, `model`,
   `cob`, `cat`, `find`…), grows TA Reborn's maps (`mapgen`; [MAPS.md](docs/MAPS.md)), and makes
-  Supreme Commander's into TA's (`supcom`).
+  Supreme Commander's maps and units into TA's (`supcom`, `supcom-units`).
 
 </details>
 
