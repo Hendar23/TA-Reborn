@@ -251,6 +251,46 @@ fn commands_for_tick(playback: Option<&mut Playback>, tick: u64, live: Vec<Comma
     commands
 }
 
+/// Whether a command of the player's shows before its tick, while it waits for it (see
+/// [`Game::show_orders_ahead`]): what it tells units (their orders and plans, a factory's queue
+/// and route, standing orders, switches, cloaks, repeat, a countdown). Not what changes more
+/// than the units told (resources shared, units given away, resigning, cheats, signals): those
+/// wait for their tick as before.
+fn shown_ahead(c: &Command) -> bool {
+    matches!(
+        c,
+        Command::Order { .. }
+            | Command::Formation { .. }
+            | Command::Produce { .. }
+            | Command::SetRally { .. }
+            | Command::SetActive { .. }
+            | Command::SetCloak { .. }
+            | Command::SetStates { .. }
+            | Command::SelfDestruct { .. }
+            | Command::SetRepeat { .. }
+            | Command::QueueFront { .. }
+            | Command::EditQueue { .. }
+            | Command::DropOrder { .. }
+    )
+}
+
+/// Multiplayer: ticks (game time) after which an order of ours sent to the host and never back in
+/// a bundle is let go of (the host drops what is beyond a player's share of a tick).
+const LOST_AFTER: u64 = 90;
+
+/// Multiplayer: our orders back from the host in a tick's `bundle` are no longer on their way
+/// (`in_flight`, in the order they were given; the bundle has them in that order too).
+fn arrived(in_flight: &mut Vec<(Command, u64)>, bundle: &[Command]) {
+    if in_flight.is_empty() {
+        return;
+    }
+    for c in bundle {
+        if let Some(k) = in_flight.iter().position(|(sent, _)| sent == c) {
+            in_flight.remove(k);
+        }
+    }
+}
+
 /// Ways of narrowing a selection (see [`Game::filter_selection`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectionFilter {
@@ -258,6 +298,43 @@ pub enum SelectionFilter {
     Builders,
     Damaged,
     Idle,
+}
+
+/// What the selection's switches (metal makers, radar, solar collectors...) are set to, as TA's
+/// ON/OFF button shows it: all on, all off, or some of each (see [`Game::selection_power`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Power {
+    On,
+    Off,
+    /// Some on and some off; `first_on`: whether the first of them is on, which says what the
+    /// button does to them all.
+    Mixed { first_on: bool },
+}
+
+impl Power {
+    /// From the switches' states in the selection's order (none without a switch).
+    pub fn of(states: impl IntoIterator<Item = bool>) -> Option<Power> {
+        let mut states = states.into_iter();
+        let first = states.next()?;
+        Some(if states.any(|on| on != first) {
+            Power::Mixed { first_on: first }
+        } else if first {
+            Power::On
+        } else {
+            Power::Off
+        })
+    }
+
+    /// Whether the first switch is on.
+    pub fn first_on(self) -> bool {
+        matches!(self, Power::On | Power::Mixed { first_on: true })
+    }
+
+    /// What pressing the button (or TA's X) sets them all to: off when the first is on, else on,
+    /// as TA's does (a mixed group all one way or the other).
+    pub fn pressed(self) -> bool {
+        !self.first_on()
+    }
 }
 
 /// A notable kill for the cast's feed: what was destroyed and whose, and what destroyed it.
@@ -304,10 +381,11 @@ pub struct UnitInfo {
     pub unit: Option<UnitId>,
 }
 
-/// Our idle constructors and factories as of a tick, a player and a spectator's seat.
+/// Our idle constructors and factories as of a tick (and orders shown ahead of it:
+/// `Game::shown_version`), a player and a spectator's seat.
 #[derive(Clone)]
 struct IdleUnits {
-    key: (u64, u8, bool),
+    key: (u64, u64, u8, bool),
     builders: Vec<UnitId>,
     factories: Vec<UnitId>,
 }
@@ -497,6 +575,17 @@ pub struct Game {
     pub speed: f32,
     pub outcome: Option<Outcome>,
     pub(crate) commands: Vec<Command>,
+    /// The game as it really stands, while `sim` shows a copy of it with the player's orders
+    /// that wait for their tick already given (the battle paused, or in multiplayer on their way
+    /// back from the host after a pause): what they tell the units shows at once, as given (see
+    /// [`Game::show_orders_ahead`]). Put back before anything goes on ([`Game::settle`]).
+    held: Option<Box<Sim>>,
+    /// Multiplayer: our orders sent to the host and not yet back in a tick's bundle (those
+    /// shown before their tick: [`shown_ahead`]), and the tick each was given on.
+    in_flight: Vec<(Command, u64)>,
+    /// Counts the changes to what `sim` shows besides the ticks (orders shown ahead of theirs, the
+    /// game put back): what is worked out once a tick is worked out again on them.
+    pub shown_version: u64,
     accumulator: f32,
     drag_start: Option<Vec2>,
     right_press: Option<Vec2>,
@@ -568,6 +657,10 @@ pub struct Game {
     pub companion_toggle: bool,
     pub replay_scan: Option<crate::replay_scan::ReplayScan>,
     pub hovered: Option<UnitId>,
+    /// The unit marked on the minimap under the pointer that an order given there would aim at,
+    /// and the cursor that says so (set by the minimap as it is drawn, this frame's only: see
+    /// [`Game::minimap_target`]).
+    pub minimap_aim: Option<(UnitId, crate::cursor::CursorKind)>,
     /// Physical pixels per interface point (the strategic icons' size; set by the app).
     pub ppp: f32,
     pub last_tick_ms: f32,
@@ -888,6 +981,9 @@ impl Game {
             speed: 1.0,
             outcome: None,
             commands: Vec::new(),
+            held: None,
+            in_flight: Vec::new(),
+            shown_version: 0,
             accumulator: 0.0,
             drag_start: None,
             right_press: None,
@@ -928,6 +1024,7 @@ impl Game {
             action_target: None,
             action_retarget: 0.0,
             hovered: None,
+            minimap_aim: None,
             ppp: 1.0,
             last_tick_ms: 0.0,
             frame_ticks: 0,
@@ -944,6 +1041,7 @@ impl Game {
 
     /// Runs `ticks` simulation steps immediately without presentation (attract-mode warm-up).
     pub fn fast_forward(&mut self, ticks: u32) {
+        self.settle();
         for _ in 0..ticks {
             let mut commands = std::mem::take(&mut self.commands);
             for ai in &mut self.ais {
@@ -1056,11 +1154,62 @@ impl Game {
         // An order of the player's takes the units it is for off duty.
         self.release_from_duty(&c);
         self.used.record(&self.sim, self.local_player, &c);
+        // What it tells the units shows at once while their orders are shown ahead of their tick.
+        let ahead = shown_ahead(&c);
+        if ahead && self.held.is_some() {
+            self.sim.preview(&c);
+            self.shown_version += 1;
+        }
         match &mut self.net {
             // Multiplayer: orders run when the host's bundle brings them back.
-            Some(net) => net.submit(c),
+            Some(net) => {
+                if ahead {
+                    self.in_flight.push((c.clone(), self.sim.tick));
+                }
+                net.submit(c);
+            }
             None => self.commands.push(c),
         }
+        // (The battle paused: the first order shows those waiting with it.)
+        if self.paused {
+            self.show_orders_ahead();
+        }
+    }
+
+    /// The player's orders that wait for their tick shown as given, from now on until it comes:
+    /// the game as it stands held aside (`held`), and a copy of it with them given
+    /// (`Sim::preview`) shown in its place, every order given afterwards given to the copy too.
+    /// Orders, routes, plans, a factory's queue, standing orders, switches: everything the
+    /// player gave shows the moment it is given, and the interface goes by it (a second order
+    /// queued from the first, a Shift-click taking one back). The game itself is untouched: it
+    /// takes them at their tick as ever ([`Game::settle`]), so a replay, a saved game and every
+    /// machine of a multiplayer battle have them as before. Single player: those waiting for
+    /// the next tick; multiplayer: those on their way to the host and back.
+    fn show_orders_ahead(&mut self) {
+        if self.held.is_some() || self.spectator || self.playback.is_some() {
+            return;
+        }
+        let ahead: Vec<Command> = if self.net.is_some() { self.in_flight.iter().map(|(c, _)| c.clone()).collect() } else { self.commands.iter().filter(|c| shown_ahead(c)).cloned().collect() };
+        if ahead.is_empty() {
+            return;
+        }
+        // (The game itself held, not a copy of it: what goes on from it is the game as it was.)
+        let shown = self.sim.clone();
+        self.held = Some(Box::new(std::mem::replace(&mut self.sim, shown)));
+        for c in &ahead {
+            self.sim.preview(c);
+        }
+        self.shown_version += 1;
+    }
+
+    /// The game as it really stands put back in place of the copy that showed orders ahead of
+    /// their tick, before it goes on (a tick, a copy of it taken, another put in its place).
+    /// True when one was shown.
+    fn settle(&mut self) -> bool {
+        let Some(real) = self.held.take() else { return false };
+        self.sim = *real;
+        self.shown_version += 1;
+        true
     }
 
     pub fn message(&mut self, text: impl Into<String>) {
@@ -1143,7 +1292,13 @@ impl Game {
             return;
         }
         if self.paused {
+            // (Orders given just before the pause, their tick still to come, show too.)
+            self.show_orders_ahead();
             return;
+        }
+        // Going on: the game put back, and the orders shown ahead of their tick given it at once.
+        if self.settle() {
+            self.accumulator = self.accumulator.max(TICK_SECONDS);
         }
         self.accumulator += dt * self.speed;
         let mut steps = 0;
@@ -1229,6 +1384,9 @@ impl Game {
         if !self.paused {
             self.accumulator += dt * self.speed;
         }
+        // (Our orders shown ahead of their tick: still while they are on their way back after a
+        // pause, else they would vanish until they came.)
+        let showing = self.held.is_some();
         let mut steps = 0;
         let started = std::time::Instant::now();
         loop {
@@ -1255,6 +1413,9 @@ impl Game {
                 if !ready_to_step || steps >= 16 && !catching_up { break; }
             }
             let Some(bundle) = net.take_tick(next) else { break };
+            // (The game goes on from where it really stands; our orders in the bundle are back.)
+            self.settle();
+            arrived(&mut self.in_flight, &bundle);
             self.run_tick(bundle);
             self.accumulator = (self.accumulator - TICK_SECONDS).max(0.0);
             steps += 1;
@@ -1270,6 +1431,12 @@ impl Game {
         }
         if self.accumulator > TICK_SECONDS * 8.0 {
             self.accumulator = TICK_SECONDS * 8.0;
+        }
+        // Orders the host never bundled (beyond a player's share of a tick) are let go of.
+        let tick = self.sim.tick;
+        self.in_flight.retain(|&(_, given)| tick <= given + LOST_AFTER);
+        if self.paused || showing {
+            self.show_orders_ahead();
         }
         self.after_update();
     }
@@ -1297,6 +1464,7 @@ impl Game {
     /// or sounds). Returns true once caught up and play has gone live.
     pub fn catch_up(&mut self, budget: std::time::Duration) -> bool {
         let start = std::time::Instant::now();
+        self.settle();
         loop {
             let Some(pb) = &mut self.playback else { return true };
             // A save runs to its end and goes live; a replay seek runs to its tick.
@@ -1359,6 +1527,8 @@ impl Game {
     /// (`sim` and its computer players' `ais` at `tick`), with the replay's orders from there on
     /// (`record`, when one plays). The battle's effects so far are forgotten.
     pub fn restore(&mut self, sim: &Sim, ais: &[ta_ai::SkirmishAi], tick: u64, record: Option<&crate::replay::Record>, renderer: &mut ta_render::Renderer) {
+        // (Orders shown ahead of their tick were the game's that is left.)
+        self.settle();
         self.sim = sim.clone();
         self.ais = ais.to_vec();
         self.duty = None;
@@ -1404,6 +1574,8 @@ impl Game {
     /// One simulation tick with the given player commands and the appropriate live or
     /// historical AI decisions.
     fn run_tick(&mut self, mut commands: Vec<Command>) {
+        // (Never a step of the copy that shows orders ahead of their tick: the game goes on.)
+        self.settle();
         {
             let t = std::time::Instant::now();
             // (The constructors on duty are sent to work with orders like the player's.)
@@ -2854,11 +3026,20 @@ impl Game {
         self.message(ta_ui::i18n::t([ta_ui::i18n::n("Move orders: hold position"), ta_ui::i18n::n("Move orders: maneuver"), ta_ui::i18n::n("Move orders: roam")][usize::from(next)]));
     }
 
-    /// TA's X: turns the selection off if the first unit that can be is on, else on.
+    /// TA's X: turns the selection off if the first unit that can be is on, else on (a group
+    /// some on and some off goes all one way: [`Power::pressed`]).
     pub fn toggle_on_off(&mut self) {
         self.ui_sounds.push("IMMEDIATEORDERS");
-        let Some(active) = self.selection.iter().filter_map(|&id| self.sim.unit(id)).find(|u| self.sim.unit_type(u).def.on_offable).map(|u| u.activated) else { return };
-        self.set_active(!active);
+        let Some(power) = self.selection_power() else { return };
+        self.set_active(power.pressed());
+    }
+
+    /// What the selection's switches are set to (none without one). Frames under construction
+    /// count only in a selection of nothing else that switches (they are not switched yet, and
+    /// switching passes them by).
+    pub fn selection_power(&self) -> Option<Power> {
+        let switches = || self.selection.iter().filter_map(|&id| self.sim.unit(id)).filter(|u| self.sim.unit_type(u).def.on_offable);
+        Power::of(switches().filter(|u| u.is_complete()).map(|u| u.activated)).or_else(|| Power::of(switches().map(|u| u.activated)))
     }
 
     pub fn mode_available(&self, mode: CommandMode) -> bool {
@@ -3116,10 +3297,15 @@ impl Game {
     }
 
     /// The cursor TA would show: the pending order's, else what a click with the order button
-    /// would do on what the pointer is over.
+    /// would do on what the pointer is over. Over the interface, the pointer's own, but over a
+    /// unit's mark on the minimap that an order given there would aim at, that order's
+    /// ([`Game::minimap_aim`]).
     pub fn cursor_kind(&self, over_ui: bool) -> crate::cursor::CursorKind {
         use crate::cursor::CursorKind as C;
-        if over_ui || self.placement.is_some() {
+        if over_ui {
+            return self.minimap_aim.map_or(C::Normal, |(_, cursor)| cursor);
+        }
+        if self.placement.is_some() {
             return C::Normal;
         }
         // (The units that fire on an attack order: bombers alone show TA's air-strike sight.)
@@ -3320,9 +3506,9 @@ impl Game {
 
     /// Our idle constructors and factories, found once a tick (the interface asks for them
     /// several times a frame, and a big army is many units to look through). What they do
-    /// changes only with the ticks.
+    /// changes only with the ticks, and with orders shown ahead of theirs.
     fn idle_units(&self) -> IdleUnits {
-        let key = (self.sim.tick, self.local_player, self.spectator);
+        let key = (self.sim.tick, self.shown_version, self.local_player, self.spectator);
         let mut cache = self.idle_cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(found) = cache.as_ref().filter(|c| c.key == key) {
             return found.clone();
@@ -3610,13 +3796,7 @@ impl Game {
         }
         let at = Vec2::new(target.x, target.z);
         if let Some(mode) = self.command_mode {
-            // The command's own kind of unit: an enemy to attack or capture, one of ours or an
-            // ally's to guard, repair, load or take apart; none for the ground's commands.
-            let unit = match mode {
-                CommandMode::Attack | CommandMode::DGun | CommandMode::Capture => self.minimap_unit_at(at, reach, true),
-                CommandMode::Guard | CommandMode::Repair | CommandMode::Load | CommandMode::Reclaim => self.minimap_unit_at(at, reach, false),
-                _ => None,
-            };
+            let unit = self.minimap_mode_unit(mode, at, reach);
             let ground = self.cursor_ground.replace(target);
             let hovered = std::mem::replace(&mut self.hovered, unit);
             let issued = self.target_command(mode, queue);
@@ -3642,6 +3822,53 @@ impl Game {
                 self.voices.push((first, ta_audio::SoundEvent::Ok));
             }
         }
+    }
+
+    /// The unit marked on the minimap near `at` that `mode`'s order aims at there: an enemy to
+    /// attack or capture, one of ours or an ally's to guard, repair, load or take apart; none for
+    /// the ground's orders.
+    fn minimap_mode_unit(&self, mode: CommandMode, at: Vec2, reach: f32) -> Option<UnitId> {
+        match mode {
+            CommandMode::Attack | CommandMode::DGun | CommandMode::Capture => self.minimap_unit_at(at, reach, true),
+            CommandMode::Guard | CommandMode::Repair | CommandMode::Load | CommandMode::Reclaim => self.minimap_unit_at(at, reach, false),
+            _ => None,
+        }
+    }
+
+    /// What an order given on the minimap at `at` (x, z on the ground; `reach` as
+    /// [`Game::order_selection_from_map`] takes it) would aim at, and the cursor that says so, as
+    /// over the battlefield: the armed command's unit, or with none the enemy a right-click there
+    /// attacks. None where the order would go to the ground (or the selection takes none).
+    pub(crate) fn minimap_target(&self, at: Vec2, reach: f32) -> Option<(UnitId, crate::cursor::CursorKind)> {
+        use crate::cursor::CursorKind as C;
+        if !self.can_order() {
+            return None;
+        }
+        let me = self.local_player;
+        let Some(mode) = self.command_mode else {
+            // (As `order_selection_from_map`: our own and our allies' marks are passed over.)
+            let enemy = self.minimap_unit_at(at, reach, true)?;
+            let click = clicks::click_on(&self.sim, me, &self.selection, enemy)?;
+            return Some((enemy, click.cursor(&self.sim)));
+        };
+        let unit = self.minimap_mode_unit(mode, at, reach)?;
+        let ours = self.sim.unit(unit).is_some_and(|u| u.owner == me);
+        // (The order's cursor, as `cursor_kind` gives it over the battlefield; loading and taking
+        // apart take our own units only, as `target_command` has them.)
+        let cursor = match mode {
+            CommandMode::Attack => {
+                let attackers: Vec<UnitId> = self.selection.iter().copied().filter(|&id| self.sim.unit(id).is_some_and(|u| u.owner == me && self.fires_on_attack(self.sim.unit_type(u)))).collect();
+                clicks::attack_cursor(&self.sim, &attackers)
+            }
+            CommandMode::DGun => C::Attack,
+            CommandMode::Capture => C::Capture,
+            CommandMode::Guard => C::Defend,
+            CommandMode::Repair => C::Repair,
+            CommandMode::Load if ours => C::Load,
+            CommandMode::Reclaim if ours => C::Reclaim,
+            _ => return None,
+        };
+        Some((unit, cursor))
     }
 
     /// An order to `units`: a group sent to a point under the rule "modern movement" goes as a
@@ -4325,7 +4552,7 @@ pub fn fx_vec(v: Vec3) -> FxVec3 {
 }
 
 /// The cells a building of type `t` centred at `pos` covers: (x0, z0, x1, z1), exclusive.
-fn footprint_rect(t: &ta_sim::UnitType, pos: ta_sim::FxVec3) -> (i32, i32, i32, i32) {
+pub(crate) fn footprint_rect(t: &ta_sim::UnitType, pos: ta_sim::FxVec3) -> (i32, i32, i32, i32) {
     use ta_sim::world::World;
     let (x0, z0) = World::footprint_origin(World::pos_to_anchor(pos, t.footprint), t.footprint);
     (x0, z0, x0 + t.footprint.0 as i32, z0 + t.footprint.1 as i32)
@@ -4828,6 +5055,48 @@ mod tests {
         assert_eq!(wrecks.len(), 1, "a tree's heap or a placed rock is nobody's wreck");
         assert_eq!(wrecks[&dead], 41);
         assert!(!wrecks.contains_key(&other), "blown to nothing");
+    }
+
+    /// TA's ON/OFF button: a group all one way says so; some on and some off says both, and a
+    /// press (or X) sets them all to the opposite of the first switch, as TA's does.
+    #[test]
+    fn a_group_of_switches_some_on_and_some_off_says_both() {
+        assert_eq!(Power::of([]), None, "nothing to switch");
+        assert_eq!(Power::of([true, true]), Some(Power::On));
+        assert_eq!(Power::of([false]), Some(Power::Off));
+        let mixed = Power::of([true, false, true]).unwrap();
+        assert_eq!(mixed, Power::Mixed { first_on: true });
+        assert!(!mixed.pressed(), "the first on: all off");
+        assert_eq!(Power::of([false, true]), Some(Power::Mixed { first_on: false }));
+        assert!(Power::Mixed { first_on: false }.pressed(), "the first off: all on");
+        assert!(!Power::On.pressed() && Power::Off.pressed());
+    }
+
+    /// Multiplayer: our orders back in a tick's bundle are no longer on their way, each once (the
+    /// same order given twice comes back twice); others' orders in the bundle leave ours alone.
+    #[test]
+    fn orders_back_from_the_host_are_no_longer_on_their_way() {
+        let unit = UnitId { slot: 1, generation: 1 };
+        let go = |x: i64, player: u8| Command::Order { player, units: vec![unit], order: Order::Move(FxVec3::from_ints(x, 0, 0)), queue: true };
+        let mut in_flight = vec![(go(10, 0), 5), (go(10, 0), 5), (go(20, 0), 6)];
+        arrived(&mut in_flight, &[go(10, 1), go(10, 0)]);
+        assert_eq!(in_flight, vec![(go(10, 0), 5), (go(20, 0), 6)], "one of the two given alike, and not the other player's");
+        arrived(&mut in_flight, &[go(10, 0), go(20, 0)]);
+        assert!(in_flight.is_empty());
+        arrived(&mut in_flight, &[go(30, 0)]);
+        assert!(in_flight.is_empty());
+    }
+
+    /// What shows ahead of its tick is what tells units; what changes more waits for the tick.
+    #[test]
+    fn orders_to_units_show_before_their_tick_and_the_rest_waits() {
+        let units = vec![UnitId { slot: 1, generation: 1 }];
+        assert!(shown_ahead(&Command::Order { player: 0, units: units.clone(), order: Order::Stop, queue: false }));
+        assert!(shown_ahead(&Command::Produce { player: 0, factory: units[0], type_id: 3, count: 1 }));
+        assert!(shown_ahead(&Command::SetActive { player: 0, units: units.clone(), on: false }));
+        assert!(!shown_ahead(&Command::Resign { player: 0 }));
+        assert!(!shown_ahead(&Command::GiveUnits { player: 0, units, to: 1 }));
+        assert!(!shown_ahead(&Command::Share { player: 0, to: 1, metal: Fx::ONE, energy: Fx::ONE }));
     }
 
     #[test]

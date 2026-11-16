@@ -738,6 +738,13 @@ enum DemoAction {
     Gallery,
     /// A staged scene, for filming (`--demo stage`, the scene in `TA_STAGE`; see `stage.rs`).
     Stage,
+    /// Pauses the battle (true) or lets it go on (false), as the pause key does.
+    Pause(bool),
+    /// `--demo paused-orders`: orders of every kind given to the units `SpawnNear` put down (the
+    /// Stumpies move, queue a patrol and one attacks the nearest enemy, the Commander plans two
+    /// buildings, the lab queues Peewees and sends them somewhere), then the Stumpies and the
+    /// Commander selected, Shift held: their routes and plans.
+    PausedOrders,
 }
 
 /// Maps that make good backdrops for the menu.
@@ -1998,11 +2005,14 @@ impl State {
             Some("fire") => vec![(5, DemoAction::Ignite)],
             // Multiplayer: one line to everyone, one to allies only.
             Some("chat") => vec![(1500, DemoAction::Say("hello everyone", false)), (1510, DemoAction::Say("our secret plan", true))],
-            // A building held over the ground, with its ranges and what it would make and use
-            // (`TA_RANGES_UNIT=ARMRAD`: another; the Light Laser Tower by default).
+            // A building held over the ground, with its ranges, what it would make and use and the
+            // cells it would take (`TA_RANGES_UNIT=ARMRAD`: another; the Light Laser Tower by
+            // default; `TA_RANGES_AT=dx,dz`: that far from the Commander, 160,60 by default).
             Some("ranges") => {
                 let unit: &'static str = std::env::var("TA_RANGES_UNIT").map(|s| &*Box::leak(s.to_ascii_uppercase().into_boxed_str())).unwrap_or("ARMLLT");
-                vec![(5, DemoAction::SelectCommander), (8, DemoAction::PlaceNear(unit, 160.0, 60.0))]
+                let at = std::env::var("TA_RANGES_AT").ok().and_then(|v| v.split_once(',').and_then(|(x, z)| Some((x.trim().parse::<f32>().ok()?, z.trim().parse::<f32>().ok()?))));
+                let (dx, dz) = at.unwrap_or((160.0, 60.0));
+                vec![(5, DemoAction::SelectCommander), (8, DemoAction::PlaceNear(unit, dx, dz))]
             }
             Some("areamex") => vec![(5, DemoAction::SelectCommander), (8, DemoAction::AreaMex(420.0))],
             // Two solars planned, then a wind generator held over the second (it must not fit).
@@ -2011,6 +2021,20 @@ impl State {
                 (10, DemoAction::BuildNear("ARMSOLAR", 120.0, 40.0)),
                 (11, DemoAction::BuildNear("ARMSOLAR", 260.0, 40.0)),
                 (60, DemoAction::PlaceOnPlan("ARMWIN")),
+            ],
+            // Orders given while the battle is paused, shown at once: Stumpies moving, patrolling
+            // and attacking, the Commander's plans (selected, Shift held), then the lab's queue
+            // and route (selected), and the battle going on with them at frame 160
+            // (`TA_SHOTS=3 TA_SHOT_STEP=50` from `--frames 80`).
+            Some("paused-orders") => vec![
+                (3, DemoAction::SpawnNear("ARMSTUMP", 0, 3, 150.0, 40.0)),
+                (3, DemoAction::SpawnNear("ARMLAB", 0, 1, -230.0, 140.0)),
+                (3, DemoAction::SpawnNear("CORAK", 1, 2, 330.0, -40.0)),
+                (20, DemoAction::Pause(true)),
+                (40, DemoAction::PausedOrders),
+                (110, DemoAction::ClearMods),
+                (110, DemoAction::SelectType("ARMLAB")),
+                (160, DemoAction::Pause(false)),
             ],
             // TA's squares round the plans: Shift over the Commander with plans queued.
             Some("plan-squares") => vec![
@@ -3342,6 +3366,46 @@ impl State {
         }
     }
 
+    /// `--demo paused-orders` (see [`DemoAction::PausedOrders`]): orders given as the interface
+    /// gives them (`Game::issue`), with the battle paused.
+    fn paused_orders_demo(&mut self) {
+        use ta_sim::{Command, FxVec3, Order, Target};
+        let me = self.game.local_player;
+        let Some(commander) = self.game.local_commander() else { return };
+        let Some(base) = self.game.sim.unit(commander).map(|u| u.pos) else { return };
+        let at = |dx: i64, dz: i64| base + FxVec3::from_ints(dx, 0, dz);
+        let ours = |game: &Game, name: &str| -> Vec<ta_sim::UnitId> {
+            let t = game.sim.types.id(name);
+            game.sim.units().filter(|u| u.owner == me && Some(u.type_id) == t).map(|u| u.id).collect()
+        };
+        let stumps = ours(&self.game, "ARMSTUMP");
+        let enemy = self.game.sim.units().filter(|u| self.game.sim.is_enemy(me, u.owner)).min_by_key(|u| (u.pos - base).length_sq_raw()).map(|u| u.id);
+        // The Stumpies: a move, a patrol queued after it; the first attacks the nearest enemy.
+        if let Some((first, rest)) = stumps.split_first() {
+            self.game.issue(Command::Order { player: me, units: rest.to_vec(), order: Order::Move(at(300, 230)), queue: false });
+            self.game.issue(Command::Order { player: me, units: rest.to_vec(), order: Order::Patrol(at(480, 90)), queue: true });
+            if let Some(e) = enemy {
+                self.game.issue(Command::Order { player: me, units: vec![*first], order: Order::Attack(Target::Unit(e)), queue: false });
+            }
+        }
+        // The Commander: two buildings planned.
+        for (name, dx, dz) in [("ARMSOLAR", -40, 210), ("ARMWIN", 70, 250)] {
+            let Some(t) = self.game.sim.types.id(name) else { continue };
+            if let Some(site) = self.game.sim.find_build_site(t, at(dx, dz), 20) {
+                self.game.issue(Command::Order { player: me, units: vec![commander], order: Order::Build { type_id: t, pos: site }, queue: true });
+            }
+        }
+        // The lab: four Peewees, and where they go.
+        if let (Some(&lab), Some(peewee)) = (ours(&self.game, "ARMLAB").first(), self.game.sim.types.id("ARMPW")) {
+            self.game.issue(Command::Produce { player: me, factory: lab, type_id: peewee, count: 4 });
+            self.game.issue(Command::SetRally { player: me, factory: lab, pos: at(-320, 330) });
+        }
+        // The Stumpies and the Commander selected, Shift held: their routes and the plans.
+        self.game.selection = stumps.into_iter().chain(std::iter::once(commander)).collect();
+        self.input.modifiers = winit::keyboard::ModifiersState::SHIFT;
+        self.game.demo_shift = true;
+    }
+
     /// `TA_RADIAL`: opens the radial menu on our first unit of that type (see
     /// [`DemoAction::OpenRadial`]), at the unit's place on the screen.
     fn open_radial_demo(&mut self) {
@@ -3573,6 +3637,8 @@ impl State {
                     self.game.scene.after_tick(&self.game.sim);
                 }
                 DemoAction::Speed(s) => self.game.speed = s,
+                DemoAction::Pause(on) => self.game.set_pace(Some(on), None),
+                DemoAction::PausedOrders => self.paused_orders_demo(),
                 DemoAction::TutorialFight => {
                     if let Some(p) = self.tutorial.as_ref().and_then(|t| t.outpost_centre(&self.game)) {
                         let (player, units) = (self.game.local_player, self.game.selection.clone());
@@ -5755,6 +5821,10 @@ impl State {
         self.feed_pad_to_egui(&mut raw);
         self.ui_script();
         raw.events.append(&mut self.demo_ui);
+        // (A demo's Shift, held for the interface too: the routes it shows while planning.)
+        if self.game.demo_shift {
+            raw.events.push(egui::Event::ModifiersChanged(egui::Modifiers { shift: true, ..Default::default() }));
+        }
         self.battle_keys_only(&mut raw);
         let screen = self.screen;
         // (The hints on the interface come when the pointer rests a moment, a little longer in a

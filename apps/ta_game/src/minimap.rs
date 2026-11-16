@@ -13,6 +13,22 @@ use crate::palette::team_color;
 /// Most texels a side of the minimap's fog (TA's maps have a few hundred sight cells a side).
 const FOG_MAX_SIDE: usize = 1024;
 
+/// The ring round a mark an order would aim at: its radius (points) round TA's cursor at its
+/// own size, which stands on the mark (its sight reaches some ten points out).
+const AIM_CLEAR: f32 = 13.0;
+
+/// The colour of the ring round a mark an order would aim at: as its order is acknowledged on
+/// the battlefield (`hud::mark_color`): red to attack or capture, yellow to take apart, cyan to
+/// help.
+fn aim_colour(cursor: crate::cursor::CursorKind) -> Color32 {
+    use crate::cursor::CursorKind as C;
+    match cursor {
+        C::Attack | C::AirStrike | C::Capture => Color32::from_rgb(255, 84, 64),
+        C::Reclaim => Color32::from_rgb(214, 214, 96),
+        _ => Color32::from_rgb(90, 225, 225),
+    }
+}
+
 #[derive(Default)]
 pub struct Minimap {
     picture: Option<Picture>,
@@ -307,6 +323,34 @@ impl Minimap {
             }
         }
         ownership.paint(&painter, 10.0, EVec2::new(0.0, -9.0));
+        // The mark under the pointer that an order given here would aim at (an enemy the selection
+        // would attack, or the armed command's unit): ringed and crossed in the order's colour,
+        // and the cursor says the order over the minimap as over the battlefield
+        // (`Game::cursor_kind`). (A unit's mark within a few of the minimap's points is the one
+        // aimed at, as a click takes it.)
+        let reach = 5.0 / rect.width().max(1.0) * map_px.x;
+        game.minimap_aim = response.hover_pos().filter(|_| !game.selection.is_empty()).and_then(|p| game.minimap_target(to_world(p), reach));
+        if let Some((id, cursor)) = game.minimap_aim
+            && let Some(u) = game.sim.unit(id)
+        {
+            let p = u.pos.to_f32();
+            let s = to_screen(p[0], p[2]);
+            let mark = (game.sim.unit_type(u).radius.to_f32() / map_px.x * rect.width()).clamp(1.2, 4.0);
+            let colour = aim_colour(cursor);
+            let dark = Stroke::new(3.4, Color32::from_black_alpha(190));
+            // The mark itself lit in the order's colour, and a ring round it with four ticks
+            // pointing in: wide enough to stand clear of TA's cursor, which stands on the mark.
+            painter.circle_filled(s, mark + 1.0, Color32::from_black_alpha(190));
+            painter.circle_filled(s, mark, colour);
+            let r = if game.ta_cursors { AIM_CLEAR * game.cursor_scale.clamp(1.0, 2.5) } else { mark + 4.0 };
+            painter.circle_stroke(s, r, dark);
+            painter.circle_stroke(s, r, Stroke::new(1.6, colour));
+            for d in [EVec2::X, -EVec2::X, EVec2::Y, -EVec2::Y] {
+                let tick = [s + d * (r + 4.0), s + d * (r - 2.5)];
+                painter.line_segment(tick, dark);
+                painter.line_segment(tick, Stroke::new(1.6, colour));
+            }
+        }
         // Recent attacks on our units (red) and an ally's (their colour): expanding rings for a
         // few seconds.
         let now = game.sim.tick as f32 / 30.0;
@@ -458,8 +502,6 @@ impl Minimap {
             let w = to_world(p).clamp(Vec2::ZERO, (map_px - Vec2::ONE).max(Vec2::ZERO));
             let ground = game.sim.world.height_at(Fx::from_f32(w.x), Fx::from_f32(w.y)).to_f32();
             let modifiers = if primary_order { primary_modifiers } else { ta_ui::widgets::click_modifiers(&response, egui::PointerButton::Secondary) };
-            // (A unit's mark within a few of the minimap's pixels is the one clicked.)
-            let reach = 5.0 / rect.width().max(1.0) * map_px.x;
             game.order_selection_from_map(glam::Vec3::new(w.x, ground, w.y), reach, modifiers.shift, ui.input(|i| i.modifiers.shift));
         }
         rect

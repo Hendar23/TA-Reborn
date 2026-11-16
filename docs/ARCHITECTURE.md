@@ -1796,7 +1796,16 @@ with reduced flashes); the painted art has the season's calendar (December, Janu
 `game.rs` owns the sim, local input → commands, the fixed-step loop, AI players and
 events → `effects.rs` and `audio.rs` (for films, `TA_SOUND_LOG` mixes the audio offline on the
 frames' clock and writes down what plays as the camera hears it, from the engine's record of
-what it tells the mixer: `sound_log.rs`, `ta_audio::playlog`). The viewer's fog of war hides enemy units, effects
+what it tells the mixer: `sound_log.rs`, `ta_audio::playlog`). Orders the player gives wait for
+their tick (single player the next one, multiplayer the host's bundle), and while the battle is
+paused that is a while: so meanwhile `Game::sim` shows them given (`Game::show_orders_ahead`: the
+game itself held aside, and a copy of it in its place with them applied by `Sim::preview`, every
+order given afterwards given to the copy too; what tells units only, `shown_ahead`). Everything the
+interface draws and goes by reads the copy (routes, plans, queues, switches; a second building
+queued after the first), and the game is put back before anything goes on (`Game::settle`: a tick,
+a copy of it taken, another put in its place), so replays, saves and every machine have the orders
+at their tick as before; in multiplayer those on their way (`Game::in_flight`, dropped as they come
+back in a bundle) are shown until they do. The viewer's fog of war hides enemy units, effects
 and projectiles outside sight; radar contacts show as blips, and the enemy structures seen
 before stand where they were as ghosts (`fog.rs`). `scene.rs` interpolates poses
 and the scripts' piece states between ticks and poses only units inside the view (its
@@ -2321,7 +2330,11 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   F4 (metal) and Alt+L (sight). N looks at the next of our units off the screen, in turn (of
   the selection, if any); Delete clears the messages and the chat (TA's F12, which here takes
   a screenshot). Dragging while placing a building lays
-  out a row of them. T follows a unit, Alt+click pings.
+  out a row of them. While a building is placed, the ground it will take shows as TA's grid of the
+  16 px cells it snaps to, under the ghost and each site of a row (`hud::footprint_on_ground`: lines
+  through every cell's corner over the ground or the sea, edged dark, in the ghost's colour from
+  `palette::allowed_rgba`/`blocked_rgba`; far out, the outline alone); Shift's squares round the
+  plans are its outline. T follows a unit, Alt+click pings.
 * **Models** are drawn with back faces culled, as TA did (its 3DO models are consistently
   wound; drawn double-sided, the undersides of ground plates and the insides of shells
   showed as black or wrongly textured faces). Shadows and ambient occlusion still use both
@@ -2381,10 +2394,14 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
     job and first order; its health beside its picture; its rank), beside the kinds of a mixed
     selection and the switches that narrow it, its queue, or for one kind with nothing queued
     its figures at a glance (`info::summary_figures`, in the information page's table, F1 a
-    click away); at the right, for a selection of ours, the command plate: ORDERS in rows by
+    click away), under DETAILS first what the selection makes and uses of metal and energy a second
+    now, all of it together (`Sim::unit_flows` summed, as TA's unit bar gives the first unit's; with
+    a queue shown, DETAILS has these alone); at the right, for a selection of ours, the command plate: ORDERS in rows by
     kind (`orders::available`: moving and fighting, work, the special ones, each with its key),
     beside them the STANCE (the standing orders as labelled buttons showing what each is set to,
-    self-destruct last and apart; a column of glyphs where the room is short), and the build menu
+    switches some on and some off ON/OFF with a half-lit lamp, as the classic's mixed art, a press
+    all one way: `Game::selection_power`; self-destruct last and apart; a column of glyphs where
+    the room is short), and the build menu
     grouped by `Purpose` on tabs with the costs on the pictures, as many across as two rows
     need (three to nine; `BuildGrid::fit` sizes the pictures to the room, on pages when they do
     not all fit). Where the room is short the plates give up their words in turn until the
@@ -2469,7 +2486,11 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   `game/clicks.rs`: the wrench over what the selected constructors would repair, help build
   or assist, a factory's production included; the shield for standing guard; TA's air-strike
   sight in place of the attack sight when the units that would attack are all bombers,
-  `clicks::bombers_only`); the system cursor is hidden in battle.
+  `clicks::bombers_only`); the system cursor is hidden in battle. Over the interface the pointer's
+  own, but over a unit's mark on the minimap that an order given there would aim at
+  (`Game::minimap_target`, from the same account as the minimap's click: the armed command's unit,
+  or the enemy a right-click attacks), that order's, the mark ringed in its colour
+  (`Game::minimap_aim`, set as the minimap is drawn).
 * **Classic interface** (`hud_classic.rs`, its data in `hud_classic_art.rs`; setting
   `gameplay.classic_interface`, hidden `--classic-ui` for captures): TA's own panels in
   place of ours, built from its interface data and scaled from its 640×480 layout to the
@@ -3122,7 +3143,9 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
 * **Lockstep, host as pacemaker**: every tick the host seals a bundle of the commands it
   received since the last one (its own included) and broadcasts it; every peer, host
   included, steps its own simulation with exactly those bundles, in order. Local orders
-  are sent to the host and run when they come back in a bundle (one round trip). A client
+  are sent to the host and run when they come back in a bundle (one round trip; while the battle
+  is paused, and after it until they are back, the player's own screen shows them given:
+  `Game::show_orders_ahead`, see the client's notes). A client
   sends what it ordered since it last read the network together (`Session::flush`, on
   every poll and after the frame's interface), in messages of at most `BATCH_BYTES` (1 MiB):
   a formation move of thousands of units is one message. AI players run on every machine

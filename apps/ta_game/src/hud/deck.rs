@@ -101,6 +101,19 @@ pub(super) struct SelectionSummary {
     damaged: usize,
     /// What the constructors in it do by themselves.
     duty: crate::game::duty::SelectionDuty,
+    /// What it makes and uses of metal and energy a second now, all of it together (its
+    /// finished units: the figures TA's unit bar gives, `Sim::unit_flows`).
+    flows: ta_sim::flows::UnitFlows,
+}
+
+/// What `units` make and use a second now, together: the finished ones the player may look
+/// into (ours, an ally's).
+fn flows_of<'a>(game: &Game, units: impl IntoIterator<Item = &'a Unit>) -> ta_sim::flows::UnitFlows {
+    let mut total = ta_sim::flows::UnitFlows::default();
+    for u in units.into_iter().filter(|u| game.may_inspect(u.owner) && u.is_complete()) {
+        total += game.sim.unit_flows(u);
+    }
+    total
 }
 
 impl SelectionSummary {
@@ -118,7 +131,8 @@ impl SelectionSummary {
         // (One on duty has its own work, and waits for it when there is none.)
         let idle = units.iter().filter(|o| o.orders.is_empty() && o.build.is_none() && o.factory_queue.is_empty() && !game.on_duty(o.id)).count();
         let damaged = units.iter().filter(|o| o.health < game.sim.unit_type(o).max_health).count();
-        SelectionSummary { kinds, many: units.len(), health, max_health, idle, damaged, duty: game.selection_duty() }
+        let flows = flows_of(game, units.iter().copied());
+        SelectionSummary { kinds, many: units.len(), health, max_health, idle, damaged, duty: game.selection_duty(), flows }
     }
 }
 
@@ -318,7 +332,7 @@ impl Hud {
         let selected = game.selection.iter().any(|&id| game.sim.unit(id).is_some());
         let commanding = selected && !game.spectator;
         // The forces (in the cast, the scoreboard has those).
-        let forces_key = (game.hud_player(), game.sim.tick / FORCES_EVERY);
+        let forces_key = (game.hud_player(), game.sim.tick / FORCES_EVERY, game.shown_version);
         let forces = if game.cast { None } else { Some(self.forces_now(game, forces_key)) };
         let layout = deck_layout(ctx.content_rect(), forces.as_ref().map(|f| f.len()), selected, commanding, if commanding { self.build_width(game) } else { 0.0 });
         self.minimap_plate(&ctx, game, camera, minimap);
@@ -469,7 +483,7 @@ impl Hud {
     /// The player's forces for this frame: the groups as they were within the last few ticks (a
     /// pass over every unit of a big battle was not to be made every frame), the selection's
     /// share as it is now. (`deck` keeps them again when it has drawn them.)
-    fn forces_now(&mut self, game: &Game, key: (u8, u64)) -> Vec<Force> {
+    fn forces_now(&mut self, game: &Game, key: (u8, u64, u64)) -> Vec<Force> {
         let mut forces = match self.forces_cache.take() {
             Some((k, forces)) if k == key => forces,
             _ => force_list(game),
@@ -756,7 +770,7 @@ impl Hud {
                 s
             }
         };
-        let SelectionSummary { kinds, many, health, max_health, idle, damaged, duty: duty_sel } = summary;
+        let SelectionSummary { kinds, many, health, max_health, idle, damaged, duty: duty_sel, flows } = summary;
         let all_same = kinds.len() == 1;
         let doing = (many == 1).then(|| activity(game, u));
         let rank = (many == 1 && u.kills > 0).then(|| (u.rank(), u.kills));
@@ -1028,23 +1042,36 @@ impl Hud {
                 }
             }
             // One kind with nothing queued: what it is good for at a glance, and its key for the
-            // information page.
+            // information page. First, for any selection that makes or uses something (a metal
+            // extractor, a power plant, the Commander, a factory at work), what it does now, as
+            // TA's unit bar gives it: a whole selection's together.
             let queues = if ty.is_factory { !queue.is_empty() } else { ty.is_builder && many == 1 && game.builder_queue(first).len() > 1 };
-            if all_same && !queues {
+            let output = super::figure_rows(&flows);
+            let summary = all_same && !queues;
+            if summary || !output.is_empty() {
                 ui.add_space(4.0);
                 let mut more = false;
                 section_with(ui, n("DETAILS"), |ui| {
                     more = key_button(ui, game.keys.text("help")).on_hover_text(t("Information on the selected unit (with none, the controls reference)")).clicked();
                 });
-                let figures = super::info::summary_figures(game, &ty);
-                let width = ui.available_width();
-                let rows = super::info::figure_rows(ui.painter(), &figures, width);
-                let (table, _) = ui.allocate_exact_size(EVec2::new(width, rows.len() as f32 * super::info::FIGURE_ROW), egui::Sense::hover());
-                super::info::paint_figures(ui, table.min, width, &figures, &rows);
-                let economy = super::info::economy_lines(&ty);
-                if !economy.is_empty() {
-                    ui.add_space(2.0);
-                    ui.label(RichText::new(economy.join("  ·  ")).font(body(11.5)).color(pal().steel));
+                let about = if many == 1 { t("What it makes and uses a second now") } else { t("What they make and use a second now, all together") };
+                for row in &output {
+                    ui.label(super::figure_job(row)).on_hover_text(about);
+                }
+                if summary {
+                    if !output.is_empty() {
+                        ui.add_space(3.0);
+                    }
+                    let figures = super::info::summary_figures(game, &ty);
+                    let width = ui.available_width();
+                    let rows = super::info::figure_rows(ui.painter(), &figures, width);
+                    let (table, _) = ui.allocate_exact_size(EVec2::new(width, rows.len() as f32 * super::info::FIGURE_ROW), egui::Sense::hover());
+                    super::info::paint_figures(ui, table.min, width, &figures, &rows);
+                    let economy = super::info::economy_lines(&ty);
+                    if !economy.is_empty() {
+                        ui.add_space(2.0);
+                        ui.label(RichText::new(economy.join("  ·  ")).font(body(11.5)).color(pal().steel));
+                    }
                 }
                 if more {
                     game.unit_info = Some(crate::game::UnitInfo { type_id: ty.id, unit: (many == 1).then_some(first) });
@@ -1137,12 +1164,12 @@ impl Hud {
         let gunner = first(&|t| t.weapons.iter().any(|w| w.is_some()));
         let mover = first(&|t| t.weapons.iter().any(|w| w.is_some()) && t.locomotion != Locomotion::Static);
         let cloaker = first(&|t| t.def.cloak_cost > 0.0);
-        let switch = first(&|t| t.def.on_offable);
+        // (The switches: all on, all off, or some of each, which the button says as TA's does.)
+        let power = game.selection_power();
         let (armed, mobile) = (gunner.is_some(), mover.is_some());
         let fire = gunner.map_or(0, |x| x.fire_state);
         let movement = mover.map_or(0, |x| x.move_state);
         let cloak_on = cloaker.is_some_and(|x| x.cloak_on);
-        let active = switch.is_some_and(|x| x.activated);
         let counting = u.self_destruct_at.is_some() && u.self_destruct_manual;
         let cloak = cloaker.map(|x| {
             let ty = game.sim.unit_type(x);
@@ -1155,7 +1182,6 @@ impl Hud {
         } else {
             tf("Self-destruct: blow up the selection after a five-second countdown ({key}); again to cancel", &[("key", &game.keys.text("self_destruct"))])
         };
-        let on_offable = switch.is_some();
         /// What a standing order's button does.
         enum State {
             Fire,
@@ -1166,14 +1192,15 @@ impl Hud {
             Destruct,
         }
         /// A standing order's button: what it does, its glyph, what it is set to and what that
-        /// does, lit (a cloak that is on), rusted (a countdown running), which of its settings it
-        /// is at.
+        /// does, lit (a cloak that is on), half lit (switches some on and some off), rusted (a
+        /// countdown running), which of its settings it is at.
         struct Button {
             state: State,
             glyph: Glyph,
             label: String,
             tip: String,
             lit: bool,
+            mixed: bool,
             warn: bool,
             steps: Option<(u8, u8)>,
         }
@@ -1185,7 +1212,7 @@ impl Hud {
                 (Glyph::FireAtWill, n("FIRE AT WILL"), n("Fire at will: shoots whatever comes in range")),
             ][usize::from(fire.min(2))];
             let tip = format!("{}\n{}", t(what), tf("Click for the next fire order ({key})", &[("key", &game.keys.text("fire_orders"))]));
-            states.push(Button { state: State::Fire, glyph, label: t(label).to_string(), tip, lit: false, warn: false, steps: Some((fire.min(2), 3)) });
+            states.push(Button { state: State::Fire, glyph, label: t(label).to_string(), tip, lit: false, mixed: false, warn: false, steps: Some((fire.min(2), 3)) });
         }
         if armed && mobile {
             let (glyph, label, what) = [
@@ -1194,23 +1221,24 @@ impl Hud {
                 (Glyph::Roam, n("ROAM"), n("Roam: chases the enemy anywhere")),
             ][usize::from(movement.min(2))];
             let tip = format!("{}\n{}", t(what), tf("Click for the next move order ({key})", &[("key", &game.keys.text("move_orders"))]));
-            states.push(Button { state: State::Move, glyph, label: t(label).to_string(), tip, lit: false, warn: false, steps: Some((movement.min(2), 3)) });
+            states.push(Button { state: State::Move, glyph, label: t(label).to_string(), tip, lit: false, mixed: false, warn: false, steps: Some((movement.min(2), 3)) });
         }
         if let Some(tip) = cloak {
             let (glyph, label) = if cloak_on { (Glyph::Cloaked, t("CLOAKED")) } else { (Glyph::Visible, t("VISIBLE")) };
-            states.push(Button { state: State::Cloak, glyph, label: label.to_string(), tip, lit: cloak_on, warn: false, steps: None });
+            states.push(Button { state: State::Cloak, glyph, label: label.to_string(), tip, lit: cloak_on, mixed: false, warn: false, steps: None });
         }
-        if on_offable {
-            let tip = if active { tf("On: click to turn off ({key})", &[("key", &game.keys.text("on_off"))]) } else { tf("Off: click to turn on ({key})", &[("key", &game.keys.text("on_off"))]) };
-            states.push(Button { state: State::Power, glyph: Glyph::Power, label: if active { t("ON") } else { t("OFF") }.to_string(), tip, lit: active, warn: false, steps: None });
+        if let Some(power) = power {
+            let (label, tip) = crate::hud::power_words(power, game.keys.text("on_off"));
+            let (lit, mixed) = (power == crate::game::Power::On, matches!(power, crate::game::Power::Mixed { .. }));
+            states.push(Button { state: State::Power, glyph: Glyph::Power, label, tip, lit, mixed, warn: false, steps: None });
         }
         // The constructors' duty: what they do by themselves (a menu of them opens from it).
         if let Some(duty) = game.duty_control() {
-            states.push(Button { state: State::Duty, glyph: Glyph::Duty, label: duty.label, tip: duty.tip, lit: duty.lit, warn: false, steps: None });
+            states.push(Button { state: State::Duty, glyph: Glyph::Duty, label: duty.label, tip: duty.tip, lit: duty.lit, mixed: false, warn: false, steps: None });
         }
         // Self-destruct last, quiet (red while it counts down).
         let label = if counting { t("CANCEL") } else { t("SELF-DESTRUCT") };
-        states.push(Button { state: State::Destruct, glyph: Glyph::SelfDestruct, label: label.to_string(), tip: destruct, lit: false, warn: counting, steps: None });
+        states.push(Button { state: State::Destruct, glyph: Glyph::SelfDestruct, label: label.to_string(), tip: destruct, lit: false, mixed: false, warn: counting, steps: None });
         ui.painter().add(metal::seam_down(grid.right() + GAP + 0.5, room.y_range().shrink(4.0)));
         let column = Rect::from_min_max(Pos2::new(room.right() - stance, room.top()), room.max);
         let mut right = ui.new_child(egui::UiBuilder::new().max_rect(column).layout(egui::Layout::top_down(egui::Align::Min)));
@@ -1235,10 +1263,11 @@ impl Hud {
             if wide && i == last && i > 0 {
                 right.add_space(apart);
             }
+            let lamp = crate::hud_icons::Lamp::of(b.lit, b.mixed);
             let resp = if wide {
-                stance_button(&mut right, b.glyph, &b.label, EVec2::new(stance, tall), b.lit, b.warn, b.steps, text_size)
+                stance_button(&mut right, b.glyph, &b.label, EVec2::new(stance, tall), lamp, b.warn, b.steps, text_size)
             } else {
-                state_icon_button(&mut right, b.glyph, EVec2::new(stance, tall), b.lit, b.warn, b.steps)
+                state_icon_button(&mut right, b.glyph, EVec2::new(stance, tall), lamp, b.warn, b.steps)
             };
             if matches!(b.state, State::Fire) {
                 self.anchors.order("fire_state", resp.rect);
@@ -1254,7 +1283,12 @@ impl Hud {
             Some(State::Fire) => game.set_states(Some((fire + 1) % 3), None),
             Some(State::Move) => game.set_states(None, Some((movement + 1) % 3)),
             Some(State::Cloak) => game.toggle_cloak(),
-            Some(State::Power) => game.set_active(!active),
+            // (Some on and some off: all one way, as TA's button and its key do.)
+            Some(State::Power) => {
+                if let Some(power) = power {
+                    game.set_active(power.pressed());
+                }
+            }
             Some(State::Destruct) => game.self_destruct_selection(),
             // (The duty button opens its menu by itself.)
             Some(State::Duty) | None => {}

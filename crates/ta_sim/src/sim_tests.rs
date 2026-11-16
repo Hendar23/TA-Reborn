@@ -119,6 +119,38 @@ fn queued_orders_are_bounded_and_stop_can_clear_a_full_queue() {
     assert_eq!(sim.unit(id).unwrap().orders.front(), Some(&Order::Stop));
 }
 
+/// The interface's copy of the game shows orders before their tick (`Sim::preview`, a battle
+/// paused): the copy has them as the tick will give them, no tick passes in it, and the game
+/// itself is untouched, given them at their tick as ever.
+#[test]
+fn a_copy_shown_orders_before_their_tick_leaves_the_game_alone() {
+    let data = data_of(&[unit("TANK", "CanMove=1; MaxVelocity=1;"), unit("MAKER", "MakesMetal=1; EnergyUse=3; ActivateWhenBuilt=1; OnOffable=1;")]);
+    let mut sim = sim_of(data, 1);
+    let tank = sim.spawn_unit(sim.types.id("TANK").unwrap(), 0, FxVec3::from_ints(100, 60, 100), 0, true).unwrap();
+    let maker = sim.spawn_unit(sim.types.id("MAKER").unwrap(), 0, FxVec3::from_ints(300, 60, 300), 0, true).unwrap();
+    sim.step(&[Command::SetActive { player: 0, units: vec![maker], on: true }]);
+    assert!(sim.unit(maker).unwrap().activated);
+    let before = sim.checksum();
+    let commands = [
+        Command::Order { player: 0, units: vec![tank], order: Order::Move(FxVec3::from_ints(600, 60, 100)), queue: false },
+        Command::Order { player: 0, units: vec![tank], order: Order::Patrol(FxVec3::from_ints(600, 60, 600)), queue: true },
+        Command::SetActive { player: 0, units: vec![maker], on: false },
+    ];
+    let mut shown = sim.clone();
+    for c in &commands {
+        shown.preview(c);
+    }
+    assert_eq!(sim.checksum(), before, "the game itself is untouched");
+    assert_eq!(shown.tick, sim.tick, "no tick passes in the copy");
+    let orders: Vec<Order> = shown.unit(tank).unwrap().orders.iter().cloned().collect();
+    assert!(matches!(orders[..], [Order::Move(_), Order::Patrol(_), Order::Patrol(_)]), "the move, then the patrol there and back: {orders:?}");
+    assert!(!shown.unit(maker).unwrap().activated, "switched off at once");
+    // The game given them at their tick: the same orders, the same switch.
+    sim.step(&commands);
+    assert_eq!(sim.unit(tank).unwrap().orders.iter().cloned().collect::<Vec<_>>(), orders);
+    assert!(!sim.unit(maker).unwrap().activated);
+}
+
 #[test]
 fn nobody_owns_units_who_is_not_in_the_battle() {
     let data = data_of(&[unit("TANK", "CanMove=1; MaxVelocity=1;")]);

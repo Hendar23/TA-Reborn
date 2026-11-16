@@ -180,10 +180,42 @@ fn keycap(painter: &Painter, at: Pos2, key: &str, lit: bool, room: f32) {
     painter.galley(pos2(x, cap.center().y - mh / 2.0), main, bright);
 }
 
+/// A state button's lamp: out; half lit, the button not pressed in (a selection set both ways:
+/// switches some on and some off); or lit, the button pressed in with it (a cloak that is on).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lamp {
+    Out,
+    Half,
+    Lit,
+}
+
+impl Lamp {
+    pub fn of(lit: bool, mixed: bool) -> Lamp {
+        if lit {
+            Lamp::Lit
+        } else if mixed {
+            Lamp::Half
+        } else {
+            Lamp::Out
+        }
+    }
+
+    /// How bright the lamp burns (0 out, 1 lit).
+    fn glow(self) -> f32 {
+        match self {
+            Lamp::Out => 0.0,
+            Lamp::Half => 0.45,
+            Lamp::Lit => 1.0,
+        }
+    }
+}
+
 /// A standing order as a button with its glyph, `size` large; what it is set to on the pointer.
-/// `lit` presses it in with its lamp (a cloak that is on); `warn` rusts it red (a countdown
-/// running); `steps`, which of how many settings it is at, as a column of lamps at its right.
-pub fn state_icon_button(ui: &mut Ui, glyph: Glyph, size: Vec2, lit: bool, warn: bool, steps: Option<(u8, u8)>) -> Response {
+/// `lamp` lit presses it in with its lamp (a cloak that is on), half lit shows it half on (some
+/// of the selection on); `warn` rusts it red (a countdown running); `steps`, which of how many
+/// settings it is at, as a column of lamps at its right.
+pub fn state_icon_button(ui: &mut Ui, glyph: Glyph, size: Vec2, lamp: Lamp, warn: bool, steps: Option<(u8, u8)>) -> Response {
+    let lit = lamp == Lamp::Lit;
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     if ui.is_rect_visible(rect) {
         let hot = if response.hovered() { 1.0 } else { 0.0 };
@@ -200,8 +232,8 @@ pub fn state_icon_button(ui: &mut Ui, glyph: Glyph, size: Vec2, lit: bool, warn:
             for k in 0..of {
                 painter.add(metal::lamp(pos2(rect.right() - 5.0, first + spacing * f32::from(k)), 1.7, pal().accent, if k == at { 1.0 } else { 0.0 }));
             }
-        } else if lit {
-            painter.add(metal::lamp(rect.right_top() + vec2(-5.5, 5.5), 2.2, pal().good, 1.0));
+        } else if lamp != Lamp::Out {
+            painter.add(metal::lamp(rect.right_top() + vec2(-5.5, 5.5), 2.2, pal().good, lamp.glow()));
         }
     }
     if response.clicked() {
@@ -212,11 +244,13 @@ pub fn state_icon_button(ui: &mut Ui, glyph: Glyph, size: Vec2, lit: bool, warn:
 
 /// A standing order as a labelled button `size` large: its glyph at the left, in words what it is
 /// set to ("FIRE AT WILL"), and at the right which of its settings it is at as a row of lamps
-/// (`steps`: the one lit, how many there are). `lit` presses it in with its lamp (a cloak that is
-/// on); `warn` rusts it red (a countdown running); `text_size` is the lettering the family of
-/// buttons shares (see [`family_size`]).
+/// (`steps`: the one lit, how many there are). `lamp` lit presses it in with its lamp (a cloak
+/// that is on), half lit shows it half on (switches some on and some off); `warn` rusts it red (a
+/// countdown running); `text_size` is the lettering the family of buttons shares (see
+/// [`family_size`]).
 #[allow(clippy::too_many_arguments)]
-pub fn stance_button(ui: &mut Ui, glyph: Glyph, label: &str, size: Vec2, lit: bool, warn: bool, steps: Option<(u8, u8)>, text_size: f32) -> Response {
+pub fn stance_button(ui: &mut Ui, glyph: Glyph, label: &str, size: Vec2, lamp: Lamp, warn: bool, steps: Option<(u8, u8)>, text_size: f32) -> Response {
+    let lit = lamp == Lamp::Lit;
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     if ui.is_rect_visible(rect) {
         let hot = if response.hovered() { 1.0 } else { 0.0 };
@@ -236,8 +270,8 @@ pub fn stance_button(ui: &mut Ui, glyph: Glyph, label: &str, size: Vec2, lit: bo
                 painter.add(metal::lamp(pos2(edge - 2.0, rect.center().y + dy), 1.9, pal().accent, if k == at { 1.0 } else { 0.0 }));
                 edge -= 6.0;
             }
-        } else if lit {
-            painter.add(metal::lamp(pos2(edge - 2.5, rect.center().y + dy), 2.3, pal().good, 1.0));
+        } else if lamp != Lamp::Out {
+            painter.add(metal::lamp(pos2(edge - 2.5, rect.center().y + dy), 2.3, pal().good, lamp.glow()));
             edge -= 8.0;
         }
         let left = glyph_at.x + side / 2.0 + 5.0;
