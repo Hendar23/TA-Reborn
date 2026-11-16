@@ -13,6 +13,7 @@ mod mod_new;
 mod notices;
 mod sprites;
 mod supcom;
+mod supcom_units;
 
 #[derive(Parser)]
 #[command(name = "ta-tools", about = "Inspect and convert Total Annihilation data")]
@@ -130,6 +131,16 @@ enum Cmd {
         /// The most cells a side of a map may have.
         #[arg(long, default_value_t = 1024)]
         max_cells: usize,
+    },
+    /// Make Supreme Commander: Forged Alliance's units (those a player may make, or those
+    /// `--only` names by id) into TA units, into a folder to mount as a mod.
+    SupcomUnits {
+        out: PathBuf,
+        #[arg(long)]
+        only: Option<String>,
+        /// The game's folder (default: the copy found, GOG's or Steam's).
+        #[arg(long)]
+        game: Option<PathBuf>,
     },
     /// Pack paintings (RGBA PNGs, listed in a `manifest.json` as tools/features/sprites.py
     /// writes it) into a GAF in TA's palette: TA Reborn's own feature art.
@@ -466,6 +477,7 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Supcom { out, only, game, preview, budget, max_cells } => supcom::run(&out, only.as_deref(), game.as_deref(), preview.as_deref(), budget, max_cells)?,
+        Cmd::SupcomUnits { out, only, game } => supcom_units::run(&out, only.as_deref(), game.as_deref())?,
         Cmd::GafPack { manifest, out } => {
             let (_, vfs) = open_vfs()?;
             sprites::pack(&manifest, &out, &inspect::palette(&vfs)?)?;

@@ -349,7 +349,7 @@ mod tests {
 
     /// A texture of one colour (uncompressed), `side` texels.
     fn plain(side: u32, rgba: [u8; 4]) -> Vec<u8> {
-        let mut b = crate::dds::tests::header(side, side, 1, None);
+        let mut b = crate::dds::header(side, side, 1, None);
         for _ in 0..side * side {
             b.extend_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]);
         }
@@ -366,7 +366,7 @@ mod tests {
         // A 32 x 32 map: red under everything, green where mask 0's red channel is full (its
         // west half), a blue decal 4 units square at (20, 20).
         let (w, h) = (32u32, 32u32);
-        let mut mask = crate::dds::tests::header(16, 16, 1, None);
+        let mut mask = crate::dds::header(16, 16, 1, None);
         for _y in 0..16 {
             for x in 0..16 {
                 let r = if x < 8 { 255 } else { 0 };

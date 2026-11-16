@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Models can be painted beyond TA's palette and textures: a 3DO with a surface beside it
+  (`objects3d/<name>.surface`) takes texture coordinates and smooth normals for its vertices and
+  materials for its polygons, each a colour map, a specular map (gloss, mirroring, lights and where
+  the player's colour shows) and a normal map, DDS textures drawn at 512 × 512. A material's paint
+  is read the first time a model of it is drawn, and a surface can name a lighter model to draw far
+  off. The mod check reads surfaces and DDS textures. See
+  [docs/MODDING.md](docs/MODDING.md#models-with-surfaces-of-their-own).
+- Groundwork for playing Supreme Commander: Forged Alliance's four factions: their units' meshes are
+  made into TA models with surfaces, painted with the game's own textures in each player's colour
+  (docs/SUPCOM_UNITS.md). Making them from the launcher, and their gameplay, come next.
+
 ## 1.0.7 — 2026-11-16
 
 Mods can present themselves in the launcher with a banner, an animated preview, an icon and

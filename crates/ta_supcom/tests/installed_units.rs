@@ -1,6 +1,7 @@
 //! The player's own copy of Forged Alliance, its units read whole: every blueprint, and for every
 //! unit a player can make, its meshes, textures and animations, and the bones its weapons and
-//! build beams name. Ignored (it needs the game installed, and takes a while):
+//! build beams name; the conventions the conversion rests on; and every unit made a TA model the
+//! same, byte for byte, twice. Ignored (it needs the game installed, and takes a while):
 //! `cargo test --release -p ta_supcom --test installed_units -- --ignored --nocapture`
 //! (`TA_SUPCOM_DIR=<folder>` a copy of the game elsewhere).
 
@@ -9,6 +10,8 @@ use std::path::PathBuf;
 
 use ta_supcom::files::Files;
 use ta_supcom::install::{self, Install, Store};
+use ta_formats::surface::Material;
+use ta_supcom::factions::{model, textures};
 use ta_supcom::unit::{self, Faction, Tech};
 use ta_supcom::{sca, scm};
 
@@ -142,4 +145,113 @@ fn every_playable_units_meshes_and_animations_read() {
     for p in &problems {
         eprintln!("  {p}");
     }
+}
+
+/// What the conversion takes the meshes to be (docs/SUPCOM_UNITS.md), held over every unit a
+/// player can make: the first vector of a vertex's frame is its normal (the triangles' corners
+/// in order wind anticlockwise about it), the next two run against the texture's u and v; a
+/// bone's bind pose (the inverse of the file's matrix) is its rest pose (its place and turn
+/// composed down the skeleton); the units face +z, their right at -x.
+#[test]
+#[ignore]
+fn the_meshes_are_as_the_conversion_takes_them() {
+    let Some(game) = the_game() else {
+        eprintln!("no copy of Forged Alliance found: nothing to read");
+        return;
+    };
+    let files = Files::own(&game).unwrap();
+    let all = unit::catalogue(&files).unwrap();
+    let (mut wound, mut against, mut triangles, mut apart) = (0usize, 0usize, 0usize, Vec::new());
+    let mut meshes = BTreeMap::new();
+    for u in all.iter().filter(|u| u.playable()) {
+        let Some(lod0) = u.display.lods.first() else { continue };
+        let Some(bytes) = files.read(&lod0.mesh).unwrap() else { continue };
+        let mesh = scm::parse(&bytes).unwrap();
+        for t in &mesh.triangles {
+            let p = |i: u32| mesh.vertices[i as usize].position;
+            let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+            let (e1, e2) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+            let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+            let v = &mesh.vertices[t[0] as usize];
+            if n.iter().map(|x| x * x).sum::<f32>() < 1e-12 {
+                continue;
+            }
+            triangles += 1;
+            wound += (n[0] * v.normal[0] + n[1] * v.normal[1] + n[2] * v.normal[2] > 0.0) as usize;
+            // (The tangent against u: along the corners' u, the place goes the other way.)
+            let (du1, du2) = (mesh.vertices[t[1] as usize].uv0[0] - v.uv0[0], mesh.vertices[t[2] as usize].uv0[0] - v.uv0[0]);
+            let (dv1, dv2) = (mesh.vertices[t[1] as usize].uv0[1] - v.uv0[1], mesh.vertices[t[2] as usize].uv0[1] - v.uv0[1]);
+            let det = du1 * dv2 - du2 * dv1;
+            if det.abs() > 1e-9 {
+                let dpdu = [0, 1, 2].map(|k| (e1[k] * dv2 - e2[k] * dv1) / det);
+                against += (dpdu[0] * v.tangent[0] + dpdu[1] * v.tangent[1] + dpdu[2] * v.tangent[2] < 0.0) as usize;
+            }
+        }
+        let rest = mesh.rest_poses();
+        let size = mesh.vertices.iter().fold(1e-6f32, |m, v| m.max(v.position.iter().fold(0f32, |a, c| a.max(c.abs()))));
+        for (b, bone) in mesh.bones.iter().enumerate() {
+            let m = bone.rest_inverse;
+            let t = [m[12], m[13], m[14]];
+            let bind = [0, 1, 2].map(|k| -(t[0] * m[4 * k] + t[1] * m[4 * k + 1] + t[2] * m[4 * k + 2]));
+            let d = (0..3).map(|k| (bind[k] - rest[b].0[k]).powi(2)).sum::<f32>().sqrt();
+            if d > size * 0.02 && mesh.vertices.iter().any(|v| v.bone == b) {
+                apart.push(format!("{} {}", u.id, bone.name));
+            }
+        }
+        meshes.insert(u.id.clone(), mesh);
+    }
+    eprintln!("{wound} of {triangles} triangles wound about their normals, {against} with tangents against u");
+    assert!(wound * 100 >= triangles * 99, "the normal comes first");
+    assert!(against * 100 >= triangles * 90, "the tangent runs against u");
+    assert!(apart.is_empty(), "bones bound away from their rest: {apart:?}");
+    // The commanders' right arms at -x, their left at +x; the Striker's gun forward of its hull.
+    let place = |id: &str, bone: &str| -> [f32; 3] {
+        let mesh = &meshes[id];
+        mesh.rest_poses()[mesh.bone(bone).unwrap_or_else(|| panic!("{id} has no {bone}"))].0
+    };
+    assert!(place("XSL0001", "Right_Arm_B01")[0] < 0.0 && place("XSL0001", "Left_Arm_B01")[0] > 0.0);
+    assert!(place("UAL0001", "Right_Turret_Muzzle")[0] < 0.0 && place("UAL0001", "Left_Turret_Muzzle")[0] > 0.0);
+    assert!(place("UEL0201", "Turret_Muzzle")[2] > 0.0 && place("UEL0201", "Exhaust_Left")[2] < 0.0);
+}
+
+/// Every unit a player can make made a TA model with its surface, its paint and its model for
+/// far off, as `ta-tools supcom-units` makes them: each surface fits its model as written and
+/// read back, the far model has the near one's pieces, and making them again gives the same
+/// bytes (a mod of units is compared byte for byte before a multiplayer battle).
+#[test]
+#[ignore]
+fn every_unit_is_made_a_model_the_same_twice() {
+    let Some(game) = the_game() else {
+        eprintln!("no copy of Forged Alliance found: nothing to read");
+        return;
+    };
+    let files = Files::own(&game).unwrap();
+    let all = unit::catalogue(&files).unwrap();
+    let make = |u: &unit::UnitBlueprint| -> Vec<Vec<u8>> {
+        let lod0 = &u.display.lods[0];
+        let mesh = scm::parse(&files.read(&lod0.mesh).unwrap().unwrap()).unwrap();
+        let paint: Vec<Vec<u8>> = [&lod0.albedo, &lod0.specular, &lod0.normals].iter().map(|p| files.read(p).unwrap().map(|b| textures::texture(&b).unwrap()).unwrap_or_default()).collect();
+        let material = Material { name: u.id.to_ascii_lowercase(), albedo: "a".into(), specular: "s".into(), normals: "n".into(), mean: textures::mean(&paint[0]) };
+        let near = model::convert(&mesh, u.display.uniform_scale, material.clone());
+        let mut out = vec![near.model.to_bytes(), near.surface.to_bytes()];
+        let back = ta_formats::model3do::Model3do::parse(&out[0]).unwrap();
+        assert!(near.surface.fits(&back), "{}: its surface fits its model as read back", u.id);
+        if let Some(bytes) = u.display.lods.get(1).and_then(|l| files.read(&l.mesh).unwrap()) {
+            let far = model::convert_onto(&scm::parse(&bytes).unwrap(), &mesh, &near, u.display.uniform_scale, material);
+            let far_back = ta_formats::model3do::Model3do::parse(&far.model.to_bytes()).unwrap();
+            assert!(far.surface.fits(&far_back), "{}: the far surface fits", u.id);
+            assert_eq!(far_back.pieces.iter().map(|p| &p.name).collect::<Vec<_>>(), back.pieces.iter().map(|p| &p.name).collect::<Vec<_>>(), "{}: the far model's pieces", u.id);
+            out.extend([far.model.to_bytes(), far.surface.to_bytes()]);
+        }
+        out.extend(paint);
+        out
+    };
+    let playable: Vec<_> = all.iter().filter(|u| u.playable() && !u.display.lods.is_empty()).collect();
+    let mut bytes = 0usize;
+    for u in &playable {
+        let first = make(u);
+        bytes += first.iter().map(Vec::len).sum::<usize>();
+        assert!(first == make(u), "{}: made again, the same bytes", u.id);
+    }
+    eprintln!("{} units made twice the same, {} MB each time", playable.len(), bytes >> 20);
 }

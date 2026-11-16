@@ -61,6 +61,19 @@ impl Model3do {
         self.pieces.iter().position(|p| p.name.eq_ignore_ascii_case(name))
     }
 
+    /// The model as a 3DO file, as [`Model3do::parse`] reads one: the first root piece at the
+    /// start, each piece's header followed by its name, vertices, primitives (and their indices
+    /// and texture names), then its children; siblings linked in order. The models TA Reborn makes
+    /// of other games' units (crates/ta_supcom) are written so.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        let roots: Vec<usize> = self.pieces.iter().enumerate().filter(|(_, p)| p.parent.is_none()).map(|(i, _)| i).collect();
+        if !roots.is_empty() {
+            write_siblings(self, &roots, &mut out);
+        }
+        out
+    }
+
     /// Distinct texture names referenced by the model.
     pub fn texture_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self
@@ -72,6 +85,76 @@ impl Model3do {
         names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
         names
     }
+}
+
+/// Writes the pieces `list`, siblings in order, each linked to the next; where the first is.
+fn write_siblings(model: &Model3do, list: &[usize], out: &mut Vec<u8>) -> usize {
+    let mut previous: Option<usize> = None;
+    let mut first = out.len();
+    for (k, &i) in list.iter().enumerate() {
+        let at = write_piece(model, i, out);
+        if k == 0 {
+            first = at;
+        }
+        if let Some(prev) = previous {
+            put_i32(out, prev + 44, at as i32);
+        }
+        previous = Some(at);
+    }
+    first
+}
+
+/// Writes piece `i` and, after it, its children; where its header is.
+fn write_piece(model: &Model3do, i: usize, out: &mut Vec<u8>) -> usize {
+    let p = &model.pieces[i];
+    let at = out.len();
+    out.resize(at + 52, 0);
+    put_i32(out, at, 1);
+    put_i32(out, at + 4, p.vertices.len() as i32);
+    put_i32(out, at + 8, p.primitives.len() as i32);
+    put_i32(out, at + 12, p.selection_primitive.map_or(-1, |s| s as i32));
+    for (k, v) in p.offset.iter().enumerate() {
+        put_i32(out, at + 16 + k * 4, *v);
+    }
+    let name_at = out.len();
+    out.extend(p.name.chars().map(|c| if (c as u32) < 256 { c as u8 } else { b'?' }));
+    out.push(0);
+    put_i32(out, at + 28, name_at as i32);
+    let vertex_at = out.len();
+    for v in &p.vertices {
+        for c in v {
+            out.extend_from_slice(&c.to_le_bytes());
+        }
+    }
+    put_i32(out, at + 36, vertex_at as i32);
+    let primitive_at = out.len();
+    out.resize(primitive_at + p.primitives.len() * 32, 0);
+    put_i32(out, at + 40, primitive_at as i32);
+    for (k, prim) in p.primitives.iter().enumerate() {
+        let o = primitive_at + k * 32;
+        put_i32(out, o, prim.color_index as i32);
+        put_i32(out, o + 4, prim.indices.len() as i32);
+        let index_at = out.len();
+        for &idx in &prim.indices {
+            out.extend_from_slice(&(idx as i16).to_le_bytes());
+        }
+        put_i32(out, o + 12, index_at as i32);
+        if let Some(texture) = prim.texture.as_ref().filter(|t| !t.is_empty()) {
+            let texture_at = out.len();
+            out.extend(texture.chars().map(|c| if (c as u32) < 256 { c as u8 } else { b'?' }));
+            out.push(0);
+            put_i32(out, o + 16, texture_at as i32);
+        }
+    }
+    if !p.children.is_empty() {
+        let child = write_siblings(model, &p.children, out);
+        put_i32(out, at + 48, child as i32);
+    }
+    at
+}
+
+fn put_i32(out: &mut [u8], at: usize, v: i32) {
+    out[at..at + 4].copy_from_slice(&v.to_le_bytes());
 }
 
 fn parse_siblings(data: &[u8], mut offset: usize, parent: Option<usize>, model: &mut Model3do, depth: usize, seen: &mut std::collections::HashSet<usize>, budget: &mut Budget) -> Result<()> {
@@ -152,5 +235,39 @@ fn parse_siblings(data: &[u8], mut offset: usize, parent: Option<usize>, model: 
             return Ok(());
         }
         offset = sibling_ptr as usize;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn piece(name: &str, parent: Option<usize>, offset: [i32; 3], vertices: Vec<[i32; 3]>, primitives: Vec<Primitive>, children: Vec<usize>) -> Piece {
+        Piece { name: name.into(), parent, offset, vertices, primitives, selection_primitive: None, children }
+    }
+
+    /// A hull with a turret and an exhaust on it, a barrel on the turret: written and read back,
+    /// the same tree, places, polygons and textures.
+    #[test]
+    fn a_written_model_reads_back_the_same() {
+        let tri = |a, b, c, texture: Option<&str>| Primitive { color_index: 7, indices: vec![a, b, c], texture: texture.map(str::to_string) };
+        let model = Model3do {
+            pieces: vec![
+                piece("base", None, [0, 0, 0], vec![[0, 0, 0], [65536, 0, 0], [0, 0, 65536]], vec![tri(0, 1, 2, Some("armsteel"))], vec![1, 3]),
+                piece("turret", Some(0), [0, 4 << 16, -(3 << 16)], vec![[1, 2, 3], [4, 5, 6], [7, 8, 9]], vec![tri(2, 1, 0, None)], vec![2]),
+                piece("barrel", Some(1), [0, -(1 << 15), 3 << 16], vec![[10, 11, 12]], vec![], vec![]),
+                piece("exhaust", Some(0), [2 << 16, 0, -(7 << 15)], vec![], vec![], vec![]),
+            ],
+        };
+        let back = Model3do::parse(&model.to_bytes()).unwrap();
+        assert_eq!(back.pieces.len(), 4);
+        for (a, b) in model.pieces.iter().zip(&back.pieces) {
+            assert_eq!((a.name.as_str(), a.parent, a.offset, &a.vertices, &a.children), (b.name.as_str(), b.parent, b.offset, &b.vertices, &b.children));
+            assert_eq!(a.primitives.len(), b.primitives.len());
+            for (pa, pb) in a.primitives.iter().zip(&b.primitives) {
+                assert_eq!((pa.color_index, &pa.indices, &pa.texture), (pb.color_index, &pb.indices, &pb.texture));
+            }
+        }
+        assert_eq!(back.texture_names(), ["armsteel"]);
     }
 }

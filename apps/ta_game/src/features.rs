@@ -764,7 +764,7 @@ impl FeatureView {
                         .map(|mut m| {
                             // A wreck's pads (an air plant's runway) clear of the ground.
                             ta_render::model::lift_ground_pads(&mut m);
-                            let id = models.library.add(&name, &m, &models.textures, palette);
+                            let id = crate::scene::add_model(models, &|p| vfs.read_opt(p), &name, &m, palette);
                             let surfaces = crate::scene::PieceSurface::of_render(&models.library, id);
                             v.ground_sink = model_ground_sink(&models.library.info(id).rest_pose(), &surfaces);
                             id

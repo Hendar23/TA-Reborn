@@ -263,7 +263,7 @@ mod tests {
         let maps = dir.0.join("maps");
         let folder = crate::map::tests::write_map(&maps);
         // The ground's textures, in an archive of the game's.
-        let plain = |rgba: [u8; 4]| { let mut b = crate::dds::tests::header(8, 8, 1, None); for _ in 0..64 { b.extend_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]); } b };
+        let plain = |rgba: [u8; 4]| { let mut b = crate::dds::header(8, 8, 1, None); for _ in 0..64 { b.extend_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]); } b };
         let names: Vec<String> = (0..10).map(|i| format!("env/evergreen/layers/a{i}_albedo.dds")).collect();
         let textures: Vec<Vec<u8>> = (0..10).map(|i| plain([40 + i * 10, 120, 60, 255])).collect();
         let members: Vec<(&str, &[u8], bool)> = names.iter().zip(&textures).map(|(n, t)| (n.as_str(), t.as_slice(), false)).collect();

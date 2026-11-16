@@ -618,7 +618,7 @@ impl Effects {
                 let models = renderer.models.as_mut()?;
                 let name = w.def.model.to_ascii_lowercase();
                 let m = ta_formats::model3do::Model3do::parse(&vfs.read_opt(&format!("objects3d/{name}.3do"))?).ok()?;
-                let id = models.library.add(&name, &m, &models.textures, palette);
+                let id = crate::scene::add_model(models, &|p| vfs.read_opt(p), &name, &m, palette);
                 // (The root at the projectile's place; the rest where they sit on it. Then the
                 // body's middle on the flight's line, see `WeaponModel`.)
                 let info = models.library.info(id);

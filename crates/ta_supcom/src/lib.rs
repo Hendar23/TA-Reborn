@@ -13,7 +13,9 @@
 //! - [`scm`], [`sca`]: their meshes and animations.
 
 pub mod convert;
-pub mod dds;
+/// (Read as TA Reborn reads textures of its own: `ta_formats::dds`.)
+pub use ta_formats::dds;
+pub mod factions;
 pub mod files;
 pub mod install;
 pub mod lua;

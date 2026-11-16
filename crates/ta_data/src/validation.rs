@@ -498,7 +498,7 @@ pub fn load_order_failure(error: &ta_vfs::mods::ModError) -> (&'static str, Word
 }
 
 fn severity_order(s: Severity) -> u8 { match s { Severity::Error => 0, Severity::Warning => 1, Severity::Info => 2 } }
-fn known(p: &str) -> bool { p.rsplit_once('.').is_some_and(|(_, e)| matches!(e, "3do" | "cob" | "gaf" | "tnt" | "pcx" | "tdf" | "fbi" | "gui" | "ota" | "fnt" | "pal" | "wav" | "features")) }
+fn known(p: &str) -> bool { p.rsplit_once('.').is_some_and(|(_, e)| matches!(e, "3do" | "cob" | "gaf" | "tnt" | "pcx" | "tdf" | "fbi" | "gui" | "ota" | "fnt" | "pal" | "wav" | "features" | "surface" | "dds")) }
 
 /// Whether a page's button makes units, as the game reads the page: its `commonattribs` bit 4;
 /// on a hand-made page without them (the game reads its buttons all, keeping those that name
@@ -573,7 +573,8 @@ fn misplaced(path: &str) -> Option<&'static [&'static str]> {
     let top = path.split('/').next().unwrap_or("");
     let home: (bool, &[&str]) = match ext {
         "fbi" => (top == "units" && depth == 1, &["units/"]),
-        "3do" => (top == "objects3d", &["objects3d/"]),
+        // (A model's surface beside it: ta_formats::surface.)
+        "3do" | "surface" => (top == "objects3d", &["objects3d/"]),
         "cob" => (top == "scripts", &["scripts/"]),
         "gui" => (top == "guis" && depth == 1, &["guis/"]),
         // (A map's own features, `maps/<map>.features`: a converted map's.)
@@ -736,6 +737,9 @@ struct Parsed { bytes: u64, content: Result<Content, Failure> }
 enum Failure { Read(String), Invalid(String), TooLarge }
 enum Content {
     Model { pieces: BTreeSet<String>, textures: BTreeSet<String> },
+    /// A model's surface (ta_formats::surface): its materials' names, the textures they name, the
+    /// model it names for far off, and whether it fits the model beside it (none: there is none).
+    Surface { materials: Vec<String>, textures: Vec<String>, far: String, fits: Option<bool> },
     /// `patch_values`: those of [`PATCH_VALUES`] it asks or sets.
     Script { pieces: BTreeSet<String>, functions: BTreeSet<String>, problems: Vec<Problem>, patch_values: BTreeSet<i32> },
     /// A GAF's entries; `whole`: the game could decode it all at once (as it does every GAF but
@@ -787,6 +791,17 @@ fn parse(vfs: &Vfs, path: &str, options: &Options) -> Parsed {
             features: map.features.iter().filter_map(|&n| map.feature_names.get(n as usize)).filter(|n| !n.trim().is_empty()).cloned().collect(),
         }).map_err(|e| Failure::Invalid(e.to_string())),
         "pcx" => ta_formats::pcx::PcxImage::parse(&bytes).map(|_| Content::Plain).map_err(|e| Failure::Invalid(e.to_string())),
+        "surface" => ta_formats::surface::Surface::parse(&bytes).map(|surface| {
+            let model = format!("{}.3do", path.trim_end_matches(".surface"));
+            let fits = vfs.read(&model).ok().map(|b| Model3do::parse(&b).is_ok_and(|m| surface.fits(&m)));
+            Content::Surface {
+                materials: surface.materials.iter().map(|m| m.name.clone()).collect(),
+                textures: surface.materials.iter().flat_map(|m| [m.albedo.clone(), m.specular.clone(), m.normals.clone()]).collect(),
+                far: surface.far.clone(),
+                fits,
+            }
+        }).map_err(|e| Failure::Invalid(e.to_string())),
+        "dds" => ta_formats::dds::Header::parse(&bytes).map(|_| Content::Plain).map_err(|e| Failure::Invalid(e.to_string())),
         "fnt" => ta_formats::fnt::Font::parse(&bytes).map(|_| Content::Plain).map_err(|e| Failure::Invalid(e.to_string())),
         "pal" => ta_formats::image::Palette::parse(&bytes).map(|_| Content::Plain).map_err(|e| Failure::Invalid(e.to_string())),
         "wav" => Ok(Content::Sound(sound_problem(&bytes))),
@@ -1259,6 +1274,23 @@ impl<'a> Scan<'a> {
                 self.record(key("file", path), Record { path: path.into(), refs, ..Default::default() });
                 let ota = format!("{}.ota", path.trim_end_matches(".tnt"));
                 if !self.vfs.exists(&ota) { self.issue(Severity::Warning, "map.metadata", path, Words::text(en("The terrain has no matching OTA metadata and cannot appear as a normal selectable map.")), en("Include a matching maps/<name>.ota with a GlobalHeader and playable schemas.")); }
+            }
+            Content::Surface { materials, textures, far, fits } => {
+                // Its materials are what its model's polygons name in place of TA's textures.
+                for name in &materials {
+                    if !self.retain(160 + 2 * name.len() + path.len(), path) { return; }
+                    self.record(key("texture", name), Record { path: path.into(), ..Default::default() });
+                }
+                let mut refs: Vec<Reference> = textures.iter().filter(|t| !t.trim().is_empty()).map(|t| Reference::new("file", &ta_vfs::normalize(t), Words::text(en("Surface texture")), Severity::Warning)).collect();
+                if !far.trim().is_empty() {
+                    refs.push(Reference::new("file", &asset("objects3d", &far, "3do"), Words::text(en("Far model")), Severity::Warning));
+                }
+                self.record(key("file", path), Record { path: path.into(), refs, ..Default::default() });
+                match fits {
+                    Some(true) => {}
+                    Some(false) => self.issue(Severity::Warning, "model.surface", path, Words::text(en("This surface does not fit the model beside it (their pieces or the pieces' vertices differ), so the model is drawn without it, as TA draws it.")), en("Make the surface again from the model as it is now.")),
+                    None => self.issue(Severity::Warning, "model.surface", path, Words::text(en("This surface has no model of its name beside it in objects3d, so nothing is drawn with it.")), en("Name it as its model, with .surface for .3do.")),
+                }
             }
             Content::Plain => {
                 if path.ends_with(".pcx") { self.report.counts.pcx += 1; }
@@ -2385,6 +2417,39 @@ mod tests {
         let report = validate_all(&f.vfs(&["mod"]));
         let error = report.issues.iter().find(|i| i.path == "anims/boom.gaf").unwrap();
         assert!(error.code == "format.invalid" && error.severity == Severity::Error && error.message.contains("exceeds resource limit"), "{}", report.to_text());
+    }
+
+    /// A model with a surface of its own (ta_formats::surface): the materials its polygons name
+    /// are no missing textures, the textures its surface names are files it needs, and a surface
+    /// that does not fit its model, or has none, is told.
+    #[test]
+    fn a_models_surface_names_its_paint() {
+        use ta_formats::surface::{Material, Piece, Surface, Vertex};
+        let f = Fixture::new(); f.valid("mod");
+        f.put("mod", "objects3d/painted.3do", textured_model(&["hull"]));
+        let surface = |vertices: usize| Surface {
+            materials: vec![Material { name: "Hull".into(), albedo: "textures/painted/colour.dds".into(), specular: "textures/painted/finish.dds".into(), normals: "textures/painted/relief.dds".into(), mean: [90; 3] }],
+            pieces: vec![Piece { vertices: vec![Vertex { uv: [0.0; 2], normal: [0, 32767, 0] }; vertices] }],
+            far: String::new(),
+        };
+        f.put("mod", "objects3d/painted.surface", surface(3).to_bytes());
+        f.put("mod", "textures/painted/colour.dds", ta_formats::dds::header(4, 4, 1, Some(b"DXT5")).into_iter().chain([0; 16]).collect::<Vec<u8>>());
+        f.put("mod", "textures/painted/finish.dds", ta_formats::dds::header(4, 4, 1, Some(b"DXT5")).into_iter().chain([0; 16]).collect::<Vec<u8>>());
+        let report = validate_all(&f.vfs(&["mod"]));
+        let text = report.to_text();
+        assert!(!report.issues.iter().any(|i| i.message.contains("texture HULL")), "the material is no missing texture: {text}");
+        assert!(report.issues.iter().any(|i| i.path == "objects3d/painted.surface" && i.message.contains("textures/painted/relief.dds")), "its missing normal map: {text}");
+        assert!(!report.issues.iter().any(|i| i.code == "model.surface"), "{text}");
+        // One that does not fit its model, and one with none beside it.
+        f.put("mod", "objects3d/painted.surface", surface(4).to_bytes());
+        f.put("mod", "objects3d/stray.surface", surface(3).to_bytes());
+        let report = validate_all(&f.vfs(&["mod"]));
+        let told: Vec<&str> = report.issues.iter().filter(|i| i.code == "model.surface").map(|i| i.path.as_str()).collect();
+        assert_eq!(told, ["objects3d/painted.surface", "objects3d/stray.surface"], "{}", report.to_text());
+        // A texture that is no DDS is invalid.
+        f.put("mod", "textures/painted/colour.dds", b"not a picture");
+        let report = validate_all(&f.vfs(&["mod"]));
+        assert!(report.issues.iter().any(|i| i.path == "textures/painted/colour.dds" && i.code == "format.invalid"), "{}", report.to_text());
     }
 
     /// Explosions taking more of the atlas than the game gives them are drawn reduced, as the

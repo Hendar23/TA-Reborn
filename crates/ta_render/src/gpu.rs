@@ -285,7 +285,9 @@ impl Gpu {
             ..wgpu::Limits::default()
         };
         // (Adapter-specific format features allow 2x and 8x antialiasing where supported.)
-        let wanted = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::FLOAT32_FILTERABLE | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        // (Block-compressed textures: the paint of models with surfaces of their own, read as
+        // it is stored; without them it is decoded first, model/surfaced.rs.)
+        let wanted = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::FLOAT32_FILTERABLE | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES | wgpu::Features::TEXTURE_COMPRESSION_BC;
         let features = adapter.features() & wanted;
         // Ray tracing: ray queries (still experimental in wgpu), their limits, and more textures
         // per shader stage than the default 16 (the traced results join the frame's bindings,

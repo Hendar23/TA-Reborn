@@ -9,13 +9,15 @@
 //! - the bones, 108 bytes each: the inverse of the bone's rest pose in the model (a 4 x 4 matrix,
 //!   rows), its place and turn relative to its parent (a quaternion, w first), where its name is,
 //!   its parent (-1 for the root) and two words unused;
-//! - the vertices, 68 bytes each: place, tangent, normal and binormal (in the model, at rest), two
-//!   texture coordinates, and four bone indices of which the first binds it;
+//! - the vertices, 68 bytes each: place, normal, tangent and binormal (in the model, at rest; the
+//!   tangent and binormal run against the texture's u and v, `-dP/du` and `-dP/dv`), two texture
+//!   coordinates, and four bone indices of which the first binds it;
 //! - the triangles: three u16 indices each;
 //! - the info text.
 //!
 //! Places are in the mesh's own units: times the blueprint's `Display.UniformScale` they are the
-//! game's grid squares (ogrids).
+//! game's grid squares (ogrids). The axes are right-handed, y up, the unit facing +z, its right at
+//! -x; a triangle's corners run anticlockwise seen from outside.
 
 use crate::{Error, Result};
 
@@ -36,13 +38,13 @@ pub struct Bone {
     pub rest_inverse: [f32; 16],
 }
 
-/// A vertex at rest, in the model: its place, tangent, normal and binormal, its two texture
+/// A vertex at rest, in the model: its place, normal, tangent and binormal, its two texture
 /// coordinates, and the bone it moves with.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Vertex {
     pub position: [f32; 3],
-    pub tangent: [f32; 3],
     pub normal: [f32; 3],
+    pub tangent: [f32; 3],
     pub binormal: [f32; 3],
     pub uv0: [f32; 2],
     pub uv1: [f32; 2],
@@ -146,8 +148,8 @@ pub fn parse(b: &[u8]) -> Result<Mesh> {
         }
         vertices.push(Vertex {
             position: v3(0)?,
-            tangent: v3(12)?,
-            normal: v3(24)?,
+            normal: v3(12)?,
+            tangent: v3(24)?,
             binormal: v3(36)?,
             uv0: [r.f32(at + 48)?, r.f32(at + 52)?],
             uv1: [r.f32(at + 56)?, r.f32(at + 60)?],
@@ -250,7 +252,8 @@ pub(crate) mod tests {
             for v in place {
                 out.extend_from_slice(&v.to_le_bytes());
             }
-            for v in [0.0f32, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0] {
+            // (Normal up, tangent and binormal along -x and -z.)
+            for v in [0.0f32, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, -1.0] {
                 out.extend_from_slice(&v.to_le_bytes());
             }
             for v in uv.iter().chain(uv.iter()) {
@@ -300,6 +303,7 @@ pub(crate) mod tests {
         assert_eq!(mesh.vertices.len(), 4);
         assert_eq!(mesh.vertices[3].bone, 2);
         assert_eq!(mesh.vertices[2].uv0, [0.5, 1.0]);
+        assert_eq!((mesh.vertices[0].normal, mesh.vertices[0].tangent, mesh.vertices[0].binormal), ([0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, -1.0]));
         assert_eq!(mesh.triangles, vec![[0, 1, 2], [1, 2, 3]]);
         assert_eq!(mesh.info, "made in a test");
         assert_eq!(mesh.bone("turret_barrel"), Some(2));

@@ -55,7 +55,7 @@ impl UnitStudio {
         let supported = adapter.limits();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("unit preview device"),
-            required_features: adapter.features() & (wgpu::Features::FLOAT32_FILTERABLE | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES),
+            required_features: adapter.features() & (wgpu::Features::FLOAT32_FILTERABLE | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES | wgpu::Features::TEXTURE_COMPRESSION_BC),
             required_limits: wgpu::Limits { max_texture_array_layers: supported.max_texture_array_layers.min(2048),
                 max_storage_buffer_binding_size: supported.max_storage_buffer_binding_size, max_buffer_size: supported.max_buffer_size, ..Default::default() },
             ..Default::default()

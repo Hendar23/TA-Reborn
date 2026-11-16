@@ -760,6 +760,7 @@ impl Game {
         renderer.set_ore(ore_w, ore_h, &ore);
         let mut scene = Scene::default();
         scene.preload_models(&sim, renderer, &|p| vfs.read_opt(p));
+        Scene::read_surfaces_from(renderer, assets.vfs.clone());
         scene.after_tick(&sim);
         let features = crate::features::FeatureView::new(vfs, renderer, &sim);
         let mut effects = crate::effects::Effects::new(vfs, renderer, &sim);

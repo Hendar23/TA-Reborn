@@ -472,7 +472,7 @@ Paths are read in any case.
 | Folder | Holds | Read |
 | --- | --- | --- |
 | `units/` | `*.fbi` unit definitions | Top level only |
-| `objects3d/` | `*.3do` models | By the name a unit's `Objectname` (a feature's `object`) gives |
+| `objects3d/` | `*.3do` models, and beside one its `<name>.surface` ([its own paint](#models-with-surfaces-of-their-own)) | By the name a unit's `Objectname` (a feature's `object`) gives |
 | `scripts/` | `*.cob` unit scripts | `scripts/<UnitName>.cob`, else the model's, `scripts/<Objectname>.cob` |
 | `unitpics/` | `<unitname>.pcx` build pictures | |
 | `weapons/` | `*.tdf` weapon definitions, any number to a file | Top level only |
@@ -481,7 +481,7 @@ Paths are read in any case.
 | `guis/` | `*.gui` pages: builders' menus (`<builder><n>.gui`), the side panel's | Top level only |
 | `download/` | `*.tdf` entries putting units on builders' menus | Top level only |
 | `anims/` | `*.gaf`: effects, explosions, build buttons' art | |
-| `textures/` | `*.gaf` textures the models paint with | |
+| `textures/` | `*.gaf` textures the models paint with; the `*.dds` textures surfaces name (anywhere) | |
 | `maps/` | `<map>.ota` with its `<map>.tnt` | Top level only; a map without its `.tnt` is left out |
 | `camps/` | Campaigns and their missions | |
 | `sounds/` | `*.wav` sounds | |
@@ -842,6 +842,28 @@ details. What mod makers ask about most:
   `FootprintX=0` or `FootprintZ=0`, or one that does not fly and gives a `MaxVelocity` with an
   explicit `Acceleration=0`, takes no ground: it stands where it was made ([upgrade
   modules](#buildings-that-build-their-own-upgrade-modules)).
+
+#### Models with surfaces of their own
+
+A 3DO can be painted beyond TA's palette and 64-pixel textures: with a **surface** beside it,
+`objects3d/<name>.surface`, its vertices take texture coordinates and smooth normals, and its
+polygons materials of three DDS textures each: a colour map, a specular map (red how much it
+mirrors its surroundings, green how glossy, blue where it glows, alpha where it takes the player's
+colour) and a normal map (x in alpha, y in green, Direct3D's way). The models TA Reborn makes of
+Supreme Commander's units are painted so. The format is in [FORMATS.md](FORMATS.md#model-surfaces-objects3dnamesurface-ta-reborns-own).
+
+- A polygon takes the material its texture name names; one naming no material of the surface is
+  drawn as TA draws it. The surface must have the model's pieces in its order and each piece's
+  vertices; one that does not is left out, and the mod check says so.
+- The textures may be any DDS; they are drawn at 512 × 512 with every mip level, BC3. Give them so
+  (`ta_formats::dds::to_bc3_levels` makes them) and they are read as they are; others are made so
+  as they are read, which takes longer.
+- A material's paint is read the first time a model of it is drawn, and kept for the battle; until
+  then its faces are drawn in its colour on average, as they are in ray-traced reflections.
+- A surface may name a lighter model drawn in its place far off (`far`), of the same pieces.
+- Models with surfaces take no skins, liveries or Reborn's plates and bolts: their paint is their
+  own, in either art style.
+- In TA itself, such a model shows its palette colours.
 
 #### Build menus
 

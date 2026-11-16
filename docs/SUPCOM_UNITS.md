@@ -6,12 +6,16 @@ against ARM and CORE. As with the maps (docs/SUPCOM_MAPS.md), they are made on t
 computer from their own copy of the game into their mods folder: nothing of Supreme Commander's is
 shipped with TA Reborn or kept in this repository.
 
-This page records what the game's units are made of, as read so far (`crates/ta_supcom`:
-[`unit`], [`scm`], [`sca`]); the conversion and the import come next, phase by phase.
+This page records what the game's units are made of (`crates/ta_supcom`: [`unit`], [`scm`],
+[`sca`]) and how they are made into TA's ([`factions`]): their models and paint so far; their
+gameplay and the import come next, phase by phase.
 
 - **Developers:** every unit of the player's copy read, with what its blueprints name that is not
-  there: `cargo test --release -p ta_supcom --test installed_units -- --ignored --nocapture`
-  (`TA_SUPCOM_DIR=<folder>` another copy).
+  there, the conventions below held over all of them, and every unit made a model twice, the same:
+  `cargo test --release -p ta_supcom --test installed_units -- --ignored --nocapture`
+  (`TA_SUPCOM_DIR=<folder>` another copy). `ta-tools supcom-units <mod folder> [--only UEL0201,..]
+  [--game <folder>]` makes the units' models, surfaces and paint, with first unit files, into a
+  folder to mount as a mod (`--demo gallery TA_GALLERY_UNITS=UEL0201` shows them).
 
 ## What the game holds
 
@@ -70,12 +74,47 @@ skeleton is its piece tree.
 | 8 | where the bones are; how many have vertices; where the vertices are; where the extra vertices are (none); how many vertices; where the indices are; how many indices; where the info is and how long; how many bones in all (u32 each) |
 | 64 | the bones' names, NUL-ended (after a `NAME` mark at 60, between `0xC5` padding) |
 | bones | 108 bytes each: the inverse of the bone's rest pose in the model (4 x 4 floats, rows: the translation in the last), its place and turn relative to its parent (3 floats, then a quaternion w, x, y, z), where its name is (u32), its parent (i32, -1 the root), two words unused |
-| vertices | 68 bytes each: place, tangent, normal, binormal (3 floats each, in the model at rest), two texture coordinates (2 floats each), four bone indices (u8: the first binds it) |
+| vertices | 68 bytes each: place, normal, tangent, binormal (3 floats each, in the model at rest; the tangent and binormal run against the texture's u and v), two texture coordinates (2 floats each), four bone indices (u8: the first binds it) |
 | indices | u16, three a triangle |
 | info | text |
 
 A bone's rest pose in the model is its parents' composed with its own ([`Mesh::rest_poses`]): that
-matches the inverse the file keeps, bone for bone. Parents always come before their children.
+matches the inverse the file keeps, bone for bone (held over every unit). Parents always come
+before their children, not always depth first.
+
+The axes are right-handed, y up; a unit faces +z, its right at -x (the commanders' `Right_` arms,
+the Striker's muzzle forward of its exhausts): TA Reborn's own. A triangle's corners wind
+anticlockwise about the normal seen from outside (99% of them; the rest degenerate or folded). No
+triangle has corners bound to two bones.
+
+## Models
+
+Each unit's first level of detail becomes `objects3d/<id>.3do` with its surface
+(`objects3d/<id>.surface`, docs/FORMATS.md), its paint three DDS textures in `textures/supcom/`:
+
+- **Size:** a mesh unit is `Display.UniformScale` ogrids, an ogrid 32 TA pixels (twice the maps'
+  16: a T1 tank about a TA tank's size, the player's choice). The meshes times their scale match the
+  blueprints' sizes: the Striker 0.57 × 0.58 × 0.84 ogrids, 18 × 19 × 27 pixels.
+- **Pieces:** a bone a piece, depth first (as a 3DO lists them), each laid along the model's axes at
+  its bone's place at rest (its offset its place less its parent's), its vertices where they are at
+  rest less that place: the model at rest is the mesh exactly, and a piece a script turns turns
+  about the model's axes there, as TA's do, whatever turn its bone rests in. z is negated (a 3DO
+  holds it the other way round) and each triangle's corners taken the other way round with it.
+- **Paint:** the colour, specular and team colour, and normal maps made BC3 of 512 × 512 with every
+  level: Forged Alliance's blocks kept wherever a texture has a level of that size (most; 1024² and
+  2048² ones from their smaller levels), the rest decoded and made again (256² and smaller grown,
+  one-level 1024² ones halved). The units are shaded as `Unit` (UEF), `Insect` (Cybran), `Aeon`
+  and `Seraphim` (each LOD's `ShaderName`): the Seraphim keep the player's colour in their colour
+  map's alpha (their specular map's empty), which the converter moves into the specular map's, as
+  the others have it. Their dark paint mirrors the sky over most of it (the specular map's red):
+  TA Reborn draws strong mirroring as polished metal. The normal maps are Direct3D's (x along u, y
+  along v, down the picture), as the panel seams of a factory's roof show under a low sun.
+- **Far off:** the second level of detail (323 units; 687,000 vertices in all against 104,000)
+  keeps a few bones of the first's skeleton, its root renamed `lod1_<id>`: it is laid onto the
+  first's pieces (a bone the piece of its name, or of the nearest of its parents with one), painted
+  with the first's paint, as `objects3d/<id>_lod1.3do`, which the first's surface names `far`.
+
+The 348 units' models come to 46 MB and their paint to 352 MB, made in about five seconds.
 
 ## Animations (`.sca`, version 5)
 

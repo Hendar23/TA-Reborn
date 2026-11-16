@@ -1158,6 +1158,24 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
     (`TextureLibrary::set_liveries`); `new_for_liveries` gives every unit the livery bits so
     an editor's preview can change it without new models, and without a livery draws
     Reborn's own to the pixel (a GPU test holds it so).
+* **Models with surfaces of their own** (`model/surfaced.rs`; `objects3d/<name>.surface`, the
+    models made of Supreme Commander's units): `ModelLibrary::add_surfaced` lays a model's
+    vertices out with the surface's texture coordinates and normals, shared by the polygons
+    round them (a vertex of the library's for each of the 3DO's and its material), none of
+    Reborn's kit, caps or rounding. A face's `layer` is its material's slot with no frames (bits
+    16-23 zero): bit 9 of the shader's flags. The paint is one array of BC3 layers of 512² with
+    every mip (`SurfaceTextures`; decoded to RGBA8 where the card has no block compression),
+    three a material (colour; specular and team colour; normals), read through the game's files
+    the first time a model of the material is drawn (`prepare` asks; six a frame) and kept: the
+    array grows by doubling, what it held copied over, and a storage buffer tells the shader
+    each slot's layers (`u32::MAX` until read: the face in its colour on average, the vertex's).
+    The shader takes the colour (in sRGB), the player's colour where the specular map's alpha
+    says, gloss and mirroring from its green and red (strong mirroring brightens the paint to
+    polished metal: Forged Alliance added the mirrored sky over dark paint), lights from its
+    blue (out when the unit's lights are), and the normal map's relief through the screen-space
+    tangent frame (`mapped_normal`). Ray-traced reflections take the vertex's colour. A model
+    whose surface names a `far` one is drawn as that one under `FAR_PIXELS` across
+    (`detail_for`, in either art style; same pieces).
 * **Sprites**: shelf-packed atlas, 4096² to begin with, growing 4096 texels at a time (taller,
   then wider: each widening a new column of shelves; a big mod's a little over 8192 × 16384 is
   12288 × 16384, not twice that) up to the largest texture the device takes, a big mod's
