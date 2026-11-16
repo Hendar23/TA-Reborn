@@ -2,13 +2,15 @@
 //! player can make becomes a TA unit, its mesh a TA model. Phase by phase:
 //!
 //! - [`model`]: a unit's mesh as a TA model (its bones its pieces) and its surface;
-//! - [`textures`]: its paint as the surface's textures.
+//! - [`textures`]: its paint as the surface's textures;
+//! - [`pictures`]: its build picture.
 //!
 //! What is written must be the same, byte for byte, on every computer (a mod of units is part
 //! of the data players compare before a multiplayer battle): plain arithmetic only, in a fixed
 //! order.
 
 pub mod model;
+pub mod pictures;
 pub mod textures;
 
 /// TA pixels per ogrid for units: twice the maps' 16 (a T1 tank about a TA tank's size, as the

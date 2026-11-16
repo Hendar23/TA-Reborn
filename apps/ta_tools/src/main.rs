@@ -133,14 +133,20 @@ enum Cmd {
         max_cells: usize,
     },
     /// Make Supreme Commander: Forged Alliance's units (those a player may make, or those
-    /// `--only` names by id) into TA units, into a folder to mount as a mod.
+    /// `--only` names by id, or of one `--faction`) into TA units, into a folder to mount as a
+    /// mod, with sheets of their build pictures in `--preview`.
     SupcomUnits {
         out: PathBuf,
         #[arg(long)]
         only: Option<String>,
+        /// uef, cybran, aeon or seraphim.
+        #[arg(long)]
+        faction: Option<String>,
         /// The game's folder (default: the copy found, GOG's or Steam's).
         #[arg(long)]
         game: Option<PathBuf>,
+        #[arg(long)]
+        preview: Option<PathBuf>,
     },
     /// Pack paintings (RGBA PNGs, listed in a `manifest.json` as tools/features/sprites.py
     /// writes it) into a GAF in TA's palette: TA Reborn's own feature art.
@@ -477,7 +483,7 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Supcom { out, only, game, preview, budget, max_cells } => supcom::run(&out, only.as_deref(), game.as_deref(), preview.as_deref(), budget, max_cells)?,
-        Cmd::SupcomUnits { out, only, game } => supcom_units::run(&out, only.as_deref(), game.as_deref())?,
+        Cmd::SupcomUnits { out, only, faction, game, preview } => supcom_units::run(&out, only.as_deref(), faction.as_deref(), game.as_deref(), preview.as_deref())?,
         Cmd::GafPack { manifest, out } => {
             let (_, vfs) = open_vfs()?;
             sprites::pack(&manifest, &out, &inspect::palette(&vfs)?)?;
