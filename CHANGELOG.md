@@ -95,6 +95,17 @@
   interface shows both, and a press turns them all off when the first is on and all on otherwise,
   as the classic button and the X key do.
 
+### Fixed
+- A unit being built in a factory stood still while the factory's pad turned under it. As in TA,
+  it now turns with the pad (the plants, labs and aircraft plants spin it while they build) and
+  is finished facing the way the pad left it.
+- The Commander now heals itself over time as in TA: 100 hit points every 27 seconds (its
+  `HealTime`), up to full health, at no cost.
+- Wrecks all lay lined up north to south, whichever way their units had faced. A wreck now lies
+  as its unit faced when it died, in every view.
+- Reclaiming a wreck gives metal only, as in TA, even where a mod's wreck says it holds energy;
+  rocks and trees give what their files say.
+
 ## 1.0.7 — 2026-11-16
 
 Mods can present themselves in the launcher with a banner, an animated preview, an icon and

@@ -191,8 +191,11 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
 - **Sides:** `gamedata/sidedata_supcom.tdf` adds UEF, CYBRAN, AEON and SERAPHIM to the game's
   sides (a side add-on: docs/MODDING.md), each with its commander.
 - **Wrecks** (`features/corpses/supcom_<faction>.tdf`): the unit's own model where it fell,
-  worth its `Wreckage` share of its cost, drawn burnt out (sooted, its player's colour gone to
-  dark grey, its lights dead: TA's wrecks are painted so, these are the units' own paint).
+  worth its `Wreckage` share of its mass (`MassMult`), in metal alone (`energy=0`), as TA's wrecks
+  are: TA Reborn pays a wreck's metal alone whatever its file says (docs/FORMATS.md), and none of
+  Forged Alliance's units' wreckage gives energy anyway (`EnergyMult = 0` in all 504). It is drawn
+  burnt out (sooted, its player's colour gone to dark grey, its lights dead: TA's wrecks are
+  painted so, these are the units' own paint).
 - **Animations** (`objects3d/<id>.anims`, ta_formats' `anims`, made by `factions::anims`): a unit's
   `AnimationWalk` as its `walk` clip and its `AnimationDeath` ones as `death`, `death2`... A frame's
   bones are composed down the skeleton (a bone the animation leaves alone keeps its rest under its

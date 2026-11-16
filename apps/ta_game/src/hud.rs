@@ -1508,8 +1508,10 @@ impl Hud {
                 let left = (1.0 - feature.reclaimed.to_f32()).clamp(0.0, 1.0);
                 let name = if def.description.is_empty() { def.name.clone() } else { def.description.clone() };
                 let mut lines = vec![(name, Color32::WHITE, 13.0)];
-                let (metal, energy) = (format!("{:.0}", def.metal * left as f64), format!("{:.0}", def.energy * left as f64));
-                let worth = match (def.metal > 0.0, def.energy > 0.0) {
+                // (A wreck's metal alone, whatever its file gives: `Sim::reclaim_value`.)
+                let (metal_worth, energy_worth) = game.sim.reclaim_value(feature.def);
+                let (metal, energy) = (format!("{:.0}", metal_worth.to_f64() * left as f64), format!("{:.0}", energy_worth.to_f64() * left as f64));
+                let worth = match (metal_worth > Fx::ZERO, energy_worth > Fx::ZERO) {
                     (true, true) => Some(ta_ui::i18n::tf("Reclaim for {metal} metal and {energy} energy", &[("metal", &metal), ("energy", &energy)])),
                     (true, false) => Some(ta_ui::i18n::tf("Reclaim for {metal} metal", &[("metal", &metal)])),
                     (false, true) => Some(ta_ui::i18n::tf("Reclaim for {energy} energy", &[("energy", &energy)])),

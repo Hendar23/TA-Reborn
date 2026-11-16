@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 
 use crate::cob::CobInstance;
 use crate::defs::UnitType;
-use crate::fixed::{Fx, FxVec3, rotate_x, rotate_y, rotate_z};
+use crate::fixed::{Fx, FxVec3, rotate_x, rotate_y, rotate_z, wrap_angle};
 use crate::rng::Rng;
 
 /// Most players a game can have: per-player sets (who sees through a cloak, which players
@@ -572,6 +572,29 @@ pub fn piece_world_position(unit: &Unit, t: &UnitType, cob: Option<&CobInstance>
     v = rotate_x(v, unit.pitch);
     v = rotate_y(v, unit.heading);
     unit.model_pos(t) + v
+}
+
+/// The heading of what stands on a model piece: the unit's own, turned as the piece and every
+/// piece it hangs from are turned about y by the unit's script (a factory's build pad spinning as
+/// it builds: TA's plants `spin pad around y-axis` from `StartBuilding` to `StopBuilding`). Turns
+/// about x and z, which would tilt it, are left out: no factory of TA's tilts its pad.
+pub fn piece_world_heading(unit: &Unit, t: &UnitType, cob: Option<&CobInstance>, model_piece: usize) -> i32 {
+    let mut heading = unit.heading;
+    let mut cur = Some(model_piece);
+    let mut guard = 0;
+    while let Some(i) = cur {
+        let Some(piece) = t.model.pieces.get(i) else { break };
+        if let (Some(c), Some(ci)) = (cob, t.model_to_cob.get(i).copied().flatten()) {
+            // (Turns about y apply as they are, as `piece_world_position` turns them.)
+            heading = wrap_angle(heading.wrapping_add(c.pieces[ci].rotation[1]));
+        }
+        cur = piece.parent;
+        guard += 1;
+        if guard > 256 {
+            break;
+        }
+    }
+    heading
 }
 
 /// Starting conditions for a player.

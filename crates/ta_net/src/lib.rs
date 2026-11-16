@@ -91,10 +91,11 @@ pub use transport::{Client, Host, HostEvent};
 /// up to eight weapons a unit; 105: targeting facilities direct their players' fire at will onto
 /// radar contacts, torpedoes and surface weapons meet units where they meet the water, nothing
 /// but torpedoes takes on underwater buildings, weapons past the first keep to their own
-/// targets on attack orders.)
+/// targets on attack orders; 106: what a factory builds turns with its pad, Commanders mend
+/// themselves (`HealTime`), wreckage pays its metal alone.)
 /// [`Msg::Hello`] and [`Refusal::Version`] keep their layout, so builds of other protocols are
 /// still told why they cannot meet.
-pub const PROTOCOL: u32 = 105;
+pub const PROTOCOL: u32 = 106;
 pub const DEFAULT_PORT: u16 = 7890;
 /// Ticks between state hash reports (which double as progress reports).
 pub const HASH_INTERVAL: u64 = 15;

@@ -445,6 +445,9 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   the water (ships, and anything on the bottom; hovercraft and aircraft spared) loses the
   map's `waterdamage` in health, without scripts, alerts or a killer's credit. A second
   being the unit, as Spring's TA engine read it.
+* **Self-repair** (TA's `HealTime`, its Commanders' 27; `Sim::heal_units`, after the acid seas):
+  a finished unit of a type that gives one regains 100 hit points every `HealTime` seconds, a share
+  each tick, up to its full health, at no cost (docs/FORMATS.md).
 * **Orders**: move, attack, fight (attack-move), patrol (reached points cycle to the back of
   the queue; builders assist, repair and reclaim beside the route), guard (follow; builders
   assist the guarded unit's construction), build, repair, reclaim, capture, load, unload,
@@ -466,7 +469,9 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   modules with no spray), and a unit that cannot move is not sent out and holds nothing up
   (ESC's `ALL_L2` stays on its lab's pad). Taking the unit in
   production off the queue takes its frame apart, its metal back. The unit in production rides
-  the factory's pad (`QueryBuildInfo`'s piece, `Sim::follow_build_pad`), but a ship is built at
+  the factory's pad (`QueryBuildInfo`'s piece, `Sim::follow_build_pad`), turned as the pad is
+  turned (TA's plants spin it while they build: docs/FORMATS.md; `unit::piece_world_heading`) and
+  keeping the heading it was left with when done, but a ship is built at
   the surface, where it floats once done (a shipyard's pad is under the water, the Core's yard
   22 px deep), and a hovercraft on a pad under the water on it too. Construction aircraft at work
   face what they build and sway round it, as TA's do (`Sim::drift_round`, `Unit::drift`): once
@@ -522,7 +527,9 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   are hidden from enemies unless one is within `MinCloakDistance`; firing reveals them.
 * **Veterancy**: kills earn experience (victim value / killer value); veterans reload up to
   30% faster, scatter up to 60% less and take up to 30% less damage.
-* **Reclaim and resurrection**: features give their metal and energy; own units are taken
+* **Reclaim and resurrection**: features give their metal and energy, wreckage (a unit's corpse
+  and its heap) its metal alone whatever its file says (`Sim::reclaim_value`, `Sim::is_wreckage`:
+  docs/FORMATS.md); own units are taken
   apart like construction in reverse, refunding metal, and vanish without a wreck, in time by
   their metal as a feature is (twenty times it in worker time: a metal maker, which costs none,
   at once). Either pays when it is done, as TA's reclaiming does: a feature's metal and energy
@@ -2885,8 +2892,9 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   anything afloat sink, buildings blown to nothing collapse; big units set off later blasts
   (`Pop`). It is shown once: the simulation names the unit a wreck is of
   (`SimEvent::FeatureCreated`'s `wreck_of`), so a building's wreck stands in its place at once
-  and the building does not come down beside it, and a wreck under a sinking hull (which settles
-  on the bottom) or a falling aircraft is not drawn until they come to rest
+  (lying as its unit faced: a feature's model is turned by its heading, `features.rs`'s
+  `model_root`) and the building does not come down beside it, and a wreck under a sinking
+  hull (which settles on the bottom) or a falling aircraft is not drawn until they come to rest
   (`Effects::unsettled_wrecks`); a frame killed unfinished leaves no charred model
   (`UnitDestroyed`'s `complete`), and a unit taken off the map (`removed`: reclaimed, given up)
   neither that nor a fire. Every wreck left on land burns, then smoulders, the longer the bigger
