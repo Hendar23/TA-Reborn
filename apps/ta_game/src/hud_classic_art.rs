@@ -814,7 +814,7 @@ impl Art {
     /// borrow the first side's.
     pub fn side_layout(&mut self, vfs: &Vfs, side: &str) -> Option<Arc<SideLayout>> {
         let sides = self.sides.get_or_insert_with(|| {
-            let Some(doc) = vfs.read_opt("gamedata/sidedata.tdf").map(|b| tdf::parse_bytes(&b)) else { return Vec::new() };
+            let Some(doc) = ta_data::side_data(vfs) else { return Vec::new() };
             doc.sections
                 .iter()
                 .filter(|s| s.name.to_ascii_uppercase().starts_with("SIDE"))

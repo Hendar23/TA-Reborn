@@ -19,6 +19,12 @@ pub enum Faction {
     Other(String),
 }
 
+impl Default for Faction {
+    fn default() -> Faction {
+        Faction::Other(String::new())
+    }
+}
+
 impl Faction {
     pub const PLAYABLE: [Faction; 4] = [Faction::Uef, Faction::Cybran, Faction::Aeon, Faction::Seraphim];
 
@@ -45,9 +51,10 @@ impl Faction {
 }
 
 /// How a unit moves (`Physics.MotionType`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Motion {
     /// Structures.
+    #[default]
     None,
     Land,
     /// Walks on land and the sea bed (`RULEUMT_Amphibious`, and the frigate-legged
@@ -213,7 +220,7 @@ pub struct Wreckage {
 }
 
 /// A unit's blueprint.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct UnitBlueprint {
     /// Its folder's name (`UEL0201`), as the archive writes it.
     pub id: String,
@@ -268,11 +275,16 @@ impl UnitBlueprint {
     }
 
     /// Whether a player may make it in Forged Alliance's skirmish: of one of the four factions,
-    /// in the game (not the campaign's own), and built by something, or a commander.
+    /// in the game (not the campaign's own), and built by something (its `BUILTBY…` categories,
+    /// an air transport's `TRANSPORTBUILTBY…`), or a commander.
     pub fn playable(&self) -> bool {
         Faction::PLAYABLE.contains(&self.faction)
             && (self.is("PRODUCTSC1") || self.is("PRODUCTFA"))
-            && (self.is("COMMAND") || self.categories.iter().any(|c| c.to_ascii_uppercase().starts_with("BUILTBY")))
+            && (self.is("COMMAND")
+                || self.categories.iter().any(|c| {
+                    let c = c.to_ascii_uppercase();
+                    c.starts_with("BUILTBY") || c.starts_with("TRANSPORTBUILTBY")
+                }))
     }
 
     /// Whether a builder whose `buildable` holds `expression` ('BUILTBYTIER1ENGINEER UEF') may
@@ -615,6 +627,12 @@ UnitBlueprint {
         assert_eq!(bp.size, [0.7, 0.5, 0.9]);
         assert_eq!(bp.intel.vision, 20.0);
         assert!(bp.playable());
+        // An air transport is built by the factories' transport category; a unit built by nothing,
+        // or the campaign's, is no player's.
+        let transport = UnitBlueprint { faction: Faction::Uef, categories: vec!["PRODUCTSC1".into(), "TRANSPORTBUILTBYTIER1FACTORY".into()], ..Default::default() };
+        assert!(transport.playable());
+        assert!(!UnitBlueprint { categories: vec!["PRODUCTSC1".into()], ..transport.clone() }.playable());
+        assert!(!UnitBlueprint { categories: vec!["TRANSPORTBUILTBYTIER1FACTORY".into()], ..transport }.playable());
         let gun = &bp.weapons[0];
         assert_eq!((gun.label.as_str(), gun.category.as_str()), ("MainGun", "Direct Fire"));
         assert_eq!((gun.damage, gun.max_radius, gun.rate_of_fire, gun.muzzle_velocity), (14.0, 18.0, 1.0, 30.0));
