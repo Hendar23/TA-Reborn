@@ -2971,3 +2971,199 @@ fn units_of_the_computer_players_lists_are_built_but_not_offered() {
         sim.units().any(|u| u.type_id == ai_ship && u.is_complete())
     }), "made when an order names it, as a computer player's");
 }
+
+/// A factory's script spins its build pad about y while it builds (TA's plants: `spin pad around
+/// y-axis speed <30>` from `StartBuilding`, `stop-spin` in `StopBuilding`): the unit being built
+/// rides the pad round, from the factory's own heading on, and keeps the heading the pad left it
+/// with when it is done; then it drives out.
+#[test]
+fn a_unit_being_built_turns_with_the_factory_pad() {
+    use crate::cob::CobProgram;
+    use crate::defs::{ModelDef, PieceDef};
+    use ta_formats::cob::{CobFunction, CobScript, op};
+    let data = data_of(&[
+        unit("PLANT", "Builder=1; WorkerTime=100; FootprintX=4; FootprintZ=4; BuildTime=1000; BuildCostMetal=100; TEDClass=PLANT;"),
+        unit("TANK", "CanMove=1; MaxVelocity=1; Acceleration=0.1; BrakeRate=0.1; TurnRate=600; BuildTime=300; BuildCostMetal=10; FootprintX=1; FootprintZ=1;"),
+    ]);
+    let mut sim = sim_of(with_menu(data, "PLANT", &["TANK"]), 1);
+    sim.set_starting_resources(0, Fx::from_int(10000), Fx::from_int(10000));
+    let (plant_type, tank_type) = (sim.types.id("PLANT").unwrap(), sim.types.id("TANK").unwrap());
+    // Its model, a base and a pad on it; its script readies it as it opens, names the pad as where
+    // it builds and spins the pad while it builds, as TA's plants' do.
+    let pieces = vec!["base".to_string(), "pad".to_string()];
+    let mut script = CobScript { pieces: pieces.clone(), ..Default::default() };
+    let function = |script: &mut CobScript, name: &str, code: &[u32]| {
+        script.functions.push(CobFunction { name: name.into(), offset: script.code.len() as u32 });
+        script.code.extend_from_slice(code);
+    };
+    function(&mut script, "Activate", &[op::PUSH_CONSTANT, crate::host::value::IN_BUILD_STANCE as u32, op::PUSH_CONSTANT, 1, op::SET_VALUE, op::PUSH_CONSTANT, 0, op::RETURN]);
+    function(&mut script, "QueryBuildInfo", &[op::CREATE_LOCAL, op::PUSH_CONSTANT, 1, op::POP_LOCAL, 0, op::PUSH_CONSTANT, 0, op::RETURN]);
+    function(&mut script, "StartBuilding", &[op::PUSH_CONSTANT, 0, op::PUSH_CONSTANT, 5461, op::SPIN, 1, 1, op::PUSH_CONSTANT, 0, op::RETURN]);
+    function(&mut script, "StopBuilding", &[op::PUSH_CONSTANT, 0, op::STOP_SPIN, 1, 1, op::PUSH_CONSTANT, 0, op::RETURN]);
+    {
+        let t = &mut Arc::get_mut(&mut sim.types).unwrap().types[plant_type];
+        t.model = Arc::new(ModelDef {
+            pieces: vec![
+                PieceDef { name: "base".into(), parent: None, offset: FxVec3::ZERO, top: Fx::ZERO },
+                PieceDef { name: "pad".into(), parent: Some(0), offset: FxVec3::ZERO, top: Fx::ZERO },
+            ],
+            ..Default::default()
+        });
+        t.model_to_cob = vec![Some(0), Some(1)];
+        t.script = Some(Arc::new(CobProgram::new(script, &pieces)));
+    }
+    let east = 16384;
+    let plant = sim.spawn_unit(plant_type, 0, FxVec3::from_ints(400, 60, 400), east, true).unwrap();
+    let pad = |sim: &Sim| {
+        let f = sim.unit(plant).unwrap();
+        piece_world_heading(f, sim.types.get(plant_type), f.cob.as_ref(), 1)
+    };
+    sim.step(&[Command::Produce { player: 0, factory: plant, type_id: tank_type, count: 1 }]);
+    // Three seconds of building (`BuildTime` 300 at `WorkerTime` 100), the pad turning 30 degrees
+    // a second: a quarter turn.
+    let (mut tank, mut first, mut turned, mut last) = (None, None, 0i64, 0);
+    for _ in 0..30 * 10 {
+        let before = pad(&sim);
+        sim.step(&[]);
+        let Some(id) = tank.or_else(|| sim.units().find(|u| u.type_id == tank_type).map(|u| u.id)) else { continue };
+        tank = Some(id);
+        let u = sim.unit(id).unwrap();
+        if u.is_complete() {
+            break;
+        }
+        // (It rides the pad as the pad stood at the start of the tick: the scripts turn it after.)
+        assert_eq!(u.heading, before, "turned as the pad is turned");
+        if first.is_none() {
+            first = Some(u.heading);
+        } else {
+            turned += wrap_angle(u.heading - last) as i64;
+        }
+        last = u.heading;
+    }
+    let tank = tank.expect("the plant builds the tank");
+    assert_eq!(first, Some(east), "begun facing as the plant faces");
+    assert!((14_000..=18_000).contains(&turned), "a quarter turn as it is built: {turned}");
+    let u = sim.unit(tank).unwrap();
+    assert!(u.is_complete());
+    assert_eq!(u.heading, last, "finished, it keeps the heading the pad left it with");
+    // Released, it drives out of the plant (the pad stopped).
+    for _ in 0..30 * 8 {
+        sim.step(&[]);
+    }
+    let stopped = pad(&sim);
+    sim.step(&[]);
+    assert_eq!(pad(&sim), stopped, "the pad stops when the unit is done");
+    let (u, f) = (sim.unit(tank).unwrap(), sim.unit(plant).unwrap());
+    assert!(u.factory.is_none() && !u.pos.within_xz(f.pos, Fx::from_int(48)), "out of the plant: {:?} from {:?}", u.pos, f.pos);
+}
+
+/// TA's `HealTime` (its Commanders', 27): a finished unit of a type that has one mends itself, 100
+/// hit points in that many seconds (a share of them every tick), up to its full health and no
+/// further, at no cost; a unit without it does not.
+#[test]
+fn a_unit_with_a_heal_time_mends_itself() {
+    let data = data_of(&[
+        unit("COMMANDER", "MaxDamage=3000; HealTime=27; Commander=1; FootprintX=2; FootprintZ=2;"),
+        unit("TANK", "MaxDamage=3000; FootprintX=2; FootprintZ=2;"),
+    ]);
+    let mut sim = sim_of(data, 1);
+    let (commander_type, tank_type) = (sim.types.id("COMMANDER").unwrap(), sim.types.id("TANK").unwrap());
+    assert_eq!((sim.types.get(commander_type).heal_ticks, sim.types.get(tank_type).heal_ticks), (27 * 30, 0));
+    let commander = sim.spawn_unit(commander_type, 0, FxVec3::from_ints(300, 60, 300), 0, true).unwrap();
+    let tank = sim.spawn_unit(tank_type, 0, FxVec3::from_ints(500, 60, 300), 0, true).unwrap();
+    for id in [commander, tank] {
+        sim.unit_mut(id).unwrap().health = Fx::from_int(1000);
+    }
+    let energy = sim.players[0].economy.energy;
+    for _ in 0..27 * 30 {
+        sim.step(&[]);
+    }
+    assert_eq!(sim.unit(commander).unwrap().health, Fx::from_int(1100), "100 hit points in 27 seconds");
+    assert_eq!(sim.unit(tank).unwrap().health, Fx::from_int(1000), "no HealTime, no mending");
+    assert_eq!(sim.players[0].economy.energy, energy, "at no cost");
+    // Evenly: half of it in half the time.
+    for _ in 0..27 * 15 {
+        sim.step(&[]);
+    }
+    let half = sim.unit(commander).unwrap().health - Fx::from_int(1100);
+    assert!((half - Fx::from_int(50)).abs() < Fx::from_ratio(1, 100), "{half:?}");
+    // Up to its full health, and no further.
+    sim.unit_mut(commander).unwrap().health = Fx::from_int(2990);
+    for _ in 0..27 * 30 {
+        sim.step(&[]);
+    }
+    assert_eq!(sim.unit(commander).unwrap().health, Fx::from_int(3000));
+}
+
+/// A unit that dies leaves its wreck lying as it faced (TA's wrecks keep their unit's heading); its
+/// footprint stays the corpse file's, square to the map.
+#[test]
+fn a_wreck_lies_as_its_unit_faced() {
+    let data = data_of(&[
+        unit("TANK", "CanMove=1; MaxVelocity=1; BuildCostMetal=100; Corpse=TANK_DEAD; FootprintX=2; FootprintZ=3;"),
+        ("features/all/corpses.tdf".into(), "[TANK_DEAD] { footprintx=2; footprintz=3; blocking=1; reclaimable=1; metal=50; damage=500; }".into()),
+    ]);
+    let mut sim = sim_of(data, 1);
+    let tank_type = sim.types.id("TANK").unwrap();
+    for (k, heading) in [0, 5000, 16384, -12000, -32768].into_iter().enumerate() {
+        let tank = sim.spawn_unit(tank_type, 0, FxVec3::from_ints(200 + 120 * k as i64, 60, 400), heading, true).unwrap();
+        let u = sim.unit_mut(tank).unwrap();
+        (u.health, u.last_damage, u.dead) = (Fx::ZERO, Fx::ONE, true);
+        let before = sim.features.len();
+        sim.step(&[]);
+        assert_eq!(sim.features.len(), before + 1, "a wreck");
+        let f = &sim.features[before];
+        assert_eq!(f.heading, heading, "lying as its unit faced");
+        let def = &sim.data.features[f.def];
+        assert_eq!((def.footprint_x, def.footprint_z), (2, 3));
+        assert_eq!(sim.world.occupant(f.origin.0 + 1, f.origin.1 + 2), crate::world::Occupant::Feature(before as u32), "its footprint as the file has it");
+    }
+}
+
+/// Reclaimed whole, wreckage (a unit's corpse and the heap it leaves) pays its metal alone, whatever
+/// energy its file gives, as TA's wrecks give metal and nothing else; a tree pays its energy and a
+/// rock its metal, as their files say; and the remains of a unit made of no metal (TA's Scorpions
+/// and Sea Serpents) are no wreckage: their energy, as their file says.
+#[test]
+fn wreckage_pays_its_metal_alone() {
+    let data = data_of(&[
+        unit("BUILDER", "Builder=1; CanMove=1; MaxVelocity=2; Acceleration=1; BrakeRate=1; TurnRate=32768; WorkerTime=300; BuildDistance=100; CanReclamate=1; FootprintX=2; FootprintZ=2;"),
+        unit("TANK", "CanMove=1; MaxVelocity=1; BuildCostMetal=100; BuildCostEnergy=1000; Corpse=TANK_DEAD; FootprintX=2; FootprintZ=2;"),
+        unit("CRITTER", "CanMove=1; MaxVelocity=1; BuildCostMetal=0; BuildCostEnergy=1000; Corpse=critter_dead; FootprintX=2; FootprintZ=2;"),
+        ("features/all/stuff.tdf".into(), [
+            "[TANK_DEAD] { footprintx=2; footprintz=2; blocking=1; reclaimable=1; metal=50; energy=400; featuredead=TANK_HEAP; damage=500; }",
+            "[TANK_HEAP] { footprintx=2; footprintz=2; blocking=0; reclaimable=1; metal=20; energy=300; damage=500; }",
+            "[CRITTER_DEAD] { footprintx=2; footprintz=2; blocking=1; reclaimable=1; metal=0; energy=300; damage=500; }",
+            "[TREE] { footprintx=1; footprintz=1; blocking=1; reclaimable=1; energy=250; damage=500; }",
+            "[ROCK] { footprintx=2; footprintz=2; blocking=1; reclaimable=1; metal=100; damage=500; }",
+        ].join("\n")),
+    ]);
+    let sim = sim_of(data, 1);
+    let id = |name: &str| sim.data.feature_id(name).unwrap();
+    let (wreck, heap, critter, tree, rock) = (id("TANK_DEAD"), id("TANK_HEAP"), id("CRITTER_DEAD"), id("TREE"), id("ROCK"));
+    assert!(sim.is_wreckage(wreck) && sim.is_wreckage(heap), "a unit's corpse, and the heap it leaves");
+    assert!(!sim.is_wreckage(critter) && !sim.is_wreckage(tree) && !sim.is_wreckage(rock));
+    let n = Fx::from_int;
+    assert_eq!(sim.reclaim_value(wreck), (n(50), Fx::ZERO));
+    assert_eq!(sim.reclaim_value(heap), (n(20), Fx::ZERO));
+    assert_eq!(sim.reclaim_value(critter), (Fx::ZERO, n(300)));
+    assert_eq!(sim.reclaim_value(tree), (Fx::ZERO, n(250)));
+    assert_eq!(sim.reclaim_value(rock), (n(100), Fx::ZERO));
+    // Reclaimed: what the stores take.
+    for (name, metal, energy) in [("TANK_DEAD", 50, 0), ("TANK_HEAP", 20, 0), ("CRITTER_DEAD", 0, 300), ("TREE", 0, 250), ("ROCK", 100, 0)] {
+        let mut sim = sim.clone();
+        let index = sim.place_feature(name, FxVec3::from_ints(520, 60, 520), 0).unwrap();
+        let builder = sim.spawn_unit(sim.types.id("BUILDER").unwrap(), 0, FxVec3::from_ints(400, 60, 520), 0, true).unwrap();
+        (sim.players[0].economy.metal, sim.players[0].economy.energy) = (Fx::ZERO, Fx::ZERO);
+        sim.step(&[Command::Order { player: 0, units: vec![builder], order: Order::Reclaim(index), queue: false }]);
+        for _ in 0..30 * 30 {
+            sim.step(&[]);
+            if !sim.features[index].alive {
+                break;
+            }
+        }
+        assert!(!sim.features[index].alive, "{name} reclaimed");
+        let e = &sim.players[0].economy;
+        assert_eq!((e.metal, e.energy), (n(metal), n(energy)), "{name} pays");
+    }
+}

@@ -3665,7 +3665,7 @@ impl State {
                     let nearest = sim
                         .features
                         .iter()
-                        .filter(|f| f.alive && sim.data.features[f.def].reclaimable && sim.data.features[f.def].metal + sim.data.features[f.def].energy > 0.0)
+                        .filter(|f| f.alive && sim.data.features[f.def].reclaimable && { let (m, e) = sim.reclaim_value(f.def); m + e > ta_sim::Fx::ZERO })
                         .map(|f| Vec3::from_array(f.pos.to_f32()))
                         .min_by(|a, b| a.distance_squared(base).total_cmp(&b.distance_squared(base)));
                     if let Some(p) = nearest {

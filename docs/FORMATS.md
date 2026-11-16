@@ -731,6 +731,20 @@ refined once by least squares) use plain arithmetic in a fixed order: the same b
   so a building clears its footprint as it takes the ground (as its construction starts, or as a
   mission places it) of those that hold no metal and can be destroyed, deposits and vents
   aside; they leave nothing. Heaps keep their metal under it; anemones and corals stay.
+* **Wrecks give metal only.** A unit's corpse (its `Corpse`, `features/corpses/`, with the
+  `featuredead` it leaves when destroyed: its heap, `category=heaps`) gives metal and no energy: no
+  corpse or heap of a unit that costs metal names any. The four corpse files that give energy are
+  the remains of TA's indigenous lifeforms, the Scorpions (`ARMSCORP`, `CORSCORP`) and Sea Serpents
+  (`ARMSS`, `CORSS`), units that cost energy alone (15,660 and 4,385): `metal=0`, `energy=4698` and
+  `1316`, given back as a tree's energy is. TA Reborn holds to it whatever a file says: wreckage,
+  the corpse of every unit type that costs metal and what it leaves when destroyed, and so on, pays
+  its metal alone when reclaimed (`Sim::reclaim_value`, the set made once with the simulation,
+  `sim::wreckage`), so a mod's wreck that gives energy gives none; the remains of a unit that costs
+  no metal, rocks and trees pay as their files say. The reclaiming, the time it takes, builders on
+  patrol, the computer players and the interface all go by it.
+* **A wreck lies as its unit faced when it died**: the feature keeps the dying unit's heading (a
+  heap the wreck's), and is drawn turned so; its footprint is the corpse file's, square to the map,
+  whichever way it lies. The map's own features have none (TNT files give no heading).
 * A feature's `world` (or its folder under `features/`) against the OTA `planet` of the
   maps that use it: Green Planet → `greenworld`, Red Planet → `mars`, Lunar → `moon`, Water
   World → `water`, Wet Desert → `wetdesert`, the others by name (Acid, Archipelago, Crystal,
@@ -783,6 +797,18 @@ refined once by least squares) use plain arithmetic in a fixed order: the same b
   Sniper.
 * Weapon `rendertype`: 0 laser, 1 model (missile), 2 point, 3 D-gun, 4 shell, 5 flame,
   6 bomb, 7 lightning.
+* **`HealTime`**: only the Commanders (`ARMCOM`, `CORCOM`) give one, 27. Modding guides call it
+  the time in seconds it takes the unit to heal itself; players timing TA's Commander found it
+  mending about 100 hit points every 27 seconds (some 3.7 a second; one test found the same rate
+  whatever `HealTime` said). Nothing known gives it an energy cost or a pause after damage. TA
+  Reborn: a finished, living unit whose type gives a `HealTime` over 0 regains 100 hit points every
+  `HealTime` seconds (`defs::HEAL_POINTS`, `UnitType::heal_ticks`), a share each tick, the shares of
+  every `HealTime` of ticks adding up to exactly 100, up to its `MaxDamage` and no further, at no
+  cost, under fire, paralysed or carried too (`Sim::heal_units`); a frame does not, nor a unit being
+  taken apart. A Commander worn down to 1,000 of its 3,000 is whole again in nine minutes. The mods
+  give it widely, lower for what should heal faster: Total Mayhem 118 units (3 to 255, every value
+  one less than a power of two), TA: The Final Frontier 55 (1 to 55: its orbital defences 1), TA:
+  Escalation 5 (its Commanders 7, its Krogoth, "Self-Heal", 3).
 * The Commander's laser (`ARMCOMLASER`, the J7): range 200, reload 0.85 s, 60 damage (about
   70 a second). The Pyro's `FLAMETHROWER`: range 160, reload 1.2 s, a burst of 17 × 10
   (about 140 a second). Two Pyros burn through a Commander's 3,000 in about 11 s, while its
@@ -863,6 +889,16 @@ refined once by least squares) use plain arithmetic in a fixed order: the same b
   the walls' and dragon's teeth's empty names do (the executable is not looked into): no
   blast either way. So these units die without a blast: their `Killed` scripts burst them
   into pieces, as every unit's do (TA Reborn's client draws a burst too).
+* **Build pads turn**: 15 of TA's 21 plants spin their build pad (the piece `QueryBuildInfo` names)
+  about y while they build: `StartBuilding` does `spin pad around y-axis speed <30>` (5461 a
+  second, no acceleration) and `StopBuilding` `stop-spin pad around y-axis` (at once), so the pad
+  stops where it is and the next unit starts from there. The Arm and Core vehicle plants, kbot labs,
+  aircraft plants and seaplane platforms, their advanced ones and the Core Hovercraft Platform do;
+  the shipyards (their pad `slip`, or `base`), the Arm Hovercraft Platform and the Core Gantry (its
+  gangplank only slides) don't. What a plant builds stands on the pad and turns with it, from the
+  plant's own heading on, as TA's players saw it: the plant's heading and the turns about y of the
+  pad and the pieces it hangs from (`unit::piece_world_heading`, `Sim::follow_build_pad`). Done, it
+  keeps the heading the pad left it with, and turns to its way out as it leaves.
 * Factory yard maps: the cells marked `o` (and `w`, `f`, `s`) block, the others are the yard,
   open to walk on. The Arm lab's `yoccoy ooccoo ooccoo ooccoo ooccoo yoccoy` is a corridor
   two cells wide through its middle, north to south, with walls either side: a unit built on

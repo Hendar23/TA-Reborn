@@ -13,7 +13,7 @@ use crate::fixed::{FULL_TURN, Fx, FxVec3, QUARTER_TURN, atan2, cos, heading_of, 
 use crate::host::{HostRequest, OtherUnit, UnitHost, script_angle};
 use crate::path::{FlowField, PathQuery, Pathfinder};
 use crate::rng::Rng;
-use crate::unit::{BuildJob, Drift, Economy, MAX_PLAYERS, Order, Player, PlayerSetup, Unit, UnitId, piece_world_position, player_bit};
+use crate::unit::{BuildJob, Drift, Economy, MAX_PLAYERS, Order, Player, PlayerSetup, Unit, UnitId, piece_world_heading, piece_world_position, player_bit};
 use crate::vision::{self, Seen, Sensor, Vision};
 use crate::world::{CELL, MoveSpec, Occupant, Region, World};
 
@@ -371,6 +371,23 @@ impl Feature {
     }
 }
 
+/// Which feature definitions are wreckage (by definition): the corpse of every unit type made of
+/// metal (its `Corpse`), what that leaves when destroyed (its heap, `featuredead`), and so on.
+/// Reclaimed, wreckage pays its metal alone, whatever energy its file gives ([`Sim::reclaim_value`]):
+/// TA's wrecks and heaps give metal and nothing else. (What a unit made of no metal leaves is not
+/// wreckage: TA's indigenous lifeforms, the Scorpions and Sea Serpents, cost energy alone, and their
+/// remains give energy as their files say, as a tree's do.)
+fn wreckage(types: &UnitTypes, data: &GameData) -> Vec<bool> {
+    let mut wreckage = vec![false; data.features.len()];
+    let mut left: Vec<usize> = types.types.iter().filter(|t| t.cost_metal > Fx::ZERO).filter_map(|t| data.feature_id(&t.def.corpse)).collect();
+    while let Some(f) = left.pop() {
+        if !std::mem::replace(&mut wreckage[f], true) && let Some(heap) = data.feature_id(&data.features[f].feature_dead) {
+            left.push(heap);
+        }
+    }
+    wreckage
+}
+
 /// A cell of the map's 16 px grid (x, z).
 type GridCell = (i32, i32);
 /// A shared route: movement class, start block (4 Ã— 4 cells), goal cell, arrival radius.
@@ -510,6 +527,9 @@ pub struct Sim {
     pub unit_limit: u32,
     /// Feature definition of a unit's wreck â†’ the unit type (for resurrection).
     wreck_of: rustc_hash::FxHashMap<usize, usize>,
+    /// By feature definition, whether it is wreckage, which pays its metal alone when reclaimed
+    /// ([`Sim::reclaim_value`]).
+    wreckage: Vec<bool>,
     /// Nearest cell of a region to an unreachable goal, per (spec, region, goal): static
     /// terrain, so the answers never go stale.
     reachable_near: rustc_hash::FxHashMap<(MoveSpec, Region, GridCell), Option<GridCell>>,
@@ -698,6 +718,7 @@ impl Sim {
                 wreck_of.entry(f).or_insert(t.id);
             }
         }
+        let wreckage = wreckage(&types, &data);
         let mut sim = Sim {
             tick: 0,
             types,
@@ -726,6 +747,7 @@ impl Sim {
             commander_ends_game: false,
             unit_limit: u32::MAX,
             wreck_of,
+            wreckage,
             reachable_near: Default::default(),
             open_goals: Default::default(),
             parallel: true,
@@ -1008,6 +1030,27 @@ impl Sim {
                 u.dead = true;
                 u.killer = Some(nobody);
             }
+        }
+    }
+
+    /// TA's `HealTime` (its Commanders', 27): a finished unit of a type that has one mends itself,
+    /// [`crate::defs::HEAL_POINTS`] hit points every `HealTime` seconds, a share of them every tick
+    /// (the shares of each `HealTime` of ticks add up to exactly that), up to its full health, at no
+    /// cost; under fire, paralysed or carried as well. A frame, one being taken apart (no longer
+    /// whole) or a dead unit does not. (See docs/FORMATS.md.)
+    fn heal_units(&mut self) {
+        if !self.types.heals {
+            return;
+        }
+        let (types, tick) = (self.types.clone(), self.tick);
+        for u in self.units.iter_mut().flatten() {
+            let t = types.get(u.type_id);
+            if t.heal_ticks == 0 || u.dead || !u.is_complete() || u.health <= Fx::ZERO || u.health >= t.max_health {
+                continue;
+            }
+            let k = tick % t.heal_ticks;
+            let heal = crate::defs::HEAL_POINTS.share(k + 1, t.heal_ticks) - crate::defs::HEAL_POINTS.share(k, t.heal_ticks);
+            u.health = (u.health + heal).min(t.max_health);
         }
     }
 
@@ -2175,6 +2218,7 @@ impl Sim {
         self.update_projectiles();
         self.update_fires();
         self.acid_seas();
+        self.heal_units();
         let t3 = std::time::Instant::now();
         self.decay_abandoned_frames();
         self.process_deaths();
@@ -2939,8 +2983,8 @@ impl Sim {
             if d > r2 {
                 continue;
             }
-            let def = &self.data.features[f.def];
-            if def.reclaimable && (def.metal > 0.0 || def.energy > 0.0) && best_feature.is_none_or(|(bd, _)| d < bd) {
+            let (metal, energy) = self.reclaim_value(f.def);
+            if self.data.features[f.def].reclaimable && (metal > Fx::ZERO || energy > Fx::ZERO) && best_feature.is_none_or(|(bd, _)| d < bd) {
                 best_feature = Some((d, i));
             }
         }
@@ -3965,7 +4009,9 @@ impl Sim {
             done(self);
             return;
         }
-        let (metal, energy) = (Fx::from_f64(def.metal.max(0.0)), Fx::from_f64(def.energy.max(0.0)));
+        // (Wreckage: its metal alone.)
+        let (metal, energy) = self.reclaim_value(f.def);
+        let def = &self.data.features[f.def];
         let fp = (def.footprint_x, def.footprint_z);
         let u = self.unit(id).unwrap();
         let reach = t.build_distance + t.radius;
@@ -4197,6 +4243,22 @@ impl Sim {
     /// The unit type a feature is the wreck of, if any.
     pub fn wreck_type(&self, feature: usize) -> Option<usize> {
         self.features.get(feature).filter(|f| f.alive).and_then(|f| self.wreck_of.get(&f.def).copied())
+    }
+
+    /// Whether features of definition `def` are wreckage: a unit's corpse or what it leaves (see
+    /// [`wreckage`]).
+    pub fn is_wreckage(&self, def: usize) -> bool {
+        self.wreckage.get(def).copied().unwrap_or(false)
+    }
+
+    /// What reclaiming a feature of definition `def` whole pays, metal and energy: what its file
+    /// gives, but wreckage pays its metal alone, as TA's wrecks and heaps do (rocks give metal, trees
+    /// energy, as their files say). Everything that values a feature goes by this: the reclaiming,
+    /// the time it takes, the builders on patrol, the computer players and the interface.
+    pub fn reclaim_value(&self, def: usize) -> (Fx, Fx) {
+        let Some(d) = self.data.features.get(def) else { return (Fx::ZERO, Fx::ZERO) };
+        let energy = if self.is_wreckage(def) { Fx::ZERO } else { Fx::from_f64(d.energy.max(0.0)) };
+        (Fx::from_f64(d.metal.max(0.0)), energy)
     }
 
     /// Resurrection: walk into range and pour the unit's energy cost into its wreck at the
@@ -4718,7 +4780,8 @@ impl Sim {
         let f = self.unit(id).unwrap();
         let pad_pos = self.cob_piece_position(f, t, pad_piece).unwrap_or(f.pos);
         let owner = f.owner;
-        let heading = f.heading;
+        // (Facing as the pad is turned: `Sim::follow_build_pad`.)
+        let heading = self.cob_piece_heading(f, t, pad_piece).unwrap_or(f.heading);
         // The pad clear first: one of its own side's units standing still where the next would
         // go (built in no time, the instant-build cheat or many builders helping; given an
         // order as it was done: to guard the factory, or to build beside it) is sent off it, to
@@ -4833,6 +4896,10 @@ impl Sim {
         FxVec3::new(p.x, self.world.height_at(p.x, p.z), p.z)
     }
 
+    /// The unit in production rides the factory's build pad (`QueryBuildInfo`'s piece): where it
+    /// is, and turned as it is turned (TA's plants spin the pad about y while they build, 30
+    /// degrees a second, and the unit goes round with it); finished, it keeps the heading the pad
+    /// left it with.
     fn follow_build_pad(&mut self, id: UnitId, factory: UnitId) {
         let types = self.types.clone();
         let Some(f) = self.unit(factory) else { return };
@@ -4840,7 +4907,7 @@ impl Sim {
         let pad = self.call_script(factory, "QueryBuildInfo", &[0]).and_then(|p| p.first().copied()).unwrap_or(-1);
         let Some(f) = self.unit(factory) else { return };
         if let Some(mut p) = self.cob_piece_position(f, t, pad) {
-            let heading = f.heading;
+            let heading = self.cob_piece_heading(f, t, pad).unwrap_or(f.heading);
             // A ship is built at the surface, where it floats once done: a shipyard's pad is under
             // the water (the Core's yard stands 22 px deep). A hovercraft on a pad under the water
             // (a floating hover plant's) is on the water too.
@@ -4862,6 +4929,13 @@ impl Sim {
         let cob = u.cob.as_ref()?;
         let mp = cob.program.piece_map.get(usize::try_from(cob_piece).ok()?).copied().flatten()?;
         Some(piece_world_position(u, t, Some(cob), mp))
+    }
+
+    /// The heading of what stands on a script's piece (`piece_world_heading`).
+    fn cob_piece_heading(&self, u: &Unit, t: &UnitType, cob_piece: i32) -> Option<i32> {
+        let cob = u.cob.as_ref()?;
+        let mp = cob.program.piece_map.get(usize::try_from(cob_piece).ok()?).copied().flatten()?;
+        Some(piece_world_heading(u, t, Some(cob), mp))
     }
 
     // ---- Motion -------------------------------------------------------------------------

@@ -67,6 +67,14 @@ fn grounded_model_y(y: f32, simulated: f32, drawn: f32, sink: f32) -> f32 {
     if (y - simulated).abs() <= 1.0 { y + drawn - simulated - sink } else { y }
 }
 
+/// Where a feature's model stands (`p`) and how it is turned: by the feature's heading (TA's angle
+/// units), as the scene turns a unit by its own (heading 0 facing +z, south; 16384 +x, east). A
+/// wreck lies as its unit faced when it died; the map's own features, placed at 0, as they were
+/// made. (Its footprint in the game stays square to the map, as TA's corpses' do.)
+fn model_root(p: Vec3, heading: i32) -> Mat4 {
+    Mat4::from_translation(p) * Mat4::from_rotation_y(heading as f32 * std::f32::consts::TAU / 65536.0)
+}
+
 /// A feature's 3D stand-in: the models it may be (one per instance, by its place), each
 /// stretched to the painting's size, and the painting's colours (linear).
 #[derive(Clone, Debug)]
@@ -1037,10 +1045,8 @@ impl FeatureView {
             {
                 self.decals.push(SpriteInstance::new([p[0], p[1] + 0.3, p[2]], shadow).alpha(0.5 * (1.0 - shown3d)));
             }
+            // (A model's instances are `model_instances`'.)
             if v.frames.is_empty() {
-                if v.model.is_some() {
-                    self.matrices.push(vec![Mat4::from_translation(Vec3::from_array(p))]);
-                }
                 continue;
             }
             let frame = if f.burn_until != 0 && !v.burn_frames.is_empty() {
@@ -1182,13 +1188,11 @@ impl FeatureView {
             }
             let ground = sim.world.height_at(f.pos.x, f.pos.z).to_f32();
             p.y = grounded_model_y(p.y, ground, crate::scene::drawn_ground(&sim.world, p.x, p.z), visual.ground_sink);
-            let root = Mat4::from_translation(p);
+            let root = model_root(p, f.heading);
             let rest = models.library.info(model).rest_pose();
             match posed.get(&i).filter(|pose| pose.len() == rest.len()) {
-                Some(pose) => {
-                    let facing = root * Mat4::from_rotation_y(f.heading as f32 * std::f32::consts::TAU / 65536.0);
-                    self.matrices.push(pose.iter().map(|&m| if m == Mat4::ZERO { m } else { facing * m }).collect());
-                }
+                // (The pose is from where the wreck stands, facing its heading: `root` turns it so.)
+                Some(pose) => self.matrices.push(pose.iter().map(|&m| if m == Mat4::ZERO { m } else { root * m }).collect()),
                 None => self.matrices.push(rest.into_iter().map(|m| root * m).collect()),
             }
             ids.push(model);
@@ -1777,6 +1781,19 @@ mod tests {
         buried.pieces[0].offset = fixed(0);
         assert_eq!(source_ground_sink(&buried), 0.0, "do not expose deliberately buried geometry");
         assert_eq!(source_ground_sink(&Model3do::default()), 0.0);
+    }
+
+    /// A wreck lies as its unit faced when it died: its model turned by the feature's heading the
+    /// way a unit's is by its own, heading 0 facing south (+z) and 16384 east (+x) (the wrecks
+    /// were all drawn facing south, as if every unit had died facing that way).
+    #[test]
+    fn wrecks_lie_as_their_units_faced() {
+        let at = Vec3::new(100.0, 20.0, 300.0);
+        for (heading, front) in [(0, Vec3::Z), (16384, Vec3::X), (-32768, -Vec3::Z), (-16384, -Vec3::X)] {
+            let root = model_root(at, heading);
+            assert!((root.transform_point3(Vec3::ZERO) - at).length() < 1e-4, "stands where it lies");
+            assert!((root.transform_vector3(Vec3::Z) - front).length() < 1e-4, "heading {heading}: its front to {front}");
+        }
     }
 
     #[test]

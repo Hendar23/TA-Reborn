@@ -1366,11 +1366,13 @@ impl ClassicHud {
         let name = if def.description.is_empty() { def.name.clone() } else { def.description.clone() };
         text(painter, font, tb, at.x, at.y, Align::Center, &name, pal().classic_text);
         let mut worth = Vec::new();
-        if def.metal > 0.0 {
-            worth.push(tf("Metal {n}", &[("n", &format!("{:.0}", def.metal * left as f64))]));
+        // (A wreck's metal alone, whatever its file gives: `Sim::reclaim_value`.)
+        let (metal, energy) = game.sim.reclaim_value(feature.def);
+        if metal > ta_sim::Fx::ZERO {
+            worth.push(tf("Metal {n}", &[("n", &format!("{:.0}", metal.to_f64() * left as f64))]));
         }
-        if def.energy > 0.0 {
-            worth.push(tf("Energy {n}", &[("n", &format!("{:.0}", def.energy * left as f64))]));
+        if energy > ta_sim::Fx::ZERO {
+            worth.push(tf("Energy {n}", &[("n", &format!("{:.0}", energy.to_f64() * left as f64))]));
         }
         if !worth.is_empty() {
             let y = l.get("DAMAGEBAR2").map_or(463.0, |r| r.min.y) + 1.0;

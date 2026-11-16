@@ -302,8 +302,10 @@ pub fn front_job(sim: &Sim, b: &Unit) -> Option<Job> {
     match b.orders.front()? {
         Order::Build { pos, .. } => Some(Job::Build(*pos)),
         Order::Reclaim(f) => Some(Job::Reclaim(*f)),
-        // (Two builders on a nanoframe are a team; on a unit that is only hurt, a waste.)
-        Order::Repair(id) => sim.unit(*id).filter(|t| t.is_complete()).map(|_| Job::Repair(*id)),
+        // (Two builders on a nanoframe are a team, to the tick it is finished, their orders naming
+        // it still: built on this tick, `worked_at`, which mending leaves; on a unit that is only
+        // hurt, a waste.)
+        Order::Repair(id) => sim.unit(*id).filter(|t| t.is_complete() && t.worked_at != Some(sim.tick)).map(|_| Job::Repair(*id)),
         _ => None,
     }
 }

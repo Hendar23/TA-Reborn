@@ -272,7 +272,14 @@ pub struct UnitType {
     /// A big walker (see [`big_walker`]): it stands level whatever the ground under it, as
     /// TA's `Upright=1` units do ([`UnitType::level`]).
     pub big_walker: bool,
+    /// It mends itself (TA's `HealTime`, its Commanders' 27): the ticks it takes to regain
+    /// [`HEAL_POINTS`] hit points, `HealTime` seconds; 0, it doesn't (`Sim::heal_units`).
+    pub heal_ticks: u64,
 }
+
+/// What a unit that mends itself regains every `HealTime` seconds (its [`UnitType::heal_ticks`]):
+/// TA's Commander, with `HealTime=27`, was measured mending 100 hit points in 27 seconds.
+pub const HEAL_POINTS: Fx = Fx::from_int(100);
 
 /// Walkers at least this tall (px: the highest point of their model at rest) are big walkers.
 /// TA's own walkers that the ground tilts (those without `Upright=1`) are 32 px tall at most
@@ -354,6 +361,8 @@ pub struct UnitTypes {
     pub(crate) airbase_reach: Fx,
     pub(crate) collision_reach: Fx,
     pub(crate) target_reach: Fx,
+    /// Whether any type mends itself ([`UnitType::heal_ticks`]).
+    pub(crate) heals: bool,
     by_name: FxHashMap<String, usize>,
     /// Upper-case `Category` token → its number in a [`CategorySet`].
     categories: FxHashMap<String, usize>,
@@ -499,6 +508,8 @@ impl UnitTypes {
                 transport_capacity: if u.transport_capacity == 0 { 0 } else if locomotion == Locomotion::Air { 1 } else { u.transport_capacity },
                 transport_size: u.transport_size,
                 big_walker,
+                // (`HealTime` seconds, in ticks: at least one; none, or none given, no mending.)
+                heal_ticks: if u.heal_time > 0.0 { ((u.heal_time * TICKS_PER_SECOND as f64).round() as u64).max(1) } else { 0 },
                 def: u.clone(),
             });
         }
@@ -507,7 +518,8 @@ impl UnitTypes {
         let airbase_reach = types.iter().filter(|t| t.def.is_airbase).map(|t| t.radius + Fx::from_int(24)).max().unwrap_or(Fx::ZERO);
         let collision_reach = types.iter().map(UnitType::collision_radius).max().unwrap_or(Fx::ZERO);
         let target_reach = types.iter().map(|t| t.radius).max().unwrap_or(Fx::ZERO);
-        UnitTypes { types, by_name, categories, airbase_reach, collision_reach, target_reach }
+        let heals = types.iter().any(|t| t.heal_ticks > 0);
+        UnitTypes { types, by_name, categories, airbase_reach, collision_reach, target_reach, heals }
     }
 
     pub fn get(&self, id: usize) -> &UnitType {

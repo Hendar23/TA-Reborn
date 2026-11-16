@@ -108,7 +108,9 @@ pub fn menus(units: &[&UnitBlueprint]) -> String {
 }
 
 /// The faction's wrecks: each unit's own model where it fell, worth its wreckage's share of its
-/// cost, as hard to clear as its wreckage's share of its health.
+/// mass, as hard to clear as its wreckage's share of its health. Metal alone, as TA's wrecks give
+/// (TA Reborn pays a wreck's metal alone whatever its file says, `Sim::reclaim_value`): no energy,
+/// whatever its `EnergyMult` (no Forged Alliance unit's wreckage gives any).
 pub fn wrecks(units: &[&UnitBlueprint]) -> String {
     let mut s = String::new();
     for u in units.iter().filter(|u| u.motion != Motion::Air || u.wreckage.is_some()) {
@@ -118,10 +120,9 @@ pub fn wrecks(units: &[&UnitBlueprint]) -> String {
         let height = ((u.size[1].max(0.2)) * super::UNIT_SCALE).round().clamp(4.0, 200.0) as i64;
         let _ = writeln!(
             s,
-            "[{id}_dead]\n\t{{\n\tworld=All Worlds;\n\tdescription={} Wreckage;\n\tcategory=supcom_corpses;\n\tobject={id};\n\tfootprintx={fx};\n\tfootprintz={fz};\n\theight={height};\n\tblocking=1;\n\thitdensity=100;\n\tmetal={};\n\tenergy={};\n\tdamage={};\n\treclaimable=1;\n\tfeaturereclamate=smudge01;\n\tseqnamereclamate=tree1reclamate;\n\t}}",
+            "[{id}_dead]\n\t{{\n\tworld=All Worlds;\n\tdescription={} Wreckage;\n\tcategory=supcom_corpses;\n\tobject={id};\n\tfootprintx={fx};\n\tfootprintz={fz};\n\theight={height};\n\tblocking=1;\n\thitdensity=100;\n\tmetal={};\n\tenergy=0;\n\tdamage={};\n\treclaimable=1;\n\tfeaturereclamate=smudge01;\n\tseqnamereclamate=tree1reclamate;\n\t}}",
             if u.name.is_empty() { u.id.clone() } else { u.name.replace(';', ",") },
             (u.cost_mass * w.mass).round() as i64,
-            (u.cost_energy * w.energy).round() as i64,
             (u.health * w.health).round().max(1.0) as i64
         );
     }
@@ -179,6 +180,17 @@ mod tests {
         assert_eq!((first.get("UNITMENU"), first.get("MENU"), first.get("BUTTON"), first.get("UNITNAME")), (Some("UEL0001"), Some("2"), Some("0"), Some("UEB1103")));
         let wrecks = ta_formats::tdf::parse(&wrecks(&all));
         let striker = wrecks.section("uel0201_dead").unwrap();
-        assert_eq!((striker.get("object"), striker.get("metal")), (Some("uel0201"), Some("9")));
+        assert_eq!((striker.get("object"), striker.get("metal"), striker.get("energy")), (Some("uel0201"), Some("9"), Some("0")));
+    }
+
+    /// A wreck gives metal alone, as TA's do, whatever energy its blueprint's wreckage would give.
+    #[test]
+    fn a_wreck_gives_no_energy() {
+        let mut tank = unit("UEL0201", "'UEF', 'MOBILE', 'LAND', 'TECH1'", "", "RULEUMT_Land");
+        tank.cost_energy = 500.0;
+        tank.wreckage = Some(crate::unit::Wreckage { mass: 0.9, energy: 0.5, health: 0.9 });
+        let wrecks = ta_formats::tdf::parse(&wrecks(&[&tank]));
+        let wreck = wrecks.section("uel0201_dead").unwrap();
+        assert_eq!((wreck.get("metal"), wreck.get("energy")), (Some("9"), Some("0")));
     }
 }

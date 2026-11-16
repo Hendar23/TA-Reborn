@@ -168,8 +168,11 @@ pub const RECORD_VERSION: u32 = 46;
 /// their target's depth and as far as their range; surface weapons aim at the part of a unit out
 /// of the water, and never take on what is wholly under it (TA's underwater buildings, however
 /// tall), by an order either (the order ends); a weapon past the first whose own bad targets name
-/// an attack order's target keeps to its own targets.
-pub const SIMULATION_VERSION: u32 = 100;
+/// an attack order's target keeps to its own targets; 101, a unit being built turns with its
+/// factory's pad (TA's plants spin it while they build), a unit with a `HealTime` (TA's
+/// Commanders) mends itself, 100 hit points in that many seconds, and wreckage (a unit's corpse
+/// and its heap) pays its metal alone when reclaimed.
+pub const SIMULATION_VERSION: u32 = 101;
 /// Records shorter than one year of simulated time are supported. Shared with the
 /// launcher's metadata reader so impossible durations cannot start endless save catch-up.
 pub const MAX_RECORD_TICKS: u64 = 30 * 3600 * 24 * 365;
