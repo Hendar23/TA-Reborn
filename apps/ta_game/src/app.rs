@@ -4459,7 +4459,7 @@ impl State {
                 cam.focus.x = cam.focus.x.clamp(margins.x, size.x - margins.x);
                 cam.focus.z = cam.focus.z.clamp(margins.y, size.y - margins.y);
                 let ground = t.field.sample(cam.focus.x, cam.focus.z).max(t.field.sea_level);
-                cam.focus.y += (ground - cam.focus.y) * (1.0 - (-dt * 3.0).exp());
+                cam.focus.y = ease_focus_height(cam.focus.y, ground, dt);
             }
             cam.keep_above_ground(|x, z| camera_ground(&t.field, x, z), dt);
         } else {
@@ -8676,6 +8676,16 @@ fn battle_camera(viewport: Vec2) -> Camera {
     camera
 }
 
+/// The perspective camera's focus `dt` seconds on from height `y` towards the `ground` under it:
+/// eased there (most of the way in a second), and once within a twentieth of a unit, there. Eased
+/// on alone it crept nearer by ever smaller steps for seconds after the camera looked still, and
+/// all that time whatever the picture decides by a hair (two trees side by side, which in front)
+/// could decide it the other way from one frame to the next.
+fn ease_focus_height(y: f32, ground: f32, dt: f32) -> f32 {
+    let eased = y + (ground - y) * (1.0 - (-dt * 3.0).exp());
+    if (ground - eased).abs() < 0.05 { ground } else { eased }
+}
+
 /// Sets the camera to the player's chosen way of seeing the battle: the modern 3D camera, or
 /// TA's own top-down view, which never turns or tilts (it is TA's oblique projection, the
 /// maps as painted).
@@ -9063,7 +9073,7 @@ impl State {
             cam.focus.z = cam.focus.z.clamp(0.0, size.y);
             if cam.mode == CameraMode::Perspective {
                 let ground = t.field.sample(cam.focus.x, cam.focus.z).max(t.field.sea_level);
-                cam.focus.y += (ground - cam.focus.y) * (1.0 - (-dt * 3.0).exp());
+                cam.focus.y = ease_focus_height(cam.focus.y, ground, dt);
             }
             cam.keep_above_ground(|x, z| camera_ground(&t.field, x, z), dt);
         }
@@ -9284,6 +9294,29 @@ mod tests {
         };
         assert!(step(&film) > 1.0, "the film's lens: {}", step(&film));
         assert!(step(&battle) < 0.05, "the battle's: {}", step(&battle));
+    }
+
+    /// After a move the camera's focus comes down to the ground under it and is still there: most
+    /// of the way in a second, all of it soon after, and then it stays put frame after frame
+    /// (eased on alone it was still creeping by thousandths of a unit four seconds later).
+    #[test]
+    fn the_camera_comes_to_rest_on_the_ground() {
+        let (ground, dt) = (148.0f32, 1.0 / 60.0);
+        let mut y = 153.0f32;
+        let mut frames = 0;
+        while y != ground {
+            y = ease_focus_height(y, ground, dt);
+            frames += 1;
+            assert!(frames < 200, "still {y} after {frames} frames");
+        }
+        assert!(frames > 60, "eased, not jumped: {frames} frames");
+        assert_eq!(ease_focus_height(y, ground, dt), ground, "at rest");
+        // Within a second most of the way down (as before).
+        let mut y = 153.0f32;
+        for _ in 0..60 {
+            y = ease_focus_height(y, ground, dt);
+        }
+        assert!((y - ground).abs() < 0.3, "{y}");
     }
 
     /// Zoomed in, the focus goes anywhere on the map; zoomed out over all of it, to its middle;
