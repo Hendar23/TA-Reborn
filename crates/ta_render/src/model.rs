@@ -32,6 +32,7 @@ mod rounded;
 mod skin;
 mod sight;
 mod smooth;
+pub mod surfaced;
 #[cfg(test)]
 mod xray;
 
@@ -988,6 +989,11 @@ pub struct ModelLibrary {
     index_buffer: Option<wgpu::Buffer>,
     /// The buffers are also what ray tracing builds its acceleration structures from.
     pub(crate) blas_input: bool,
+    /// Models with surfaces of their own -> the material slots they paint with (surfaced.rs).
+    surfaced: HashMap<ModelId, Vec<u32>>,
+    /// A model -> the lighter one drawn in its place far off (its surface's `far`: the same
+    /// pieces in the same order).
+    far: HashMap<ModelId, ModelId>,
 }
 
 impl ModelLibrary {
@@ -1520,6 +1526,12 @@ impl ModelLibrary {
     /// choice but the water's reflection, which draws the original (see `draw_reflection`);
     /// the pieces and their order are the original's either way.
     pub(super) fn detail_for(&self, original: ModelId, root: Mat4, camera: Option<&Camera>, reborn: bool) -> ModelId {
+        // (A model with a lighter one for far off, whatever the art style: surfaced.rs.)
+        if let Some(&far) = self.far.get(&original) {
+            let info = &self.models[original as usize];
+            let near = camera.is_none_or(|camera| projected_pixels(camera, root.transform_point3(Vec3::Y * info.height * 0.5), info.radius.max(info.height * 0.5)) >= surfaced::FAR_PIXELS);
+            return if near { original } else { far };
+        }
         // (`TA_REBORN_DETAIL=0`: Reborn's paint on the original shapes, for comparisons.)
         static DETAIL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let wanted = *DETAIL.get_or_init(|| std::env::var("TA_REBORN_DETAIL").map_or(true, |v| v != "0"));
@@ -2446,6 +2458,8 @@ fn write_matrices(out: wgpu::WriteOnly<'_, [[u8; 48]]>, order: &[u32], list: &[D
 pub struct ModelRenderer {
     pub library: ModelLibrary,
     pub textures: TextureLibrary,
+    /// The paint of models with surfaces of their own (surfaced.rs).
+    pub surfaces: surfaced::SurfaceTextures,
     art_style_reborn: bool,
     pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
@@ -2572,6 +2586,19 @@ impl ModelRenderer {
                 paint_array(8),
                 paint_array(9),
                 paint_array(10),
+                // The paint of models with surfaces of their own, and where each material's is
+                // (surfaced.rs).
+                paint_array(11),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 12,
+                    visibility: S::FRAGMENT,
+                    ty: B::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -2727,13 +2754,15 @@ impl ModelRenderer {
         });
         let matrix_buffer = Self::make_matrix_buffer(device, 1024);
         let instance_buffer = Self::make_instance_buffer(device, 256);
-        let bind_group = Self::make_bind_group(device, &layout, &matrix_buffer, &textures, &sampler);
+        let surfaces = surfaced::SurfaceTextures::new(device);
+        let bind_group = Self::make_bind_group(device, &layout, &matrix_buffer, &textures, &surfaces, &sampler);
         ModelRenderer {
             library: ModelLibrary {
                 blas_input: crate::util::ray_traced(),
                 ..Default::default()
             },
             textures,
+            surfaces,
             art_style_reborn: true,
             pipeline,
             shadow_pipeline,
@@ -2776,6 +2805,7 @@ impl ModelRenderer {
         layout: &wgpu::BindGroupLayout,
         matrices: &wgpu::Buffer,
         textures: &TextureLibrary,
+        surfaces: &surfaced::SurfaceTextures,
         sampler: &wgpu::Sampler,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2826,6 +2856,14 @@ impl ModelRenderer {
                     binding: 10,
                     resource: wgpu::BindingResource::TextureView(&textures.second[2]),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: wgpu::BindingResource::TextureView(&surfaces.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: surfaces.table.as_entire_binding(),
+                },
             ],
         })
     }
@@ -2860,6 +2898,20 @@ impl ModelRenderer {
             list.par_iter_mut().with_min_len(128).for_each(detail);
         } else {
             list.iter_mut().for_each(detail);
+        }
+        // The paint of the models with surfaces drawn, read the first time they are.
+        if !self.library.surfaced.is_empty() {
+            let mut seen = std::collections::HashSet::new();
+            for inst in &list {
+                if seen.insert(inst.model) {
+                    for &slot in self.library.surface_slots(inst.model) {
+                        self.surfaces.want(slot);
+                    }
+                }
+            }
+        }
+        if self.surfaces.update(device, queue) {
+            self.bind_group = Self::make_bind_group(device, &self.layout, &self.matrix_buffer, &self.textures, &self.surfaces, &self.sampler);
         }
         // Instances by model, each model's in the order given (indices into `list`).
         let models = self.library.models.len();
@@ -2947,7 +2999,7 @@ impl ModelRenderer {
         }
         if (self.matrix_buffer.size() as usize) < len * 48 {
             self.matrix_buffer = Self::make_matrix_buffer(device, len.next_power_of_two());
-            self.bind_group = Self::make_bind_group(device, &self.layout, &self.matrix_buffer, &self.textures, &self.sampler);
+            self.bind_group = Self::make_bind_group(device, &self.layout, &self.matrix_buffer, &self.textures, &self.surfaces, &self.sampler);
         }
         let need_i = self.instances.len() * std::mem::size_of::<InstanceData>();
         if (self.instance_buffer.size() as usize) < need_i {

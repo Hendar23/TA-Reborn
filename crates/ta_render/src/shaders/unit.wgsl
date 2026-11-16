@@ -23,6 +23,12 @@ struct Affine {
 @group(1) @binding(9) var reborn_textures_2: texture_2d_array<f32>;
 @group(1) @binding(10) var reborn_physical_2: texture_2d_array<f32>;
 override SECOND_BANK: u32 = 0u;
+// The paint of models with surfaces of their own (model/surfaced.rs): three layers a material
+// (its colour, its specular and team colour, its normals), and where each material's are (the
+// first of its layers over three; u32's largest where they are not read yet: the faces in their
+// colour on average).
+@group(1) @binding(11) var surface_paint: texture_2d_array<f32>;
+@group(1) @binding(12) var<storage, read> surface_slots: array<u32>;
 
 fn in_second_bank(layer: u32) -> bool {
     return SECOND_BANK != 0u && layer >= SECOND_BANK;
@@ -93,7 +99,8 @@ struct VOut {
     // 1 when the face's texture is a light (see model.rs).
     @location(8) @interpolate(flat) emissive: u32,
     // Colour-blind colours: the player's colour slot + 1, to tint the white team frame with
-    // (0: the texture as it is).
+    // (0: the texture as it is), in bits 0-7; the player's colour slot in bits 8-15 (a surface's
+    // team colour).
     @location(9) @interpolate(flat) tint: u32,
     @location(10) edge_dist: vec4<f32>,
     @location(11) @interpolate(flat) edge_weight: vec4<f32>,
@@ -212,6 +219,12 @@ fn vs_main(in: VIn) -> VOut {
     // Bits 6/7/8: a skin's texture, its livery, and the enemy bank (model/skin.rs), changing
     // neither opacity nor geometry.
     out.emissive |= ((in.layer >> 29u) & 7u) << 6u;
+    // Bit 9: a model's own surface (no frames, its material's slot for a layer: surfaced.rs),
+    // its finish its paint's (bit 4).
+    if (layer != 0xFFFFu && frames == 0u) {
+        out.emissive |= 512u | 16u;
+    }
+    out.tint |= min(in.team, 255u) << 8u;
     // Treads run as the unit drives, the two sides against each other as it turns (a face at
     // x goes forward by the distance less x times the turn); bit 3 wraps the texture. A road
     // wheel's hub turns instead, a radian for each radius of track its rim rolls over.
@@ -492,7 +505,36 @@ fn model_surface(in: VOut, front: bool) -> Surface {
     let painted = (in.emissive & 128u) != 0u;
     let bank = liveries.banks[select(0u, 1u, (in.emissive & 256u) != 0u)];
     let reborn_paint = frame.ao.w > 0.5 && !(painted && livery_original(bank));
-    if (layer != 0xFFFFu) {
+    if ((in.emissive & 512u) != 0u) {
+        // A model's own surface: its material's colour, the player's colour where its specular
+        // map's alpha says, its gloss and mirroring (green and red), its lights (blue), and its
+        // normal map's relief (x in alpha, y in green). Not read yet: its colour on average.
+        let group = surface_slots[layer];
+        if (group != 0xFFFFFFFFu) {
+            let first = group * 3u;
+            let paint = textureSampleGrad(surface_paint, tex_sampler, in.uv, first, duv_x, duv_y);
+            let finish = textureSampleGrad(surface_paint, tex_sampler, in.uv, first + 1u, duv_x, duv_y);
+            let relief = textureSampleGrad(surface_paint, tex_sampler, in.uv, first + 2u, duv_x, duv_y);
+            var albedo = srgb_to_linear(paint.rgb);
+            let slot = in.tint >> 8u;
+            let team = select(team_paint(slot), team_cb(slot), frame.detail.w > 0.5);
+            let shade = dot(albedo, vec3<f32>(0.2126, 0.7152, 0.0722));
+            albedo = mix(albedo, team * saturate(0.35 + shade * 2.6), finish.a);
+            // What mirrors its surroundings well (red) is polished metal: as bright as metal is,
+            // in its paint's tint (Forged Alliance added the mirrored sky over a dark paint: the
+            // Seraphim's chrome, the Aeon's).
+            let mirror = smoothstep(0.35, 0.9, finish.r) * (1.0 - finish.a);
+            albedo = mix(albedo, vec3<f32>(0.5) + albedo * 0.7, mirror * 0.85);
+            s.albedo = albedo;
+            s.material = vec2<f32>(mix(0.82, 0.2, max(finish.g, mirror * 0.8)), mirror * 0.9);
+            let lit = 1.0 - f32(in.flags >> 24u) / 255.0;
+            s.glow += albedo * finish.b * lit * 2.5;
+            // (Direct3D's way: x along u, y along v, down the picture.)
+            let xy = vec2<f32>(relief.a, relief.g) * 2.0 - 1.0;
+            let z = sqrt(max(1.0 - dot(xy, xy), 0.0));
+            s.normal = mapped_normal(n, position_x, position_y, duv_x, duv_y, vec3<f32>(xy, z) * 0.5 + 0.5);
+        }
+    } else if (layer != 0xFFFFu) {
         let uv = select(in.uv, vec2<f32>(fract(in.uv.x), in.uv.y), (in.emissive & 8u) != 0u);
         if ((in.emissive & 64u) != 0u) {
             if ((in.emissive & 256u) != 0u) {
@@ -564,9 +606,9 @@ fn model_surface(in: VOut, front: bool) -> Surface {
         worn = min(l.weather.x * 2.0, 1.0);
     }
     s.normal = bevelled(s.normal, in.world, in.edge_dist, in.edge_weight, select(0.28, 0.5, reborn), select(0.7, 1.1, reborn));
-    if (in.tint > 0u) {
+    if ((in.tint & 255u) > 0u) {
         // The white frame's brightest shade (about 230 of 255) becomes the player's colour.
-        s.albedo = s.albedo / 0.79 * team_cb(in.tint - 1u);
+        s.albedo = s.albedo / 0.79 * team_cb((in.tint & 255u) - 1u);
     }
     // Art direction is independent of camera and the terrain's HD-surface preference.
     // Enhanced Classic keeps the original paint; Reborn exposes more of the physical finish.

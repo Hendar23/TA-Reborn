@@ -187,6 +187,9 @@ pub struct Lod {
     pub specular: String,
     pub normals: String,
     pub cutoff: f64,
+    /// How the game shades it (`ShaderName`: `Unit`, `Insect`, `Aeon`, `Seraphim`...), which
+    /// says what its textures' channels hold (docs/SUPCOM_UNITS.md); empty where none is named.
+    pub shader: String,
 }
 
 /// How a unit is drawn (`Display`).
@@ -483,6 +486,7 @@ fn display(id: &str, t: Option<&Table>) -> Display {
                     own.specular = s("SpecularName").unwrap_or(own.specular);
                     own.normals = s("NormalsName").unwrap_or(own.normals);
                     own.cutoff = lod.get_ci("LODCutoff").and_then(Value::num).unwrap_or(0.0);
+                    own.shader = lod.get_ci("ShaderName").and_then(Value::str).unwrap_or("").to_string();
                     own
                 })
                 .collect::<Vec<Lod>>()
@@ -520,6 +524,7 @@ fn default_lod(stem: &str, k: usize) -> Lod {
         specular: format!("{textures}_specteam.dds"),
         normals: format!("{textures}_normalsts.dds"),
         cutoff: 0.0,
+        shader: String::new(),
     }
 }
 

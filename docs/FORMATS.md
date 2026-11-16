@@ -436,6 +436,41 @@ the rest a fireball's canvas; its 86 animations named by weapons come to 1.33 bi
 Escalation also replaces `fx.gaf`'s Explode2-Explode4 and Nuke1 with shield bubbles 760 to
 1140 px across, which no weapon of its names.
 
+## Model surfaces (`objects3d/<name>.surface`, TA Reborn's own)
+
+What TA Reborn paints a 3DO with beyond TA's palette colours and GAF textures (`ta_formats::surface`;
+the models it makes of Supreme Commander's units have them, docs/SUPCOM_UNITS.md). Beside its
+model, of the same name. Little-endian:
+
+| Bytes | What |
+| --- | --- |
+| 0 | `TASURF`, two zero bytes; the version (1); the number of materials; of pieces (u32 each) |
+| 20 | the far model's name: a u16 length and that many bytes of UTF-8 (none: 0) |
+| materials | each: its name, its colour map's path, its specular map's, its normal map's (each a u16 length and UTF-8), its colour on average (sRGB, 3 bytes) and a byte unused |
+| pieces | in the 3DO's order (depth first, as `Model3do::parse` lists them): the piece's number of vertices (u32, its own), then for each vertex its texture coordinates (two f32: u from the picture's left, v from its top) and normal (three i16 of 32,767ths, in the 3DO's axes as its vertices are, and one unused): 16 bytes |
+
+* A primitive whose texture name is one of the surface's materials (any case) is painted with it;
+  any other is drawn as TA draws it. A surface whose pieces or vertices do not match its model's is
+  not used (the log and the mod check say so).
+* The textures' channels: the colour map's RGB (sRGB; alpha unused); the specular map's red (how
+  much it mirrors its surroundings), green (how glossy), blue (where it glows by itself) and alpha
+  (where it takes the player's colour); the normal map's tangent-space normal, x in alpha and y in
+  green (z made up), x along u and y along v down the picture, as Direct3D's are.
+* `far`: a lighter model (a 3DO with its own surface, of the same pieces in the same order) drawn
+  in this one's place when it is under 48 pixels across on screen.
+
+## DDS textures
+
+`ta_formats::dds` reads DirectDraw Surfaces: DXT1, DXT3 and DXT5 (BC1, BC2, BC3) and uncompressed
+colour of 8 to 32 bits described by masks, a mip level at a time, or its blocks as stored. The paint
+of models with surfaces is drawn from arrays of BC3 layers of 512 × 512 texels with every mip level
+(`to_bc3_levels`): a DXT5 of that size with its levels is taken as it is; DXT1's and DXT3's are made
+BC3 block by block (DXT1's four-colour blocks keep their colours under an opaque alpha, its
+three-colour ones are encoded again, since BC3 always reads four; DXT3's colours stay, its alpha is
+encoded); anything else is decoded, halved or grown to 512 and encoded level by level. The encoders
+(an alpha block's ends its least and greatest, a colour block's ends along the colours' main axis,
+refined once by least squares) use plain arithmetic in a fixed order: the same bytes everywhere.
+
 ## COB bytecode (verified against shipped scripts)
 
 * `turn`/`move`: pop **target** (top) then speed; `spin`: pop **speed** (top) then

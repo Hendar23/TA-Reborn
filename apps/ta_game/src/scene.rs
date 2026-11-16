@@ -802,6 +802,8 @@ impl Scene {
             {
                 ta_render::model::lift_ground_pads(m);
             }
+            // (A model with a surface of its own: ta_formats::surface.)
+            let surface = parsed.as_ref().and_then(|m| surface_for(load, &object, m));
             if let Some(m) = &parsed {
                 self.bounds.insert(t.id, std::sync::Arc::new(PieceBounds::of(m)));
                 self.walk.add_model(t, m);
@@ -827,8 +829,17 @@ impl Scene {
                 }
             }
             let ids = parsed.map(|m| {
-                let own = models.library.add_unit(&t.def.name, &object, &m, &models.textures, palette);
-                let enemy = models.library.add_unit_for_side(&t.def.name, &object, &m, &models.textures, palette, true);
+                let (own, enemy) = match &surface {
+                    // (Its own paint, for every player: no skins, no kit.)
+                    Some(surface) => {
+                        let id = add_surfaced(models, load, &object, &m, surface, palette);
+                        (id, id)
+                    }
+                    None => (
+                        models.library.add_unit(&t.def.name, &object, &m, &models.textures, palette),
+                        models.library.add_unit_for_side(&t.def.name, &object, &m, &models.textures, palette, true),
+                    ),
+                };
                 // Cosmetic variants share the repaired source geometry used for ground contact.
                 self.surfaces.insert(t.id, PieceSurface::of_render(&models.library, own));
                 // (And for the room its guns have to recoil in: the faces as drawn.)
@@ -840,6 +851,14 @@ impl Scene {
             });
             self.models.insert(t.id, ids.map(|ids| ids.0));
             self.enemy_models.insert(t.id, ids.map(|ids| ids.1));
+        }
+    }
+
+    /// The game's files for the paint of the models with surfaces of their own, read as their
+    /// models are first drawn (ta_render's `surfaced.rs`).
+    pub fn read_surfaces_from(renderer: &mut Renderer, vfs: std::sync::Arc<ta_vfs::Vfs>) {
+        if let Some(models) = renderer.models.as_mut() {
+            models.surfaces.set_loader(std::sync::Arc::new(move |path: &str| vfs.read_opt(path)));
         }
     }
 
@@ -1302,6 +1321,55 @@ fn piece_matrices_between(t: &UnitType, before: &[PieceState], now: &[PieceState
     }
     for i in hidden_more {
         out[i] = Mat4::ZERO;
+    }
+}
+
+/// A model (`objects3d/<object>.3do`) added to the renderer's library: with its surface where it
+/// has one (see [`add_surfaced`]), as TA's are drawn otherwise.
+pub fn add_model(models: &mut ta_render::model::ModelRenderer, load: &dyn Fn(&str) -> Option<Vec<u8>>, object: &str, model: &ta_formats::model3do::Model3do, palette: &ta_formats::image::Palette) -> ModelId {
+    match surface_for(load, object, model) {
+        Some(surface) => add_surfaced(models, load, object, model, &surface, palette),
+        None => models.library.add(object, model, &models.textures, palette),
+    }
+}
+
+/// A model with a surface of its own added to the renderer's library, its materials registered
+/// (their paint read as it is first drawn), and the lighter model its surface names (`far`)
+/// drawn in its place far off.
+pub fn add_surfaced(models: &mut ta_render::model::ModelRenderer, load: &dyn Fn(&str) -> Option<Vec<u8>>, object: &str, model: &ta_formats::model3do::Model3do, surface: &ta_formats::surface::Surface, palette: &ta_formats::image::Palette) -> ModelId {
+    let slots: Vec<u32> = surface.materials.iter().map(|material| models.surfaces.register(material)).collect();
+    let textures = &models.textures;
+    let id = models.library.add_surfaced(object, model, surface, &slots, |name| textures.get(name), palette);
+    let far_name = surface.far.trim().to_ascii_lowercase();
+    if !far_name.is_empty()
+        && let Some(far_model) = load(&format!("objects3d/{far_name}.3do")).and_then(|b| ta_formats::model3do::Model3do::parse(&b).ok())
+        && let Some(far_surface) = surface_for(load, &far_name, &far_model)
+    {
+        let slots: Vec<u32> = far_surface.materials.iter().map(|material| models.surfaces.register(material)).collect();
+        let textures = &models.textures;
+        let far = models.library.add_surfaced(&far_name, &far_model, &far_surface, &slots, |name| textures.get(name), palette);
+        if !models.library.set_far(id, far) {
+            log::warn!("objects3d/{far_name}.3do: not of {object}'s pieces, not drawn far off in its place");
+        }
+    }
+    id
+}
+
+/// The surface beside a model (`objects3d/<object>.surface`, ta_formats::surface), if it has one
+/// that fits it: texture coordinates and normals for its vertices, its materials' paint.
+pub fn surface_for(load: &dyn Fn(&str) -> Option<Vec<u8>>, object: &str, model: &ta_formats::model3do::Model3do) -> Option<ta_formats::surface::Surface> {
+    let path = format!("objects3d/{object}.surface");
+    let bytes = load(&path)?;
+    match ta_formats::surface::Surface::parse(&bytes) {
+        Ok(surface) if surface.fits(model) => Some(surface),
+        Ok(_) => {
+            log::warn!("{path}: not the surface of its model (its pieces or their vertices differ)");
+            None
+        }
+        Err(e) => {
+            log::warn!("{path}: {e}");
+            None
+        }
     }
 }
 

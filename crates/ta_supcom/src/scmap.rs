@@ -493,7 +493,7 @@ pub(crate) mod tests {
             version,
             width: w,
             height: h,
-            preview: crate::dds::tests::header(4, 4, 1, None).into_iter().chain([7u8; 64]).collect(),
+            preview: crate::dds::header(4, 4, 1, None).into_iter().chain([7u8; 64]).collect(),
             height_scale: 1.0 / 128.0,
             heights: (0..(w + 1) * (h + 1)).map(|i| (i * 37 % 5000) as u16).collect(),
             shader: "TTerrainXP".into(),
