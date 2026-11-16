@@ -50,6 +50,13 @@
   editor, saving a map as a mod again, does the same and keeps the map's other authors.
 
 ### Fixed
+- A battle started from the menu (a new skirmish, a saved game or replay opened there, a lesson,
+  a multiplayer game) and the map editor kept the lens of the menu's film: its field of view,
+  its roll and a near plane a few units in front of the camera. Zoomed out over the battlefield
+  that left the depth too coarse to tell things apart, and for a few seconds after every pan or
+  zoom the trees in a wood traded places and the water along the shores streaked white (a battle
+  started straight away, or a saved game resumed from the launcher, never had it). Every battle now
+  starts with the game's own camera.
 - In the classic camera, what lies on the ground (metal deposits laid as features, scorch marks,
   painted shadows) was drawn over the lower part of what stood on it: a metal extractor or moho
   mine built on one of the Supreme Commander maps' deposits showed only its arms, and a tank on a
