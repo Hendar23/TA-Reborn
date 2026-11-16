@@ -18,7 +18,7 @@ use ta_formats::dds;
 use ta_formats::model3do::{FIXED_ONE, Model3do};
 use ta_formats::surface::{Material, Surface};
 
-use super::{FAR_FROM_EDGES, ModelId, ModelInfo, ModelLibrary, ModelVertex, PALETTE_FACE, PieceInfo, f16_bits};
+use super::{FAR_FROM_EDGES, ModelId, ModelInfo, ModelLibrary, ModelVertex, PALETTE_FACE, PieceInfo, TextureRef, f16_bits, face_normal, polygon_uvs, unflagged_ground_plate};
 use crate::occlusion::Footprint;
 
 /// The side of a material's layers.
@@ -233,8 +233,10 @@ impl ModelLibrary {
     /// A model with a surface of its own, registered under `name`: each piece's vertices as the 3DO
     /// places them with the surface's texture coordinates and normals; a polygon naming one of
     /// its materials painted with it (`slots`: each material's, from
-    /// [`SurfaceTextures::register`]), any other in its palette colour.
-    pub fn add_surfaced(&mut self, name: &str, model: &Model3do, surface: &Surface, slots: &[u32], palette: &ta_formats::image::Palette) -> ModelId {
+    /// [`SurfaceTextures::register`]), one naming a TA texture (`texture` finds it) painted as TA
+    /// lays it on, any other in its palette colour. The selection plate is left out, as from
+    /// TA's own models.
+    pub fn add_surfaced(&mut self, name: &str, model: &Model3do, surface: &Surface, slots: &[u32], texture: impl Fn(&str) -> Option<TextureRef>, palette: &ta_formats::image::Palette) -> ModelId {
         let key = name.to_ascii_lowercase();
         if let Some(&id) = self.by_name.get(&key) {
             return id;
@@ -252,32 +254,38 @@ impl ModelLibrary {
         let mut ranges = Vec::with_capacity(model.pieces.len());
         for (pi, (piece, faces)) in model.pieces.iter().zip(&surface.pieces).enumerate() {
             let piece_first = self.indices.len() as u32;
-            // (A vertex of the library's for each of the 3DO's and the slot it is painted with:
-            // shared by the polygons round it, as its surface's normal is.)
-            let mut made: HashMap<(u16, u32), u32> = HashMap::new();
-            for prim in piece.primitives.iter().filter(|p| p.indices.len() >= 3) {
+            // (A vertex of the library's for each of the 3DO's and what paints it: shared by the
+            // polygons round it, as its surface's normal is; a TA texture's laid on each polygon
+            // of its own.)
+            let mut made: HashMap<(u16, u32, [u8; 4]), u32> = HashMap::new();
+            let plate = piece.selection_primitive.or_else(|| unflagged_ground_plate(piece, rest[pi].y));
+            for (_, prim) in piece.primitives.iter().enumerate().filter(|&(k, p)| p.indices.len() >= 3 && Some(k) != plate) {
+                let at_corners: Vec<Vec3> = prim.indices.iter().map(|&i| fixed(piece.vertices[i as usize])).collect();
                 let material = prim.texture.as_deref().and_then(|t| surface.material(t));
-                let (layer, color) = match material {
-                    Some(m) => {
+                let ta = if material.is_none() { prim.texture.as_deref().and_then(&texture) } else { None };
+                let laid = ta.map(|_| polygon_uvs(&at_corners, face_normal(&at_corners)));
+                let (layer, color, roughness) = match (material, ta) {
+                    (Some(m), _) => {
                         let mean = surface.materials[m].mean;
-                        (slots[m], [mean[0], mean[1], mean[2], 0])
+                        // (A middling roughness: the material's own is in its paint.)
+                        (slots[m], [mean[0], mean[1], mean[2], 0], 64)
                     }
-                    None => {
+                    (None, Some(t)) => (t.layer | (t.frames.min(0xFF) << 16) | ((t.emissive as u32) << 24) | (1 << 28), [255, 255, 255, (t.metallic * 255.0).round() as u8], (t.roughness * 127.0).round() as i8),
+                    (None, None) => {
                         let [r, g, b] = palette.rgb((prim.color_index & 0xFF) as u8);
-                        (0xFFFF | (1 << 16) | PALETTE_FACE, [r, g, b, 255])
+                        (0xFFFF | (1 << 16) | PALETTE_FACE, [r, g, b, 255], 64)
                     }
                 };
                 let mut corners: Vec<u32> = Vec::with_capacity(prim.indices.len());
-                for &i in &prim.indices {
-                    let p = fixed(piece.vertices[i as usize]);
-                    let at = *made.entry((i, layer)).or_insert_with(|| {
+                for (c, (&i, &p)) in prim.indices.iter().zip(&at_corners).enumerate() {
+                    let mut vertex = || {
                         let v = faces.vertices.get(i as usize).copied().unwrap_or(ta_formats::surface::Vertex { uv: [0.0; 2], normal: [0, 32767, 0] });
                         let n = Vec3::new(v.normal[0] as f32, v.normal[1] as f32, -(v.normal[2] as f32)).normalize_or(Vec3::Y);
+                        let uv = laid.as_ref().map_or(v.uv, |uvs| uvs[c]);
                         self.vertices.push(ModelVertex {
                             pos: p.to_array(),
-                            // (A middling roughness: the material's own is in its paint.)
-                            normal: [(n.x * 127.0) as i8, (n.y * 127.0) as i8, (n.z * 127.0) as i8, 64],
-                            uv: [(v.uv[0].clamp(0.0, 1.0) * 65535.0).round() as u16, (v.uv[1].clamp(0.0, 1.0) * 65535.0).round() as u16],
+                            normal: [(n.x * 127.0) as i8, (n.y * 127.0) as i8, (n.z * 127.0) as i8, roughness],
+                            uv: [(uv[0].clamp(0.0, 1.0) * 65535.0).round() as u16, (uv[1].clamp(0.0, 1.0) * 65535.0).round() as u16],
                             layer,
                             color,
                             piece: pi as u32,
@@ -289,13 +297,14 @@ impl ModelLibrary {
                         max_r2 = max_r2.max(world.x * world.x + world.z * world.z);
                         max_h = max_h.max(world.y);
                         (self.vertices.len() as i32 - 1 - base_vertex) as u32
-                    });
+                    };
+                    let at = if laid.is_some() { vertex() } else { *made.entry((i, layer, color)).or_insert_with(vertex) };
                     corners.push(at);
                 }
                 for k in 1..corners.len() - 1 {
                     self.indices.extend_from_slice(&[corners[0], corners[k + 1], corners[k]]);
                 }
-                polygons.push(prim.indices.iter().map(|&i| rest[pi] + fixed(piece.vertices[i as usize])).collect());
+                polygons.push(at_corners.iter().map(|&p| rest[pi] + p).collect());
             }
             ranges.push((piece_first, self.indices.len() as u32 - piece_first));
         }
@@ -367,9 +376,10 @@ mod tests {
             far: String::new(),
         };
         let palette = ta_formats::image::Palette::parse(&vec![0u8; 1024]).unwrap();
+        let none = |_: &str| None;
         let mut library = ModelLibrary::default();
-        let id = library.add_surfaced("tank", &model, &surface, &[5], &palette);
-        assert_eq!(library.add_surfaced("TANK", &model, &surface, &[5], &palette), id, "registered once");
+        let id = library.add_surfaced("tank", &model, &surface, &[5], none, &palette);
+        assert_eq!(library.add_surfaced("TANK", &model, &surface, &[5], none, &palette), id, "registered once");
         let info = library.info(id).clone();
         assert_eq!(info.pieces.len(), 2);
         assert_eq!(info.index_count, 6);
@@ -387,11 +397,11 @@ mod tests {
         let mut twice = model.clone();
         twice.pieces[1].primitives.push(tri(Some("paint")));
         let mut library = ModelLibrary::default();
-        let near = library.add_surfaced("tank", &twice, &surface, &[5], &palette);
+        let near = library.add_surfaced("tank", &twice, &surface, &[5], none, &palette);
         assert_eq!(library.vertices.len(), 6);
         assert_eq!(library.indices.len(), 9);
         // A far model of the same pieces is drawn in its place far off; another's is not taken.
-        let far = library.add_surfaced("tank_lod1", &model, &surface, &[5], &palette);
+        let far = library.add_surfaced("tank_lod1", &model, &surface, &[5], none, &palette);
         assert!(library.set_far(near, far));
         let root = glam::Mat4::IDENTITY;
         assert_eq!(library.detail_for(near, root, None, true), near, "no camera: as itself");
@@ -402,7 +412,42 @@ mod tests {
         assert_eq!(library.detail_for(near, root, Some(&camera), false), near, "large on screen");
         let mut other = model.clone();
         other.pieces[1].name = "gun".into();
-        let stranger = library.add_surfaced("other", &other, &surface, &[5], &palette);
+        let stranger = library.add_surfaced("other", &other, &surface, &[5], none, &palette);
         assert!(!library.set_far(near, stranger));
+    }
+
+    /// Polygons naming no material: one naming a TA texture painted with it, laid on as TA lays
+    /// it (its own corners, its frames' count kept for team colours), palette faces of two
+    /// colours not sharing their corners, and the selection plate left out.
+    #[test]
+    fn a_surfaced_models_other_polygons_are_drawn_as_tas() {
+        let prim = |colour: u32, texture: Option<&str>| Primitive { color_index: colour, indices: vec![0, 1, 2], texture: texture.map(str::to_string) };
+        let model = Model3do {
+            pieces: vec![Piece {
+                name: "base".into(),
+                parent: None,
+                offset: [0; 3],
+                vertices: vec![[0, 0, 0], [65536, 0, 0], [0, 0, 65536]],
+                primitives: vec![prim(0, Some("armcolour")), prim(1, None), prim(2, None), prim(3, None)],
+                selection_primitive: Some(3),
+                children: vec![],
+            }],
+        };
+        let surface = Surface { materials: vec![], pieces: vec![surface::Piece { vertices: vec![surface::Vertex { uv: [0.0; 2], normal: [0, 32767, 0] }; 3] }], far: String::new() };
+        let mut colours = vec![0u8; 1024];
+        colours[4..8].copy_from_slice(&[200, 0, 0, 0]);
+        colours[8..12].copy_from_slice(&[0, 200, 0, 0]);
+        let palette = ta_formats::image::Palette::parse(&colours).unwrap();
+        let team = TextureRef { layer: 7, frames: 10, emissive: false, roughness: 0.5, metallic: 0.2, mean: [128; 3] };
+        let mut library = ModelLibrary::default();
+        let id = library.add_surfaced("mixed", &model, &surface, &[], |n: &str| n.eq_ignore_ascii_case("armcolour").then_some(team), &palette);
+        // Three polygons drawn (the plate left out), three corners each, none shared.
+        assert_eq!(library.info(id).index_count, 9);
+        assert_eq!(library.vertices.len(), 9);
+        let painted = &library.vertices[0..3];
+        assert!(painted.iter().all(|v| v.layer & 0xFFFF == 7 && (v.layer >> 16) & 0xFF == 10), "TA's texture, its ten frames");
+        assert_ne!(painted[0].uv, painted[1].uv, "laid on as TA lays it");
+        assert_eq!(library.vertices[3].color[..3], [200, 0, 0]);
+        assert_eq!(library.vertices[6].color[..3], [0, 200, 0]);
     }
 }

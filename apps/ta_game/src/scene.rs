@@ -1338,14 +1338,16 @@ pub fn add_model(models: &mut ta_render::model::ModelRenderer, load: &dyn Fn(&st
 /// drawn in its place far off.
 pub fn add_surfaced(models: &mut ta_render::model::ModelRenderer, load: &dyn Fn(&str) -> Option<Vec<u8>>, object: &str, model: &ta_formats::model3do::Model3do, surface: &ta_formats::surface::Surface, palette: &ta_formats::image::Palette) -> ModelId {
     let slots: Vec<u32> = surface.materials.iter().map(|material| models.surfaces.register(material)).collect();
-    let id = models.library.add_surfaced(object, model, surface, &slots, palette);
+    let textures = &models.textures;
+    let id = models.library.add_surfaced(object, model, surface, &slots, |name| textures.get(name), palette);
     let far_name = surface.far.trim().to_ascii_lowercase();
     if !far_name.is_empty()
         && let Some(far_model) = load(&format!("objects3d/{far_name}.3do")).and_then(|b| ta_formats::model3do::Model3do::parse(&b).ok())
         && let Some(far_surface) = surface_for(load, &far_name, &far_model)
     {
         let slots: Vec<u32> = far_surface.materials.iter().map(|material| models.surfaces.register(material)).collect();
-        let far = models.library.add_surfaced(&far_name, &far_model, &far_surface, &slots, palette);
+        let textures = &models.textures;
+        let far = models.library.add_surfaced(&far_name, &far_model, &far_surface, &slots, |name| textures.get(name), palette);
         if !models.library.set_far(id, far) {
             log::warn!("objects3d/{far_name}.3do: not of {object}'s pieces, not drawn far off in its place");
         }

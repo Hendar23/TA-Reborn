@@ -126,8 +126,8 @@ fn unit_file(u: &UnitBlueprint) -> String {
         put("MaxVelocity", format!("{:.2}", u.max_speed * UNIT_SCALE / 30.0));
         put("Acceleration", format!("{:.3}", (u.acceleration * UNIT_SCALE / 900.0).max(0.01)));
         put("BrakeRate", format!("{:.3}", (u.brake * UNIT_SCALE / 900.0).max(0.01)));
-        // Degrees a second to TA's angle units (65,536 a turn) a second.
-        put("TurnRate", format!("{}", (u.turn_rate * 65536.0 / 360.0).round() as i64));
+        // Degrees a second to TA's angle units (65,536 a turn) a tick (30 a second).
+        put("TurnRate", format!("{}", (u.turn_rate * 65536.0 / 360.0 / 30.0).round() as i64));
         put("canmove", "1".into());
         put("canpatrol", "1".into());
         put("canguard", "1".into());
@@ -139,6 +139,22 @@ fn unit_file(u: &UnitBlueprint) -> String {
     }
     if let Some(class) = class {
         put("MovementClass", class.into());
+    }
+    // How it moves, as TA's units say it beside their class: hovercraft hover, ships float,
+    // submarines keep to deep water, amphibians go to the sea bed.
+    match u.motion {
+        Motion::Hover => put("canhover", "1".into()),
+        Motion::Water => {
+            put("Floater", "1".into());
+            put("MinWaterDepth", "6".into());
+        }
+        Motion::Sub => {
+            put("MinWaterDepth", "20".into());
+            put("WaterLine", "20".into());
+            put("Upright", "1".into());
+        }
+        Motion::Amphibious => put("MaxWaterDepth", "255".into()),
+        _ => {}
     }
     if u.motion == Motion::Air {
         put("canfly", "1".into());
