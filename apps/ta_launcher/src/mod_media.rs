@@ -831,6 +831,34 @@ mod tests {
         false
     }
 
+    /// A 24-bit BMP of `width` x `height` pixels of one colour, written out by hand: the `image`
+    /// crate writes BMP only where a platform's own dependencies turn the format on (the clipboard's,
+    /// on Windows), not on Linux or macOS.
+    fn bmp(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
+        let row = (width * 3).div_ceil(4) * 4;
+        let size = 54 + row * height;
+        let mut out = Vec::with_capacity(size as usize);
+        out.extend_from_slice(b"BM");
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&[0; 4]);
+        out.extend_from_slice(&54u32.to_le_bytes());
+        out.extend_from_slice(&40u32.to_le_bytes());
+        out.extend_from_slice(&(width as i32).to_le_bytes());
+        out.extend_from_slice(&(height as i32).to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&24u16.to_le_bytes());
+        // (No compression; the image's size, resolution and colours left to the reader.)
+        out.extend_from_slice(&[0; 24]);
+        for _ in 0..height {
+            let start = out.len();
+            for _ in 0..width {
+                out.extend_from_slice(&[rgb[2], rgb[1], rgb[0]]);
+            }
+            out.resize(start + row as usize, 0);
+        }
+        out
+    }
+
     /// A screenshot that is not there, one of a kind the launcher does not read, and one over
     /// its size each come to nothing, said so (never a rail at work for ever); a good one comes
     /// in; and RESCAN tries again one that failed.
@@ -838,7 +866,7 @@ mod tests {
     fn a_picture_not_to_be_had_says_so_and_a_rescan_tries_it_again() {
         let dir = temp("states");
         std::fs::create_dir_all(dir.join("media")).unwrap();
-        image::RgbImage::from_pixel(64, 36, image::Rgb([200, 0, 0])).save(dir.join("media/picture.bmp")).unwrap();
+        std::fs::write(dir.join("media/picture.bmp"), bmp(64, 36, [200, 0, 0])).unwrap();
         image::GrayImage::new(5000, 20).save(dir.join("media/huge.png")).unwrap();
         image::RgbImage::from_pixel(640, 360, image::Rgb([0, 90, 0])).save(dir.join("media/fine.png")).unwrap();
         let info = module(&dir, "[media]\nscreenshots = [\"media/mistyped.png\", \"media/picture.bmp\", \"media/huge.png\", \"media/fine.png\"]\n");
