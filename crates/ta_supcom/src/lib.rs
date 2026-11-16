@@ -7,6 +7,10 @@
 //! - [`scd`], [`dds`], [`lua`], [`scmap`]: reading its archives, textures, data and maps;
 //! - [`map`]: a map as the converter needs it (the scenario, the save file's markers, the map);
 //! - [`convert`]: the map made into a TA map.
+//!
+//! Its factions' units are read too (docs/SUPCOM_UNITS.md), to be made into a mod of TA units:
+//! - [`unit`]: their blueprints;
+//! - [`scm`], [`sca`]: their meshes and animations.
 
 pub mod convert;
 pub mod dds;
@@ -14,8 +18,11 @@ pub mod files;
 pub mod install;
 pub mod lua;
 pub mod map;
+pub mod sca;
 pub mod scd;
+pub mod scm;
 pub mod scmap;
+pub mod unit;
 
 use std::path::{Path, PathBuf};
 
