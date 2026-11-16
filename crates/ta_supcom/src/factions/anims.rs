@@ -157,16 +157,29 @@ fn key(place: [f64; 3], turn: [f64; 4], at_rest: [f64; 3], pixels: f64) -> Key {
     Key { moved, turned: [wrapped(units(x)), wrapped(units(y)), wrapped(units(-z))] }
 }
 
+/// Under this, the cosine of the turn about x counts as none: the piece points straight up or
+/// down, where the turns about y and z are one.
+const STRAIGHT_UP: f64 = 1e-6;
+
 /// The turns about y, x and z (radians) that composed so (`R = Ry Rx Rz`) make `q`.
 fn euler_yxz(q: [f64; 4]) -> (f64, f64, f64) {
     let [w, x, y, z] = q;
+    let m00 = 1.0 - 2.0 * (y * y + z * z);
+    let m01 = 2.0 * (x * y - w * z);
     let m02 = 2.0 * (x * z + w * y);
     let m22 = 1.0 - 2.0 * (x * x + y * y);
     let m10 = 2.0 * (x * y + w * z);
     let m11 = 1.0 - 2.0 * (x * x + z * z);
     let m12 = (2.0 * (y * z - w * x)).clamp(-1.0, 1.0);
     // asin(-m12), from the arctangent: the same bits everywhere.
-    let pitch = atan2(-m12, (1.0 - m12 * m12).max(0.0).sqrt());
+    let cos_pitch = (1.0 - m12 * m12).max(0.0).sqrt();
+    let pitch = atan2(-m12, cos_pitch);
+    if cos_pitch < STRAIGHT_UP {
+        // Pointing straight up or down (sin x = -m12, ±1), the turns about y and z are one: with
+        // none about z, the row Ry Rx makes of x's axis holds the turn about y (its first two
+        // entries cos y and sin y, the second's sign with sin x's).
+        return (atan2(-m12 * m01, m00), pitch, 0.0);
+    }
     (atan2(m02, m22), pitch, atan2(m10, m11))
 }
 
@@ -252,6 +265,23 @@ mod tests {
         assert_eq!(k.turned, [0, 16384, 0]);
         // A move along x is negated as well.
         assert_eq!(key([1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [0.0; 3], 2.0).moved, [-131072, 0, 0]);
+    }
+
+    /// A piece turned to point straight up or down keeps the rest of its turn: about x a quarter,
+    /// and about y as much as it was (at that pitch the turns about y and z are one, all given to
+    /// y). The rotation that sends x to -z and y to x.
+    #[test]
+    fn a_turn_straight_up_keeps_its_heading() {
+        let k = key([0.0; 3], [0.5, 0.5, 0.5, -0.5], [0.0; 3], 1.0);
+        assert_eq!(k.turned, [16384, 16384, 0]);
+        // And down: a quarter the other way about x, and a quarter about y.
+        let k = key([0.0; 3], [0.5, -0.5, 0.5, 0.5], [0.0; 3], 1.0);
+        assert_eq!(k.turned, [-16384, 16384, 0]);
+        // Composed back as the engine composes a script's turns (Ry Rx Rz), x goes where the
+        // quaternion sends it.
+        let (a, b, c) = euler_yxz([0.5, 0.5, 0.5, -0.5]);
+        let x = [a.cos() * c.cos() + a.sin() * b.sin() * c.sin(), b.cos() * c.sin(), -a.sin() * c.cos() + a.cos() * b.sin() * c.sin()];
+        assert!(x[0].abs() < 1e-9 && x[1].abs() < 1e-9 && (x[2] + 1.0).abs() < 1e-9, "{a} {b} {c}: {x:?}");
     }
 
     #[test]

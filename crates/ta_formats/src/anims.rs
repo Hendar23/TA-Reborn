@@ -119,9 +119,13 @@ impl Anims {
         self.clips.iter().find(|c| c.name.eq_ignore_ascii_case(name))
     }
 
-    /// The death clips (`death`, `death2`...).
+    /// The death clips (`death`, `death2`...). (Their names are read as bytes: a clip named in any
+    /// script, `歩く`, is no death, and no trouble.)
     pub fn deaths(&self) -> impl Iterator<Item = &Clip> {
-        self.clips.iter().filter(|c| c.name.len() >= 5 && c.name[..5].eq_ignore_ascii_case("death") && c.name[5..].bytes().all(|b| b.is_ascii_digit()))
+        self.clips.iter().filter(|c| {
+            let name = c.name.as_bytes();
+            name.len() >= 5 && name[..5].eq_ignore_ascii_case(b"death") && name[5..].iter().all(u8::is_ascii_digit)
+        })
     }
 
     /// Whether it fits a model of `pieces` pieces: every clip moves pieces it has, each once, and
@@ -241,6 +245,8 @@ mod tests {
                 Clip { name: "walk".into(), seconds: 1.0, pieces: vec![2, 0], times: vec![0.0, 0.5], keys: vec![key(0, 0), key(65536, 30000), key(131072, 32000), key(0, -30000)] },
                 Clip { name: "death".into(), seconds: 2.0, pieces: vec![1], times: vec![0.0, 2.0], keys: vec![key(0, 0), key(0, 16384)] },
                 Clip { name: "Death2".into(), ..Default::default() },
+                Clip { name: "歩く".into(), ..Default::default() },
+                Clip { name: "deathé".into(), ..Default::default() },
             ],
         }
     }
@@ -252,7 +258,7 @@ mod tests {
         assert_eq!(back, a);
         assert!(back.fits(3) && !back.fits(2), "the walk moves piece 2");
         assert_eq!(back.clip("WALK").map(|c| c.pieces.len()), Some(2));
-        assert_eq!(back.deaths().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["death", "Death2"]);
+        assert_eq!(back.deaths().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["death", "Death2"], "names in other scripts are no deaths");
     }
 
     #[test]
