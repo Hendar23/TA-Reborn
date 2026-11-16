@@ -1729,8 +1729,7 @@ impl State {
         let staged = crate::stage::current().filter(|_| args.demo.as_deref() == Some("stage"));
         let mut audio = GameAudio::new(assets.vfs.clone(), &config.audio);
         audio.set_user_music(&ta_config::music_files(&config.audio), config.audio.user_music);
-        let mut camera = Camera::new(Vec2::new(size.width as f32, size.height as f32));
-        camera.zoom = 1.6;
+        let mut camera = battle_camera(Vec2::new(size.width as f32, size.height as f32));
         if let Some(c) = game.local_commander().filter(|_| !game.spectator) {
             crate::hud::focus_on(&mut camera, &game, c);
             camera.focus.z += 60.0;
@@ -2873,6 +2872,8 @@ impl State {
             }
             Transition::Editor(start, panel) => match crate::editor::Editor::start(&self.assets, &mut self.renderer, start, panel.as_deref()) {
                 Ok(editor) => {
+                    // (Not the menu film's lens: see `battle_camera`; the editor frames the map.)
+                    self.camera = Camera::new(self.camera.viewport);
                     self.audio.reset_scene();
                     self.editor = Some(editor);
                     self.screen = Screen::Editor;
@@ -3006,9 +3007,8 @@ impl State {
                 meet_the_enemy(&mut self.game, &self.settings, self.profile_eligible);
                 self.screen = Screen::Playing;
                 self.in_game_menu = false;
-                self.camera.zoom = 1.6;
-                self.camera.pitch = ta_render::camera::TA_ELEVATION;
-                self.camera.yaw = 0.0;
+                // (Not the camera the menu's film had: see `battle_camera`.)
+                self.camera = battle_camera(self.camera.viewport);
                 // (The menu's backdrop had the modern camera: every battle, replay and lesson
                 // is seen the way the player chose.)
                 set_camera_style(&mut self.camera, self.settings.graphics.camera);
@@ -8664,6 +8664,18 @@ impl Shots {
     }
 }
 
+/// The camera a battle starts with on `viewport`, before it is put on the player's Commander:
+/// the game's own, whether the battle was started straight away or from the menu. The menu's film
+/// shares the camera and leaves its lens on it (its field of view, its roll and its near plane, a
+/// few units in front of an eye low over the ground): over a battlefield seen from thousands of
+/// units away, a near plane that close left the depth no precision, and the trees in a wood traded
+/// places and the water along the shores streaked white as the camera settled after every move.
+fn battle_camera(viewport: Vec2) -> Camera {
+    let mut camera = Camera::new(viewport);
+    camera.zoom = 1.6;
+    camera
+}
+
 /// Sets the camera to the player's chosen way of seeing the battle: the modern 3D camera, or
 /// TA's own top-down view, which never turns or tilts (it is TA's oblique projection, the
 /// maps as painted).
@@ -9249,6 +9261,29 @@ mod tests {
         assert_eq!(zoom_out_limit(hd, Some(wide)), FARTHEST_ZOOM_1080);
         assert!((zoom_out_limit(Vec2::new(3840.0, 2160.0), Some(wide)) - 2.0 * FARTHEST_ZOOM_1080).abs() < 1e-6, "4K sees as much as 1080p");
         assert_eq!(zoom_out_limit(hd, None), FARTHEST_ZOOM_1080);
+    }
+
+    /// A battle started from the menu has the game's own camera, as one started straight away
+    /// does, not the lens the menu's film left on it (its field of view, its roll, its near plane
+    /// a few units off): zoomed out over the battlefield, that near plane left the depth too coarse
+    /// to tell a tree from the one beside it, or the water from the shore under it.
+    #[test]
+    fn a_battle_does_not_keep_the_menu_films_lens() {
+        let viewport = Vec2::new(3840.0, 2160.0);
+        let mut film = Camera::new(viewport);
+        (film.fov_y, film.roll, film.near) = (55f32.to_radians(), 0.08, Some(2.0));
+        let battle = battle_camera(film.viewport);
+        assert_eq!((battle.near, battle.roll, battle.fov_y, battle.zoom), (None, 0.0, Camera::new(viewport).fov_y, 1.6));
+        // How far apart (world units) two depths lie that the depth buffer can still tell apart, at
+        // the focus of a view zoomed out as a player does (a 32-bit float depth, 0 near, 1 far).
+        let step = |camera: &Camera| {
+            let mut c = camera.clone();
+            c.zoom = 0.3;
+            let (near, _) = c.clip_range();
+            c.distance() * c.distance() / near * f32::EPSILON * 0.5
+        };
+        assert!(step(&film) > 1.0, "the film's lens: {}", step(&film));
+        assert!(step(&battle) < 0.05, "the battle's: {}", step(&battle));
     }
 
     /// Zoomed in, the focus goes anywhere on the map; zoomed out over all of it, to its middle;
