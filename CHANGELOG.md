@@ -30,6 +30,9 @@
   experimentals now walk as in their game, and 93 of their units die as they do there (make the
   factions again in the launcher: it offers UPDATE). See
   [docs/MODDING.md](docs/MODDING.md#models-that-move-by-clips-of-their-own).
+- The Supreme Commander factions' nukes fly at TA's nukes' speed at least: they left their silo
+  at a crawl and took a minute to cross a big map. Their wrecks, their units' own models, are
+  drawn burnt out, sooted and without their player's colour, as TA's wrecks are painted.
 - A mod's units carry up to eight weapons, `Weapon1` to `Weapon8`: the fourth to the eighth aim
   and fire through the numbered script functions (`AimWeapon4`, `QueryWeapon4`, `FireWeapon4`...),
   each with its own bad targets (`BadTargetCategory4`...). The Supreme Commander factions' 23 units

@@ -32,6 +32,10 @@ struct FeatureVisual {
     ore: f32,
     translucent: bool,
     model: Option<ModelId>,
+    /// A wreck drawn from its unit's own model with a surface of its own (a mod's: the Supreme
+    /// Commander units'): drawn burnt out, its player's colour gone to soot, its lights dead (TA's
+    /// wrecks are painted so already).
+    burnt_out: bool,
     /// Positive gap under the rest mesh (some wrecks' root offsets leave them above zero).
     /// Removed only for a feature anchored on the ground; buried or elevated art stays so.
     ground_sink: f32,
@@ -744,6 +748,10 @@ impl FeatureView {
         let mut patches: HashMap<usize, Vec<crate::feature_strokes::Blob>> = HashMap::new();
         // (With HD surfaces the standing paintings' palette static is calmed, as the ground's.)
         renderer.sprites.atlas.calm_paintings = renderer.lighting.hd_surfaces > 0.0;
+        // The wrecks and heaps the units leave (their `Corpse`, and its `featuredead`).
+        let mut corpses: std::collections::HashSet<String> = sim.types.types.iter().map(|t| t.def.corpse.to_ascii_lowercase()).filter(|c| !c.is_empty()).collect();
+        let heaps: Vec<String> = sim.data.features.iter().filter(|d| corpses.contains(&d.name.to_ascii_lowercase())).map(|d| d.feature_dead.to_ascii_lowercase()).filter(|h| !h.is_empty()).collect();
+        corpses.extend(heaps);
         for def_id in used {
             let def = &sim.data.features[def_id];
             let mut v = FeatureVisual {
@@ -769,6 +777,7 @@ impl FeatureView {
                             v.ground_sink = model_ground_sink(&models.library.info(id).rest_pose(), &surfaces);
                             id
                         });
+                    v.burnt_out = v.model.is_some() && corpses.contains(&def.name.to_ascii_lowercase()) && vfs.exists(&format!("objects3d/{name}.surface"));
                 }
             } else if !def.filename.is_empty() {
                 let key = def.filename.to_ascii_lowercase();
@@ -1133,6 +1142,7 @@ impl FeatureView {
         let now = sim.tick as f32 / 30.0;
         let mut ids = Vec::new();
         let mut heats = Vec::new();
+        let mut burnt = Vec::new();
         self.matrices.clear();
         let near = features_in_view(sim, view_min, view_max, margin);
         // Crystals on the metal deposits no building stands on (modern camera).
@@ -1156,6 +1166,7 @@ impl FeatureView {
                 self.matrices.push(vec![Mat4::from_translation(Vec3::new(p[0], ground, p[2])) * Mat4::from_rotation_y(yaw)]);
                 ids.push(self.ore_models[(h >> 8) as usize % self.ore_models.len()]);
                 heats.push(0.0);
+                burnt.push(false);
             }
         }
         for i in near {
@@ -1182,14 +1193,28 @@ impl FeatureView {
             }
             ids.push(model);
             heats.push(self.heat(i, now));
+            burnt.push(visual.burnt_out);
         }
         ids.into_iter()
             .zip(heats)
+            .zip(burnt)
             .zip(self.matrices.iter())
-            .map(|((model, damage), m)| DrawInstance { model, pieces: m, team: 0, flags: 0, build: 1.0, damage, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL })
+            .map(|(((model, damage), burnt), m)| {
+                // (A unit's own model as its wreck: sooted all over, but no embers once cool; its
+                // player's colour the dark grey slot's; its lights out.)
+                let (team, flags, damage) = if burnt { (BURNT_TEAM, BURNT_LIGHTS, damage.max(BURNT_SOOT)) } else { (0, 0, damage) };
+                DrawInstance { model, pieces: m, team, flags, build: 1.0, damage, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL }
+            })
             .collect()
     }
 }
+
+/// A burnt-out wreck's colour slot (TA's dark grey) for where its unit wore its player's colour.
+const BURNT_TEAM: u32 = 7;
+/// Its lights, out.
+const BURNT_LIGHTS: u32 = 255 << ta_render::model::FLAG_LIGHTS_OUT_SHIFT;
+/// How sooted it is, cold (the shader's battle damage: under 0.6, no embers).
+const BURNT_SOOT: f32 = 0.58;
 
 /// A climatic optimizer's lamp (linear): the pale yellow TA paints it.
 const OPTIMIZER_LAMP: [f32; 3] = [0.79, 0.66, 0.15];

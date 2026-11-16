@@ -188,6 +188,12 @@ pub fn transport(mesh: &crate::scm::Mesh) -> Option<(u32, u32)> {
 /// A nuke's range, pixels: the whole of any map.
 const NUKE_RANGE: i64 = 32000;
 
+/// The speed a strategic missile flies at, at least: TA's nukes' (`NUCLEAR_MISSILE`'s 350 pixels a
+/// second). Forged Alliance's leave their silo at a crawl (5 ogrids a second) and speed up on their
+/// way, which TA's flight model, a missile at its weapon's velocity, cannot do: at the crawl, one
+/// took a minute to cross a 20 km map.
+const NUKE_SPEED: i64 = 350;
+
 /// How long a missile flies before it falls, seconds (TA's `flighttime`, its projectile's life):
 /// long enough to cover `range` pixels at its `speed` half again (it turns as it tracks), with
 /// its climb to speed from `start` at `acceleration` and a second to launch.
@@ -205,12 +211,13 @@ pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
         let _ = writeln!(s, "\t{key}={value};");
     };
     put("name", if w.display_name.is_empty() { w.label.clone() } else { w.display_name.replace(';', ",") });
-    put("range", px(w.max_radius.max(1.0)).to_string());
+    put("range", if k == Kind::Nuke { NUKE_RANGE } else { px(w.max_radius.max(1.0)) }.to_string());
     if w.min_radius > 0.0 {
         put("minbarrelangle", "-15".into());
     }
     put("reloadtime", format!("{:.3}", 1.0 / w.rate_of_fire.max(0.01)));
     let speed = (w.muzzle_velocity.max(5.0) * UNIT_SCALE).round() as i64;
+    let speed = if k == Kind::Nuke { speed.max(NUKE_SPEED) } else { speed };
     put("weaponvelocity", speed.to_string());
     let blast = match &w.nuke {
         Some(n) => n.outer_radius * 2.0 * UNIT_SCALE,
@@ -279,7 +286,6 @@ pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
                 put("targetable", "1".into());
                 put("commandfire", "1".into());
                 put("noautorange", "1".into());
-                put("range", NUKE_RANGE.to_string());
             }
             if k == Kind::AntiMissile {
                 put("interceptor", "1".into());
@@ -789,6 +795,24 @@ mod tests {
         let section = weapon_section(&striker(), &missile);
         let life: f64 = section.lines().find_map(|l| l.trim().strip_prefix("flighttime=")).and_then(|v| v.trim_end_matches(';').parse().ok()).expect(&section);
         assert!(life * 320.0 >= 120.0 * 32.0, "{section}");
+        // A strategic missile reaches across the map at TA's nukes' speed at least, its range given
+        // once.
+        let nuke = WeaponBlueprint {
+            label: "NukeMissiles".into(),
+            category: "Missile".into(),
+            damage: 1.0,
+            rate_of_fire: 0.1,
+            max_radius: 20000.0,
+            muzzle_velocity: 5.0,
+            nuke: Some(crate::unit::Nuke { inner_damage: 70000.0, inner_radius: 30.0, outer_damage: 500.0, outer_radius: 40.0 }),
+            ..Default::default()
+        };
+        let section = weapon_section(&striker(), &nuke);
+        let value = |key: &str| section.lines().filter_map(|l| l.trim().strip_prefix(key)).map(|v| v.trim_end_matches(';').to_string()).collect::<Vec<_>>();
+        assert_eq!(value("range="), [NUKE_RANGE.to_string()], "{section}");
+        assert_eq!(value("weaponvelocity="), [NUKE_SPEED.to_string()], "{section}");
+        let life: i64 = value("flighttime=")[0].parse().unwrap();
+        assert!(life * NUKE_SPEED >= NUKE_RANGE && life < 200, "{life} s: {section}");
     }
 
     /// The fields TA Reborn reads: builders reclaim (`CanReclamate`), a radar is on once built
