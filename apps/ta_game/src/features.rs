@@ -1124,7 +1124,10 @@ impl FeatureView {
     /// 3DO feature instances (rest pose; single-piece models get one matrix, others the
     /// root transform applied to each piece's rest offset). The wrecks in `waiting` are left out,
     /// as from the sprites (`update`): most wrecks are models.
-    pub fn model_instances<'a>(&'a mut self, sim: &Sim, renderer: &Renderer, view_min: Vec2, view_max: Vec2, waiting: &[usize]) -> Vec<DrawInstance<'a>> {
+    /// The features' models in view as instances (`waiting`: wrecks not shown yet; `posed`: wrecks
+    /// lying as their unit's death left them, by feature: their pieces from where they stand,
+    /// facing their heading).
+    pub fn model_instances<'a>(&'a mut self, sim: &Sim, renderer: &Renderer, view_min: Vec2, view_max: Vec2, waiting: &[usize], posed: &rustc_hash::FxHashMap<usize, Vec<Mat4>>) -> Vec<DrawInstance<'a>> {
         let Some(models) = renderer.models.as_ref() else { return Vec::new() };
         let margin = 96.0;
         let now = sim.tick as f32 / 30.0;
@@ -1170,7 +1173,13 @@ impl FeatureView {
             p.y = grounded_model_y(p.y, ground, crate::scene::drawn_ground(&sim.world, p.x, p.z), visual.ground_sink);
             let root = Mat4::from_translation(p);
             let rest = models.library.info(model).rest_pose();
-            self.matrices.push(rest.into_iter().map(|m| root * m).collect());
+            match posed.get(&i).filter(|pose| pose.len() == rest.len()) {
+                Some(pose) => {
+                    let facing = root * Mat4::from_rotation_y(f.heading as f32 * std::f32::consts::TAU / 65536.0);
+                    self.matrices.push(pose.iter().map(|&m| if m == Mat4::ZERO { m } else { facing * m }).collect());
+                }
+                None => self.matrices.push(rest.into_iter().map(|m| root * m).collect()),
+            }
             ids.push(model);
             heats.push(self.heat(i, now));
         }

@@ -883,6 +883,18 @@ Supreme Commander's units are painted so. The format is in [FORMATS.md](FORMATS.
   own, in either art style.
 - In TA itself, such a model shows its palette colours.
 
+#### Models that move by clips of their own
+
+A model can have **animations** beside it, `objects3d/<name>.anims`: keyframed movements of its
+pieces, played on the screen alone (the simulation, and so multiplayer, never sees them). A clip
+named `walk` is played as a ground unit of the model walks, in step with the ground it covers,
+instead of its script's walk (the pieces its script aims with keep the script's turns); clips
+named `death`, `death2`... play where one dies on the ground, its wreck lying in the pose the
+clip ends in. The Supreme Commander units walk and die so, their clips made from their game's own
+animations. The format is in [FORMATS.md](FORMATS.md#model-animations-objects3dnameanims-ta-reborns-own);
+`ta_formats::anims::Anims::to_bytes` writes it. The mod check reads them and says which do not
+fit their model.
+
 #### Build menus
 
 A builder's menu, what its player is offered, comes from two places:

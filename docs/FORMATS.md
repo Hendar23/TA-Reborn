@@ -459,6 +459,33 @@ model, of the same name. Little-endian:
 * `far`: a lighter model (a 3DO with its own surface, of the same pieces in the same order) drawn
   in this one's place when it is under 48 pixels across on screen.
 
+## Model animations (`objects3d/<name>.anims`, TA Reborn's own)
+
+Keyframed movements of a 3DO's pieces that TA Reborn plays on the screen alone (`ta_formats::anims`;
+the models it makes of Supreme Commander's units have them, docs/SUPCOM_UNITS.md). Beside its
+model, of the same name. The simulation never sees them, as it never sees how its walkers' legs are
+posed by the ground they cover. Little-endian:
+
+| Bytes | What |
+| --- | --- |
+| 0 | `TAANIMS`, a zero byte; the version (1); the number of clips (u32 each) |
+| clips | each: its name (a u16 length and UTF-8), its length in seconds (f32), the number of pieces it moves and of its frames (u32 each); the pieces, by their index in the 3DO's order (u32 each); its frames' times, seconds from its start, rising (f32 each); then each frame's keys, piece by piece in that order, each a move and a turn (six i32: 24 bytes) |
+
+* A key holds its piece as a TA script holds one: moved from where it stands in the model along x, y
+  and z in 65,536ths of a pixel (x negated as scripts give it), and turned about x, y and z in TA's
+  angle units (65,536 a turn; z negated), applied about y, then x, then z, as the engine composes a
+  script's (see "Turrets aim with the same sense" above). Between keys a piece moves in a straight
+  line and turns the short way round.
+* `walk`: a cycle, its last frame leading back into its first over the time left to its length.
+  A ground unit whose model has one walks by it, in step with the ground it covers, instead of by its
+  script (apps/ta_game's `scene/walk.rs`): its stride is measured from its planted feet as a
+  script's is, and the channels its script aims with (a turret, a torso) stay the script's.
+* `death`, `death2`...: one of them, at random, plays where a unit of the model dies on the ground
+  (an aircraft out of the sky and a ship going under go as TA Reborn's other units do); its wreck
+  shows once the clip is over, lying in the pose it ends in.
+* A clip that moves a piece the model has not, more than once, or with its times out of order, is
+  not played (the mod check says so).
+
 ## DDS textures
 
 `ta_formats::dds` reads DirectDraw Surfaces: DXT1, DXT3 and DXT5 (BC1, BC2, BC3) and uncompressed

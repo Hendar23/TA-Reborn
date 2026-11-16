@@ -416,8 +416,12 @@ pub struct Effects {
     death_weapons: Vec<bool>,
     /// The map's sea is lava (blasts in it throw up glowing rock, not spray).
     lava_world: bool,
-    /// What is left of the dead: falling, sinking, collapsing (`effects_remains.rs`).
+    /// What is left of the dead: falling, sinking, collapsing, dying as its model's clip has it
+    /// (`effects_remains.rs`).
     remains: Vec<remains::Remains>,
+    /// Wrecks left in the pose their unit's death ended in, by feature: their pieces' matrices
+    /// from where the wreck stands, facing its heading (see [`Effects::posed_wrecks`]).
+    posed: rustc_hash::FxHashMap<usize, Vec<glam::Mat4>>,
     /// Big units' later blasts, due.
     pops: Vec<remains::Pop>,
     /// Fireworks for the New Year (`effects_fireworks.rs`): the shells in flight, when each rack
@@ -688,6 +692,7 @@ impl Effects {
             death_weapons,
             lava_world: false,
             remains: Vec::new(),
+            posed: Default::default(),
             pops: Vec::new(),
             sounds: Vec::new(),
             shells: Vec::new(),
@@ -1267,6 +1272,9 @@ impl Effects {
         {
             self.due_blasts.push((now + when.to_f32() / 30.0, e.clone()));
             return;
+        }
+        if let SimEvent::FeatureDestroyed { index, .. } = e {
+            self.forget_posed_wreck(*index);
         }
         self.happened(e, sim, now);
     }

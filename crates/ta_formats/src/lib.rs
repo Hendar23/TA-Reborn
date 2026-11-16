@@ -5,6 +5,7 @@
 //! documented community specifications of the formats; no original game code is used.
 
 mod bin;
+pub mod anims;
 pub mod cob;
 pub mod dds;
 pub mod fnt;

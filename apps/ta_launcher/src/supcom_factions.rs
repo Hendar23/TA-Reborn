@@ -27,6 +27,9 @@ pub use make::MOD_ID;
 /// interface shows them in the language in use ([`mod_name`]; the Mods page translates a
 /// description).
 const MOD_NAME: &str = n("Supreme Commander factions");
+// (The description is shown through the Mods page's own translation of a manifest's words: kept
+// here to be collected for translation, and held to `make`'s by a test.)
+#[cfg_attr(not(test), allow(dead_code))]
 const MOD_DESCRIPTION: &str = n("Supreme Commander: Forged Alliance's four factions, their units and buildings, made from your own copy of the game.");
 /// What a unit takes on the disk once made, about (its paint the most): 402 MB for the game's 348.
 const UNIT_BYTES: u64 = 1_160_000;

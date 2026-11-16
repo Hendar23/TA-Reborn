@@ -13,6 +13,7 @@
 //! of the data players compare before a multiplayer battle): plain arithmetic only, in a fixed
 //! order.
 
+pub mod anims;
 pub mod faction;
 pub mod make;
 pub mod model;

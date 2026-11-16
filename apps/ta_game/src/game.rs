@@ -1617,7 +1617,8 @@ impl Game {
                 if let SimEvent::UnitDestroyed { id, type_id, pos, removed: false, complete, .. } = &e {
                     let pieces = thrown.get(id).map_or(&[][..], Vec::as_slice);
                     let death = crate::effects::Death { wreck: wrecks.get(id).copied(), complete: *complete };
-                    self.effects.unit_died(self.scene.take_departed(*id), *type_id, Vec3::from_array(pos.to_f32()), pieces, death, &self.sim, now);
+                    let clips = self.scene.death_clips(*type_id);
+                    self.effects.unit_died(self.scene.take_departed(*id), *type_id, Vec3::from_array(pos.to_f32()), pieces, death, clips, &self.sim, now);
                 }
                 self.effects.on_event(&e, &self.sim, now);
                 // (An order of the officer's own that was refused is no news to the player: it looks for another
@@ -4026,7 +4027,7 @@ impl Game {
             }
             list.push(DrawInstance { model, pieces: &r.matrices, team: r.color, flags, build: r.build, damage: 0.0, travel: [0.0; 2], piece: None, playing: 0 });
         }
-        list.extend(features.model_instances(sim, renderer, view_min, view_max, &waiting));
+        list.extend(features.model_instances(sim, renderer, view_min, view_max, &waiting, effects.posed_wrecks()));
         list.extend(effects.models());
         if let (Some((model, flags)), Some(pl)) = (ghost, placement.as_ref()) {
             list.push(DrawInstance { model, pieces: &pl.matrices, team: *local_player as u32, flags, build: 0.0, damage: 0.0, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL });
