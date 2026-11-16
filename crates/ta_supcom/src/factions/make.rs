@@ -18,7 +18,7 @@ pub const DESCRIPTION: &str = "Supreme Commander: Forged Alliance's four faction
 pub const TAGS: [&str; 3] = ["units", "factions", "supreme commander"];
 /// The converter's version, the mod's own (its manifest's `version`): a mod made by an older one
 /// is offered to be made again. Raised whenever what is made changes.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// What was made.
 #[derive(Clone, Debug, Default)]

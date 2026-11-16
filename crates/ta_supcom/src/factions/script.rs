@@ -2,7 +2,8 @@
 //! the same functions of every unit's script (docs/FORMATS.md, "COB bytecode"), and these answer
 //! them as the unit's bones say.
 //!
-//! - **Weapons** (TA's three slots: `AimPrimary`... `FireTertiary`): a turret turns its yaw bone to
+//! - **Weapons** (TA's three slots, `AimPrimary`... `FireTertiary`, and five more, `AimWeapon4`...
+//!   `FireWeapon8`, as TA Reborn calls a mod's script's): a turret turns its yaw bone to
 //!   the target's heading less the heading it rests at, and pitches its pitch bone about the axis
 //!   square to the way it rests (an x turn and a z turn, `cos` and `sin` of that heading made
 //!   numbers in the script: exact for guns resting ahead, behind or to a side, close for the
@@ -21,11 +22,15 @@ use crate::convert::trig::atan2;
 use crate::scm::{self, Mesh};
 use crate::unit::{UnitBlueprint, WeaponBlueprint};
 
-/// TA's names of a weapon slot's functions.
-const AIM: [&str; 3] = ["AimPrimary", "AimSecondary", "AimTertiary"];
-const AIM_FROM: [&str; 3] = ["AimFromPrimary", "AimFromSecondary", "AimFromTertiary"];
-const QUERY: [&str; 3] = ["QueryPrimary", "QuerySecondary", "QueryTertiary"];
-const FIRE: [&str; 3] = ["FirePrimary", "FireSecondary", "FireTertiary"];
+/// The name the engine calls a weapon slot's function by (`kind`: `Aim`, `AimFrom`, `Query` or
+/// `Fire`): TA's for the first three slots (`AimPrimary`), Spring's for the rest (`AimWeapon4`),
+/// as TA Reborn reads them (ta_data's `WEAPON_FUNCTIONS`).
+fn weapon_function(kind: &str, slot: usize) -> String {
+    match slot {
+        0..=2 => format!("{kind}{}", ["Primary", "Secondary", "Tertiary"][slot]),
+        _ => format!("{kind}Weapon{}", slot + 1),
+    }
+}
 
 /// The unit values scripts set (ta_sim's `host::value`).
 const IN_BUILD_STANCE: i32 = 5;
@@ -76,8 +81,14 @@ pub fn rest_aim(mesh: &Mesh, bone: usize) -> RestAim {
     RestAim { heading: units(atan2(x, z)), cos: (z / level * ONE).round() as i32, sin: (x / level * ONE).round() as i32, pitch: units(atan2(y, level)) }
 }
 
-/// Each weapon slot's restore, turning its turrets back to rest.
-const RESTORE: [&str; 3] = ["RestoreAfterDelay", "RestoreAfterDelay2", "RestoreAfterDelay3"];
+/// Each weapon slot's restore, turning its turrets back to rest: `RestoreAfterDelay`, then
+/// `RestoreAfterDelay2`...
+fn restore_function(slot: usize) -> String {
+    match slot {
+        0 => "RestoreAfterDelay".to_string(),
+        _ => format!("RestoreAfterDelay{}", slot + 1),
+    }
+}
 
 /// Degrees a second as TA's angle units a second.
 fn angle_speed(degrees: f64) -> i32 {
@@ -91,7 +102,7 @@ pub fn script(plan: &Plan) -> CobScript {
     let bone = |name: &str| -> Option<usize> { plan.mesh.bone(name) };
     let reload = asm.static_var();
     // (Each weapon's turrets to turn back to rest, and their speeds: a restore of its own each.)
-    let mut rests: [Vec<(u32, u32, i32)>; 3] = Default::default();
+    let mut rests: [Vec<(u32, u32, i32)>; super::units::MAX_WEAPONS] = Default::default();
 
     // Create: hidden what the enhancements show; a reload of a second until told.
     let mut create = Function::new(0);
@@ -107,7 +118,7 @@ pub fn script(plan: &Plan) -> CobScript {
     set_reload.push_local(0).pop_static(reload).ret(0);
     asm.define("SetMaxReloadTime", set_reload);
 
-    for (slot, w) in plan.weapons.iter().enumerate().take(3) {
+    for (slot, w) in plan.weapons.iter().enumerate().take(super::units::MAX_WEAPONS) {
         let signal = 2i32 << slot;
         let yaw = w.yaw_bone.as_deref().and_then(|b| piece(b).zip(bone(b)));
         let pitch = w.pitch_bone.as_deref().and_then(|b| piece(b).zip(bone(b)));
@@ -165,14 +176,14 @@ pub fn script(plan: &Plan) -> CobScript {
                     aim.wait_turn(p, Z_AXIS);
                 }
             }
-            let restore = asm.declare(RESTORE[slot]);
+            let restore = asm.declare(&restore_function(slot));
             aim.start_script(restore, 0).ret(1);
-            asm.define(AIM[slot], aim);
+            asm.define(&weapon_function("Aim", slot), aim);
         }
 
         let mut from = Function::new(1);
         from.push(aim_from as i32).pop_local(0).ret(0);
-        asm.define(AIM_FROM[slot], from);
+        asm.define(&weapon_function("AimFrom", slot), from);
 
         // Query: the muzzle whose turn it is.
         let mut query = Function::new(1);
@@ -185,7 +196,7 @@ pub fn script(plan: &Plan) -> CobScript {
             query.mark(skip);
         }
         query.mark(done).ret(0);
-        asm.define(QUERY[slot], query);
+        asm.define(&weapon_function("Query", slot), query);
 
         // Fire: the rack kicks back along its barrel and returns; the next muzzle's turn.
         let mut fire = Function::new(0);
@@ -221,7 +232,7 @@ pub fn script(plan: &Plan) -> CobScript {
             fire.mark(wrap).push(0).pop_static(next);
         }
         fire.ret(0);
-        asm.define(FIRE[slot], fire);
+        asm.define(&weapon_function("Fire", slot), fire);
     }
 
     // Each weapon's turrets back to rest twice the longest reload after its last aim. Its restore
@@ -236,7 +247,7 @@ pub fn script(plan: &Plan) -> CobScript {
             back.push(speed).push(0).turn(p, axis);
         }
         back.ret(0);
-        asm.define(RESTORE[slot], back);
+        asm.define(&restore_function(slot), back);
     }
 
     if plan.builder {

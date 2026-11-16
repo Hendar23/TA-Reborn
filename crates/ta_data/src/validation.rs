@@ -947,7 +947,7 @@ enum Use { File(String), Record(String) }
 /// `script`: the unit's script as the game finds it (`UnitDef::script_path`); `builds`: it has
 /// build power (`WorkerTime`), which makes it a builder whatever its Builder flag, as the game
 /// has it; `takes_no_ground`: a mod's upgrade module (`UnitDef::takes_no_ground`).
-struct UnitFacts { name: String, object: String, script: String, builds: bool, takes_no_ground: bool, weapons: [bool; 3] }
+struct UnitFacts { name: String, object: String, script: String, builds: bool, takes_no_ground: bool, weapons: [bool; crate::unit::MAX_WEAPONS] }
 #[derive(Default)]
 struct Animation { frames: usize, size: AnimSize }
 
@@ -1854,9 +1854,13 @@ impl<'a> Scan<'a> {
         // carries on without them, but it shows). Aim functions may be missing by design:
         // TA's aircraft fire fixed weapons wherever they fly.
         if let Some(functions) = self.functions.get(&script).cloned() {
-            const QUERIES: [&str; 3] = ["QueryPrimary", "QuerySecondary", "QueryTertiary"];
-            // (A note: mods give units dummy weapons, which need no muzzle. One a unit.)
-            let lacking: Vec<(usize, &str)> = QUERIES.iter().enumerate().filter(|(slot, name)| unit.weapons[*slot] && !functions.contains(&name.to_ascii_lowercase())).map(|(slot, name)| (slot, *name)).collect();
+            // (A note: mods give units dummy weapons, which need no muzzle. One a unit. The query
+            // goes by TA's name or Spring's numbered one: `QueryPrimary` or `QueryWeapon1`.)
+            let query = |slot: usize| crate::unit::WeaponFunction::Query.names(slot);
+            let lacking: Vec<(usize, &str)> = (0..crate::unit::MAX_WEAPONS)
+                .filter(|&slot| unit.weapons[slot] && !query(slot).iter().any(|name| functions.contains(&name.to_ascii_lowercase())))
+                .map(|slot| (slot, query(slot)[0]))
+                .collect();
             let message = match lacking.as_slice() {
                 [] => None,
                 [(slot, name)] => Some(enf("{unit} has {weapon} but its script {script} has no {function}: if the weapon fires, its shots leave from the unit's centre, not a barrel.", [

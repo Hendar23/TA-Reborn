@@ -2,6 +2,55 @@
 
 use ta_formats::tdf::TdfSection;
 
+/// The most weapons a unit carries: TA's three (`Weapon1` to `Weapon3`) and five more for mods
+/// (`Weapon4` to `Weapon8`).
+pub const MAX_WEAPONS: usize = 8;
+
+/// The script functions the engine calls for each weapon slot (from the first), by what it asks
+/// of them ([`WeaponFunction`]): TA's names for the first three slots (`AimPrimary`,
+/// `AimSecondary`, `AimTertiary`), and `AimWeapon1` to `AimWeapon8` (Spring's) for every slot. A
+/// script defines one or the other; TA's name goes first where it defines both.
+pub const WEAPON_FUNCTIONS: [[[&str; 2]; MAX_WEAPONS]; 4] = [
+    [
+        ["AimPrimary", "AimWeapon1"], ["AimSecondary", "AimWeapon2"], ["AimTertiary", "AimWeapon3"], ["AimWeapon4", "AimWeapon4"],
+        ["AimWeapon5", "AimWeapon5"], ["AimWeapon6", "AimWeapon6"], ["AimWeapon7", "AimWeapon7"], ["AimWeapon8", "AimWeapon8"],
+    ],
+    [
+        ["AimFromPrimary", "AimFromWeapon1"], ["AimFromSecondary", "AimFromWeapon2"], ["AimFromTertiary", "AimFromWeapon3"], ["AimFromWeapon4", "AimFromWeapon4"],
+        ["AimFromWeapon5", "AimFromWeapon5"], ["AimFromWeapon6", "AimFromWeapon6"], ["AimFromWeapon7", "AimFromWeapon7"], ["AimFromWeapon8", "AimFromWeapon8"],
+    ],
+    [
+        ["QueryPrimary", "QueryWeapon1"], ["QuerySecondary", "QueryWeapon2"], ["QueryTertiary", "QueryWeapon3"], ["QueryWeapon4", "QueryWeapon4"],
+        ["QueryWeapon5", "QueryWeapon5"], ["QueryWeapon6", "QueryWeapon6"], ["QueryWeapon7", "QueryWeapon7"], ["QueryWeapon8", "QueryWeapon8"],
+    ],
+    [
+        ["FirePrimary", "FireWeapon1"], ["FireSecondary", "FireWeapon2"], ["FireTertiary", "FireWeapon3"], ["FireWeapon4", "FireWeapon4"],
+        ["FireWeapon5", "FireWeapon5"], ["FireWeapon6", "FireWeapon6"], ["FireWeapon7", "FireWeapon7"], ["FireWeapon8", "FireWeapon8"],
+    ],
+];
+
+/// What the engine asks of a weapon's script (an index into [`WEAPON_FUNCTIONS`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WeaponFunction {
+    /// `AimPrimary(heading, pitch)`: turns the turret, returns once aimed.
+    Aim = 0,
+    /// `AimFromPrimary(piece)`: the piece aimed from.
+    AimFrom = 1,
+    /// `QueryPrimary(piece)`: the piece the shot leaves from.
+    Query = 2,
+    /// `FirePrimary()`: recoil and flash as it fires.
+    Fire = 3,
+}
+
+impl WeaponFunction {
+    pub const ALL: [WeaponFunction; 4] = [WeaponFunction::Aim, WeaponFunction::AimFrom, WeaponFunction::Query, WeaponFunction::Fire];
+
+    /// The names a script may give this function of weapon `slot` (from 0), TA's first.
+    pub fn names(self, slot: usize) -> [&'static str; 2] {
+        WEAPON_FUNCTIONS[self as usize][slot]
+    }
+}
+
 /// A unit type, parsed from the `[UNITINFO]` section of an FBI file. Units follow TA's
 /// conventions: distances in map pixels, speeds in pixels per tick (30 ticks/s), turn rates
 /// in TA angle units (65536 = 360°) per tick, costs in whole resource units.
@@ -83,13 +132,15 @@ pub struct UnitDef {
     pub turn_rate: f64,
     pub cruise_alt: f64,
     pub maneuver_leash: f64,
-    pub weapons: [Option<String>; 3],
+    /// Its weapons by slot: `Weapon1` to `Weapon8` (TA's units carry three at most).
+    pub weapons: [Option<String>; MAX_WEAPONS],
     /// The categories (`Category` tokens) of the units the unit never picks as targets on its own
     /// (TA: `BadTargetCategory`; an attack order still names them).
     pub bad_target_category: String,
     /// The same for each weapon: `wpri_`, `wsec_` and `wspe_badTargetCategory` (TA3D's `wthi_`
-    /// for the third); empty, the unit's [`UnitDef::bad_target_category`] goes for it.
-    pub weapon_bad_target_category: [String; 3],
+    /// for the third), or for any slot `BadTargetCategory<n>` (Spring's, `n` from 1); empty, the
+    /// unit's [`UnitDef::bad_target_category`] goes for it.
+    pub weapon_bad_target_category: [String; MAX_WEAPONS],
     /// The categories of the units it never goes after (TA: `NoChaseCategory`).
     pub no_chase_category: String,
     pub category: String,
@@ -245,13 +296,17 @@ impl UnitDef {
             turn_rate: f("TurnRate", 0.0),
             cruise_alt: f("CruiseAlt", if can_fly { 100.0 } else { 0.0 }),
             maneuver_leash: f("ManeuverLeashLength", 640.0),
-            weapons: [weapon("Weapon1"), weapon("Weapon2"), weapon("Weapon3")],
+            weapons: std::array::from_fn(|slot| weapon(&format!("Weapon{}", slot + 1))),
             bad_target_category: st("BadTargetCategory"),
-            weapon_bad_target_category: [
-                st("wpri_badTargetCategory"),
-                st("wsec_badTargetCategory"),
-                Some(st("wspe_badTargetCategory")).filter(|v| !v.is_empty()).unwrap_or_else(|| st("wthi_badTargetCategory")),
-            ],
+            weapon_bad_target_category: std::array::from_fn(|slot| {
+                let ta = match slot {
+                    0 => st("wpri_badTargetCategory"),
+                    1 => st("wsec_badTargetCategory"),
+                    2 => Some(st("wspe_badTargetCategory")).filter(|v| !v.is_empty()).unwrap_or_else(|| st("wthi_badTargetCategory")),
+                    _ => String::new(),
+                };
+                if ta.is_empty() { st(&format!("BadTargetCategory{}", slot + 1)) } else { ta }
+            }),
             no_chase_category: st("NoChaseCategory"),
             category: st("Category"),
             tedclass: st("TEDClass").to_ascii_uppercase(),
@@ -324,7 +379,15 @@ mod tests {
         let u = read("[UNITINFO]{ unitname = armpw ; name=Peewee; side=arm; objectname=; weapon1= emg ; Weapon2=; BMcode=1; MaxVelocity=1.5; TransportCapacity=-4; StandingFireOrder=9; Category=KBOT  WEAPON ;footprintx=0;}").unwrap();
         assert_eq!((u.name.as_str(), u.display_name.as_str(), u.side.as_str()), ("ARMPW", "Peewee", "ARM"), "names in capitals, trimmed");
         assert_eq!(u.object, "armpw", "no model named: the unit's own name");
-        assert_eq!(u.weapons, [Some("EMG".to_string()), None, None], "an empty slot is none");
+        assert_eq!(u.weapons[..3], [Some("EMG".to_string()), None, None], "an empty slot is none");
+        assert!(u.weapons[3..].iter().all(Option::is_none));
+        // Mods' units carry up to eight, each with its own bad targets as Spring names them.
+        let many = read("[UNITINFO]{UnitName=MANY;Weapon1=A;Weapon5=E;Weapon8=H;wpri_badTargetCategory=VTOL;BadTargetCategory1=SHIP;BadTargetCategory5=NOTAIR;}").unwrap();
+        assert_eq!(many.weapons.iter().map(|w| w.as_deref().unwrap_or("-")).collect::<String>(), "A---E--H");
+        assert_eq!((many.weapon_bad_target_category[0].as_str(), many.weapon_bad_target_category[4].as_str()), ("VTOL", "NOTAIR"), "TA's own key goes first");
+        assert_eq!(WeaponFunction::Aim.names(0), ["AimPrimary", "AimWeapon1"]);
+        assert_eq!(WeaponFunction::Fire.names(7), ["FireWeapon8", "FireWeapon8"]);
+        assert_eq!(WeaponFunction::Query.names(2), ["QueryTertiary", "QueryWeapon3"]);
         assert!(u.can_move, "its BMcode moves it");
         assert_eq!((u.max_velocity, u.transport_capacity, u.standing_fire_order, u.footprint_x, u.footprint_z), (1.5, 0, 2, 1, 1));
         assert!(u.has_category("weapon") && u.has_category("KBOT") && !u.has_category("SHIP"));

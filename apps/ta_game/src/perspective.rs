@@ -315,10 +315,10 @@ pub struct HudState {
     pub kills: u64,
     pub kill_flash: Option<f64>,
     /// The weapons' reload counters at the last frame (a shot starts a new reload).
-    reloads: [u32; 3],
+    reloads: [u32; ta_data::unit::MAX_WEAPONS],
     /// Shots fired, by weapon, and when each last fired; when each last came ready.
-    pub last_shot: [f64; 3],
-    pub ready_since: [f64; 3],
+    pub last_shot: [f64; ta_data::unit::MAX_WEAPONS],
+    pub ready_since: [f64; ta_data::unit::MAX_WEAPONS],
     /// What the guns are on, and since when (the sight's bracket closes in on a new one); the
     /// last one as last seen, and, destroyed, since when its bracket collapses.
     pub target: Option<(UnitId, f64)>,
@@ -809,7 +809,7 @@ impl Perspective {
         let named = |names: &[&str]| names.iter().find_map(|n| t.model.pieces.iter().position(|p| p.name.eq_ignore_ascii_case(n))).filter(|&i| i < self.pieces.len() && self.pieces[i] != Mat4::ZERO);
         // The piece the main gun aims from, and the piece under the body that carries it (a
         // barrel's turret).
-        let aim_piece = (0..3).filter(|&s| t.weapons[s].is_some()).find_map(|s| game.sim.aim_from_piece(u, s)).filter(|&i| i < self.pieces.len());
+        let aim_piece = (0..ta_data::unit::MAX_WEAPONS).filter(|&s| t.weapons[s].is_some()).find_map(|s| game.sim.aim_from_piece(u, s)).filter(|&i| i < self.pieces.len());
         let gun_mount = aim_piece.map(|mut i| {
             while let Some(parent) = t.model.pieces.get(i).and_then(|p| p.parent) {
                 if t.model.pieces.get(parent).is_none_or(|p| p.parent.is_none()) {
@@ -981,7 +981,7 @@ impl Perspective {
         }
         // Shots: a reload starting is a shot; the camera kicks with the gun. A reload over is
         // the weapon ready.
-        for s in 0..3 {
+        for s in 0..ta_data::unit::MAX_WEAPONS {
             let r = u.weapons[s].reload;
             if r > self.hud.reloads[s] + 1 {
                 self.hud.last_shot[s] = now;
@@ -1017,7 +1017,7 @@ impl Perspective {
         let Some(u) = game.sim.unit(self.unit) else { return Vec::new() };
         let t = game.sim.unit_type(u);
         let has_normal = t.weapons.iter().flatten().any(|&w| !game.sim.weapon_types.get(w).command_fire);
-        (0..3)
+        (0..ta_data::unit::MAX_WEAPONS)
             .filter_map(|s| {
                 let w = game.sim.weapon_types.get(t.weapons[s]?);
                 let full = w.reload_ticks.max(1) as f32;

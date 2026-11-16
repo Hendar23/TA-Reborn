@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn anti_missile_overlays_show_protection_instead_of_flight_range() {
         let mut unit = types(&[("PROTECTOR", "")]).types.remove(0);
-        unit.weapons = [Some(0), None, None];
+        unit.weapons = std::array::from_fn(|s| (s == 0).then_some(0));
         for (keys, expected) in [("interceptor=1; coverage=2000; range=32000;", 2000.0), ("interceptor=1; coverage=500; range=32000;", 500.0), ("interceptor=1; range=900;", 900.0)] {
             let mut data = ta_data::GameData::load(&ta_vfs::Vfs::new());
             data.weapons.push(ta_data::WeaponDef::from_tdf(&ta_formats::tdf::parse(&format!("[ANTI]{{{keys}}}")).sections[0]));

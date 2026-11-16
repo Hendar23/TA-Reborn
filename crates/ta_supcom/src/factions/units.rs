@@ -6,10 +6,11 @@
 //!   in `BuildTime / WorkerTime`; both are taken ten times ([`WORK`]), so its builders' work
 //!   stands beside TA's (a commander's 100 against TA's 300) and every unit takes as long to
 //!   build as in Forged Alliance.
-//! - **Weapons:** TA's three slots ([`Weapons`]): a commander's main gun first and its Overcharge
-//!   second, made TA's D-gun (`commandfire`); otherwise the most damaging first, an anti-air one
-//!   kept where there is one. Weapons an enhancement brings, and dummies, are left out; the
-//!   death weapon is what the unit explodes as. Each looks as TA's weapon of its kind does (a
+//! - **Weapons:** up to eight slots ([`Weapons`], [`MAX_WEAPONS`]: TA's three and the five more TA
+//!   Reborn gives mods): a commander's main gun first and its Overcharge second, made TA's D-gun
+//!   (`commandfire`); otherwise the most damaging first, an anti-air one kept where there is one.
+//!   Weapons an enhancement brings, and dummies, are left out; the death weapon is what the unit
+//!   explodes as. Each looks as TA's weapon of its kind does (a
 //!   laser, a shell, a missile, a torpedo, a bomb) and hits as Forged Alliance's.
 
 use std::fmt::Write as _;
@@ -31,7 +32,10 @@ pub fn side(faction: &Faction) -> &'static str {
     }
 }
 
-/// The weapons in TA's slots, and the one it dies with.
+/// The most weapons a unit carries in TA Reborn (`Weapon1` to `Weapon8`: ta_data's `MAX_WEAPONS`).
+pub const MAX_WEAPONS: usize = 8;
+
+/// The weapons in its slots, and the one it dies with.
 pub struct Weapons<'a> {
     pub slots: Vec<&'a WeaponBlueprint>,
     pub death: Option<&'a WeaponBlueprint>,
@@ -93,7 +97,7 @@ fn power(w: &WeaponBlueprint) -> f64 {
     w.damage.max(0.0) * w.salvo_size.max(1) as f64 * w.rate_of_fire.max(0.01) + w.nuke.as_ref().map_or(0.0, |n| n.inner_damage)
 }
 
-/// The weapons that take TA's slots, and the death weapon.
+/// The weapons that take its slots (eight at most), and the death weapon.
 pub fn weapons(u: &UnitBlueprint) -> Weapons<'_> {
     let usable = |w: &&WeaponBlueprint| {
         !w.category.eq_ignore_ascii_case("death")
@@ -120,8 +124,8 @@ pub fn weapons(u: &UnitBlueprint) -> Weapons<'_> {
     // The rest by their damage (the first among equals first), an anti-air one kept.
     armed.sort_by(|a, b| power(b).total_cmp(&power(a)));
     let anti_air = armed.iter().position(|w| kind(w) == Kind::AntiAir);
-    while slots.len() < 3 && !armed.is_empty() {
-        if slots.len() == 2
+    while slots.len() < MAX_WEAPONS && !armed.is_empty() {
+        if slots.len() == MAX_WEAPONS - 1
             && anti_air.is_some()
             && !slots.iter().any(|w| kind(w) == Kind::AntiAir)
             && let Some(i) = armed.iter().position(|w| kind(w) == Kind::AntiAir)

@@ -613,7 +613,7 @@ impl Sim {
             && !self.no_auto_target.contains(&o.type_id)
             && !self.ai_ignores(o.id)
             && self.seen_by(o, hunter.owner) != vision::Seen::Hidden
-            && (0..3).any(|s| t.weapons[s].is_some_and(|w| self.engages(hunter.type_id, s, self.weapon_types.get(w), o)))
+            && (0..ta_data::unit::MAX_WEAPONS).any(|s| t.weapons[s].is_some_and(|w| self.engages(hunter.type_id, s, self.weapon_types.get(w), o)))
     }
 
     /// Who holds the objective area: the human's side or the enemy, alone (finished ground
