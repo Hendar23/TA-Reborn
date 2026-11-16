@@ -87,10 +87,11 @@ pub use transport::{Client, Host, HostEvent};
 /// fire at will takes on only what its side sees, radar and sonar contacts by order alone; 100:
 /// reclaiming pays when it is done; 101: a scenario's spotter-directed guns fire at will on radar;
 /// 102: `Command::DropOrder`, a queued order taken back; 103: an automatic target past firing
-/// reach is looked past for one in reach, and attack-move stops for a target only in reach.)
+/// reach is looked past for one in reach, and attack-move stops for a target only in reach; 104:
+/// up to eight weapons a unit.)
 /// [`Msg::Hello`] and [`Refusal::Version`] keep their layout, so builds of other protocols are
 /// still told why they cannot meet.
-pub const PROTOCOL: u32 = 103;
+pub const PROTOCOL: u32 = 104;
 pub const DEFAULT_PORT: u16 = 7890;
 /// Ticks between state hash reports (which double as progress reports).
 pub const HASH_INTERVAL: u64 = 15;

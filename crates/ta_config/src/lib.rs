@@ -161,8 +161,9 @@ pub const RECORD_VERSION: u32 = 46;
 /// scenario sets to be directed by a spotter (`Unit::radar_guided`: Iron Rain's battery) fire at
 /// will on radar and sonar contacts as well; 98, an automatic target past a weapon's firing reach
 /// no longer holds it: it looks round for one in reach and turns to it (an ordered one is kept),
-/// and attack-move and patrol stop for a target only once a weapon can fire on it.
-pub const SIMULATION_VERSION: u32 = 98;
+/// and attack-move and patrol stop for a target only once a weapon can fire on it; 99, a unit
+/// carries up to eight weapons (a mod's `Weapon4` to `Weapon8`, its script's `AimWeapon4`...).
+pub const SIMULATION_VERSION: u32 = 99;
 /// Records shorter than one year of simulated time are supported. Shared with the
 /// launcher's metadata reader so impossible durations cannot start endless save catch-up.
 pub const MAX_RECORD_TICKS: u64 = 30 * 3600 * 24 * 365;

@@ -285,7 +285,8 @@ pub struct Unit {
     /// Footprint origin cell for buildings that occupy the grid.
     pub occupied_origin: Option<(i32, i32)>,
     pub cob: Option<CobInstance>,
-    pub weapons: [WeaponState; 3],
+    /// Its weapons' states by slot ([`ta_data::unit::MAX_WEAPONS`]).
+    pub weapons: [WeaponState; ta_data::unit::MAX_WEAPONS],
     pub last_attacker: Option<UnitId>,
     /// Size of the most recent hit (determines death severity).
     pub last_damage: Fx,
@@ -427,7 +428,7 @@ impl Unit {
             yard: Vec::new(),
             occupied_origin: None,
             cob: None,
-            weapons: [WeaponState::default(); 3],
+            weapons: [WeaponState::default(); ta_data::unit::MAX_WEAPONS],
             last_attacker: None,
             last_damage: Fx::ZERO,
             killer: None,

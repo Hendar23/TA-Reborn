@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
+use ta_data::unit::{MAX_WEAPONS, WeaponFunction};
 use ta_data::{GameData, UnitDef};
 use ta_formats::cob::CobScript;
 use ta_formats::model3do::Model3do;
@@ -97,12 +98,20 @@ pub struct Callins {
     pub target_cleared: bool,
     /// Builders: the piece the nano spray leaves from (factories alternate between two).
     pub query_nano_piece: bool,
+    /// The names its script gives its weapons' functions, by slot and [`WeaponFunction`]: TA's
+    /// (`AimPrimary`) or Spring's (`AimWeapon1`), whichever it defines (TA's where neither).
+    pub weapon_functions: [[&'static str; 4]; MAX_WEAPONS],
 }
 
 impl Callins {
     fn of(script: Option<&CobProgram>) -> Callins {
         let has = |name: &str| script.is_some_and(|s| s.function(name).is_some());
+        let weapon = |f: WeaponFunction, slot: usize| {
+            let [ta, numbered] = f.names(slot);
+            if !has(ta) && has(numbered) { numbered } else { ta }
+        };
         Callins {
+            weapon_functions: std::array::from_fn(|slot| WeaponFunction::ALL.map(|f| weapon(f, slot))),
             set_speed: has("SetSpeed"),
             set_direction: has("SetDirection"),
             set_max_reload_time: has("SetMaxReloadTime"),
@@ -202,7 +211,8 @@ pub struct UnitType {
     pub build_distance: Fx,
     pub sight: Fx,
     pub radar: Fx,
-    pub weapons: [Option<usize>; 3],
+    /// Its weapons by slot (TA's units fill the first three at most).
+    pub weapons: [Option<usize>; MAX_WEAPONS],
     /// It builds missiles to launch (a `stockpile` weapon: nuclear silos, anti-missile
     /// defences).
     pub stockpile: bool,
@@ -240,7 +250,7 @@ pub struct UnitType {
     /// never shoot tanks), its other armed units VTOL, the cruisers' depth charges NOTSUB. (Empty
     /// for a weapon whose bad targets are every unit a player can field that it could hit:
     /// `lift_bad_targets_of_everything`.)
-    pub weapon_bad_masks: [CategorySet; 3],
+    pub weapon_bad_masks: [CategorySet; MAX_WEAPONS],
     /// What it never goes after (`NoChaseCategory`: TA's ground units list VTOL).
     pub no_chase_mask: CategorySet,
     /// Gunships: aircraft that hover at range while attacking.
@@ -404,7 +414,7 @@ impl UnitTypes {
                 (yard_blocking(&u.yard_map, fp, false), yard_blocking(&u.yard_map, fp, true))
             };
             let build_time = Fx::from_f64(u.build_time);
-            let weapons: [Option<usize>; 3] = std::array::from_fn(|i| u.weapons[i].as_deref().and_then(|w| data.weapon_id(w)));
+            let weapons: [Option<usize>; MAX_WEAPONS] = std::array::from_fn(|i| u.weapons[i].as_deref().and_then(|w| data.weapon_id(w)));
             let move_class = data.move_classes.iter().position(|m| m.name == u.movement_class);
             let big_walker = big_walker(u, &model, move_class.map(|c| &data.move_classes[c]), locomotion);
             // A unit builds with build power (`WorkerTime`): what its menu offers, whatever its
@@ -699,7 +709,7 @@ fn lift_bad_targets_of_everything(types: &mut [UnitType], data: &GameData) {
     let lifted: Vec<(usize, usize)> = types
         .iter()
         .enumerate()
-        .flat_map(|(i, t)| (0..3).map(move |k| (i, k, t)))
+        .flat_map(|(i, t)| (0..MAX_WEAPONS).map(move |k| (i, k, t)))
         .filter(|&(_, k, t)| !t.weapon_bad_masks[k].is_empty())
         .filter_map(|(i, k, t)| {
             let (air, ground) = reach(&data.weapons[t.weapons[k]?]);

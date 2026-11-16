@@ -640,6 +640,13 @@ refined once by least squares) use plain arithmetic in a fixed order: the same b
   reads the numbers as f64 and whole numbers as i64 (up to 1.12, f32 and i32), so a mod's
   values past 16,777,216 keep their precision. The units name 54 distinct `Category`
   tokens.
+* **Weapons: three a unit in TA** (`Weapon1` to `Weapon3`, the engine calling `AimPrimary`,
+  `AimSecondary` and `AimTertiary`, and their `AimFrom`, `Query` and `Fire` functions). TA Reborn
+  reads five more for mods (`Weapon4` to `Weapon8`, `ta_data::unit::MAX_WEAPONS`), calling the
+  numbered functions Spring calls for any slot (`AimWeapon4`... `FireWeapon8`; for the first
+  three, TA's names where a script defines them, else `AimWeapon1`...:
+  `ta_data::unit::WEAPON_FUNCTIONS`), each with its own bad targets (`BadTargetCategory<n>`, after
+  TA's `wpri_`, `wsec_` and `wspe_` keys). None of TA's own units has a fourth.
 * **A unit's script goes by its `UnitName`**: `scripts/<UnitName>.cob`, whatever model
   (`Objectname`) it borrows. TA's own 278 units go by one name for both, but the mods show
   it: TA: Enhanced gives 62 units another unit's model, and 35 of them (the Enforcer, the

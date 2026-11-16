@@ -43,7 +43,7 @@ fn a_scouts_new_tour_is_not_overwritten_by_the_same_thinks_attack_wave() {
 
 #[test]
 fn mission_scripted_planes_are_not_recruited_as_scouts() {
-    let mut sim = fixture_edit(|d| { let t = d.unit_id("BOMBER").unwrap(); d.units[t].weapons = [None, None, None]; });
+    let mut sim = fixture_edit(|d| { let t = d.unit_id("BOMBER").unwrap(); d.units[t].weapons = Default::default(); });
     let plane = put(&mut sim, "BOMBER", 0, 200, 200);
     sim.give_orders(plane, [Order::Wait(10000)]);
     let mut ai = SkirmishAi::new(0, &sim, Difficulty::Hard);
@@ -97,7 +97,7 @@ fn surface_guns_do_not_receive_concentrated_fire_orders_against_submarines() {
             d.units[t].can_fly = false;
             d.units[t].floater = true;
             d.units[t].min_water_depth = 10.0;
-            d.units[t].weapons = [Some("GUN".into()), None, None];
+            d.units[t].weapons = std::array::from_fn(|s| (s == 0).then(|| "GUN".into()));
             if name == "BOMBER" { d.units[t].water_line = 20.0; }
         }
     });

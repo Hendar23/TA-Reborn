@@ -2465,7 +2465,7 @@ impl Sim {
         // takes on of its own accord, its bad targets: a tank does not run after a gunship.)
         let engages = |a: &Unit| {
             !self.types.get(a.type_id).category_mask.intersects(&t.no_chase_mask)
-                && (0..3).any(|s| {
+                && (0..ta_data::unit::MAX_WEAPONS).any(|s| {
                     t.weapons[s].is_some_and(|w| {
                         let w = self.weapon_types.get(w);
                         !w.command_fire && self.engages(t.id, s, w, a)

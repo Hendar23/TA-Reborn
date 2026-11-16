@@ -1,11 +1,13 @@
 //! Weapons, projectiles, damage and death.
 //!
 //! Aiming follows TA: the engine computes a heading/pitch to the target relative to the unit
-//! and starts the script's `AimPrimary/Secondary/Tertiary` thread; when that thread returns
-//! non-zero the weapon is aimed. Firing asks `QueryPrimary` for the muzzle piece, calls
-//! `FirePrimary` for recoil/flash animation and launches a projectile from the muzzle.
+//! and starts the script's `AimPrimary/Secondary/Tertiary` thread (`AimWeapon1` to `AimWeapon8`
+//! in a mod's scripts, for up to eight weapons: [`ta_data::unit::WEAPON_FUNCTIONS`]); when that
+//! thread returns non-zero the weapon is aimed. Firing asks `QueryPrimary` for the muzzle piece,
+//! calls `FirePrimary` for recoil/flash animation and launches a projectile from the muzzle.
 
 use ta_data::RenderType;
+use ta_data::unit::{MAX_WEAPONS, WeaponFunction};
 
 use crate::cob::{TICKS_PER_SECOND, ThreadTag};
 use crate::defs::{Locomotion, Trajectory, WeaponType};
@@ -21,10 +23,11 @@ mod projectiles;
 #[cfg(test)]
 mod targeting_tests;
 
-const AIM_FUNCS: [&str; 3] = ["AimPrimary", "AimSecondary", "AimTertiary"];
-const AIM_FROM_FUNCS: [&str; 3] = ["AimFromPrimary", "AimFromSecondary", "AimFromTertiary"];
-const QUERY_FUNCS: [&str; 3] = ["QueryPrimary", "QuerySecondary", "QueryTertiary"];
-const FIRE_FUNCS: [&str; 3] = ["FirePrimary", "FireSecondary", "FireTertiary"];
+/// The name a unit's script gives the function `f` of its weapon in `slot` (TA's `AimPrimary`,
+/// or Spring's `AimWeapon1`: [`crate::defs::Callins::weapon_functions`]).
+fn weapon_function(t: &crate::defs::UnitType, f: WeaponFunction, slot: usize) -> &'static str {
+    t.callins.weapon_functions[slot][f as usize]
+}
 
 /// How far apart the planes of a group sent at one target come in on it, across their front
 /// (see `Sim::air_attack_pass`).
@@ -414,7 +417,7 @@ impl Sim {
             .flat_map(|u| {
                 let t = types.get(u.type_id);
                 let weapons = &weapons;
-                (0..3).filter_map(move |slot| {
+                (0..MAX_WEAPONS).filter_map(move |slot| {
                     let w = weapons.get(t.weapons[slot]?);
                     (w.def.interceptor && (!w.def.stockpile || u.stockpile > 0)).then_some((u.id, slot))
                 })
@@ -510,7 +513,7 @@ impl Sim {
 
         // (Slots index the type's weapons, the unit's weapon states and the aim functions.)
         #[allow(clippy::needless_range_loop)]
-        for slot in 0..3 {
+        for slot in 0..MAX_WEAPONS {
             let Some(wid) = t.weapons[slot] else {
                 // No weapon here: nothing may hold a target in this slot.
                 if let Some(u) = self.unit_mut(id) {
@@ -693,7 +696,8 @@ impl Sim {
     fn aim_weapon(&mut self, id: UnitId, slot: usize, heading: i32, pitch: i32) -> bool {
         let Some(u) = self.unit(id) else { return false };
         let tag = ThreadTag::Aim(slot as u16);
-        let has_aim = u.cob.as_ref().is_some_and(|c| c.has_function(AIM_FUNCS[slot]));
+        let aim = weapon_function(self.types.get(u.type_id), WeaponFunction::Aim, slot);
+        let has_aim = u.cob.as_ref().is_some_and(|c| c.has_function(aim));
         let tick = self.tick;
         let Some(u) = self.unit_mut(id) else { return false };
         match u.cob.as_mut().filter(|_| has_aim) {
@@ -718,7 +722,7 @@ impl Sim {
                 if ask {
                     c.supersede_aims(slot as u16);
                     // (As TA hands them, 0..65535: see `script_angle`.)
-                    c.start(AIM_FUNCS[slot], &[script_angle(heading), script_angle(pitch)], tag);
+                    c.start(aim, &[script_angle(heading), script_angle(pitch)], tag);
                     let ws = &mut u.weapons[slot];
                     ws.aim_heading = heading;
                     ws.aim_pitch = pitch;
@@ -961,7 +965,8 @@ impl Sim {
         let piece = match self.aim_from_cache.get(&(type_id, slot as u8)) {
             Some(&p) => p,
             None => {
-                let p = self.call_script(id, AIM_FROM_FUNCS[slot], &[0]).and_then(|p| p.first().copied());
+                let aim_from = weapon_function(self.types.get(type_id), WeaponFunction::AimFrom, slot);
+                let p = self.call_script(id, aim_from, &[0]).and_then(|p| p.first().copied());
                 self.aim_from_cache.insert((type_id, slot as u8), p);
                 p
             }
@@ -1213,8 +1218,15 @@ impl Sim {
             e.tick_energy_wanted += energy;
             e.tick_metal_wanted += w.metal_per_shot;
         }
-        let muzzle_piece = self.call_script(id, QUERY_FUNCS[slot], &[0]).and_then(|p| p.first().copied());
-        self.start_script(id, FIRE_FUNCS[slot], &[]);
+        let (query, fire) = match self.unit(id) {
+            Some(u) => {
+                let t = self.types.get(u.type_id);
+                (weapon_function(t, WeaponFunction::Query, slot), weapon_function(t, WeaponFunction::Fire, slot))
+            }
+            None => return,
+        };
+        let muzzle_piece = self.call_script(id, query, &[0]).and_then(|p| p.first().copied());
+        self.start_script(id, fire, &[]);
         // The recoil rocks the hull away from the shot, in the unit's own frame (TA's
         // RockUnit: tilts about the x and z axes, 500 at most).
         if let Some(u) = self.unit(id)
@@ -1449,7 +1461,7 @@ impl Sim {
             Target::Unit(tid) => ordered != Some(tg) && self.unit(tid).is_none_or(|tu| self.types.get(tu.type_id).weapons.iter().all(|w| w.is_none())),
             _ => false,
         };
-        let slots: Vec<usize> = (0..3)
+        let slots: Vec<usize> = (0..MAX_WEAPONS)
             .filter(|&s| {
                 t.weapons[s].is_some_and(|w| {
                     let w = self.weapon_types.get(w);
@@ -1918,7 +1930,7 @@ impl Sim {
         let has_normal = t.weapons.iter().flatten().any(|&w| !weapons.get(w).command_fire && can_hit(weapons.get(w)));
         let fires = |slot: usize, w: &WeaponType| if w.command_fire { (manual || slot == 0 || !has_normal) && can_hit(w) } else { !manual && can_hit(w) };
         let dy = tp.y - (u.model_pos(t).y + t.model.height / 2);
-        let reaches = (0..3).filter_map(|s| t.weapons[s].map(|w| (s, weapons.get(w))));
+        let reaches = (0..MAX_WEAPONS).filter_map(|s| t.weapons[s].map(|w| (s, weapons.get(w))));
         let available = reaches.clone().filter(|&(_, w)| self.weapon_can_fire_from(u, w));
         let submerged_guns = reaches.clone().next().is_some() && available.clone().next().is_none();
         let firing = available.clone().filter(|&(s, w)| fires(s, w)).map(|(_, w)| self.weapon_reach(w, dy)).max().filter(|r| !r.is_zero());

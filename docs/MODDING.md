@@ -842,6 +842,14 @@ details. What mod makers ask about most:
   `FootprintX=0` or `FootprintZ=0`, or one that does not fly and gives a `MaxVelocity` with an
   explicit `Acceleration=0`, takes no ground: it stands where it was made ([upgrade
   modules](#buildings-that-build-their-own-upgrade-modules)).
+- A unit carries up to **eight weapons**, `Weapon1` to `Weapon8` (TA's own carry three at most).
+  For each, the engine calls TA's script functions for the first three slots (`AimPrimary`,
+  `AimFromPrimary`, `QueryPrimary`, `FirePrimary`, then `...Secondary` and `...Tertiary`), or the
+  numbered ones for any slot (`AimWeapon1` to `AimWeapon8`, `AimFromWeapon<n>`, `QueryWeapon<n>`,
+  `FireWeapon<n>`, as Spring names them): a script defines one or the other. A weapon's bad
+  targets are `wpri_`, `wsec_` or `wspe_badTargetCategory` for the first three, or
+  `BadTargetCategory<n>` for any slot (`n` from 1), else the unit's `BadTargetCategory`. TA
+  itself never fires a fourth weapon, and the mod check reads the numbered functions too.
 
 #### Sides of a mod's own
 

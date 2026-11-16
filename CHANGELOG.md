@@ -20,11 +20,17 @@
   Steam's, or in a folder you choose), the Mods page's SUPREME COMMANDER… (or the FACTIONS tab of
   the Maps page's) counts the UEF's, the Cybran's, the Aeon's and the Seraphim's units and makes
   those of the factions you choose into the mod Supreme Commander factions, turned on: a side each
-  to play in skirmish, against each other, the Arm and the Core. Their walking animations, their
-  own sounds and more than three weapons a unit come later.
+  to play in skirmish, against each other, the Arm and the Core. Their walking animations and
+  their own sounds come later.
 - A mod adds a side without replacing the game's side data: `gamedata/sidedata_<name>.tdf` adds
   its sides and computer players' build lists to the game's. See
   [docs/MODDING.md](docs/MODDING.md#sides-of-a-mods-own).
+- A mod's units carry up to eight weapons, `Weapon1` to `Weapon8`: the fourth to the eighth aim
+  and fire through the numbered script functions (`AimWeapon4`, `QueryWeapon4`, `FireWeapon4`...),
+  each with its own bad targets (`BadTargetCategory4`...). The Supreme Commander factions' 23 units
+  with more than three weapons now fire them all: the Fatboy, the CZAR, the Monkeylord and the
+  battleships among them (make the factions again in the launcher: it offers UPDATE). See
+  [docs/MODDING.md](docs/MODDING.md#units-weapons-and-features).
 
 ## 1.0.7 — 2026-11-16
 

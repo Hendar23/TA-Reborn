@@ -934,7 +934,7 @@ fn extract(t: &UnitType, shape: &Shape) -> Result<Walk, String> {
     }
     let aimed = aimed_channels(&program.script);
     let walk = gait(t, shape, program, &aimed, None)?;
-    let aim = ["AimPrimary", "AimSecondary", "AimTertiary"].into_iter().find(|f| program.function(f).is_some());
+    let aim = (0..ta_data::unit::MAX_WEAPONS).flat_map(|slot| ta_data::unit::WeaponFunction::Aim.names(slot)).find(|f| program.function(f).is_some());
     let aiming = aim.and_then(|f| gait(t, shape, program, &aimed, Some(f)).ok());
     Ok(Walk::new(walk, aiming))
 }

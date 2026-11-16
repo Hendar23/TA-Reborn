@@ -8,7 +8,7 @@ shipped with TA Reborn or kept in this repository.
 
 This page records what the game's units are made of (`crates/ta_supcom`: [`unit`], [`scm`],
 [`sca`]) and how they are made into TA's ([`factions`]): their models, paint, build pictures and
-gameplay. Their animations, sounds and more weapons a unit come next, phase by phase.
+gameplay. Their animations and sounds come next, phase by phase.
 
 - **Players:** the launcher's Mods page, **SUPREME COMMANDER…** (or the Maps page's, its
   FACTIONS tab). The dialog finds the game (as for its maps: GOG's or Steam's copy, or a folder
@@ -155,9 +155,12 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
   and nine times at T3 (FA's 2, 6 and 18 mass a second); fabricators make metal from energy
   while on; radar, sonar, jammers, stealth and shields switch on when built and pay their
   upkeep while on, as TA's do.
-- **Weapons** (`weapons/supcom_<faction>.tdf`): TA's three slots. A commander's main gun goes
-  first and its Overcharge second, as TA's D-gun (`commandfire`); otherwise the most damaging
-  go first, an anti-air one kept where there is one. Weapons an enhancement brings, dummies
+- **Weapons** (`weapons/supcom_<faction>.tdf`): up to eight slots, the most TA Reborn gives a
+  unit (TA's three and five more: `Weapon4` to `Weapon8`). A commander's main gun goes first and
+  its Overcharge second, as TA's D-gun (`commandfire`); otherwise the most damaging go first, an
+  anti-air one kept where there is one. 162 of the 357 units carry none, 130 one, 27 two, 15
+  three and 23 more than three; four fill all eight (the Fatboy, the CZAR, the Summit and the
+  Hauthuum). Weapons an enhancement brings, dummies
   and anti-torpedo defences are left out; a death weapon is what the unit explodes as. Ranges ×
   32, reloads 1 / rate of fire, muzzle velocities × 32, splash diameters twice the damage
   radius × 32, salvos as bursts, damage as it is (a nuke's inner damage over its outer
@@ -169,7 +172,9 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
   to the target's heading less the heading it rests at, and pitches its pitch bone about the
   axis square to the way it rests (an x turn and a z turn: exact for guns resting ahead,
   behind or to a side, close for the rest; 71 of the 259 turrets rest turned), less the pitch it
-  rests at; muzzles take turns, racks kick back along their barrels. Each weapon's turrets turn
+  rests at; muzzles take turns, racks kick back along their barrels. The first three weapons answer
+  TA's functions (`AimPrimary`... `FireTertiary`), the fourth to the eighth the numbered ones
+  (`AimWeapon4`... `FireWeapon8`). Each weapon's turrets turn
   back to rest twice the longest reload after its last aim, by a restore of its own that any
   weapon turning the same pieces stops when it aims. Engineers and commanders lift their build
   stance and spray from their build effect bones, and reclaim; factories open their yards and
