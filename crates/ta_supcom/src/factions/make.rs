@@ -4,9 +4,10 @@
 
 use ta_formats::surface::Material;
 
-use super::{faction, model, pictures, script, textures, units, UNIT_SCALE};
+use super::{anims, faction, model, pictures, script, textures, units, UNIT_SCALE};
 use crate::files::Files;
 use crate::scm::{self, Mesh};
+use crate::sca;
 use crate::unit::{Faction, UnitBlueprint};
 use crate::Result;
 
@@ -18,7 +19,7 @@ pub const DESCRIPTION: &str = "Supreme Commander: Forged Alliance's four faction
 pub const TAGS: [&str; 3] = ["units", "factions", "supreme commander"];
 /// The converter's version, the mod's own (its manifest's `version`): a mod made by an older one
 /// is offered to be made again. Raised whenever what is made changes.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// What was made.
 #[derive(Clone, Debug, Default)]
@@ -122,6 +123,20 @@ fn unit(files: &Files, u: &UnitBlueprint, put: &mut dyn FnMut(&str, &[u8]) -> Re
     }
     put(&format!("objects3d/{name}.3do"), &near.model.to_bytes())?;
     put(&format!("objects3d/{name}.surface"), &near.surface.to_bytes())?;
+    // Its walk and its deaths (the far model has the same pieces: they play on it as well).
+    let animation = |path: &str| -> Result<Option<sca::Animation>> { Ok(files.read(path)?.and_then(|b| sca::parse(&b).ok())) };
+    let walk = match &u.display.walk {
+        Some((path, _)) => animation(path)?,
+        None => None,
+    };
+    let mut deaths = Vec::new();
+    for path in &u.display.deaths {
+        deaths.extend(animation(path)?);
+    }
+    let clips = anims::anims(&mesh, &near.bones, u.display.uniform_scale * UNIT_SCALE, walk.as_ref(), &deaths);
+    if !clips.clips.is_empty() {
+        put(&format!("objects3d/{name}.anims"), &clips.to_bytes())?;
+    }
     // Its build picture.
     if let Some(icon) = files.read(&pictures::icon_path(u))? {
         let frame = match pictures::frame_path(u) {

@@ -8,7 +8,7 @@ shipped with TA Reborn or kept in this repository.
 
 This page records what the game's units are made of (`crates/ta_supcom`: [`unit`], [`scm`],
 [`sca`]) and how they are made into TA's ([`factions`]): their models, paint, build pictures and
-gameplay. Their animations and sounds come next, phase by phase.
+gameplay, and their walks and deaths. Their sounds come later.
 
 - **Players:** the launcher's Mods page, **SUPREME COMMANDER…** (or the Maps page's, its
   FACTIONS tab). The dialog finds the game (as for its maps: GOG's or Steam's copy, or a folder
@@ -190,6 +190,14 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
   sides (a side add-on: docs/MODDING.md), each with its commander.
 - **Wrecks** (`features/corpses/supcom_<faction>.tdf`): the unit's own model where it fell,
   worth its `Wreckage` share of its cost.
+- **Animations** (`objects3d/<id>.anims`, ta_formats' `anims`, made by `factions::anims`): a unit's
+  `AnimationWalk` as its `walk` clip and its `AnimationDeath` ones as `death`, `death2`... A frame's
+  bones are composed down the skeleton (a bone the animation leaves alone keeps its rest under its
+  parent), each piece drawn where its bone has gone, turned by its bone's turn less its turn at rest,
+  and kept as a script's move and turn under its parent piece. A walk's root keeps to where it
+  stands (the unit's own movement carries it; its rise and fall kept), a death's goes with it.
+  102 of the 357 units have clips: 29 walks (the commanders, the support commanders, the bots, the
+  walking experimentals) and 93 with deaths; 6 MB in all.
 
 The computer players play them: UEF against Cybran on Coast To Coast, twelve minutes (`cargo test
 --release -p ta_ai --test skirmish` with `TA_TEST_MOD` and `TA_TEST_SIDES=UEF,CYBRAN`), each

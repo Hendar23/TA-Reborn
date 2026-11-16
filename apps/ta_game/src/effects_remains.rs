@@ -4,6 +4,10 @@
 //! unit's death sets off a few blasts more. Whatever its death script threw clear flies as debris
 //! of its own (see `spawn_debris`) and is left out here.
 //!
+//! A unit whose model has deaths of its own (`death` clips: the Supreme Commander units' falls and
+//! collapses) plays one where it died; its wreck waits unseen until the clip is over and then lies
+//! in the pose the clip ends in.
+//!
 //! What is left is shown once. A building's wreck stands where it stood from the moment it dies,
 //! so the building itself does not come down too (it sagged and tilted through the ground beside
 //! its own wreck); a wreck under a sinking hull, or under a falling aircraft, waits unseen until
@@ -13,7 +17,10 @@
 //!
 //! Presentation only: the game has already moved on.
 
+use std::sync::Arc;
+
 use glam::{Mat4, Quat, Vec3};
+use ta_formats::anims::Clip;
 use ta_render::{DrawInstance, ModelId, ParticleBurst as Burst, ParticleKind as Kind};
 use ta_sim::{Locomotion, Sim};
 
@@ -39,6 +46,8 @@ enum Fate {
     Sink,
     /// Sagging into the ground behind a cloud of dust.
     Collapse,
+    /// As its model's death clip has it.
+    Clip,
 }
 
 /// What is left to show of a unit that moves as `locomotion` does and died as `death` tells
@@ -72,6 +81,10 @@ fn sunk(k: f32, height: f32, room: Option<f32>) -> f32 {
 pub(super) struct Remains {
     model: ModelId,
     fate: Fate,
+    /// Its death clip (a [`Fate::Clip`]'s), its unit type and its root when it died.
+    clip: Option<(Arc<Vec<Clip>>, usize)>,
+    type_id: usize,
+    root: Mat4,
     /// Its wreck, a feature not drawn until this has come to rest (see `Effects::unsettled_wrecks`),
     /// and how far the bottom lies under its pivot (a hull settles on it).
     wreck: Option<usize>,
@@ -111,12 +124,25 @@ pub(super) struct Pop {
 /// airframes glide a while).
 const FALL: f32 = 240.0;
 
+/// Seconds a death clip's last pose holds before its wreck takes its place.
+const CLIP_HOLD: f32 = 0.2;
+
+/// The most wrecks kept in their deaths' poses (older ones lie as their models stand).
+const MAX_POSED: usize = 512;
+
+/// The heading (radians about y) `turn` turns a unit's front (+z) to.
+fn heading_of(turn: Quat) -> f32 {
+    let front = turn * Vec3::Z;
+    front.x.atan2(front.z)
+}
+
 impl Effects {
     /// A unit of type `type_id` died at `pos` (`death`: what it left, whether it was finished):
     /// big ones go off in a few blasts more, and what is left of it (`remnant`, when it was in
     /// view) lingers as its kind decides, without the pieces its death script threw clear
     /// (`thrown`), and shown once with its wreck (see the module's notes).
-    pub fn unit_died(&mut self, remnant: Option<Remnant>, type_id: usize, pos: Vec3, thrown: &[usize], death: Death, sim: &Sim, now: f32) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn unit_died(&mut self, remnant: Option<Remnant>, type_id: usize, pos: Vec3, thrown: &[usize], death: Death, clips: Option<Arc<Vec<Clip>>>, sim: &Sim, now: f32) {
         if !self.sees(sim, pos) {
             return;
         }
@@ -147,7 +173,10 @@ impl Effects {
             self.burn(super::Burning { pos: Vec3::new(pos.x, ground.max(pos.y.min(ground + height * 0.3)), pos.z), start: now + 0.3, big: size >= 24.0, next_puff: now + 0.3, fire, smoulder });
         }
         let Some(r) = remnant else { return };
-        let Some(fate) = fate_of(t.locomotion, r.flying, wet, death) else {
+        // A death of its model's own, on the ground (not out of the sky, not sinking).
+        let clip = clips.filter(|c| !c.is_empty() && death.complete && !r.flying && !(wet && matches!(t.locomotion, Locomotion::Naval | Locomotion::Hover)));
+        let fate = if clip.is_some() { Some(Fate::Clip) } else { fate_of(t.locomotion, r.flying, wet, death) };
+        let Some(fate) = fate else {
             // A building whose wreck stands in its place: only the dust it throws up and the rumble.
             if t.locomotion == Locomotion::Static && !wet && death.complete {
                 self.collapse_dust(pos, ground, size);
@@ -187,12 +216,22 @@ impl Effects {
                 let tilt = Vec3::new(self.rand() - 0.5, 0.0, self.rand() - 0.5).normalize_or(Vec3::X);
                 (tilt, side, Vec3::ZERO, 1.2 + (size / 80.0).min(1.0))
             }
+            // (Its clip, one of its deaths at random, says how long.)
+            Fate::Clip => (Vec3::Y, 0.0, Vec3::ZERO, 0.0),
         };
+        let clip = clip.map(|c| {
+            let k = ((self.rand() * c.len() as f32) as usize).min(c.len() - 1);
+            (c, k)
+        });
+        let duration = clip.as_ref().map_or(duration, |(c, k)| c[*k].seconds.max(0.05) + CLIP_HOLD);
         // (A hull settles on the bottom where its wreck lies, rather than sinking on through it.)
         let room = (fate == Fate::Sink && death.wreck.is_some()).then(|| pivot.y - ground);
         let remains = Remains {
             model: r.model,
             fate,
+            clip,
+            type_id,
+            root: r.root,
             wreck: death.wreck,
             room,
             matrices: at_death.clone(),
@@ -214,7 +253,7 @@ impl Effects {
         match fate {
             Fate::Collapse => self.collapse_dust(pos, ground, size),
             Fate::Sink => self.sounds.push(("xplosml2", pos, 0.5)),
-            Fate::Crash => {}
+            Fate::Crash | Fate::Clip => {}
         }
         self.remains.push(remains);
         if self.remains.len() > MAX_REMAINS {
@@ -292,6 +331,34 @@ impl Effects {
                     }
                     r.done = age > r.duration;
                 }
+                Fate::Clip => {
+                    // Posed by its clip about where it stood (what it threw clear, or hid, gone).
+                    if let Some((clips, k)) = &r.clip {
+                        crate::scene::clip_pose(sim.types.get(r.type_id), &clips[*k], age, r.root, &mut r.matrices);
+                        for (out, &d) in r.matrices.iter_mut().zip(&r.at_death) {
+                            if d == Mat4::ZERO {
+                                *out = Mat4::ZERO;
+                            }
+                        }
+                    }
+                    if age > r.duration {
+                        r.done = true;
+                        // Its wreck lies as it ended: its pieces from the wreck's place, facing as
+                        // the unit faced (as the wreck is drawn, see `Effects::posed_wrecks`).
+                        if let Some(w) = r.wreck {
+                            let (_, turn, place) = r.root.to_scale_rotation_translation();
+                            let facing = Mat4::from_translation(place) * Mat4::from_rotation_y(heading_of(turn));
+                            let back = facing.inverse();
+                            if self.posed.len() >= MAX_POSED
+                                && let Some(&oldest) = self.posed.keys().min()
+                            {
+                                self.posed.remove(&oldest);
+                            }
+                            self.posed.insert(w, r.matrices.iter().map(|&m| if m == Mat4::ZERO { m } else { back * m }).collect());
+                        }
+                    }
+                    continue;
+                }
             }
             // Its pieces: turned about the pivot, then moved with it.
             let m = Mat4::from_translation(r.pos) * Mat4::from_quat(r.turn) * Mat4::from_translation(-r.pivot);
@@ -301,6 +368,18 @@ impl Effects {
         }
         remains.retain(|r| !r.done);
         self.remains = remains;
+    }
+
+    /// Wrecks lying in the pose their unit's death clip ended in, by feature: their pieces'
+    /// matrices from where the wreck stands, turned to face its heading. (A wreck gone, its pose
+    /// goes too: [`Effects::forget_posed_wreck`].)
+    pub fn posed_wrecks(&self) -> &rustc_hash::FxHashMap<usize, Vec<Mat4>> {
+        &self.posed
+    }
+
+    /// A wreck gone (reclaimed, blown apart, burnt).
+    pub fn forget_posed_wreck(&mut self, feature: usize) {
+        self.posed.remove(&feature);
     }
 
     /// The wrecks not to draw yet: those of hulls still sinking and aircraft still falling, which
@@ -315,7 +394,8 @@ impl Effects {
         self.remains
             .iter()
             .filter(move |r| in_view(r.pos, r.size + 60.0))
-            .map(|r| DrawInstance { model: r.model, pieces: &r.matrices, team: r.team, flags: super::DEAD_LIGHTS, build: 1.0, damage: 1.0, travel: [0.0; 2], piece: None, playing: 0 })
+            // (A death clip plays on the unit as it was, scorched; the rest are charred.)
+            .map(|r| DrawInstance { model: r.model, pieces: &r.matrices, team: r.team, flags: super::DEAD_LIGHTS, build: 1.0, damage: if r.fate == Fate::Clip { 0.6 } else { 1.0 }, travel: [0.0; 2], piece: None, playing: 0 })
     }
 
     /// Falling wrecks light the ground under them.

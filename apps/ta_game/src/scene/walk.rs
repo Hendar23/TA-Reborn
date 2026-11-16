@@ -34,6 +34,11 @@
 //!   by straight lines, turns at a speed are as the script turns them (a pose it then sets at
 //!   once, the next cycle's first, is reached over the time since its last change).
 //!
+//! A model may walk by a clip instead (`objects3d/<name>.anims`, ta_formats' `anims`: the
+//! Supreme Commander units' walks, made from their game's animations): its cycle is the clip's,
+//! its channels those the clip moves less those the unit's script aims with (a turret, a torso),
+//! and its stride is measured and its table laid out as a script's.
+//!
 //! A walking unit is posed from the table by how far it has come, between its poses at the
 //! display's rate. Its legs blend in as it sets off and back into the game's pose as it stops;
 //! it steps at most [`CAP`] times as fast as its script would, or [`BRISK`] cycles a second
@@ -46,6 +51,7 @@
 use std::sync::OnceLock;
 
 use glam::{Mat4, Vec3};
+use ta_formats::anims::Clip;
 use ta_formats::cob::{CobScript, op, operand_count};
 use ta_formats::model3do::Model3do;
 use ta_render::{Camera, CameraMode};
@@ -207,6 +213,9 @@ pub(super) struct Gaits {
     /// By unit type: the model's vertices (ground units with a script).
     shapes: Vec<Option<Shape>>,
     walks: Vec<OnceLock<Option<Walk>>>,
+    /// By unit type: the walk its model's clips give it, in place of its script's (see the
+    /// module's notes).
+    clips: Vec<Option<Clip>>,
 }
 
 impl Gaits {
@@ -218,8 +227,16 @@ impl Gaits {
         if self.shapes.len() <= t.id {
             self.shapes.resize_with(t.id + 1, || None);
             self.walks.resize_with(t.id + 1, OnceLock::new);
+            self.clips.resize_with(t.id + 1, || None);
         }
         self.shapes[t.id] = Some(Shape::of(m));
+    }
+
+    /// Gives a ground unit's type the walk of its model's clip (after [`Gaits::add_model`]).
+    pub(super) fn add_walk_clip(&mut self, t: &UnitType, clip: Clip) {
+        if let Some(slot) = self.clips.get_mut(t.id) {
+            *slot = Some(clip);
+        }
     }
 
     /// A type's gaits, if it walks (worked out on the first call).
@@ -232,7 +249,10 @@ impl Gaits {
             .get(t.id)?
             .get_or_init(|| {
                 let started = std::time::Instant::now();
-                let walk = extract(t, shape);
+                let walk = match self.clips.get(t.id).and_then(Option::as_ref) {
+                    Some(clip) => clip_walk(t, shape, clip),
+                    None => extract(t, shape),
+                };
                 let took = started.elapsed().as_secs_f32() * 1000.0;
                 match walk {
                     Ok(w) => {
@@ -956,7 +976,67 @@ fn gait(t: &UnitType, shape: &Shape, program: &std::sync::Arc<CobProgram>, aimed
     if channels.is_empty() {
         return Err("its walk moves only what aims".into());
     }
-    let Stride { covered, planted, .. } = stride(t, shape, &cycle);
+    let stride = stride(t, shape, &cycle);
+    let values: Vec<(usize, usize)> = cob_of.iter().zip(&channels).map(|(&c, &(_, ch))| (c, ch)).collect();
+    table(&stride, period, channels, &|c, at| cycle.value(values[c].0, values[c].1, at))
+}
+
+/// A walk from a model's walk clip (see the module's notes): the channels the clip moves, less
+/// those the unit's script aims with, over the clip's cycle.
+fn clip_walk(t: &UnitType, shape: &Shape, clip: &Clip) -> Result<Walk, String> {
+    if clip.seconds <= 0.0 || clip.times.is_empty() {
+        return Err("its walk clip is empty".into());
+    }
+    let aimed_cob = t.script.as_ref().map(|p| aimed_channels(&p.script)).unwrap_or_default();
+    let aimed = |piece: usize, ch: usize| t.model_to_cob.get(piece).copied().flatten().and_then(|c| aimed_cob.get(c)).is_some_and(|a| a[ch]);
+    let value_of = |key: ta_formats::anims::Key, ch: usize| if ch < 3 { key.moved[ch] } else { key.turned[ch - 3] };
+    // (Channel by channel: the clip's piece and channel, and the model's.)
+    let mut moved: Vec<(usize, usize)> = Vec::new();
+    let mut channels: Vec<(usize, usize)> = Vec::new();
+    for (k, &piece) in clip.pieces.iter().enumerate() {
+        let piece = piece as usize;
+        if piece >= t.model.pieces.len() {
+            continue;
+        }
+        for ch in (0..6).filter(|&ch| !aimed(piece, ch) && (0..clip.times.len()).any(|f| value_of(clip.frame(f)[k], ch) != 0)) {
+            moved.push((k, ch));
+            channels.push((piece, ch));
+        }
+    }
+    if channels.is_empty() {
+        return Err("its walk clip moves only what aims".into());
+    }
+    let period = f64::from(clip.seconds) * 1000.0;
+    let hidden = super::feet::hidden_when_built(t);
+    let sample = |at: f64| {
+        let mut v = Vec::new();
+        clip.sample((at / 1000.0) as f32, true, &mut v);
+        v
+    };
+    // Every model piece's state `at` milliseconds in: the clip's moves and turns, rest elsewhere
+    // (what the script hides once built hidden).
+    let states = |at: f64, out: &mut Vec<PieceState>| {
+        out.clear();
+        out.extend((0..t.model.pieces.len()).map(|i| ([0; 3], [0; 3], !hidden.get(i).copied().unwrap_or(false))));
+        for (k, v) in sample(at).iter().enumerate() {
+            if let Some(s) = out.get_mut(clip.pieces[k] as usize) {
+                for (ch, &x) in v.iter().enumerate() {
+                    set_channel(s, ch, if ch >= 3 { (x.round() as i32) as i16 as i32 } else { x.round() as i32 });
+                }
+            }
+        }
+    };
+    let stride = stride_of(t, shape, period, &states);
+    let gait = table(&stride, period, channels, &|c, at| f64::from(sample(at)[moved[c].0][moved[c].1]))?;
+    Ok(Walk::new(gait, None))
+}
+
+/// A gait's table: `channels` (each one's value `at` milliseconds into the cycle, from `value`)
+/// laid out over a cycle of `period` milliseconds by the ground the planted foot covers
+/// (`stride`), each stretch at least [`FLOOR`] of its mean pace.
+fn table(stride: &Stride, period: f64, channels: Vec<(usize, usize)>, value: &dyn Fn(usize, f64) -> f64) -> Result<Gait, String> {
+    let Stride { covered, planted, .. } = stride;
+    let (covered, planted) = (covered, *planted);
     let samples = STRIDE_SAMPLES;
     let stride = covered[samples];
     if stride < MIN_STRIDE || planted * 4 < samples {
@@ -979,8 +1059,8 @@ fn gait(t: &UnitType, shape: &Shape, program: &std::sync::Arc<CobProgram>, aimed
         let k = progress.partition_point(|&x| x <= p).clamp(1, samples) - 1;
         let f = ((p - progress[k]) / (progress[k + 1] - progress[k]).max(1e-12)).clamp(0.0, 1.0);
         let at = period * (k as f64 + f) / samples as f64;
-        for (c, &(_, ch)) in channels.iter().enumerate() {
-            poses.push(cycle.value(cob_of[c], ch, at) as f32);
+        for c in 0..channels.len() {
+            poses.push(value(c, at) as f32);
         }
     }
     // (Turns unwrapped from pose to pose.)
@@ -1066,11 +1146,17 @@ struct Stride {
 /// lowest point goes back. (Some walks never lift a foot: their feet slide forwards as they
 /// swing.)
 fn stride(t: &UnitType, shape: &Shape, cycle: &Cycle) -> Stride {
+    stride_of(t, shape, cycle.period, &|at, out| cycle.states(t, at, out))
+}
+
+/// [`stride`] of any cycle `period` milliseconds long, posed by `states` (every model piece's
+/// script state some milliseconds in).
+fn stride_of(t: &UnitType, shape: &Shape, period: f64, states_at: &dyn Fn(f64, &mut Vec<PieceState>)) -> Stride {
     let samples = STRIDE_SAMPLES;
     let mut states = Vec::new();
     let mut matrices: Vec<Vec<Mat4>> = Vec::with_capacity(samples + 1);
     for k in 0..=samples {
-        cycle.states(t, cycle.period * k as f64 / samples as f64, &mut states);
+        states_at(period * k as f64 / samples as f64, &mut states);
         let mut m = Vec::new();
         piece_matrices_between(t, &states, &states, 1.0, Mat4::IDENTITY, &mut m);
         matrices.push(m);
@@ -1523,6 +1609,39 @@ mod tests {
                 assert!(s.along[1] < 0.05, "the Peewee in step slides {:?}", s.along);
             }
         }
+    }
+
+    /// A walk clip walks as the script it was taken from: the Peewee's walk, recorded and kept as
+    /// a clip (every piece's state at 64 moments of its cycle), makes the gait its script makes:
+    /// the same cycle, covering the same ground.
+    #[test]
+    fn a_walk_clip_walks_as_its_script() {
+        use ta_formats::anims::{Clip, Key};
+        let Some((vfs, types)) = install() else {
+            eprintln!("TA install not found; skipping");
+            return;
+        };
+        let gaits = gaits(&vfs, &types);
+        let t = types.by_name("ARMPW").unwrap();
+        let shape = gaits.shapes[t.id].as_ref().unwrap();
+        let program = t.script.as_ref().unwrap();
+        let rec = record(program, t.model.height.to_cob(), t.def.activate_when_built, None);
+        let cycle = cycle_of(&rec, &aimed_channels(&program.script)).unwrap();
+        let frames = 64;
+        let (mut times, mut keys, mut states) = (Vec::new(), Vec::new(), Vec::new());
+        for f in 0..frames {
+            let at = cycle.period * f as f64 / frames as f64;
+            cycle.states(t, at, &mut states);
+            times.push((at / 1000.0) as f32);
+            keys.extend(states.iter().map(|s| Key { moved: s.0, turned: s.1 }));
+        }
+        let pieces = (0..t.model.pieces.len() as u32).collect();
+        let clip = Clip { name: "walk".into(), seconds: (cycle.period / 1000.0) as f32, pieces, times, keys };
+        let (from_clip, from_script) = (clip_walk(t, shape, &clip).unwrap(), extract(t, shape).unwrap());
+        let (a, b) = (&from_clip.walk, &from_script.walk);
+        assert!((a.period - b.period).abs() < 1e-3, "cycles {} and {}", a.period, b.period);
+        assert!((a.distance - b.distance).abs() < b.distance * 0.1, "covers {} by its clip, {} by its script", a.distance, b.distance);
+        assert!(b.channels.iter().all(|c| a.channels.contains(c)), "the clip moves what the script walks with: {:?} against {:?}", a.channels, b.channels);
     }
 
     /// Every walker of the install has a gait from its script; vehicles have none.

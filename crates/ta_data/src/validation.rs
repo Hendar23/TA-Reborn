@@ -498,7 +498,7 @@ pub fn load_order_failure(error: &ta_vfs::mods::ModError) -> (&'static str, Word
 }
 
 fn severity_order(s: Severity) -> u8 { match s { Severity::Error => 0, Severity::Warning => 1, Severity::Info => 2 } }
-fn known(p: &str) -> bool { p.rsplit_once('.').is_some_and(|(_, e)| matches!(e, "3do" | "cob" | "gaf" | "tnt" | "pcx" | "tdf" | "fbi" | "gui" | "ota" | "fnt" | "pal" | "wav" | "features" | "surface" | "dds")) }
+fn known(p: &str) -> bool { p.rsplit_once('.').is_some_and(|(_, e)| matches!(e, "3do" | "cob" | "gaf" | "tnt" | "pcx" | "tdf" | "fbi" | "gui" | "ota" | "fnt" | "pal" | "wav" | "features" | "surface" | "anims" | "dds")) }
 
 /// Whether a page's button makes units, as the game reads the page: its `commonattribs` bit 4;
 /// on a hand-made page without them (the game reads its buttons all, keeping those that name
@@ -573,8 +573,8 @@ fn misplaced(path: &str) -> Option<&'static [&'static str]> {
     let top = path.split('/').next().unwrap_or("");
     let home: (bool, &[&str]) = match ext {
         "fbi" => (top == "units" && depth == 1, &["units/"]),
-        // (A model's surface beside it: ta_formats::surface.)
-        "3do" | "surface" => (top == "objects3d", &["objects3d/"]),
+        // (A model's surface and its animations beside it: ta_formats::surface, ta_formats::anims.)
+        "3do" | "surface" | "anims" => (top == "objects3d", &["objects3d/"]),
         "cob" => (top == "scripts", &["scripts/"]),
         "gui" => (top == "guis" && depth == 1, &["guis/"]),
         // (A map's own features, `maps/<map>.features`: a converted map's.)
@@ -740,6 +740,9 @@ enum Content {
     /// A model's surface (ta_formats::surface): its materials' names, the textures they name, the
     /// model it names for far off, and whether it fits the model beside it (none: there is none).
     Surface { materials: Vec<String>, textures: Vec<String>, far: String, fits: Option<bool> },
+    /// A model's animations (ta_formats::anims), and whether they fit the model beside it (none:
+    /// there is none).
+    Anims { fits: Option<bool> },
     /// `patch_values`: those of [`PATCH_VALUES`] it asks or sets.
     Script { pieces: BTreeSet<String>, functions: BTreeSet<String>, problems: Vec<Problem>, patch_values: BTreeSet<i32> },
     /// A GAF's entries; `whole`: the game could decode it all at once (as it does every GAF but
@@ -800,6 +803,10 @@ fn parse(vfs: &Vfs, path: &str, options: &Options) -> Parsed {
                 far: surface.far.clone(),
                 fits,
             }
+        }).map_err(|e| Failure::Invalid(e.to_string())),
+        "anims" => ta_formats::anims::Anims::parse(&bytes).map(|anims| {
+            let model = format!("{}.3do", path.trim_end_matches(".anims"));
+            Content::Anims { fits: vfs.read(&model).ok().map(|b| Model3do::parse(&b).is_ok_and(|m| anims.fits(m.pieces.len()))) }
         }).map_err(|e| Failure::Invalid(e.to_string())),
         "dds" => ta_formats::dds::Header::parse(&bytes).map(|_| Content::Plain).map_err(|e| Failure::Invalid(e.to_string())),
         "fnt" => ta_formats::fnt::Font::parse(&bytes).map(|_| Content::Plain).map_err(|e| Failure::Invalid(e.to_string())),
@@ -1292,6 +1299,11 @@ impl<'a> Scan<'a> {
                     None => self.issue(Severity::Warning, "model.surface", path, Words::text(en("This surface has no model of its name beside it in objects3d, so nothing is drawn with it.")), en("Name it as its model, with .surface for .3do.")),
                 }
             }
+            Content::Anims { fits } => match fits {
+                Some(true) => {}
+                Some(false) => self.issue(Severity::Warning, "model.anims", path, Words::text(en("These animations do not fit the model beside it (they move pieces it has not, or their keys are out of order), so they are not played.")), en("Make the animations again from the model as it is now.")),
+                None => self.issue(Severity::Warning, "model.anims", path, Words::text(en("These animations have no model of their name beside them in objects3d, so they are not played.")), en("Name them as their model, with .anims for .3do.")),
+            },
             Content::Plain => {
                 if path.ends_with(".pcx") { self.report.counts.pcx += 1; }
             }
@@ -2454,6 +2466,26 @@ mod tests {
         f.put("mod", "textures/painted/colour.dds", b"not a picture");
         let report = validate_all(&f.vfs(&["mod"]));
         assert!(report.issues.iter().any(|i| i.path == "textures/painted/colour.dds" && i.code == "format.invalid"), "{}", report.to_text());
+    }
+
+    /// A model's animations (ta_formats::anims) are read beside it: ones that move pieces it has
+    /// not, or have no model of their name, are told; ones that fit say nothing.
+    #[test]
+    fn a_models_animations_are_checked_against_it() {
+        use ta_formats::anims::{Anims, Clip, Key};
+        let f = Fixture::new(); f.valid("mod");
+        f.put("mod", "objects3d/walker.3do", textured_model(&["hull"]));
+        let anims = |piece: u32| Anims { clips: vec![Clip { name: "walk".into(), seconds: 1.0, pieces: vec![piece], times: vec![0.0, 0.5], keys: vec![Key::default(), Key { moved: [0, 65536, 0], turned: [0; 3] }] }] };
+        f.put("mod", "objects3d/walker.anims", anims(0).to_bytes());
+        let report = validate_all(&f.vfs(&["mod"]));
+        assert!(!report.issues.iter().any(|i| i.code == "model.anims" || i.path.ends_with(".anims")), "{}", report.to_text());
+        f.put("mod", "objects3d/walker.anims", anims(3).to_bytes());
+        f.put("mod", "objects3d/stray.anims", anims(0).to_bytes());
+        f.put("mod", "objects3d/broken.anims", b"TAANIMS\0".to_vec());
+        let report = validate_all(&f.vfs(&["mod"]));
+        let told: Vec<&str> = report.issues.iter().filter(|i| i.code == "model.anims").map(|i| i.path.as_str()).collect();
+        assert_eq!(told, ["objects3d/stray.anims", "objects3d/walker.anims"], "{}", report.to_text());
+        assert!(report.issues.iter().any(|i| i.path == "objects3d/broken.anims" && i.code == "format.invalid"), "{}", report.to_text());
     }
 
     /// Explosions taking more of the atlas than the game gives them are drawn reduced, as the

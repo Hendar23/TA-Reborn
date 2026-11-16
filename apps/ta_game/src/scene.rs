@@ -687,6 +687,8 @@ pub struct Remnant {
     pub model: ModelId,
     /// World matrices of its pieces as last drawn (hidden pieces zero).
     pub pieces: Vec<Mat4>,
+    /// Where it stood, faced and leant at the last tick (its pieces' root).
+    pub root: Mat4,
     /// Its velocity at the end (world units a second).
     pub velocity: Vec3,
     pub team: u32,
@@ -722,6 +724,9 @@ pub struct Scene {
     pub hide_near: Option<(UnitId, Vec3, f32)>,
     /// Walkers' gaits, read from their scripts (see [`walk`]).
     walk: walk::Gaits,
+    /// Unit type id → its model's deaths (`objects3d/<name>.anims`' `death` clips: ta_formats'
+    /// `anims`), played where one dies (`effects_remains.rs`).
+    deaths: HashMap<usize, std::sync::Arc<Vec<ta_formats::anims::Clip>>>,
     /// Unit type id → its guns that recoil, and its pieces' faces (see [`recoil`]).
     guns: HashMap<usize, std::sync::Arc<recoil::Guns>>,
     /// The camera of the frame being drawn: walkers too small on it keep their scripts' walk.
@@ -807,6 +812,19 @@ impl Scene {
             if let Some(m) = &parsed {
                 self.bounds.insert(t.id, std::sync::Arc::new(PieceBounds::of(m)));
                 self.walk.add_model(t, m);
+                // Its clips (a mod's model's own movements: ta_formats::anims): a walk, played in
+                // place of its script's, and deaths.
+                if let Some(anims) = load(&format!("objects3d/{object}.anims")).and_then(|b| ta_formats::anims::Anims::parse(&b).ok()).filter(|a| a.fits(m.pieces.len())) {
+                    if t.locomotion == Locomotion::Ground
+                        && let Some(walk) = anims.clip("walk")
+                    {
+                        self.walk.add_walk_clip(t, walk.clone());
+                    }
+                    let deaths: Vec<_> = anims.deaths().filter(|c| !c.times.is_empty()).cloned().collect();
+                    if !deaths.is_empty() {
+                        self.deaths.insert(t.id, std::sync::Arc::new(deaths));
+                    }
+                }
                 if t.locomotion == Locomotion::Ground {
                     // (The walkers' feet, for their prints: what their scripts hide once they
                     // are built, a second body for an upgrade, a gun until it fires, is none.)
@@ -933,7 +951,7 @@ impl Scene {
                 && !v.matrices.is_empty()
             {
                 let velocity = if v.motion.body == Body::Still { Vec3::ZERO } else { v.motion.vel / TICK };
-                self.departed.insert(v.id, Remnant { model, pieces: v.matrices, velocity, team: v.team, flying: v.motion.flying });
+                self.departed.insert(v.id, Remnant { model, pieces: v.matrices, root: v.cur.matrix(), velocity, team: v.team, flying: v.motion.flying });
             }
         }
         // Every unit's pose, motion and hits, each its own (on all cores for a big battle); the
@@ -1076,6 +1094,11 @@ impl Scene {
     /// What the scene last showed of a unit that died at the last tick, if it was in view.
     pub fn take_departed(&mut self, id: UnitId) -> Option<Remnant> {
         self.departed.remove(&id)
+    }
+
+    /// A unit type's model's deaths (its `death` clips), if it has any.
+    pub fn death_clips(&self, type_id: usize) -> Option<std::sync::Arc<Vec<ta_formats::anims::Clip>>> {
+        self.deaths.get(&type_id).cloned()
     }
 
     /// Interpolated world position of a unit (for selection, UI anchors).
@@ -1279,6 +1302,22 @@ pub fn piece_matrices(u: &Unit, t: &UnitType, root: Mat4, out: &mut Vec<Mat4>) {
 /// its parent's frame: Ry · Rx · Rz, z turns negated (see FORMATS.md).
 fn local_rotation(turns: [f32; 3]) -> Quat {
     Quat::from_rotation_y(turns[1] * ANGLE_TO_RAD) * Quat::from_rotation_x(turns[0] * ANGLE_TO_RAD) * Quat::from_rotation_z(-turns[2] * ANGLE_TO_RAD)
+}
+
+/// World matrices for every model piece of a unit of type `t` standing at `root`, posed by `clip`
+/// `at` seconds in (held at its ends): the pieces it moves as it moves them, the rest as they stand
+/// in the model.
+pub(crate) fn clip_pose(t: &UnitType, clip: &ta_formats::anims::Clip, at: f32, root: Mat4, out: &mut Vec<Mat4>) {
+    let mut keys = Vec::new();
+    clip.sample(at, false, &mut keys);
+    let mut states: Vec<PieceState> = vec![([0; 3], [0; 3], true); t.model.pieces.len()];
+    for (k, v) in keys.iter().enumerate() {
+        if let Some(s) = states.get_mut(clip.pieces[k] as usize) {
+            s.0 = [0, 1, 2].map(|c| v[c].round() as i32);
+            s.1 = [3, 4, 5].map(|c| (v[c].round() as i32) as i16 as i32);
+        }
+    }
+    piece_matrices_between(t, &states, &states, 1.0, root, out);
 }
 
 /// World matrices for every model piece, `alpha` of the way from the script's states `before`
