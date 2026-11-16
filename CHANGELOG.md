@@ -50,6 +50,11 @@
   editor, saving a map as a mod again, does the same and keeps the map's other authors.
 
 ### Fixed
+- Trees standing side by side in a wood traded places for a second or two after every pan or zoom
+  (the perspective camera): drawn as far from the eye as each other, which was in front came down to
+  rounding while the camera came to rest. Each tree's painting now keeps its place in front of or
+  behind its neighbours, and the camera comes to rest a moment after a move instead of creeping on
+  for seconds.
 - A battle started from the menu (a new skirmish, a saved game or replay opened there, a lesson,
   a multiplayer game) and the map editor kept the lens of the menu's film: its field of view,
   its roll and a near plane a few units in front of the camera. Zoomed out over the battlefield
