@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 1.0.7 — 2026-11-16
+
+Mods can present themselves in the launcher with a banner, an animated preview, an icon and
+screenshots, theme the battle's interface in colours and pictures of their own, and name the mods
+they cannot be played with and the oldest TA Reborn they need. Trees and shores no longer flicker
+for a few seconds after the camera moves, and in TA's own view metal extractors stand whole on the
+Supreme Commander maps' deposits. A turret turns to an enemy in reach rather than holding fire on
+one just out of it, and every page of the launcher had a QA pass.
 
 ### Added
 - Mods present themselves in the launcher's library with pictures of their own, named in their
