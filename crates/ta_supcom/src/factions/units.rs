@@ -157,6 +157,42 @@ fn explosion(diameter: f64) -> &'static str {
 
 /// A weapon's section: its range, reload, speed, blast and damage Forged Alliance's at TA's
 /// scale; how it flies and looks as TA's weapons of its kind.
+/// What an air transport carries, by its mesh's attach bones (`…Attachpoint…`: Forged Alliance
+/// sets its passengers there, small units on the plain or `_sml`/`_Small` ones, larger on `_Med`
+/// and `_Lrg` ones; a side's own named `Left_`, `Right_`):
+/// as many units as it has small slots (or larger, where it has none), as large as its largest
+/// slots take (TA's `TransportSize`: footprints up to twice it). None without attach bones.
+pub fn transport(mesh: &crate::scm::Mesh) -> Option<(u32, u32)> {
+    let (mut small, mut medium, mut large) = (0u32, 0u32, 0u32);
+    for b in &mesh.bones {
+        let name = b.name.to_ascii_lowercase();
+        if !name.contains("attachpoint") {
+            continue;
+        }
+        if name.contains("lrg") {
+            large += 1;
+        } else if name.contains("med") {
+            medium += 1;
+        } else {
+            small += 1;
+        }
+    }
+    let units = if small > 0 { small } else { medium + large };
+    (units > 0).then_some((units, if large > 0 { 3 } else if medium > 0 { 2 } else { 1 }))
+}
+
+/// A nuke's range, pixels: the whole of any map.
+const NUKE_RANGE: i64 = 32000;
+
+/// How long a missile flies before it falls, seconds (TA's `flighttime`, its projectile's life):
+/// long enough to cover `range` pixels at its `speed` half again (it turns as it tracks), with
+/// its climb to speed from `start` at `acceleration` and a second to launch.
+pub fn flight_time(range: i64, speed: i64, start: i64, acceleration: i64) -> i64 {
+    let speed = speed.max(1) as f64;
+    let climb = (speed - start as f64).max(0.0) / acceleration.max(1) as f64;
+    (range as f64 / speed * 1.5 + climb + 1.0).ceil().max(3.0) as i64
+}
+
 pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
     let k = kind(w);
     let px = |ogrids: f64| (ogrids * UNIT_SCALE).round() as i64;
@@ -221,15 +257,16 @@ pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
         }
         Kind::Artillery => put("ballistic", "1".into()),
         Kind::Missile | Kind::AntiMissile | Kind::Nuke => {
+            let (start, acceleration) = ((speed / 3).max(60), (speed / 2).max(60));
             put("lineofsight", "1".into());
             put("selfprop", "1".into());
             put("smoketrail", "1".into());
-            put("startvelocity", (speed / 3).max(60).to_string());
-            put("weaponacceleration", (speed / 2).max(60).to_string());
+            put("startvelocity", start.to_string());
+            put("weaponacceleration", acceleration.to_string());
             put("turnrate", "16000".into());
             put("tracks", "1".into());
             put("guidance", "1".into());
-            put("flighttime", "10".into());
+            put("flighttime", flight_time(if k == Kind::Nuke { NUKE_RANGE } else { px(w.max_radius.max(1.0)) }, speed, start, acceleration).to_string());
             if matches!(k, Kind::Nuke | Kind::AntiMissile) || w.manual_fire {
                 put("vlaunch", "1".into());
             }
@@ -238,7 +275,7 @@ pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
                 put("targetable", "1".into());
                 put("commandfire", "1".into());
                 put("noautorange", "1".into());
-                put("range", "32000".into());
+                put("range", NUKE_RANGE.to_string());
             }
             if k == Kind::AntiMissile {
                 put("interceptor", "1".into());
@@ -366,7 +403,7 @@ pub fn yard_map(fx: i64, fz: i64) -> String {
 }
 
 /// The unit's file.
-pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons) -> String {
+pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32)>) -> String {
     let id = u.id.to_ascii_uppercase();
     let (fx, fz) = footprint(u);
     let side = side(&u.faction);
@@ -438,6 +475,11 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons) -> String {
         } else {
             put("MetalMake", format!("{}", u.production_mass));
         }
+    } else if u.upkeep_energy > 0.0 {
+        // Kept working at an energy cost (radar, sonar, jammers, stealth, shields): as TA's, on
+        // once built and switchable, the upkeep paid while on.
+        put("ActivateWhenBuilt", "1".into());
+        put("OnOffable", "1".into());
     }
     // Building.
     if builds != Builds::No {
@@ -445,7 +487,7 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons) -> String {
         put("WorkerTime", ((u.build_rate * WORK).round().max(1.0) as i64).to_string());
         let reach = u.table.path(&["Economy"]).and_then(|e| e.get_ci("MaxBuildDistance")).and_then(|v| v.num()).unwrap_or(5.0);
         put("BuildDistance", ((reach * UNIT_SCALE).round() as i64).max(64).to_string());
-        put("canreclaim", "1".into());
+        put("CanReclamate", "1".into());
         if builds == Builds::Factory {
             put("YardMap", yard_map(fx, fz));
         }
@@ -558,8 +600,13 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons) -> String {
             Motion::Air => {
                 put("canfly", "1".into());
                 put("cruisealt", ((u.elevation.unwrap_or(18.0) * 8.0).clamp(60.0, 250.0).round() as i64).to_string());
-                if u.is("TRANSPORTATION") {
+                if u.is("TRANSPORTATION")
+                    && let Some((units, size)) = carries
+                {
                     put("canload", "1".into());
+                    put("TransportCapacity", units.to_string());
+                    put("TransportMaxUnits", units.to_string());
+                    put("TransportSize", size.to_string());
                 }
                 if weapons.slots.iter().any(|w| w.turreted) || u.is("GROUNDATTACK") {
                     put("HoverAttack", "1".into());
@@ -570,10 +617,17 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons) -> String {
     } else {
         put("BMcode", "0".into());
         put("MaxSlope", "15".into());
-        put("MaxWaterDepth", if u.layers.water { "255" } else { "0" }.into());
-        if u.layers.water && !u.layers.land {
-            put("MinWaterDepth", "5".into());
-            put("Floater", "1".into());
+        // On the water (floating), under it (on the sea bed, or below the surface: extractors and
+        // power plants on deposits there too), or on land.
+        let under = u.layers.seabed || u.layers.sub;
+        put("MaxWaterDepth", if u.layers.water || under { "255" } else { "0" }.into());
+        if !u.layers.land {
+            if u.layers.water {
+                put("MinWaterDepth", "5".into());
+                put("Floater", "1".into());
+            } else if under {
+                put("MinWaterDepth", "15".into());
+            }
         }
     }
     format!("[UNITINFO]\n\t{{\n{f}\t}}\n")
@@ -668,7 +722,7 @@ mod tests {
         let u = striker();
         let w = weapons(&u);
         assert_eq!(w.slots.len(), 1);
-        let file = unit_file(&u, &w);
+        let file = unit_file(&u, &w, None);
         for line in ["UnitName=UEL0201;", "Side=UEF;", "MaxDamage=300;", "BuildCostMetal=56;", "BuildCostEnergy=266;", "BuildTime=2800;", "FootprintX=2;", "SightDistance=640;", "Weapon1=UEL0201_MAINGUN;", "MovementClass=TANKSH2;", "TEDClass=TANK;", "TurnRate=546;", "Corpse=uel0201_dead;"] {
             assert!(file.contains(line), "{line} in {file}");
         }
@@ -696,10 +750,67 @@ mod tests {
         let w = weapons(&u);
         assert_eq!(w.slots.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(), ["RightZephyr", "OverCharge"]);
         assert_eq!(w.dgun, Some(1));
-        let file = unit_file(&u, &w);
+        let file = unit_file(&u, &w, None);
         assert!(file.contains("canDgun=1;") && file.contains("Commander=1;") && file.contains("TEDClass=COMMANDER;"), "{file}");
         assert!(weapon_section(&u, w.slots[1]).contains("commandfire=1;"));
         let _ = Rack::default();
+    }
+
+    /// An air transport's slots, by its attach bones however they are named: small ones (plain,
+    /// `_sml`, `_Small`, on either side) counted, sized by its largest; larger ones counted where
+    /// there are no small; none at all, none.
+    #[test]
+    fn a_transport_carries_what_its_attach_bones_hold() {
+        let still = [1.0, 0.0, 0.0, 0.0];
+        let mesh = |bones: &[&str]| {
+            let mut all = vec![("Hull", -1, [0.0f32; 3], still)];
+            all.extend(bones.iter().map(|b| (*b, 0, [0.0f32; 3], still)));
+            crate::scm::parse(&crate::scm::tests::write(&all, &[([0.0; 3], [0.0; 2], 0)], &[[0, 0, 0]])).unwrap()
+        };
+        assert_eq!(transport(&mesh(&["Left_Attachpoint_sml_01", "Right_Attachpoint_sml_01", "Attachpoint_Small_03", "Attachpoint_Med_01", "Attachpoint_Lrg_01"])), Some((3, 3)));
+        assert_eq!(transport(&mesh(&["Attachpoint01", "Attachpoint02"])), Some((2, 1)));
+        assert_eq!(transport(&mesh(&["Attachpoint_Med_01"])), Some((1, 2)), "a gunship's one slot");
+        assert_eq!(transport(&mesh(&["Turret", "Muzzle"])), None);
+    }
+
+    /// A missile lives long enough to reach as far as its range, a nuke across the map.
+    #[test]
+    fn missiles_fly_as_far_as_their_range() {
+        // 1,920 pixels at 640 a second from 213: 3 s, half again, 0.7 s to speed, a second.
+        assert_eq!(flight_time(1920, 640, 213, 320), 7);
+        assert!(flight_time(NUKE_RANGE, 1600, 533, 800) as f64 * 1600.0 >= NUKE_RANGE as f64);
+        assert_eq!(flight_time(10, 640, 213, 320), 3, "never less than three seconds");
+        let mut missile = WeaponBlueprint { label: "Tac".into(), category: "Missile".into(), damage: 100.0, rate_of_fire: 0.1, max_radius: 120.0, muzzle_velocity: 10.0, ..Default::default() };
+        missile.projectile = Some("/projectiles/TIFMissileCruise01/TIFMissileCruise01_proj.bp".into());
+        let section = weapon_section(&striker(), &missile);
+        let life: f64 = section.lines().find_map(|l| l.trim().strip_prefix("flighttime=")).and_then(|v| v.trim_end_matches(';').parse().ok()).expect(&section);
+        assert!(life * 320.0 >= 120.0 * 32.0, "{section}");
+    }
+
+    /// The fields TA Reborn reads: builders reclaim (`CanReclamate`), a radar is on once built
+    /// and switchable (its upkeep paid while on), an air transport carries what its attach bones
+    /// hold, and structures stand on the water, under it or on land as their layers allow.
+    #[test]
+    fn builders_reclaim_sensors_switch_transports_carry_and_structures_stand_where_they_may() {
+        use crate::unit::Layers;
+        let none = Weapons { slots: Vec::new(), death: None, dgun: None };
+        let engineer = UnitBlueprint { id: "UEL0105".into(), faction: Faction::Uef, motion: Motion::Land, build_rate: 5.0, buildable: vec!["BUILTBYTIER1ENGINEER UEF".into()], categories: vec!["ENGINEER".into()], ..Default::default() };
+        assert!(unit_file(&engineer, &none, None).contains("CanReclamate=1;"));
+        let radar = UnitBlueprint { id: "UEB3101".into(), faction: Faction::Uef, categories: vec!["STRUCTURE".into(), "RADAR".into()], upkeep_energy: 20.0, layers: Layers { land: true, ..Default::default() }, ..Default::default() };
+        let file = unit_file(&radar, &none, None);
+        assert!(file.contains("EnergyUse=20;") && file.contains("ActivateWhenBuilt=1;") && file.contains("OnOffable=1;") && file.contains("MaxWaterDepth=0;"), "{file}");
+        let transport = UnitBlueprint { id: "UEA0107".into(), faction: Faction::Uef, motion: Motion::Air, categories: vec!["AIR".into(), "TRANSPORTATION".into()], ..Default::default() };
+        let file = unit_file(&transport, &none, Some((6, 3)));
+        assert!(file.contains("TransportCapacity=6;") && file.contains("TransportMaxUnits=6;") && file.contains("TransportSize=3;") && file.contains("canload=1;"), "{file}");
+        assert!(!unit_file(&transport, &none, None).contains("canload"), "no attach bones, no transport");
+        // An extractor on land or the sea bed; a torpedo trap on the sea bed alone; a sonar afloat.
+        let structure = |id: &str, layers: Layers| UnitBlueprint { id: id.into(), faction: Faction::Uef, categories: vec!["STRUCTURE".into()], layers, ..Default::default() };
+        let file = unit_file(&structure("UEB1103", Layers { land: true, seabed: true, ..Default::default() }), &none, None);
+        assert!(file.contains("MaxWaterDepth=255;") && !file.contains("MinWaterDepth"), "{file}");
+        let file = unit_file(&structure("XRB2308", Layers { sub: true, ..Default::default() }), &none, None);
+        assert!(file.contains("MaxWaterDepth=255;") && file.contains("MinWaterDepth=15;") && !file.contains("Floater"), "{file}");
+        let file = unit_file(&structure("UEB3102", Layers { water: true, ..Default::default() }), &none, None);
+        assert!(file.contains("MinWaterDepth=5;") && file.contains("Floater=1;"), "{file}");
     }
 
     #[test]

@@ -76,6 +76,9 @@ pub fn rest_aim(mesh: &Mesh, bone: usize) -> RestAim {
     RestAim { heading: units(atan2(x, z)), cos: (z / level * ONE).round() as i32, sin: (x / level * ONE).round() as i32, pitch: units(atan2(y, level)) }
 }
 
+/// Each weapon slot's restore, turning its turrets back to rest.
+const RESTORE: [&str; 3] = ["RestoreAfterDelay", "RestoreAfterDelay2", "RestoreAfterDelay3"];
+
 /// Degrees a second as TA's angle units a second.
 fn angle_speed(degrees: f64) -> i32 {
     (degrees.max(1.0) * TURN / 360.0).round() as i32
@@ -87,9 +90,8 @@ pub fn script(plan: &Plan) -> CobScript {
     let piece = |name: &str| -> Option<u32> { plan.pieces.iter().position(|p| p.eq_ignore_ascii_case(name)).map(|i| i as u32) };
     let bone = |name: &str| -> Option<usize> { plan.mesh.bone(name) };
     let reload = asm.static_var();
-    let restore = asm.declare("RestoreAfterDelay");
-    // (The turrets to turn back to rest, and their speeds.)
-    let mut rests: Vec<(u32, u32, i32)> = Vec::new();
+    // (Each weapon's turrets to turn back to rest, and their speeds: a restore of its own each.)
+    let mut rests: [Vec<(u32, u32, i32)>; 3] = Default::default();
 
     // Create: hidden what the enhancements show; a reload of a second until told.
     let mut create = Function::new(0);
@@ -135,7 +137,7 @@ pub fn script(plan: &Plan) -> CobScript {
             if let Some((y, _)) = yaw {
                 // turn yaw to (heading - its rest heading)
                 aim.push(yaw_speed).push_local(0).push(rest.heading).op(op::SUB).turn(y, Y_AXIS);
-                rests.push((y, Y_AXIS, yaw_speed));
+                rests[slot].push((y, Y_AXIS, yaw_speed));
             }
             if let Some((p, _)) = pitch {
                 // The pitch, signed (the engine hands 0..65535), less the barrel's own at rest.
@@ -148,10 +150,10 @@ pub fn script(plan: &Plan) -> CobScript {
                 aim.push_local(q).push(barrel.pitch).op(op::SUB).pop_local(q);
                 // About x by -q cos, about z by -q sin (as the script gives a z turn: negated).
                 aim.push(pitch_speed).push_local(q).push(rest.cos).op(op::MUL).push(-(ONE as i32)).op(op::DIV).turn(p, X_AXIS);
-                rests.push((p, X_AXIS, pitch_speed));
+                rests[slot].push((p, X_AXIS, pitch_speed));
                 if rest.sin != 0 {
                     aim.push(pitch_speed).push_local(q).push(rest.sin).op(op::MUL).push(-(ONE as i32)).op(op::DIV).turn(p, Z_AXIS);
-                    rests.push((p, Z_AXIS, pitch_speed));
+                    rests[slot].push((p, Z_AXIS, pitch_speed));
                 }
             }
             if let Some((y, _)) = yaw {
@@ -163,6 +165,7 @@ pub fn script(plan: &Plan) -> CobScript {
                     aim.wait_turn(p, Z_AXIS);
                 }
             }
+            let restore = asm.declare(RESTORE[slot]);
             aim.start_script(restore, 0).ret(1);
             asm.define(AIM[slot], aim);
         }
@@ -221,14 +224,20 @@ pub fn script(plan: &Plan) -> CobScript {
         asm.define(FIRE[slot], fire);
     }
 
-    // Back to rest twice the longest reload after the last aim.
-    let mut back = Function::new(0);
-    back.push_static(reload).push(2).op(op::MUL).op(op::SLEEP);
-    for &(p, axis, speed) in &rests {
-        back.push(speed).push(0).turn(p, axis);
+    // Each weapon's turrets back to rest twice the longest reload after its last aim. Its restore
+    // answers the signal of every weapon turning any of its pieces, so an aim of any of them stops
+    // it: a weapon gone quiet never turns back a turret another is aiming.
+    for (slot, own) in rests.iter().enumerate().filter(|(_, own)| !own.is_empty()) {
+        let mask = rests.iter().enumerate().filter(|(_, other)| other.iter().any(|o| own.iter().any(|s| s.0 == o.0))).fold(0i32, |mask, (j, _)| mask | (2 << j));
+        let mut back = Function::new(0);
+        back.push(mask).op(op::SET_SIGNAL_MASK);
+        back.push_static(reload).push(2).op(op::MUL).op(op::SLEEP);
+        for &(p, axis, speed) in own {
+            back.push(speed).push(0).turn(p, axis);
+        }
+        back.ret(0);
+        asm.define(RESTORE[slot], back);
     }
-    back.ret(0);
-    asm.define("RestoreAfterDelay", back);
 
     if plan.builder {
         build_functions(&mut asm, plan);
@@ -401,6 +410,30 @@ mod tests {
         let listing = ta_formats::cob::disassemble(&script(&plan));
         assert!(listing.contains("push-const       16384"), "{listing}");
         assert!(listing.contains("turn             2 2"), "the side gun pitches about z: {listing}");
+    }
+
+    /// Two guns on turrets of their own each turn back to rest by a restore of their own, which
+    /// turns only their turret and answers their own aim alone; two sharing a turret both stop
+    /// either's restore when they aim.
+    #[test]
+    fn each_weapon_turns_back_its_own_turret() {
+        let still = [1.0, 0.0, 0.0, 0.0];
+        let file = scm::tests::write(&[("Hull", -1, [0.0; 3], still), ("Front", 0, [0.0, 1.0, 1.0], still), ("Back", 0, [0.0, 1.0, -1.0], still)], &[([0.0; 3], [0.0; 2], 0)], &[[0, 0, 0]]);
+        let mesh = scm::parse(&file).unwrap();
+        let unit = UnitBlueprint { id: "SHIP".into(), ..Default::default() };
+        let on = |bone: &str| WeaponBlueprint { yaw_bone: Some(bone.into()), pitch_bone: None, muzzle_bone: Some(bone.into()), racks: vec![], ..gun() };
+        let (front, back) = (on("Front"), on("Back"));
+        let pieces: Vec<String> = vec!["Hull".into(), "Front".into(), "Back".into()];
+        let body = |listing: &str, name: &str| -> String { listing.split(&format!("\n{name}:\n")).nth(1).map(|rest| rest.split("\n\n").next().unwrap_or("").to_string()).unwrap_or_default() };
+        let mask = |body: &str| -> i32 { body.lines().next().and_then(|l| l.split_whitespace().last()).and_then(|v| v.parse().ok()).unwrap_or(-1) };
+        let listing = ta_formats::cob::disassemble(&script(&Plan { unit: &unit, mesh: &mesh, pieces: pieces.clone(), weapons: vec![&front, &back], factory: false, builder: false, pixels: 2.0 }));
+        let (first, second) = (body(&listing, "RestoreAfterDelay"), body(&listing, "RestoreAfterDelay2"));
+        assert!(first.contains("turn             1 1") && !first.contains("turn             2 1"), "{listing}");
+        assert!(second.contains("turn             2 1") && !second.contains("turn             1 1"), "{listing}");
+        assert_eq!((mask(&first), mask(&second)), (2, 4), "{listing}");
+        // Sharing the front turret: either's aim stops both restores.
+        let listing = ta_formats::cob::disassemble(&script(&Plan { unit: &unit, mesh: &mesh, pieces, weapons: vec![&front, &on("Front")], factory: false, builder: false, pixels: 2.0 }));
+        assert_eq!((mask(&body(&listing, "RestoreAfterDelay")), mask(&body(&listing, "RestoreAfterDelay2"))), (6, 6), "{listing}");
     }
 
     /// An engineer lifts its stance to build and sprays from its effect bones in turn; a factory

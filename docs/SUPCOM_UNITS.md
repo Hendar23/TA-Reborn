@@ -25,11 +25,12 @@ archives rebalance the units, and the import plays them as Forged Alliance does.
 
 - `units.scd`: 679 unit folders, 568 blueprints (`<id>_unit.bp`), 1,148 meshes (`.scm`), 474
   animations (`.sca`) and 3,276 textures (`.dds`).
-- **348 units a player can make** ([`UnitBlueprint::playable`]: of the four factions, in the game
-  rather than its campaign, built by something or a commander): UEF 89, Cybran 89, Aeon 90,
-  Seraphim 80, each about 25 tech 1, 30 tech 2, 26 tech 3, three or four experimentals, the ACU
-  and a support commander. Every one is made by some builder, by its lists' categories.
-- Their first levels of detail hold 754,000 vertices in all (the Fatboy, UEL0401, the most: 15,100);
+- **357 units a player can make** ([`UnitBlueprint::playable`]: of the four factions, in the game
+  rather than its campaign, built by something (an air transport by its factories'
+  `TRANSPORTBUILTBY…` categories) or a commander): UEF 92, Cybran 91, Aeon 92, Seraphim 82, each
+  about 26 tech 1, 31 tech 2, 26 tech 3, three or four experimentals, the ACU and a support
+  commander. Every one is made by some builder, by its lists' categories.
+- Their first levels of detail hold 785,000 vertices in all (the Fatboy, UEL0401, the most: 15,100);
   194 walks and deaths.
 - `projectiles.scd` (289 projectile blueprints, 48 meshes), `textures.scd` (539 build icons,
   1,249 strategic icons), `effects.scd` (2,827 emitter blueprints), `loc_US.scd` (the string
@@ -116,7 +117,7 @@ Each unit's first level of detail becomes `objects3d/<id>.3do` with its surface
   first's pieces (a bone the piece of its name, or of the nearest of its parents with one), painted
   with the first's paint, as `objects3d/<id>_lod1.3do`, which the first's surface names `far`.
 
-The 348 units' models come to 46 MB and their paint to 352 MB, made in about five seconds.
+The 357 units' models come to 56 MB and their paint to 361 MB, made in about seven seconds.
 
 ## Gameplay
 
@@ -131,11 +132,18 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
 - **Movement:** speeds × 32 / 30 (pixels a tick), turn rates in degrees a second to TA's
   angle units a tick, TA's movement classes by how it moves and its footprint, and the fields
   TA reads beside the class (hovercraft hover, ships float, submarines keep to deep water,
-  amphibians go to the sea bed). Mobile units take square footprints, as TA's do.
+  amphibians go to the sea bed). Mobile units take square footprints, as TA's do. Structures
+  stand where their build layers let them: on land, afloat (`Floater`), or on the sea bed
+  (extractors and hydrocarbon plants on deposits under water as well as on land).
+- **Transports:** an air transport carries as many units as its mesh has attach bones for small
+  ones (`…Attachpoint…`, `_sml` or `_Small` or plain, on either side; or its larger slots where
+  it has none: the UEF's T2 gunship carries one), as large as its largest slots take (TA's
+  `TransportSize`). The T1 transports carry 6 to 8, the T2 10 to 16, the UEF's T3 28.
 - **Economy:** power generators make energy as in FA; extractors switch on when built, cover a
   metal spot (three cells a side, as TA's) and extract as TA's (0.001), three times that at T2
   and nine times at T3 (FA's 2, 6 and 18 mass a second); fabricators make metal from energy
-  while on.
+  while on; radar, sonar, jammers, stealth and shields switch on when built and pay their
+  upkeep while on, as TA's do.
 - **Weapons** (`weapons/supcom_<faction>.tdf`): TA's three slots. A commander's main gun goes
   first and its Overcharge second, as TA's D-gun (`commandfire`); otherwise the most damaging
   go first, an anti-air one kept where there is one. Weapons an enhancement brings, dummies
@@ -143,15 +151,19 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
   32, reloads 1 / rate of fire, muzzle velocities × 32, splash diameters twice the damage
   radius × 32, salvos as bursts, damage as it is (a nuke's inner damage over its outer
   radius). Each looks and sounds as TA's weapons of its kind (lasers, shells, artillery,
-  missiles, torpedoes, bombs, anti-air, the D-gun, nukes, anti-missiles), TA's own art.
+  missiles, torpedoes, bombs, anti-air, the D-gun, nukes, anti-missiles), TA's own art. A
+  missile flies long enough to reach as far as its range (a nuke's, the whole map) half again,
+  with its climb to speed.
 - **Scripts:** made by an assembler (`ta_formats::cob::Assembler`). A turret turns its yaw bone
   to the target's heading less the heading it rests at, and pitches its pitch bone about the
   axis square to the way it rests (an x turn and a z turn: exact for guns resting ahead,
   behind or to a side, close for the rest; 71 of the 259 turrets rest turned), less the pitch it
-  rests at; muzzles take turns, racks kick back along their barrels, turrets turn back to rest
-  twice the longest reload after their last aim. Engineers and commanders lift their build
-  stance and spray from their build effect bones; factories open their yards and build on the
-  bone their blueprint attaches units to. Fresh units hide what their enhancements show.
+  rests at; muzzles take turns, racks kick back along their barrels. Each weapon's turrets turn
+  back to rest twice the longest reload after its last aim, by a restore of its own that any
+  weapon turning the same pieces stops when it aims. Engineers and commanders lift their build
+  stance and spray from their build effect bones, and reclaim; factories open their yards and
+  build on the bone their blueprint attaches units to. Fresh units hide what their
+  enhancements show.
 - **Builds:** each builder's build lists matched against the units' categories. A commander
   builds its own tier (`BUILTBYCOMMANDER`: its engineering enhancements, which bring the others,
   are not yet in TA Reborn); a factory builds units (the buildings its lists name are its own
@@ -184,7 +196,7 @@ seconds).
 
 ## What the game's data gets wrong
 
-Seen across the 348 (the installed test lists them); the conversion steps round them:
+Seen across the 357 (the installed test lists them); the conversion steps round them:
 
 - Animations that move bones the mesh has not (a death moving an attach point; the frigate
   UES0202's deaths move 17 bones of an older mesh).

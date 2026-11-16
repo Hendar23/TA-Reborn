@@ -117,7 +117,7 @@ fn unit(files: &Files, u: &UnitBlueprint, put: &mut dyn FnMut(&str, &[u8]) -> Re
     }
     // Its unit file and its script.
     let weapons = units::weapons(u);
-    put(&format!("units/{name}.fbi"), units::unit_file(u, &weapons).as_bytes())?;
+    put(&format!("units/{name}.fbi"), units::unit_file(u, &weapons, units::transport(&mesh)).as_bytes())?;
     let builds = units::builds(u);
     let plan = script::Plan {
         unit: u,
