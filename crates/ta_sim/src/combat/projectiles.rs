@@ -27,6 +27,21 @@ fn cruise_aim(world: &World, pos: FxVec3, to: FxVec3) -> FxVec3 {
     FxVec3::new(to.x, flat * short / clearance, to.z)
 }
 
+/// How far on (px) a torpedo comes to its target's depth.
+const TORPEDO_RUN_UP: i64 = 48;
+
+/// Where a torpedo, its target `to` away, steers: at the target, but one under its target's depth
+/// rises to it over the next [`TORPEDO_RUN_UP`] px (all the way, nearer than that) and runs on
+/// level at it, as torpedoes run at a depth (the surface keeps it from rising past a ship's or a
+/// tower's waterline): one sent along the straight line from a submarine down in the deep to a
+/// floating tower's waterline ran into the sea bed rising to the shallows the tower stood in. One
+/// over its target goes straight for it (a torpedo turning slowly, sent down steeply, could not
+/// level off before the sea bed).
+pub(super) fn torpedo_aim(to: FxVec3) -> FxVec3 {
+    let (flat, run_up) = (to.length_xz(), Fx::from_int(TORPEDO_RUN_UP));
+    if to.y <= Fx::ZERO || flat <= run_up { to } else { FxVec3::new(to.x, to.y * flat / run_up, to.z) }
+}
+
 #[derive(Clone, Copy)]
 struct Impact {
     when: Fx,
@@ -46,7 +61,8 @@ impl Sim {
             return false;
         }
         let flying = !u.landed && self.types.get(u.type_id).locomotion == Locomotion::Air;
-        !(flying && (!w.hits_air || friendly) || !w.water && self.submerged(u))
+        // (A torpedo meets only what reaches into the water, where it does: `reach_sphere`.)
+        !(flying && (!w.hits_air || friendly) || !self.reaches(w, u))
     }
 
     /// First solid contact on the planned flight. Interception may only precede this:
@@ -58,7 +74,7 @@ impl Sim {
             for &slot in near.iter() {
                 let Some(u) = self.units.get(slot as usize).and_then(|u| u.as_ref()) else { continue };
                 if !self.projectile_hits_unit(p, w, u) { continue; }
-                let (centre, radius) = hit_sphere(u, self);
+                let (centre, radius) = reach_sphere(u, w, self);
                 if let Some(when) = segment_entry(p.prev_pos, p.pos, centre, radius)
                     && first.is_none_or(|(before, _)| when < before)
                 {
@@ -153,7 +169,7 @@ impl Sim {
                     // TA's `cruise` missiles launched upright (its strategic ones: the nukes, the
                     // EMP and tactical missiles) cross the map level, high over everything, and
                     // dive onto their target from above (see `cruise_aim`).
-                    let aim = if w.vlaunch && w.def.cruise { cruise_aim(&self.world, p.pos, to) } else { to };
+                    let aim = if w.vlaunch && w.def.cruise { cruise_aim(&self.world, p.pos, to) } else if w.torpedo { torpedo_aim(to) } else { to };
                     let speed = (p.vel.length() + w.acceleration).min(w.velocity);
                     let turn = w.turn_rate.max(if w.torpedo { 1 } else { 200 });
                     // (Straight up, at the top of its climb, a missile has no heading: it takes

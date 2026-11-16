@@ -32,7 +32,10 @@ fn game_of(units: &[(&str, &str)]) -> Sim {
     std::fs::write(
         dir.join("weapons/laser.tdf"),
         "[LASER] { range=400; reloadtime=0.1; weaponvelocity=400; rendertype=0; [DAMAGE] { default=1; } }
-         [AAGUN] { range=400; reloadtime=0.1; weaponvelocity=400; rendertype=0; toairweapon=1; [DAMAGE] { default=1; } }",
+         [AAGUN] { range=400; reloadtime=0.1; weaponvelocity=400; rendertype=0; toairweapon=1; [DAMAGE] { default=1; } }
+         [SHORTLASER] { range=180; reloadtime=0.3; weaponvelocity=400; rendertype=0; beamweapon=1; [DAMAGE] { default=1; } }
+         [MISSILE] { range=600; reloadtime=0.5; weaponvelocity=650; startvelocity=450; weaponacceleration=100; rendertype=1; guidance=1; tracks=1; selfprop=1; turnrate=33000; weapontimer=5; [DAMAGE] { default=1; } }
+         [DGUN] { range=250; reloadtime=0.9; weaponvelocity=300; rendertype=3; commandfire=1; [DAMAGE] { default=1; } }",
     )
     .unwrap();
     let mut vfs = ta_vfs::Vfs::new();
@@ -134,6 +137,67 @@ fn ranking_keeps_visibility_categories_priority_retaliation_and_id_ties() {
 
 fn spawn(sim: &mut Sim, name: &str, owner: u8, x: i64, z: i64) -> UnitId {
     sim.spawn_unit(sim.types.id(name).unwrap(), owner, FxVec3::from_ints(x, 0, z), 0, true).unwrap()
+}
+
+/// TA's own game data from the install, read once (none without an install).
+pub(super) fn installed() -> Option<&'static (Arc<ta_data::GameData>, Arc<crate::UnitTypes>)> {
+    static DATA: std::sync::OnceLock<Option<(Arc<ta_data::GameData>, Arc<crate::UnitTypes>)>> = std::sync::OnceLock::new();
+    DATA.get_or_init(|| {
+        let install = ta_vfs::install::discover(None).ok()?;
+        let mut vfs = ta_vfs::Vfs::new();
+        vfs.mount_game_dir(&install.root, "base").ok()?;
+        let data = Arc::new(ta_data::GameData::load(&vfs));
+        let types = Arc::new(crate::UnitTypes::compile(&data, &|p| vfs.read_opt(p)));
+        Some((data, types))
+    })
+    .as_ref()
+}
+
+/// A battle of TA's own units, the Arm (player 0) against the Core (player 1), each with plenty
+/// of metal and energy, on a flat 128 × 128-cell map (2,048 px a side): the ground at 60 under a
+/// sea whose surface is at `sea` (60 and under: dry land), rising from x = 1,100 px to `shelf` at
+/// x = 1,250 and on (a shallow shelf, or the shore). None without an install.
+pub(super) fn tas_battle(sea: i32, shelf: u8) -> Option<Sim> {
+    let (data, types) = installed()?;
+    let mut heights = vec![60u8; 128 * 128];
+    for z in 0..128 {
+        for x in 0..128 {
+            let px = x as i64 * 16;
+            let rise = ((px - 1100).clamp(0, 150) * (shelf as i64 - 60)) / 150;
+            heights[z * 128 + x] = (60 + rise) as u8;
+        }
+    }
+    let map = ta_formats::tnt::TntMap {
+        width: 128,
+        height: 128,
+        sea_level: sea,
+        tiles: Vec::new(),
+        tile_map: Vec::new(),
+        heights,
+        features: vec![ta_formats::tnt::FEATURE_NONE; 128 * 128],
+        feature_names: Vec::new(),
+        minimap: Default::default(),
+        flags: Vec::new(),
+    };
+    let players: Vec<_> = (0..2)
+        .map(|i| crate::PlayerSetup { side: ["ARM", "CORE"][i].into(), color: i as u8, start: FxVec3::ZERO, metal: Fx::from_int(100_000), energy: Fx::from_int(1_000_000), ai: false })
+        .collect();
+    let mut sim = Sim::new(types.clone(), data.clone(), &map, &ta_data::MapInfo::default(), 0, &players, 11);
+    for p in 0..2 {
+        sim.set_starting_resources(p, Fx::from_int(100_000), Fx::from_int(1_000_000));
+    }
+    Some(sim)
+}
+
+/// Puts one of TA's units for `owner` at (x, z), on the ground or the water there, facing east.
+pub(super) fn put_at(sim: &mut Sim, name: &str, owner: u8, x: i64, z: i64) -> UnitId {
+    let ground = sim.world.height_at(Fx::from_int(x), Fx::from_int(z));
+    sim.spawn_unit(sim.types.id(name).unwrap_or_else(|| panic!("{name}")), owner, FxVec3::new(Fx::from_int(x), ground, Fx::from_int(z)), 16384, true).unwrap()
+}
+
+/// Whether `unit` fired in the events since they were last taken.
+pub(super) fn fired(sim: &mut Sim, unit: UnitId) -> bool {
+    sim.take_events().iter().any(|e| matches!(e, SimEvent::WeaponFired { unit: u, .. } if *u == unit))
 }
 
 #[test]
@@ -486,6 +550,53 @@ fn every_units_weapons_pick_what_tas_rules_let_them() {
         expect(unit, 1, &["sub"]);
     }
     assert!(wrong.is_empty(), "{} units against TA's rules:\n{}", wrong.len(), wrong.join("\n"));
+
+    // On an attack order: the second and third weapons that leave the order to the others for
+    // these kinds of target, and keep choosing their own (`Sim::keeps_to_own_targets`).
+    let keeps = |sim: &Sim, unit: &str, slot: usize| -> Vec<&'static str> {
+        let t = types.by_name(unit).unwrap();
+        let w = weapons.get(t.weapons[slot].unwrap());
+        targets.iter().filter(|&&(_, id)| sim.keeps_to_own_targets(t, slot, w, sim.unit(id).unwrap().type_id, 0)).map(|&(kind, _)| kind).collect()
+    };
+    let mut table = Vec::new();
+    for t in &types.types {
+        for slot in 1..3 {
+            let Some(wid) = t.weapons[slot] else { continue };
+            let kinds = keeps(&sim, &t.name, slot);
+            if !kinds.is_empty() {
+                table.push(format!("{:<9} weapon {} {:<20} keeps to its own targets on an order on: {}", t.name, slot + 1, weapons.get(wid).name, kinds.join(", ")));
+            }
+        }
+    }
+    println!("\n{}", table.join("\n"));
+    let mut wrong = Vec::new();
+    let mut expect = |unit: &str, slot: usize, want: &[&str]| {
+        let got = keeps(&sim, unit, slot);
+        if got != want {
+            wrong.push(format!("{unit} weapon {} keeps to its own on {got:?}, expected {want:?}", slot + 1));
+        }
+    };
+    // The Skeeter's and the Searcher's anti-air missiles: everything but an aircraft (a submarine
+    // too, though they could not reach it).
+    for unit in ["ARMPT", "CORPT", "ARMLATNK", "ARMMSHIP", "CORMSHIP"] {
+        expect(unit, 1, &["tank", "building", "boat", "sub"]);
+    }
+    // The destroyers' and cruisers' depth charges (`NOTSUB`): what TA tags as no submarine, which
+    // is all but the submarines and a few amphibians.
+    for unit in ["ARMROY", "CORROY", "ARMCRUS", "CORCRUS"] {
+        let got = keeps(&sim, unit, 1);
+        assert!(got.contains(&"boat") && !got.contains(&"sub"), "{unit}'s depth charges: {got:?}");
+    }
+    // The first weapon always takes the order; the Commanders' D-gun (command fire) too.
+    for t in &types.types {
+        if let Some(w) = t.weapons[0] {
+            assert!(targets.iter().all(|&(_, id)| !sim.keeps_to_own_targets(t, 0, weapons.get(w), sim.unit(id).unwrap().type_id, 0)), "{} weapon 1", t.name);
+        }
+    }
+    for unit in ["ARMCOM", "CORCOM"] {
+        expect(unit, 2, &[]);
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 /// Fire at will, as a player found it in TA's own units: a missile tower with no aircraft about
@@ -587,4 +698,178 @@ fn tas_units_fire_at_will_on_their_bad_targets_last() {
         if fired && sim.unit(llt).is_none_or(|u| u.health < start) { break; }
     }
     assert!(fired, "the destroyer shells the tower on the shore: target {:?}, blocked {:?}", sim.unit(destroyer).unwrap().weapons[0].target, sim.unit(destroyer).unwrap().weapons[0].blocked);
+}
+
+/// TA's own Targeting Facility (`ARMTARG`, "Automatic Radar Targeting") at work: a Big Bertha
+/// set to fire at will shells what a radar tower shows of the enemy, far out of anything's sight;
+/// with no facility, or with it switched off, it does not.
+#[test]
+fn tas_targeting_facility_lets_a_big_bertha_fire_at_will_on_radar() {
+    let Some(mut sim) = tas_battle(0, 60) else {
+        eprintln!("TA install not found; skipping");
+        return;
+    };
+    let bertha = put_at(&mut sim, "ARMBRTHA", 0, 300, 1000);
+    put_at(&mut sim, "ARMRAD", 0, 420, 1150);
+    // 1,200 px off: in the Bertha's reach (4,096) and the radar's (1,440), out of all sight.
+    let target = put_at(&mut sim, "CORLLT", 1, 1500, 1000);
+    sim.unit_mut(target).unwrap().fire_state = 0;
+    // (Built, the Bertha holds its fire: `NoAutoFire`.)
+    sim.step(&[crate::Command::SetStates { player: 0, units: vec![bertha], fire: Some(2), movement: None }]);
+    sim.step(&[]);
+    assert_eq!(sim.seen_by(sim.unit(target).unwrap(), 0), crate::vision::Seen::Radar, "a radar contact");
+    // Whether the Bertha fires within 15 s (its reload is 7, its turret turns first).
+    let fires = |sim: &mut Sim| {
+        sim.take_events();
+        (0..450).any(|_| {
+            sim.step(&[]);
+            fired(sim, bertha)
+        })
+    };
+    assert!(!fires(&mut sim), "no facility: the radar contact is let be");
+    let facility = put_at(&mut sim, "ARMTARG", 0, 300, 1400);
+    assert!(fires(&mut sim), "the facility at work: the Bertha fires at will on the radar contact");
+    assert!(sim.players[0].radar_targeting);
+    sim.step(&[crate::Command::SetActive { player: 0, units: vec![facility], on: false }]);
+    sim.step(&[]);
+    assert!(!fires(&mut sim), "switched off: it holds its fire again");
+    assert!(!sim.players[0].radar_targeting);
+}
+
+/// A second weapon whose own bad targets name what its unit is ordered to attack (TA's Skeeter:
+/// its anti-air missiles say `wsec_badTargetCategory=NOTAIR`) leaves the order to the first and
+/// keeps choosing its own targets, as with no order: the laser fires at the ordered boat, the
+/// missiles at the aircraft about, and with none at the nearest enemy. The unit closes on the
+/// boat to its laser's reach, not its missiles'. A weapon's bad targets taken from the unit's
+/// `BadTargetCategory` don't count, nor any with the player's `+shootall`; a command-fire weapon
+/// fires as ordered.
+#[test]
+fn a_second_weapon_keeps_to_its_own_targets_on_an_attack_order() {
+    let units = [
+        ("SKEETER", "Weapon1=SHORTLASER; Weapon2=MISSILE; wsec_badTargetCategory=NOTAIR; Category=SHIP NOTAIR; CanMove=1; MaxVelocity=2; Acceleration=1; BrakeRate=1; TurnRate=4000; SteeringMode=2;"),
+        ("TWIN", "Weapon1=SHORTLASER; Weapon2=MISSILE; BadTargetCategory=NOTAIR; Category=SHIP NOTAIR;"),
+        ("BOSS", "Weapon1=SHORTLASER; Weapon3=DGUN; wspe_badTargetCategory=NOTAIR; Category=SHIP NOTAIR;"),
+        ("BOAT", "CanMove=1; MaxVelocity=1; Category=SHIP NOTAIR;"),
+        ("JET", "CanFly=1; CanMove=1; MaxVelocity=5; Category=VTOL;"),
+    ];
+    let new_game = || {
+        let mut sim = game_of(&units);
+        sim.los_enabled = false;
+        sim
+    };
+    let calm = |sim: &mut Sim, id: UnitId| {
+        let u = sim.unit_mut(id).unwrap();
+        u.fire_state = 0;
+        u.move_state = 0;
+    };
+    let fly = |sim: &mut Sim, id: UnitId| {
+        let u = sim.unit_mut(id).unwrap();
+        u.landed = false;
+        u.pos.y += Fx::from_int(120);
+    };
+    let attack = |sim: &mut Sim, unit: UnitId, target: UnitId| {
+        sim.step(&[crate::Command::Order { player: 0, units: vec![unit], order: Order::Attack(Target::Unit(target)), queue: false }]);
+    };
+    let targets = |sim: &Sim, id: UnitId| [0, 1, 2].map(|k| sim.unit(id).unwrap().weapons[k].target);
+
+    // The Skeeter, the ordered boat 500 px off (out of its laser's reach, in its missiles'),
+    // another boat nearer, an aircraft about.
+    let mut sim = new_game();
+    let skeeter = spawn(&mut sim, "SKEETER", 0, 300, 600);
+    let ordered = spawn(&mut sim, "BOAT", 1, 800, 600);
+    let nearer = spawn(&mut sim, "BOAT", 1, 300, 760);
+    let jet = spawn(&mut sim, "JET", 1, 420, 760);
+    for id in [ordered, nearer, jet] {
+        calm(&mut sim, id);
+    }
+    fly(&mut sim, jet);
+    attack(&mut sim, skeeter, ordered);
+    let laser = sim.weapon_types.by_name("SHORTLASER").unwrap().id;
+    let lasered = (0..360).any(|_| {
+        sim.step(&[]);
+        sim.take_events().iter().any(|e| matches!(e, SimEvent::WeaponFired { unit, weapon, .. } if *unit == skeeter && *weapon == laser))
+    });
+    assert!(lasered, "the Skeeter closes to its laser's reach and lasers the ordered boat: at {:?}", sim.unit(skeeter).unwrap().pos);
+    let [laser, missiles, _] = targets(&sim, skeeter);
+    assert_eq!(laser, Some(Target::Unit(ordered)), "the laser fires as ordered");
+    assert_eq!(missiles, Some(Target::Unit(jet)), "the missiles at the aircraft about");
+    // The aircraft gone: the missiles at the nearest enemy, as with no order.
+    sim.remove_unit(jet);
+    for _ in 0..30 {
+        sim.step(&[]);
+    }
+    let [laser, missiles, _] = targets(&sim, skeeter);
+    assert_eq!(laser, Some(Target::Unit(ordered)), "the laser keeps to the order");
+    let from = sim.unit(skeeter).unwrap().pos;
+    let nearest = [ordered, nearer].into_iter().min_by_key(|&b| (sim.unit(b).unwrap().pos - from).xz().length_sq_raw()).unwrap();
+    assert_eq!(missiles, Some(Target::Unit(nearest)), "and the missiles at the nearest enemy");
+    // With `+shootall` no target is a bad one: the missiles take the order too.
+    sim.step(&[crate::Command::SetShootAll { player: 0, on: true }]);
+    for _ in 0..30 {
+        sim.step(&[]);
+    }
+    assert_eq!(targets(&sim, skeeter)[1], Some(Target::Unit(ordered)), "+shootall: the missiles as ordered");
+
+    // The unit's `BadTargetCategory` alone: both weapons take the order.
+    let mut sim = new_game();
+    let twin = spawn(&mut sim, "TWIN", 0, 300, 600);
+    let ordered = spawn(&mut sim, "BOAT", 1, 440, 600);
+    let jet = spawn(&mut sim, "JET", 1, 300, 760);
+    calm(&mut sim, ordered);
+    calm(&mut sim, jet);
+    fly(&mut sim, jet);
+    attack(&mut sim, twin, ordered);
+    for _ in 0..30 {
+        sim.step(&[]);
+    }
+    assert_eq!(targets(&sim, twin)[..2], [Some(Target::Unit(ordered)); 2], "a weapon's bad targets from its unit's list don't keep it from the order");
+
+    // A command-fire third weapon whose own bad targets name the target fires as ordered.
+    let mut sim = new_game();
+    let boss = spawn(&mut sim, "BOSS", 0, 300, 600);
+    let ordered = spawn(&mut sim, "BOAT", 1, 440, 600);
+    calm(&mut sim, ordered);
+    sim.step(&[crate::Command::Order { player: 0, units: vec![boss], order: Order::ManualFire(Target::Unit(ordered)), queue: false }]);
+    let dgun = sim.weapon_types.by_name("DGUN").unwrap().id;
+    let shot = (0..60).any(|_| {
+        sim.step(&[]);
+        sim.take_events().iter().any(|e| matches!(e, SimEvent::WeaponFired { unit, weapon, .. } if *unit == boss && *weapon == dgun))
+    });
+    assert!(shot, "the command-fire weapon fires as ordered");
+}
+
+/// TA's Skeeter ordered to attack a Searcher, a Core Avenger flying near and another boat
+/// nearer: its laser fires at the Searcher, its missiles at the Avenger.
+#[test]
+fn tas_skeeter_lasers_what_it_is_ordered_to_and_its_missiles_take_the_aircraft() {
+    let Some(mut sim) = tas_battle(150, 60) else {
+        eprintln!("TA install not found; skipping");
+        return;
+    };
+    sim.los_enabled = false;
+    let skeeter = put_at(&mut sim, "ARMPT", 0, 600, 1000);
+    let ordered = put_at(&mut sim, "CORPT", 1, 760, 1000);
+    let nearer = put_at(&mut sim, "CORPT", 1, 600, 1120);
+    let plane = put_at(&mut sim, "CORVENG", 1, 700, 1150);
+    for id in [ordered, nearer, plane] {
+        let u = sim.unit_mut(id).unwrap();
+        u.fire_state = 0;
+        u.move_state = 0;
+    }
+    {
+        let u = sim.unit_mut(plane).unwrap();
+        u.landed = false;
+        u.pos.y += Fx::from_int(120);
+    }
+    sim.step(&[crate::Command::Order { player: 0, units: vec![skeeter], order: Order::Attack(Target::Unit(ordered)), queue: false }]);
+    let mut at = [None; 2];
+    for _ in 0..90 {
+        sim.step(&[]);
+        let u = sim.unit(skeeter).unwrap();
+        at = [u.weapons[0].target, u.weapons[1].target];
+        if at == [Some(Target::Unit(ordered)), Some(Target::Unit(plane))] && sim.unit(plane).is_some_and(|p| sim.airborne(p)) {
+            break;
+        }
+    }
+    assert_eq!(at, [Some(Target::Unit(ordered)), Some(Target::Unit(plane))], "the laser as ordered, the missiles at the aircraft");
 }

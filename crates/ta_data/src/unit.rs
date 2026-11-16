@@ -165,6 +165,10 @@ pub struct UnitDef {
     pub transport_capacity: u32,
     pub transport_size: u32,
     pub is_airbase: bool,
+    /// A targeting facility (`IsTargetingUpgrade`: Core Contingency's Targeting Facilities,
+    /// ARMTARG and CORTARG, "Automatic Radar Targeting"): while one of a player's is at work, its
+    /// units fire at will on what its side has on radar as on what it sees.
+    pub is_targeting_upgrade: bool,
     pub is_commander: bool,
     pub heal_time: f64,
     pub damage_modifier: f64,
@@ -205,6 +209,15 @@ impl UnitDef {
     /// gap on a slope), and its pictures leave that out.
     pub fn stands_on_land(&self) -> bool {
         !self.can_fly && !self.can_hover && !self.floater && self.min_water_depth <= 0.0
+    }
+
+    /// Whether it is one of TA's underwater buildings: a building that needs water under it
+    /// (`MinWaterDepth`) and neither floats (`Floater`) nor sits at a `WaterLine`, so it stands on
+    /// the sea bed: the underwater metal extractors, storages and fusion plants. TA's buildings on
+    /// the water (the floating towers, torpedo launchers, tidal generators, sonar stations and
+    /// shipyards) give a `WaterLine`.
+    pub fn stands_on_sea_bed(&self) -> bool {
+        self.is_building() && self.min_water_depth > 0.0 && !self.floater && self.water_line <= 0.0
     }
 
     /// Where the unit's script may be, in the order they are tried. TA runs a unit's own
@@ -328,6 +341,7 @@ impl UnitDef {
             transport_capacity: match count("TransportMaxUnits", 0) { 0 => count("TransportCapacity", 0), n => n },
             transport_size: count("TransportSize", 0),
             is_airbase: b("IsAirBase", false),
+            is_targeting_upgrade: b("IsTargetingUpgrade", false),
             is_commander: b("Commander", false),
             heal_time: f("HealTime", 0.0),
             damage_modifier: f("DamageModifier", 1.0),
@@ -425,6 +439,26 @@ mod tests {
         assert!(!unsaid.takes_no_ground && !unsaid.cannot_get_going, "no acceleration given: moved as it always was");
         let plane = read("[UNITINFO]{UnitName=PLANE; CanFly=1; MaxVelocity=8; Acceleration=0;}").unwrap();
         assert!(!plane.cannot_get_going);
+    }
+
+    /// Core Contingency's Targeting Facilities say `istargetingupgrade=1`, in lower case as TA's
+    /// keys often are.
+    #[test]
+    fn a_targeting_facility_is_read_as_one() {
+        assert!(read("[UNITINFO]{UnitName=ARMTARG; onoffable=1; ActivateWhenBuilt=1; istargetingupgrade=1;}").unwrap().is_targeting_upgrade);
+        assert!(read("[UNITINFO]{UnitName=X; IsTargetingUpgrade=1;}").unwrap().is_targeting_upgrade);
+        assert!(!read("[UNITINFO]{UnitName=ARMRAD; RadarDistance=2200;}").unwrap().is_targeting_upgrade);
+    }
+
+    /// TA's underwater buildings stand on the sea bed: they need water and give no `WaterLine`;
+    /// its buildings on the water give one.
+    #[test]
+    fn underwater_buildings_stand_on_the_sea_bed() {
+        assert!(read("[UNITINFO]{UnitName=ARMUWMEX; MinWaterDepth=19; ExtractsMetal=0.001;}").unwrap().stands_on_sea_bed());
+        assert!(!read("[UNITINFO]{UnitName=ARMFRT; MinWaterDepth=2; WaterLine=0.3;}").unwrap().stands_on_sea_bed(), "a floating tower");
+        assert!(!read("[UNITINFO]{UnitName=ARMSUB; BMcode=1; MaxVelocity=2; MinWaterDepth=20; WaterLine=20;}").unwrap().stands_on_sea_bed(), "a submarine");
+        assert!(!read("[UNITINFO]{UnitName=ARMPT; BMcode=1; MaxVelocity=3; MinWaterDepth=6; Floater=1;}").unwrap().stands_on_sea_bed(), "a boat");
+        assert!(!read("[UNITINFO]{UnitName=ARMLLT;}").unwrap().stands_on_sea_bed(), "a tower on land");
     }
 
     /// TA's units spell the initial cloak `init_cloaked` (Core Contingency's mines).

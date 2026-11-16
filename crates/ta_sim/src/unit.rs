@@ -184,7 +184,8 @@ pub struct Unit {
     pub fire_state: u8,
     /// Fires at will on what its side has on radar or sonar as well as on what it sees: guns a
     /// spotter directs, a scenario's (`radar_guided`: Iron Rain's battery, which a radar post
-    /// spots for). Every other unit's fire at will takes on only what its side sees.
+    /// spots for). Every other unit's fire at will takes on only what its side sees, but where
+    /// its player has a targeting facility at work ([`Player::radar_targeting`]).
     pub radar_guided: bool,
     pub move_state: u8,
     pub orders: VecDeque<Order>,
@@ -685,6 +686,13 @@ pub struct Player {
     /// TA's `+shootall`: its units' weapons take on every enemy in reach alike, their bad targets
     /// included (see `Sim::find_target`), nearest first.
     pub shoot_all: bool,
+    /// A targeting facility of its own at work (TA's `IsTargetingUpgrade`: Core Contingency's
+    /// Targeting Facilities, "Automatic Radar Targeting"): its units fire at will on what its side
+    /// has on radar as on what it sees, as a spotter's guns do ([`Unit::radar_guided`]). Its own
+    /// units, not its allies'. Set at each tick's economy end for the next: a facility finished,
+    /// switched on, its upkeep paid (1,250 energy a second for the Arm's) and not paralysed, as a
+    /// radar's coverage counts (`Sim::working`).
+    pub radar_targeting: bool,
 }
 
 /// What a player passes to its allies on its own, each tick (TA's `+sharemetal`,
