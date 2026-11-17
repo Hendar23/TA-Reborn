@@ -199,6 +199,17 @@
   two rows instead of leaving an empty band; Shift+Tab and a gamepad go back up the list; one map
   or one faction is told as one, and none chosen as none; the units that could not be made are
   named; the "Still to come" line is up to date; and an error from the system is said once.
+- The Supreme Commander factions look as they do in their game (make the factions again in the
+  launcher: it offers UPDATE). Their paint was drawn about half as bright as their game lights it,
+  the UEF's and the Cybran's units dark as if unpainted, and a selected Commander was a pale haze
+  the ground seemed to show through; their metal now has its game's broad sheen, and the player's
+  colour is as bright as on TA's units. Their build pictures are their game's own build icons in
+  the modern interface too (a mass extractor's was a dark shape, drawn before its paint was read),
+  without the white edge each had; the classic interface shows their build menus (it showed none),
+  laid out as the pages of the side whose panels they wear. Their buildings stand on footprints as
+  wide as what of them meets the ground (a point defence's was a quarter of its turret's: on a
+  hillside it ran into the ground beside it, and neighbours were built into it) and on slopes no
+  steeper than TA's buildings take.
 
 ## 1.0.7 — 2026-11-16
 
