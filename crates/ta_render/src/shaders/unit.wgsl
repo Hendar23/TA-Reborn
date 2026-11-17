@@ -299,10 +299,22 @@ struct Surface {
     // The paint's own occlusion (1: none); the scene's contact and ray-traced AO come on top.
     occlusion: f32,
     material: vec2<f32>,
+    // A model's own surface (surfaced.rs): how strongly a broad, cool sheen shines where the
+    // sun's light glances off it towards the eye, as Forged Alliance lights its units' metal (its
+    // specular map's green; 0 for every other model).
+    sheen: f32,
+    // The normal its rim light and its silhouette go by: a model's own surface its face's own,
+    // smooth (its normal map's fine relief lit the rim all over it, a haze from every angle); any
+    // other model's its shading normal's.
+    rim_normal: vec3<f32>,
 };
 
 // Width (model units) of the band along an edge that edge wear lightens or darkens.
 const EDGE_WIDTH: f32 = 1.1;
+// A model's own surface's sheen (`Surface::sheen`): how bright at its strongest, and how broad
+// (Forged Alliance's highlights on its units' metal are broad: a power of 2 to 3).
+const SHEEN: f32 = 0.5;
+const SHEEN_POWER: f32 = 3.0;
 const PI: f32 = 3.14159265;
 // How deep under the water a submarine looks all over, at the least.
 const SUBMERGED: f32 = 14.0;
@@ -498,6 +510,8 @@ fn model_surface(in: VOut, front: bool) -> Surface {
     s.glow = vec3<f32>(0.0);
     s.occlusion = 1.0;
     s.material = in.material;
+    s.sheen = 0.0;
+    s.rim_normal = n;
     // (Derivatives of the unwrapped coordinates, so a running tread's wrap leaves no seam.)
     let duv_x = dpdx(in.uv);
     let duv_y = dpdy(in.uv);
@@ -527,10 +541,10 @@ fn model_surface(in: VOut, front: bool) -> Surface {
             let paint = textureSampleGrad(surface_paint, tex_sampler, in.uv, first, duv_x, duv_y);
             let finish = textureSampleGrad(surface_paint, tex_sampler, in.uv, first + 1u, duv_x, duv_y);
             let relief = textureSampleGrad(surface_paint, tex_sampler, in.uv, first + 2u, duv_x, duv_y);
+            // (The player's colour as Forged Alliance lays it on: the paint blended into it as far
+            // as the alpha says, the colour as bright as TA's units wear it.)
             var albedo = srgb_to_linear(paint.rgb);
-            let team = player_colour((in.tint >> 8u) & 255u, f32(in.tint >> 24u) / 255.0);
-            let shade = dot(albedo, vec3<f32>(0.2126, 0.7152, 0.0722));
-            albedo = mix(albedo, team * saturate(0.35 + shade * 2.6), finish.a);
+            albedo = mix(albedo, player_colour((in.tint >> 8u) & 255u, f32(in.tint >> 24u) / 255.0), finish.a);
             // What mirrors its surroundings well (red) is polished metal: as bright as metal is,
             // in its paint's tint (Forged Alliance added the mirrored sky over a dark paint: the
             // Seraphim's chrome, the Aeon's).
@@ -538,6 +552,9 @@ fn model_surface(in: VOut, front: bool) -> Surface {
             albedo = mix(albedo, vec3<f32>(0.5) + albedo * 0.7, mirror * 0.85);
             s.albedo = albedo;
             s.material = vec2<f32>(mix(0.82, 0.2, max(finish.g, mirror * 0.8)), mirror * 0.9);
+            // (Its sheen where it is painted rather than polished: polished metal shines as
+            // metal does. A burnt-out wreck's sooted paint shines no more.)
+            s.sheen = finish.g * (1.0 - mirror) * (1.0 - f32(in.tint >> 24u) / 255.0);
             let lit = 1.0 - f32(in.flags >> 24u) / 255.0;
             s.glow += albedo * finish.b * lit * 2.5;
             // (Direct3D's way: x along u, y along v, down the picture.)
@@ -633,6 +650,7 @@ fn model_surface(in: VOut, front: bool) -> Surface {
         let scorch = battle_damage(in.local, in.damage, &glow);
         s.albedo = mix(s.albedo, s.albedo * 0.28 + vec3<f32>(0.014, 0.011, 0.008), scorch * 0.88);
         s.wear *= 1.0 - scorch;
+        s.sheen *= 1.0 - scorch;
         s.glow += glow;
     }
     return s;
@@ -781,8 +799,10 @@ fn shade_model(in: VOut, surface: Surface, flags: u32) -> vec4<f32> {
     let h = normalize(l + v);
     let spec_mask = 0.25 + 0.75 * smoothstep(0.1, 0.6, dot(albedo, vec3<f32>(0.333))) + 0.8 * max(surface.wear, 0.0);
     let spec = pow(max(dot(n, h), 0.0), widened_power(48.0, widen)) * 0.55 * spec_mask * (1.0 + 1.5 * wet);
-    // Rim light keeps silhouettes readable against busy terrain.
-    let rim = pow(1.0 - max(dot(n, v), 0.0), 4.0) * 0.25;
+    // Rim light keeps silhouettes readable against busy terrain (a model's own surface by its
+    // faces' own normals: `Surface::rim_normal`).
+    let surfaced = (in.emissive & 512u) != 0u;
+    let rim = pow(1.0 - max(dot(select(n, normalize(surface.rim_normal), surfaced), v), 0.0), 4.0) * 0.25;
 
     let sun = frame.sun_color.rgb * frame.sun_dir.w;
     // Dynamic point lights (explosions, muzzle flashes, lasers): diffuse plus a metal glint.
@@ -856,6 +876,12 @@ fn shade_model(in: VOut, surface: Surface, flags: u32) -> vec4<f32> {
             + env * env_f * mix(0.45, 1.0, metal) * ao * mix(0.55, 1.0, shadow)
             + ambient * rim * ao * 0.6;
         color = mix(color, pbr, style);
+    }
+    // A model's own surface: the broad, cool sheen Forged Alliance lights its units' metal with
+    // (as strong as its specular map's green says), where the sun glances off towards the eye.
+    if (surface.sheen > 0.0) {
+        let glance = pow(saturate(dot(reflect(-l, n), v)), SHEEN_POWER);
+        color += sun * vec3<f32>(0.6, 0.78, 0.95) * (glance * surface.sheen * SHEEN * shadow * direct);
     }
     // A film of rain water mirrors the sky on every surface.
     if (wet > 0.0) {
@@ -955,8 +981,9 @@ fn shade_model(in: VOut, surface: Surface, flags: u32) -> vec4<f32> {
         color = mix(color, deep, murk);
     }
     if ((flags & 1u) != 0u) {
-        // Selected / hovered: gentle team-neutral highlight on the silhouette.
-        color += vec3<f32>(0.12, 0.16, 0.12) * (0.5 + rim * 4.0);
+        // Selected / hovered: gentle team-neutral highlight on the silhouette (over a model's own
+        // surface, its dark paint showing through: a flat lift over all of it washed it out).
+        color += vec3<f32>(0.12, 0.16, 0.12) * (select(0.5, 0.15, surfaced) + rim * 4.0);
     }
     if ((flags & 64u) != 0u) {
         // A structure the viewer saw and no longer sees, remembered where it stood: a cool grey
