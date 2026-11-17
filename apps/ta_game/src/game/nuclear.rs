@@ -7,12 +7,19 @@ pub(crate) fn destination_known(sim: &Sim, viewer: Option<u8>, owner: u8) -> boo
     viewer.is_none_or(|player| sim.allied(player, owner))
 }
 
-/// Missiles a defence can shoot down (TA's `targetable`: the nukes, the EMP and tactical
-/// missiles) and the interceptors that do: their own side follows them wherever they fly, and
-/// sees and hears them go off or be shot down, in sight or not (what they hit there stays out of
-/// sight).
+/// Strategic missiles (`targetable` of the strategic class, `ta_sim::STRATEGIC_CLASS`: TA's
+/// nukes, EMP and tactical missiles; not a mod's tactical missiles of a class of their own, the
+/// Supreme Commander factions') and the interceptors that take them: their own side follows them
+/// wherever they fly, and sees and hears them go off or be shot down, in sight or not (what they
+/// hit there stays out of sight).
 pub(crate) fn strategic(w: &ta_sim::WeaponType) -> bool {
-    w.def.targetable || w.def.interceptor
+    (w.def.targetable_classes() | w.def.interceptor_classes()) & ta_sim::STRATEGIC_CLASS != 0
+}
+
+/// A missile warned of as a nuclear launch (the launch notice, the impact marker, the minimap's
+/// track): a stored strategic missile, not an interceptor.
+pub(crate) fn nuclear_missile(w: &ta_sim::WeaponType) -> bool {
+    w.def.stockpile && !w.def.interceptor && w.def.targetable_classes() & ta_sim::STRATEGIC_CLASS != 0
 }
 
 /// Whether `viewer` is shown where a missile is going (and when it gets there): its own side's,
@@ -79,7 +86,7 @@ pub(crate) struct ImpactMarker {
 pub(crate) fn impact_markers(sim: &Sim, viewer: Option<u8>) -> impl Iterator<Item = ImpactMarker> + '_ {
     sim.projectiles.iter().filter_map(move |p| {
         let w = sim.weapon_types.get(p.weapon);
-        (!p.dead && w.def.stockpile && !w.def.interceptor && destination_shown(sim, viewer, p))
+        (!p.dead && nuclear_missile(w) && destination_shown(sim, viewer, p))
             .then(|| ImpactMarker { at: Vec3::from_array(p.target_pos.to_f32()), radius: w.aoe_radius.to_f32(), age: p.age as f32 / 30.0, seconds: time_to_impact(sim, p) })
     })
 }
@@ -114,6 +121,38 @@ mod tests {
         assert_eq!(xs(Some(2)), [300.0]);
         assert_eq!(xs(None), [100.0, 200.0, 300.0]);
         assert!(!destination_known(&sim, Some(0), 2), "enemy launch notices must not link to their hidden target");
+    }
+
+    /// Only strategic missiles are warned of (TA's all: `targetable=1`): a mod's tactical missiles
+    /// of a class of their own (the Supreme Commander factions', `targetable=2`) and the
+    /// defences that take them are not nuclear, nor followed out of sight.
+    #[test]
+    fn only_strategic_missiles_are_warned_of() {
+        let weapon = |keys: &str| {
+            let mut data = ta_data::GameData::load(&ta_vfs::Vfs::new());
+            data.weapons.push(ta_data::WeaponDef::from_tdf(&ta_formats::tdf::parse(&format!("[W]{{ {keys} }}")).sections[0]));
+            ta_sim::WeaponTypes::compile(&data).types.pop().unwrap()
+        };
+        for (keys, nuclear, followed) in [
+            ("stockpile=1; targetable=1;", true, true),
+            ("stockpile=1; targetable=3;", true, true),
+            ("stockpile=1; targetable=2;", false, false),
+            ("stockpile=1; interceptor=1;", false, true),
+            ("stockpile=1; interceptor=2;", false, false),
+            ("targetable=1;", false, true),
+        ] {
+            let w = weapon(keys);
+            assert_eq!((nuclear_missile(&w), strategic(&w)), (nuclear, followed), "{keys}");
+        }
+        let mut sim = missiles();
+        let mut data = (*sim.data).clone();
+        data.weapons.push(ta_data::WeaponDef::from_tdf(&ta_formats::tdf::parse("[TACTICAL]{ stockpile=1; targetable=2; areaofeffect=128; }").sections[0]));
+        sim.weapon_types = Arc::new(ta_sim::WeaponTypes::compile(&data));
+        assert_eq!(impact_markers(&sim, None).count(), 3, "the nukes' markers");
+        for p in &mut sim.projectiles {
+            p.weapon = 1;
+        }
+        assert_eq!(impact_markers(&sim, None).count(), 0, "no impact marker for a tactical missile");
     }
 
     #[test]

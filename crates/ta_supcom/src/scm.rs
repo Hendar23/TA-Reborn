@@ -122,6 +122,11 @@ pub fn parse(b: &[u8]) -> Result<Mesh> {
     if bone_count == 0 || bone_count > MAX_ITEMS || vertex_count > MAX_ITEMS || index_count > MAX_ITEMS * 3 || index_count % 3 != 0 {
         return Err(bad(&format!("{bone_count} bones, {vertex_count} vertices, {index_count} indices")));
     }
+    // (What it claims to hold must be in the file before room is made for it.)
+    let fits = |at: u32, count: u32, size: usize| (at as usize).checked_add((count as usize).saturating_mul(size)).is_some_and(|end| end <= b.len());
+    if !fits(bone_at, bone_count, BONE_SIZE) || !fits(vertex_at, vertex_count, VERTEX_SIZE) || !fits(index_at, index_count, 2) {
+        return Err(bad(&format!("{bone_count} bones, {vertex_count} vertices and {index_count} indices claimed, past the end of its {} bytes", b.len())));
+    }
     let mut bones = Vec::with_capacity(bone_count as usize);
     for i in 0..bone_count as usize {
         let at = bone_at as usize + i * BONE_SIZE;
@@ -337,5 +342,11 @@ pub(crate) mod tests {
         // A parent after its child.
         let bad_parent = write(&[("Root", 1, [0.0; 3], STILL), ("Child", -1, [0.0; 3], STILL)], &[], &[]);
         assert!(parse(&bad_parent).is_err());
+        // A million vertices claimed in a file of a few hundred bytes: refused before room is
+        // made for them.
+        let mut claims = good.clone();
+        claims[24..28].copy_from_slice(&999_999u32.to_le_bytes());
+        let err = parse(&claims).unwrap_err().to_string();
+        assert!(err.contains("past the end"), "{err}");
     }
 }

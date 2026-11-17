@@ -417,7 +417,7 @@ impl Minimap {
         let sim = &game.sim;
         let sightings = sim.projectiles.iter().filter(|p| {
             let w = sim.weapon_types.get(p.weapon);
-            !p.dead && w.def.stockpile && w.def.targetable && !w.def.interceptor
+            !p.dead && crate::game::nuclear::nuclear_missile(w)
                 && viewer.is_none_or(|viewer| sim.projectile_seen_by(p, viewer) != ta_sim::Seen::Hidden || radar_reveal)
         }).map(|p| {
             let before = p.prev_pos.to_f32();

@@ -9,9 +9,11 @@
 //! - [`convert`]: the map made into a TA map.
 //!
 //! Its factions' units are read too (docs/SUPCOM_UNITS.md), to be made into a mod of TA units:
-//! - [`unit`]: their blueprints;
+//! - [`unit`]: their blueprints, with their weapons' [`projectile`]s and what their scripts say
+//!   ([`behaviour`]);
 //! - [`scm`], [`sca`]: their meshes and animations.
 
+pub mod behaviour;
 pub mod convert;
 /// (Read as TA Reborn reads textures of its own: `ta_formats::dds`.)
 pub use ta_formats::dds;
@@ -20,6 +22,7 @@ pub mod files;
 pub mod install;
 pub mod lua;
 pub mod map;
+pub mod projectile;
 pub mod sca;
 pub mod scd;
 pub mod scm;

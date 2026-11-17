@@ -16,23 +16,102 @@ pub fn commander<'a>(units: &[&'a UnitBlueprint]) -> Option<&'a UnitBlueprint> {
     units.iter().copied().find(|u| u.is("COMMAND"))
 }
 
-/// What `builder` builds of `units`, in the order its menu shows them: buildings before units,
-/// the lower tech first; among buildings economy, factories, defences, then the rest.
-pub fn builds<'a>(builder: &UnitBlueprint, units: &[&'a UnitBlueprint]) -> Vec<&'a UnitBlueprint> {
-    if units::builds(builder) == Builds::No {
-        return Vec::new();
-    }
-    let lists = units::build_lists(builder);
-    let factory = units::builds(builder) == Builds::Factory;
-    // (A factory builds units: the buildings its lists name are its own upgrades, in place.)
-    let mut out: Vec<&UnitBlueprint> = units.iter().copied().filter(|u| u.id != builder.id && lists.iter().any(|e| u.matches(e)) && !(factory && u.motion == Motion::None)).collect();
-    let tech = |u: &UnitBlueprint| match u.tech {
+/// A unit's tier, 1 to 3, an experimental 4 and a commander 5.
+fn tier(u: &UnitBlueprint) -> u8 {
+    match u.tech {
         Some(Tech::T1) | None => 1,
         Some(Tech::T2) => 2,
         Some(Tech::T3) => 3,
         Some(Tech::Experimental) => 4,
         Some(Tech::Commander) => 5,
-    };
+    }
+}
+
+/// A builder's own tier, for the buildings it may raise a tier above it: an engineer's, a support
+/// commander's the third (it builds what tech 3 engineers do).
+fn builder_tier(u: &UnitBlueprint) -> u8 {
+    if u.is("SUBCOMMANDER") { 3 } else { tier(u).min(4) }
+}
+
+/// What `builder` builds by its lists' categories alone (no building upgraded into): its own
+/// units, those of every one of its `BuildableCategory` entries; a factory's units alone (the
+/// buildings its lists name are its own upgrades, in place); a commander's not those Forged
+/// Alliance keeps from it until its engineering enhancements (`BUILTBYTIER2COMMANDER`,
+/// `BUILTBYTIER3COMMANDER`: the Cybran commander's Engineering Station).
+fn listed<'a>(builder: &UnitBlueprint, units: &[&'a UnitBlueprint]) -> Vec<&'a UnitBlueprint> {
+    if units::builds(builder) == Builds::No {
+        return Vec::new();
+    }
+    let lists = units::build_lists(builder);
+    let factory = units::builds(builder) == Builds::Factory;
+    let commander = builder.is("COMMAND");
+    units
+        .iter()
+        .copied()
+        .filter(|u| u.id != builder.id && lists.iter().any(|e| u.matches(e)) && !(factory && u.motion == Motion::None))
+        .filter(|u| !(commander && (u.is("BUILTBYTIER2COMMANDER") || u.is("BUILTBYTIER3COMMANDER"))))
+        .collect()
+}
+
+/// The buildings Forged Alliance makes only by upgrading another (`General.UpgradesFrom`), which
+/// no builder reaches by its lists' categories (the tech 2 and 3 factories, each the one below it
+/// upgraded), each with the building it upgrades from.
+fn upgrades_only<'a>(units: &[&'a UnitBlueprint], lists: &[(&'a UnitBlueprint, Vec<&'a UnitBlueprint>)]) -> Vec<(&'a UnitBlueprint, &'a UnitBlueprint)> {
+    units
+        .iter()
+        .copied()
+        .filter(|u| u.motion == Motion::None && !lists.iter().any(|(_, built)| built.iter().any(|b| b.id == u.id)))
+        .filter_map(|u| {
+            let from = u.upgrades_from.as_deref()?;
+            let below = units.iter().copied().find(|b| b.id.eq_ignore_ascii_case(from) && b.id != u.id)?;
+            Some((u, below))
+        })
+        .collect()
+}
+
+/// What each builder of `units` builds, in the order its menu shows them (see [`builds`]).
+pub fn all_builds<'a>(units: &[&'a UnitBlueprint]) -> Vec<(&'a UnitBlueprint, Vec<&'a UnitBlueprint>)> {
+    let mut lists: Vec<(&UnitBlueprint, Vec<&UnitBlueprint>)> = units.iter().copied().map(|b| (b, listed(b, units))).collect();
+    // A building made only by upgrading: on the menus of those that build what it upgrades from,
+    // a tier below it at most (a tech 2 factory for tech 1 engineers and up, a tech 3 one for tech
+    // 2 and up), not a commander's. Followed up the ladder: the tech 3 factory from those that
+    // build the tech 2 one.
+    let upgrades = upgrades_only(units, &lists);
+    loop {
+        let mut added = false;
+        for (builder, built) in &mut lists {
+            if builder.is("COMMAND") {
+                continue;
+            }
+            for &(up, from) in &upgrades {
+                if builder_tier(builder) + 1 >= tier(up) && built.iter().any(|b| b.id == from.id) && !built.iter().any(|b| b.id == up.id) {
+                    built.push(up);
+                    added = true;
+                }
+            }
+        }
+        if !added {
+            break;
+        }
+    }
+    for (_, built) in &mut lists {
+        sort(built);
+    }
+    lists.retain(|(_, built)| !built.is_empty());
+    lists
+}
+
+/// What `builder` builds of `units`, in the order its menu shows them: buildings before units,
+/// the lower tech first; among buildings economy, factories, defences, then the rest. Its lists'
+/// units ([`listed`]), and the buildings made only by upgrading what it builds ([`all_builds`]).
+pub fn builds<'a>(builder: &UnitBlueprint, units: &[&'a UnitBlueprint]) -> Vec<&'a UnitBlueprint> {
+    all_builds(units).into_iter().find(|(b, _)| b.id == builder.id).map(|(_, built)| built).unwrap_or_default()
+}
+
+/// The menu's order: buildings before units, the lower tech first; among buildings economy,
+/// factories, defences, then the rest.
+fn sort(out: &mut [&UnitBlueprint]) {
+    let tech = tier;
     let kind = |u: &UnitBlueprint| -> u8 {
         if u.motion != Motion::None {
             return 10;
@@ -48,7 +127,6 @@ pub fn builds<'a>(builder: &UnitBlueprint, units: &[&'a UnitBlueprint]) -> Vec<&
         }
     };
     out.sort_by(|a, b| (a.motion != Motion::None, tech(a), kind(a), &a.id).cmp(&(b.motion != Motion::None, tech(b), kind(b), &b.id)));
-    out
 }
 
 /// The side add-on: a side for each faction that has a commander, and what each builder builds
@@ -63,7 +141,7 @@ pub fn side_add_on(factions: &[(Faction, Vec<&UnitBlueprint>)]) -> String {
             s,
             "[SIDE{n}]\n\t{{\n\tname={};\n\tnameprefix={};\n\tcommander={};\n\tintgaf={};\n\tenergycolor=208;\n\tmetalcolor=224;\n\t}}",
             units::side(faction),
-            &commander.id[..2.min(commander.id.len())],
+            units::tdf_text(&commander.id.chars().take(2).collect::<String>()),
             commander.id.to_ascii_uppercase(),
             if core { "CORINT" } else { "ARMINT" }
         );
@@ -71,11 +149,7 @@ pub fn side_add_on(factions: &[(Faction, Vec<&UnitBlueprint>)]) -> String {
     }
     s.push_str("[CANBUILD]\n\t{\n");
     for (_, units) in factions {
-        for builder in units {
-            let built = builds(builder, units);
-            if built.is_empty() {
-                continue;
-            }
+        for (builder, built) in all_builds(units) {
             let _ = writeln!(s, "\t[{}]\n\t\t{{", builder.id.to_ascii_uppercase());
             for (k, u) in built.iter().enumerate() {
                 let _ = writeln!(s, "\t\tcanbuild{}={};", k + 1, u.id.to_ascii_uppercase());
@@ -91,8 +165,8 @@ pub fn side_add_on(factions: &[(Faction, Vec<&UnitBlueprint>)]) -> String {
 pub fn menus(units: &[&UnitBlueprint]) -> String {
     let mut s = String::new();
     let mut n = 0;
-    for builder in units {
-        for (k, u) in builds(builder, units).iter().enumerate() {
+    for (builder, built) in all_builds(units) {
+        for (k, u) in built.iter().enumerate() {
             let _ = writeln!(
                 s,
                 "[MENUENTRY{n}]\n\t{{\n\tUNITMENU={};\n\tMENU={};\n\tBUTTON={};\n\tUNITNAME={};\n\t}}",
@@ -107,21 +181,28 @@ pub fn menus(units: &[&UnitBlueprint]) -> String {
     s
 }
 
+/// Whether a unit leaves a wreck: all but aircraft whose blueprint gives none.
+pub fn leaves_wreck(u: &UnitBlueprint) -> bool {
+    u.motion != Motion::Air || u.wreckage.is_some()
+}
+
 /// The faction's wrecks: each unit's own model where it fell, worth its wreckage's share of its
 /// mass, as hard to clear as its wreckage's share of its health. Metal alone, as TA's wrecks give
 /// (TA Reborn pays a wreck's metal alone whatever its file says, `Sim::reclaim_value`): no energy,
-/// whatever its `EnergyMult` (no Forged Alliance unit's wreckage gives any).
+/// whatever its `EnergyMult` (no Forged Alliance unit's wreckage gives any). A ship's or a
+/// submarine's lies on the sea bed and blocks nothing, as TA's do.
 pub fn wrecks(units: &[&UnitBlueprint]) -> String {
     let mut s = String::new();
-    for u in units.iter().filter(|u| u.motion != Motion::Air || u.wreckage.is_some()) {
+    for u in units.iter().filter(|u| leaves_wreck(u)) {
         let (fx, fz) = units::footprint(u);
         let w = u.wreckage.unwrap_or(crate::unit::Wreckage { mass: 0.9, energy: 0.0, health: 0.9 });
         let id = u.id.to_ascii_lowercase();
         let height = ((u.size[1].max(0.2)) * super::UNIT_SCALE).round().clamp(4.0, 200.0) as i64;
+        let blocking = if matches!(u.motion, Motion::Water | Motion::Sub) { 0 } else { 1 };
         let _ = writeln!(
             s,
-            "[{id}_dead]\n\t{{\n\tworld=All Worlds;\n\tdescription={} Wreckage;\n\tcategory=supcom_corpses;\n\tobject={id};\n\tfootprintx={fx};\n\tfootprintz={fz};\n\theight={height};\n\tblocking=1;\n\thitdensity=100;\n\tmetal={};\n\tenergy=0;\n\tdamage={};\n\treclaimable=1;\n\tfeaturereclamate=smudge01;\n\tseqnamereclamate=tree1reclamate;\n\t}}",
-            if u.name.is_empty() { u.id.clone() } else { u.name.replace(';', ",") },
+            "[{id}_dead]\n\t{{\n\tworld=All Worlds;\n\tdescription={} Wreckage;\n\tcategory=supcom_corpses;\n\tobject={id};\n\tfootprintx={fx};\n\tfootprintz={fz};\n\theight={height};\n\tblocking={blocking};\n\thitdensity=100;\n\tmetal={};\n\tenergy=0;\n\tdamage={};\n\treclaimable=1;\n\tfeaturereclamate=smudge01;\n\tseqnamereclamate=tree1reclamate;\n\t}}",
+            units::tdf_text(if u.name.is_empty() { &u.id } else { &u.name }),
             (u.cost_mass * w.mass).round() as i64,
             (u.health * w.health).round().max(1.0) as i64
         );
@@ -139,6 +220,9 @@ pub fn weapons(units: &[&UnitBlueprint]) -> String {
         }
         if let Some(death) = w.death.and_then(|d| units::death_section(u, d)) {
             s.push_str(&death);
+        }
+        if let Some(blast) = w.kamikaze.and_then(|k| units::kamikaze_section(u, k)) {
+            s.push_str(&blast);
         }
     }
     s
@@ -181,6 +265,83 @@ mod tests {
         let wrecks = ta_formats::tdf::parse(&wrecks(&all));
         let striker = wrecks.section("uel0201_dead").unwrap();
         assert_eq!((striker.get("object"), striker.get("metal"), striker.get("energy")), (Some("uel0201"), Some("9"), Some("0")));
+    }
+
+    /// Forged Alliance makes its tech 2 and 3 factories only by upgrading the one below: they go on
+    /// the menus of those that build the one below them, a tier below them at most, and not a
+    /// commander's (its own tier alone). The commander builds none of what Forged Alliance keeps
+    /// from it until its engineering enhancements (the Cybran's Engineering Station). Every unit
+    /// is reached from the commander, by builders building builders.
+    #[test]
+    fn upgraded_factories_go_on_their_builders_menus() {
+        let factory = |id: &str, tier: &str, built_by: &str, buildable: &str, from: &str| {
+            let mut u = unit(id, &format!("'UEF', 'STRUCTURE', 'FACTORY', 'LAND', '{tier}', '{built_by}'"), buildable, "RULEUMT_None");
+            u.upgrades_from = (!from.is_empty()).then(|| from.to_string());
+            u
+        };
+        let acu = unit("UEL0001", "'UEF', 'COMMAND', 'MOBILE'", "'BUILTBYCOMMANDER UEF', 'BUILTBYTIER2COMMANDER UEF'", "RULEUMT_Amphibious");
+        let t1 = factory("UEB0101", "TECH1", "BUILTBYTIER1ENGINEER', 'BUILTBYCOMMANDER", "'BUILTBYTIER1FACTORY UEF MOBILE', 'BUILTBYTIER1FACTORY UEF STRUCTURE LAND'", "");
+        let t2 = factory("UEB0201", "TECH2", "BUILTBYTIER1FACTORY", "'BUILTBYTIER2FACTORY UEF MOBILE', 'BUILTBYTIER2FACTORY UEF STRUCTURE LAND'", "ueb0101");
+        let t3 = factory("UEB0301", "TECH3", "BUILTBYTIER2FACTORY", "'BUILTBYTIER3FACTORY UEF MOBILE'", "ueb0201");
+        let e1 = unit("UEL0105", "'UEF', 'MOBILE', 'LAND', 'TECH1', 'ENGINEER', 'BUILTBYTIER1FACTORY', 'BUILTBYTIER2FACTORY', 'BUILTBYTIER3FACTORY'", "'BUILTBYTIER1ENGINEER UEF'", "RULEUMT_Land");
+        let e2 = unit("UEL0208", "'UEF', 'MOBILE', 'LAND', 'TECH2', 'ENGINEER', 'BUILTBYTIER2FACTORY', 'BUILTBYTIER3FACTORY'", "'BUILTBYTIER2ENGINEER UEF'", "RULEUMT_Land");
+        let station = unit("UEB0104", "'UEF', 'STRUCTURE', 'TECH2', 'BUILTBYCOMMANDER', 'BUILTBYTIER2COMMANDER', 'BUILTBYTIER2ENGINEER'", "", "RULEUMT_None");
+        let tank = unit("UEL0303", "'UEF', 'MOBILE', 'LAND', 'TECH3', 'BUILTBYTIER3FACTORY'", "", "RULEUMT_Land");
+        // The T1 engineer builds the T1 factory, the T2 one both and the station.
+        let mut e2 = e2;
+        e2.buildable.push("BUILTBYTIER1ENGINEER UEF".into());
+        let mut t1 = t1;
+        t1.categories.push("BUILTBYTIER1ENGINEER".into());
+        let all = vec![&acu, &t1, &t2, &t3, &e1, &e2, &station, &tank];
+        let ids = |b: &UnitBlueprint| builds(b, &all).iter().map(|u| u.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(ids(&acu), ["UEB0101"], "a commander's own tier, not the station its enhancements bring");
+        assert_eq!(ids(&e1), ["UEB0101", "UEB0201"], "a tech 1 engineer: the tech 2 factory, not the tech 3");
+        assert_eq!(ids(&e2), ["UEB0101", "UEB0201", "UEB0104", "UEB0301"], "a tech 2 engineer: both, up the ladder");
+        assert_eq!(ids(&t2), ["UEL0105", "UEL0208"], "a factory builds units, its upgrade in place not yet");
+        // Every one reached from the commander.
+        let mut reached = vec!["UEL0001".to_string()];
+        let mut k = 0;
+        while k < reached.len() {
+            let b = all.iter().find(|u| u.id == reached[k]).unwrap();
+            for u in builds(b, &all) {
+                if !reached.contains(&u.id) {
+                    reached.push(u.id.clone());
+                }
+            }
+            k += 1;
+        }
+        reached.sort();
+        let mut every: Vec<String> = all.iter().map(|u| u.id.clone()).collect();
+        every.sort();
+        assert_eq!(reached, every);
+        // The menus and the computer players' lists say the same.
+        let side = side_add_on(&[(Faction::Uef, all.clone())]);
+        let doc = ta_formats::tdf::parse(&side);
+        let lists = doc.section("CANBUILD").and_then(|c| c.sections.iter().find(|b| b.name == "UEL0105")).unwrap();
+        assert_eq!((lists.get("canbuild1"), lists.get("canbuild2"), lists.get("canbuild3")), (Some("UEB0101"), Some("UEB0201"), None));
+    }
+
+    /// A ship's wreck lies on the sea bed and blocks nothing, as TA's do; an aircraft with no
+    /// wreckage leaves none (and its file names none).
+    #[test]
+    fn ships_wrecks_block_nothing() {
+        let ship = unit("UES0103", "'UEF', 'MOBILE', 'NAVAL', 'TECH1'", "", "RULEUMT_Water");
+        let tank = unit("UEL0201", "'UEF', 'MOBILE', 'LAND', 'TECH1'", "", "RULEUMT_Land");
+        let plane = unit("UEA0102", "'UEF', 'MOBILE', 'AIR', 'TECH1'", "", "RULEUMT_Air");
+        let doc = ta_formats::tdf::parse(&wrecks(&[&ship, &tank, &plane]));
+        assert_eq!(doc.section("ues0103_dead").and_then(|s| s.get("blocking")), Some("0"));
+        assert_eq!(doc.section("uel0201_dead").and_then(|s| s.get("blocking")), Some("1"));
+        assert!(doc.section("uea0102_dead").is_none() && !leaves_wreck(&plane));
+        let none = units::Weapons { slots: Vec::new(), death: None, dgun: None, kamikaze: None };
+        assert!(!units::unit_file(&plane, &none, None).contains("Corpse"));
+    }
+
+    /// A side's prefix is its commander's first two letters, whatever letters they are.
+    #[test]
+    fn a_sides_prefix_takes_two_letters() {
+        let acu = unit("ÜEL0001", "'UEF', 'COMMAND', 'MOBILE'", "", "RULEUMT_Amphibious");
+        let side = side_add_on(&[(Faction::Uef, vec![&acu])]);
+        assert!(side.contains("nameprefix=ÜE;"), "{side}");
     }
 
     /// A wreck gives metal alone, as TA's do, whatever energy its blueprint's wreckage would give.

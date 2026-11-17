@@ -11,6 +11,12 @@
 //! a 3DO holds z the other way round (docs/FORMATS.md): z is negated, and with the mirror each
 //! triangle's corners are taken the other way round (TA's faces run clockwise seen from outside
 //! once z is flipped back, the mesh's anticlockwise).
+//!
+//! A surface holds its texture coordinates from 0 to 1 (TA Reborn keeps them in 16 bits, and a
+//! texture's edge clamps): a triangle the mesh paints from a repeat of its texture (u or v past 1,
+//! or under 0) is moved by whole textures to lie within it, the same texels as the repeat gave it
+//! ([`fit_uvs`]), its corners copied where other triangles share them. One that straddles a
+//! texture's edge cannot be moved so, and is left as it is.
 
 use std::collections::BTreeMap;
 
@@ -34,11 +40,72 @@ pub struct Converted {
     pub bones: Vec<usize>,
     /// Triangles whose corners were bound to more than one bone: given to their first corner's.
     pub split_triangles: usize,
+    /// Triangles painted from a repeat of the texture moved into it, and those left straddling a
+    /// texture's edge ([`fit_uvs`]).
+    pub uvs_moved: usize,
+    pub uvs_straddling: usize,
+}
+
+/// The most vertices a piece may hold: a 3DO's polygons name them in 16 bits.
+const MAX_PIECE_VERTICES: usize = u16::MAX as usize + 1;
+
+/// Each triangle whose texture coordinates all lie within one repeat of the texture moved by whole
+/// textures into 0..1 (its corners copied, once each, where another triangle shares them unmoved):
+/// how many were moved, and how many straddle a texture's edge (left as they are). `Err` when a
+/// piece would hold more vertices than a 3DO can name.
+pub fn fit_uvs(pieces: &mut [Piece], faces: &mut [surface::Piece]) -> std::result::Result<(usize, usize), String> {
+    let (mut moved, mut straddling) = (0, 0);
+    for (piece, face) in pieces.iter_mut().zip(faces.iter_mut()) {
+        let mut copies: BTreeMap<(u16, i64, i64), u16> = BTreeMap::new();
+        for k in 0..piece.primitives.len() {
+            let corners = piece.primitives[k].indices.clone();
+            let uv = |i: u16| face.vertices[i as usize].uv;
+            let (mut lo, mut hi) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+            for &i in &corners {
+                for a in 0..2 {
+                    lo[a] = lo[a].min(uv(i)[a]);
+                    hi[a] = hi[a].max(uv(i)[a]);
+                }
+            }
+            if lo[0] >= 0.0 && lo[1] >= 0.0 && hi[0] <= 1.0 && hi[1] <= 1.0 {
+                continue;
+            }
+            let shift = [lo[0].floor(), lo[1].floor()];
+            if !(hi[0] - shift[0] <= 1.0 && hi[1] - shift[1] <= 1.0 && shift.iter().all(|s| s.is_finite())) {
+                straddling += 1;
+                continue;
+            }
+            moved += 1;
+            let key = (shift[0] as i64, shift[1] as i64);
+            let mut indices = Vec::with_capacity(corners.len());
+            for &i in &corners {
+                let copy = match copies.get(&(i, key.0, key.1)) {
+                    Some(&c) => c,
+                    None => {
+                        if piece.vertices.len() >= MAX_PIECE_VERTICES {
+                            return Err(format!("piece {} holds more than {MAX_PIECE_VERTICES} vertices", piece.name));
+                        }
+                        let mut v = face.vertices[i as usize];
+                        v.uv = [v.uv[0] - shift[0], v.uv[1] - shift[1]];
+                        piece.vertices.push(piece.vertices[i as usize]);
+                        face.vertices.push(v);
+                        let c = (piece.vertices.len() - 1) as u16;
+                        copies.insert((i, key.0, key.1), c);
+                        c
+                    }
+                };
+                indices.push(copy);
+            }
+            piece.primitives[k].indices = indices;
+        }
+    }
+    Ok((moved, straddling))
 }
 
 /// `mesh` made into a model, its units times `uniform_scale` ogrids (the blueprint's
-/// `Display.UniformScale`), painted with `material`.
-pub fn convert(mesh: &Mesh, uniform_scale: f64, material: Material) -> Converted {
+/// `Display.UniformScale`), painted with `material`. `Err` when a piece would hold more vertices
+/// than a 3DO can name.
+pub fn convert(mesh: &Mesh, uniform_scale: f64, material: Material) -> std::result::Result<Converted, String> {
     let scale = uniform_scale * UNIT_SCALE * 65536.0;
     let fixed = |v: f32| -> i32 { (v as f64 * scale).round() as i32 };
     // A place in the mesh as the 3DO holds it: z the other way round.
@@ -76,18 +143,21 @@ pub fn convert(mesh: &Mesh, uniform_scale: f64, material: Material) -> Converted
     let mut faces: Vec<surface::Piece> = vec![surface::Piece::default(); pieces.len()];
     // Each piece's vertices: the mesh's bound to its bone, in the mesh's order, then those split
     // triangles bring in (each once a piece).
-    let add = |piece: usize, v: u32, pieces: &mut Vec<Piece>, faces: &mut Vec<surface::Piece>| -> u16 {
+    let add = |piece: usize, v: u32, pieces: &mut Vec<Piece>, faces: &mut Vec<surface::Piece>| -> std::result::Result<u16, String> {
+        if pieces[piece].vertices.len() >= MAX_PIECE_VERTICES {
+            return Err(format!("piece {} holds more than {MAX_PIECE_VERTICES} vertices", pieces[piece].name));
+        }
         let at = rest[bones[piece]].0;
         let vertex = &mesh.vertices[v as usize];
         let p = vertex.position;
         pieces[piece].vertices.push(place([p[0] - at[0], p[1] - at[1], p[2] - at[2]]));
         let n = vertex.normal;
         faces[piece].vertices.push(surface::Vertex { uv: vertex.uv0, normal: [unit(n[0]), unit(n[1]), unit(-n[2])] });
-        (pieces[piece].vertices.len() - 1) as u16
+        Ok((pieces[piece].vertices.len() - 1) as u16)
     };
     let mut own: Vec<u16> = Vec::with_capacity(mesh.vertices.len());
     for (v, vertex) in mesh.vertices.iter().enumerate() {
-        own.push(add(piece_of[vertex.bone], v as u32, &mut pieces, &mut faces));
+        own.push(add(piece_of[vertex.bone], v as u32, &mut pieces, &mut faces)?);
     }
     let mut copies: BTreeMap<(usize, u32), u16> = BTreeMap::new();
     let mut split_triangles = 0;
@@ -105,7 +175,7 @@ pub fn convert(mesh: &Mesh, uniform_scale: f64, material: Material) -> Converted
                 match copies.get(&(piece, v)) {
                     Some(&i) => i,
                     None => {
-                        let i = add(piece, v, &mut pieces, &mut faces);
+                        let i = add(piece, v, &mut pieces, &mut faces)?;
                         copies.insert((piece, v), i);
                         i
                     }
@@ -115,7 +185,8 @@ pub fn convert(mesh: &Mesh, uniform_scale: f64, material: Material) -> Converted
         split_triangles += split as usize;
         pieces[piece].primitives.push(Primitive { color_index: FILL, indices: corners.to_vec(), texture: Some(material.name.clone()) });
     }
-    Converted { model: Model3do { pieces }, surface: Surface { materials: vec![material], pieces: faces, far: String::new() }, bones, split_triangles }
+    let (uvs_moved, uvs_straddling) = fit_uvs(&mut pieces, &mut faces)?;
+    Ok(Converted { model: Model3do { pieces }, surface: Surface { materials: vec![material], pieces: faces, far: String::new() }, bones, split_triangles, uvs_moved, uvs_straddling })
 }
 
 /// A lighter mesh of the same unit (Forged Alliance's second level of detail, whose skeleton
@@ -123,7 +194,8 @@ pub fn convert(mesh: &Mesh, uniform_scale: f64, material: Material) -> Converted
 /// the piece of the same name, or of the nearest of its parents with one (the root the root's),
 /// its vertices where they are at rest less that piece's place. Same pieces, same order: drawn
 /// with the first's piece matrices, far off. `first_mesh` is the mesh `first` was made from.
-pub fn convert_onto(mesh: &Mesh, first_mesh: &Mesh, first: &Converted, uniform_scale: f64, material: Material) -> Converted {
+/// `Err` when a piece would hold more vertices than a 3DO can name.
+pub fn convert_onto(mesh: &Mesh, first_mesh: &Mesh, first: &Converted, uniform_scale: f64, material: Material) -> std::result::Result<Converted, String> {
     let scale = uniform_scale * UNIT_SCALE * 65536.0;
     let fixed = |v: f32| -> i32 { (v as f64 * scale).round() as i32 };
     let place = |p: [f32; 3]| -> [i32; 3] { [fixed(p[0]), fixed(p[1]), fixed(-p[2])] };
@@ -148,18 +220,27 @@ pub fn convert_onto(mesh: &Mesh, first_mesh: &Mesh, first: &Converted, uniform_s
         let piece = piece_of[mesh.vertices[tri[0] as usize].bone];
         let mut corners = [0u16; 3];
         for (k, v) in [tri[0], tri[2], tri[1]].into_iter().enumerate() {
-            corners[k] = *index.entry((piece, v)).or_insert_with(|| {
-                let vertex = &mesh.vertices[v as usize];
-                let (p, o) = (vertex.position, at[piece]);
-                pieces[piece].vertices.push(place([p[0] - o[0], p[1] - o[1], p[2] - o[2]]));
-                let n = vertex.normal;
-                faces[piece].vertices.push(surface::Vertex { uv: vertex.uv0, normal: [unit(n[0]), unit(n[1]), unit(-n[2])] });
-                (pieces[piece].vertices.len() - 1) as u16
-            });
+            corners[k] = match index.get(&(piece, v)) {
+                Some(&i) => i,
+                None => {
+                    if pieces[piece].vertices.len() >= MAX_PIECE_VERTICES {
+                        return Err(format!("piece {} holds more than {MAX_PIECE_VERTICES} vertices", pieces[piece].name));
+                    }
+                    let vertex = &mesh.vertices[v as usize];
+                    let (p, o) = (vertex.position, at[piece]);
+                    pieces[piece].vertices.push(place([p[0] - o[0], p[1] - o[1], p[2] - o[2]]));
+                    let n = vertex.normal;
+                    faces[piece].vertices.push(surface::Vertex { uv: vertex.uv0, normal: [unit(n[0]), unit(n[1]), unit(-n[2])] });
+                    let i = (pieces[piece].vertices.len() - 1) as u16;
+                    index.insert((piece, v), i);
+                    i
+                }
+            };
         }
         pieces[piece].primitives.push(Primitive { color_index: FILL, indices: corners.to_vec(), texture: Some(material.name.clone()) });
     }
-    Converted { model: Model3do { pieces }, surface: Surface { materials: vec![material], pieces: faces, far: String::new() }, bones: first.bones.clone(), split_triangles: 0 }
+    let (uvs_moved, uvs_straddling) = fit_uvs(&mut pieces, &mut faces)?;
+    Ok(Converted { model: Model3do { pieces }, surface: Surface { materials: vec![material], pieces: faces, far: String::new() }, bones: first.bones.clone(), split_triangles: 0, uvs_moved, uvs_straddling })
 }
 
 #[cfg(test)]
@@ -182,7 +263,7 @@ mod tests {
     #[test]
     fn a_tanks_bones_become_its_pieces_at_their_places() {
         let mesh = scm::parse(&scm::tests::tank()).unwrap();
-        let out = convert(&mesh, 1.0 / 16.0, paint());
+        let out = convert(&mesh, 1.0 / 16.0, paint()).unwrap();
         let m = &out.model;
         assert_eq!(m.pieces.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Tank", "Turret", "Turret_Barrel", "Exhaust"]);
         assert_eq!(m.pieces[0].children, [1, 3]);
@@ -204,7 +285,7 @@ mod tests {
     #[test]
     fn a_triangle_across_bones_goes_whole_to_its_first_corners() {
         let mesh = scm::parse(&scm::tests::tank()).unwrap();
-        let out = convert(&mesh, 1.0 / 16.0, paint());
+        let out = convert(&mesh, 1.0 / 16.0, paint()).unwrap();
         // The test tank's triangles are 0, 1 (the hull's), 2 (the turret's) and 1, 2, 3 (the
         // barrel's).
         assert_eq!(out.split_triangles, 2);
@@ -222,7 +303,7 @@ mod tests {
     #[test]
     fn the_surface_fits_the_model() {
         let mesh = scm::parse(&scm::tests::tank()).unwrap();
-        let out = convert(&mesh, 1.0 / 16.0, paint());
+        let out = convert(&mesh, 1.0 / 16.0, paint()).unwrap();
         assert!(out.surface.fits(&out.model));
         assert_eq!(out.surface.materials, [paint()]);
         let hull = &out.surface.pieces[0];
@@ -241,7 +322,7 @@ mod tests {
             &[[0, 0, 0], [1, 1, 1], [2, 2, 2]],
         );
         let mesh = scm::parse(&file).unwrap();
-        let out = convert(&mesh, 1.0 / 16.0, paint());
+        let out = convert(&mesh, 1.0 / 16.0, paint()).unwrap();
         assert_eq!(out.model.pieces.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Root", "A", "A1", "B"]);
         assert_eq!(out.bones, [0, 1, 3, 2]);
         assert_eq!(out.model.pieces[2].parent, Some(1));
@@ -261,14 +342,14 @@ mod tests {
     #[test]
     fn a_second_level_takes_the_firsts_pieces() {
         let first_mesh = scm::parse(&scm::tests::tank()).unwrap();
-        let first = convert(&first_mesh, 1.0 / 16.0, paint());
+        let first = convert(&first_mesh, 1.0 / 16.0, paint()).unwrap();
         let still = [1.0, 0.0, 0.0, 0.0];
         let file = scm::tests::write(
             &[("lod1_Tank", -1, [0.0; 3], still), ("Turret", 0, [0.0, 4.0, -3.0], still), ("Rivet", 1, [0.0, 1.0, 0.0], still)],
             &[([1.0, 0.0, 2.0], [0.0; 2], 0), ([0.0, 4.0, -3.0], [0.0; 2], 1), ([0.0, 5.0, -3.0], [0.0; 2], 2)],
             &[[0, 0, 0], [1, 2, 1]],
         );
-        let far = convert_onto(&scm::parse(&file).unwrap(), &first_mesh, &first, 1.0 / 16.0, paint());
+        let far = convert_onto(&scm::parse(&file).unwrap(), &first_mesh, &first, 1.0 / 16.0, paint()).unwrap();
         assert_eq!(far.model.pieces.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Tank", "Turret", "Turret_Barrel", "Exhaust"]);
         assert_eq!(far.model.pieces[1].offset, first.model.pieces[1].offset);
         assert_eq!(far.model.pieces[0].vertices, [[px(1.0), 0, px(-2.0)]]);
@@ -278,11 +359,31 @@ mod tests {
         assert!(far.surface.fits(&far.model));
     }
 
+    /// A triangle painted from a repeat of its texture is moved into it by whole textures (its
+    /// corners copied, the other triangle sharing them left alone); one straddling an edge stays.
+    #[test]
+    fn texture_coordinates_are_moved_into_the_texture() {
+        let still = [1.0, 0.0, 0.0, 0.0];
+        let file = scm::tests::write(
+            &[("Root", -1, [0.0; 3], still)],
+            &[([0.0; 3], [1.25, 0.5], 0), ([1.0, 0.0, 0.0], [1.75, 0.5], 0), ([0.0, 1.0, 0.0], [1.5, 0.9], 0), ([0.0, 0.0, 1.0], [0.5, 0.5], 0), ([1.0, 1.0, 0.0], [-0.25, 0.5], 0)],
+            &[[0, 1, 2], [0, 3, 2], [3, 4, 2]],
+        );
+        let out = convert(&scm::parse(&file).unwrap(), 1.0 / 16.0, paint()).unwrap();
+        assert_eq!((out.uvs_moved, out.uvs_straddling), (1, 2));
+        let (piece, face) = (&out.model.pieces[0], &out.surface.pieces[0]);
+        let uvs = |k: usize| piece.primitives[k].indices.iter().map(|&i| face.vertices[i as usize].uv).collect::<Vec<_>>();
+        assert!(uvs(0).iter().all(|uv| (0.0..=1.0).contains(&uv[0])), "{:?}", uvs(0));
+        assert_eq!(uvs(1), [[1.25, 0.5], [1.5, 0.9], [0.5, 0.5]], "straddling, left as it was");
+        assert_eq!(piece.vertices.len(), 8, "the moved triangle's corners copied");
+        assert!(out.surface.fits(&out.model));
+    }
+
     /// The model written as a 3DO reads back with the same tree.
     #[test]
     fn the_model_writes_as_a_3do() {
         let mesh = scm::parse(&scm::tests::tank()).unwrap();
-        let out = convert(&mesh, 0.05, paint());
+        let out = convert(&mesh, 0.05, paint()).unwrap();
         let back = Model3do::parse(&out.model.to_bytes()).unwrap();
         assert_eq!(back.pieces.len(), 4);
         assert_eq!(back.piece_index("turret_barrel"), Some(2));

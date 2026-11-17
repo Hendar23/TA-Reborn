@@ -29,7 +29,7 @@ use ta_vfs::Vfs;
 pub use feature::FeatureDef;
 pub use map::MapInfo;
 pub use unit::UnitDef;
-pub use weapon::{RenderType, WeaponDef};
+pub use weapon::{RenderType, STRATEGIC_CLASS, WeaponDef};
 
 /// Largest supported unit, feature or movement-class side, in 16-pixel map cells.
 /// Keeps occupancy/yard arrays and per-placement work bounded for untrusted mods.

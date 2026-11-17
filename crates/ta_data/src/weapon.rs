@@ -45,6 +45,12 @@ impl RenderType {
     }
 }
 
+/// The class of missiles TA's own interceptors and targetable missiles name (`interceptor=1`,
+/// `targetable=1`): the strategic ones, its nukes and the EMP and tactical missiles its silos
+/// fire, and what its anti-nukes shoot down. A mod may name others (bit 2 the Supreme Commander
+/// factions' tactical missiles, for their tactical missile defences).
+pub const STRATEGIC_CLASS: u32 = 1;
+
 #[derive(Clone, Debug, Default)]
 pub struct WeaponDef {
     /// Upper-case section name, referenced by `Weapon1=` in FBIs.
@@ -94,8 +100,18 @@ pub struct WeaponDef {
     pub paralyzer: bool,
     pub command_fire: bool,
     pub stockpile: bool,
+    /// An anti-missile weapon (TA's `interceptor` not 0): it shoots down the missiles whose
+    /// classes it shares ([`WeaponDef::intercepts`]).
     pub interceptor: bool,
+    /// A missile anti-missile weapons may shoot down (TA's `targetable` not 0).
     pub targetable: bool,
+    /// TA's `interceptor` and `targetable` as written, read as sets of classes as the Spring
+    /// engine reads them: an interceptor takes a missile whose `targetable` shares a bit with its
+    /// `interceptor` (TA's own say 1 and 1: its anti-nukes take its nukes, its EMP and tactical
+    /// missiles). 0 when not given; a definition built with the flags alone is class 1
+    /// ([`WeaponDef::interceptor_classes`]).
+    pub interceptor_mask: u32,
+    pub targetable_mask: u32,
     pub coverage: f64,
     pub energy_per_shot: f64,
     pub metal_per_shot: f64,
@@ -145,6 +161,12 @@ impl WeaponDef {
             }
         }
         let raw_render_type = s.get_i32_or("rendertype", 1);
+        // (Any number as written; a negative one, every class.)
+        let mask = |k: &str| match s.get_i64_or(k, 0) {
+            v if v > 0 => v.min(u32::MAX as i64) as u32,
+            0 => 0,
+            _ => u32::MAX,
+        };
         WeaponDef {
             name: s.name.trim().to_ascii_uppercase(),
             display_name: st("name"),
@@ -186,8 +208,10 @@ impl WeaponDef {
             paralyzer: b("paralyzer"),
             command_fire: b("commandfire"),
             stockpile: b("stockpile"),
-            interceptor: b("interceptor"),
-            targetable: b("targetable"),
+            interceptor: mask("interceptor") != 0,
+            targetable: mask("targetable") != 0,
+            interceptor_mask: mask("interceptor"),
+            targetable_mask: mask("targetable"),
             coverage: f("coverage", 0.0),
             energy_per_shot: f("energypershot", 0.0),
             metal_per_shot: f("metalpershot", 0.0),
@@ -223,6 +247,31 @@ impl WeaponDef {
     pub fn damage_against(&self, unit_name: &str) -> f64 {
         self.damage.get(unit_name).copied().unwrap_or(self.default_damage)
     }
+
+    /// The classes of missiles it shoots down (0: none, not an interceptor).
+    pub fn interceptor_classes(&self) -> u32 {
+        classes(self.interceptor, self.interceptor_mask)
+    }
+
+    /// The classes of interceptors that may shoot it down (0: none, not targetable).
+    pub fn targetable_classes(&self) -> u32 {
+        classes(self.targetable, self.targetable_mask)
+    }
+
+    /// Whether this interceptor may shoot down `quarry`'s missiles: they share a class.
+    pub fn intercepts(&self, quarry: &WeaponDef) -> bool {
+        self.interceptor_classes() & quarry.targetable_classes() != 0
+    }
+}
+
+/// The classes of a flag and its mask: none without the flag, the mask's with it (class 1 where a
+/// definition built by hand gives the flag alone).
+fn classes(flag: bool, mask: u32) -> u32 {
+    match (flag, mask) {
+        (false, _) => 0,
+        (true, 0) => 1,
+        (true, m) => m,
+    }
 }
 
 #[cfg(test)]
@@ -246,6 +295,24 @@ mod tests {
         }
         // Without a damage table: none.
         assert_eq!(WeaponDef::from_tdf(&tdf::parse("[W]{range=1;}").sections[0]).damage_against("ARMPW"), 0.0);
+    }
+
+    /// TA's `interceptor` and `targetable` as classes: TA's own 1 and 1 match; a mod's anti-nuke
+    /// (1) takes no tactical missile (2), its tactical defence (2) no nuke, one of both (3) either.
+    #[test]
+    fn interceptors_take_the_missiles_of_their_classes() {
+        let read = |keys: &str| WeaponDef::from_tdf(&tdf::parse(&format!("[W] {{ {keys} }}")).sections[0]);
+        let (nuke, anti) = (read("targetable=1;"), read("interceptor=1;"));
+        assert!(anti.intercepts(&nuke) && anti.interceptor && nuke.targetable && !nuke.interceptor);
+        let (tactical, defence, both) = (read("targetable=2;"), read("interceptor=2;"), read("interceptor=3;"));
+        assert!(!anti.intercepts(&tactical) && !defence.intercepts(&nuke) && defence.intercepts(&tactical));
+        assert!(both.intercepts(&nuke) && both.intercepts(&tactical));
+        assert_eq!((tactical.targetable_mask, defence.interceptor_mask, read("").interceptor_mask), (2, 2, 0));
+        assert!(!read("").intercepts(&nuke) && !anti.intercepts(&read("")), "neither is one");
+        assert_eq!(read("interceptor=-1;").interceptor_classes(), u32::MAX, "a negative one, every class");
+        // Built by hand with the flags alone: class 1, as TA's.
+        let by_hand = WeaponDef { interceptor: true, ..Default::default() };
+        assert!(by_hand.intercepts(&WeaponDef { targetable: true, ..Default::default() }));
     }
 
     #[test]

@@ -6,9 +6,9 @@ against ARM and CORE. As with the maps (docs/SUPCOM_MAPS.md), they are made on t
 computer from their own copy of the game into their mods folder: nothing of Supreme Commander's is
 shipped with TA Reborn or kept in this repository.
 
-This page records what the game's units are made of (`crates/ta_supcom`: [`unit`], [`scm`],
-[`sca`]) and how they are made into TA's ([`factions`]): their models, paint, build pictures and
-gameplay, and their walks and deaths. Their sounds come later.
+This page records what the game's units are made of (`crates/ta_supcom`: [`unit`], [`projectile`],
+[`behaviour`], [`scm`], [`sca`]) and how they are made into TA's ([`factions`]): their models,
+paint, build pictures and gameplay, and their walks and deaths. Their sounds come later.
 
 - **Players:** the launcher's Mods page, **SUPREME COMMANDER…** (or the Maps page's, its
   FACTIONS tab). The dialog finds the game (as for its maps: GOG's or Steam's copy, or a folder
@@ -47,7 +47,10 @@ archives rebalance the units, and the import plays them as Forged Alliance does.
   rather than its campaign, built by something (an air transport by its factories'
   `TRANSPORTBUILTBY…` categories) or a commander): UEF 92, Cybran 91, Aeon 92, Seraphim 82, each
   about 26 tech 1, 31 tech 2, 26 tech 3, three or four experimentals, the ACU and a support
-  commander. Every one is made by some builder, by its lists' categories.
+  commander. Every one but the tech 2 and 3 factories is made by some builder, by its lists'
+  categories; those Forged Alliance makes only by upgrading the factory below
+  (`General.UpgradesFrom`), which the conversion puts on the menus of those that build that one
+  (Builds, below): every one is then reached from its faction's commander.
 - Their first levels of detail hold 785,000 vertices in all (the Fatboy, UEL0401, the most: 15,100);
   194 walks and deaths.
 - `projectiles.scd` (289 projectile blueprints, 48 meshes), `textures.scd` (539 build icons,
@@ -70,9 +73,27 @@ typed in [`UnitBlueprint`] (and the whole table beside it):
 | `SizeX/Y/Z`, `Footprint` | sizes, MaxSlope | ogrids |
 | `Intel` | Vision, WaterVision, Radar, Sonar, Omni radii; stealth, cloak, stealth fields, jamming | ogrids |
 | `Air` | MaxAirspeed | |
-| `Weapon` | per weapon: label, WeaponCategory, damage and its radius, Min/MaxRadius, RateOfFire, MuzzleVelocity, BallisticArc, salvo, ProjectileId, FireTargetLayerCapsTable, the turret's bones (TurretBoneYaw/Pitch/Muzzle) and RackBones (rack, muzzles), its arcs and speeds, beams, energy, nukes' rings, ManualFire | |
+| `Weapon` | per weapon: label, WeaponCategory, damage and its radius, Min/MaxRadius, RateOfFire, MuzzleVelocity, BallisticArc, salvo (MuzzleSalvoSize, MuzzleSalvoDelay, MuzzleChargeDelay), RackFireTogether, RackSalvoReloadTime and RackSalvoChargeTime, DoTPulses and DoTTime, ProjectileId, FireTargetLayerCapsTable, TargetRestrictOnlyAllow, the turret's bones (TurretBoneYaw/Pitch/Muzzle) and RackBones (rack, muzzles), its arcs and speeds, beams (BeamLifetime, BeamCollisionDelay), energy, CountedProjectile and MaxProjectileStorage, nukes' rings, ManualFire | |
 | `Display` | UniformScale, Mesh.LODs (or the game's own names), AnimationWalk and its rate, AnimationDeath, BuildAttachBone, MeshBlueprint | |
 | `Wreckage` | MassMult, EnergyMult, HealthMult | |
+
+A weapon's projectile (`projectiles.scd`, `<name>_proj.bp`, its `ProjectileId`; [`projectile`])
+says what kind of shot it is (its `Categories`: a `STRATEGIC` or `TACTICAL` `MISSILE` is what
+missile defences take), what a counted one costs to build (`Economy`: a nuke 12,000 mass and
+1,350,000 energy over 324,000 of its silo's build power) and how it flies (`Physics`: its speeds,
+`TrackTarget`, `TurnRate`). What a projectile splits into as it lands is its script's (beside its
+blueprint: `OnImpact` making `numProjectiles` children; [`behaviour::fragments`]): the
+Salvation's shell six, each of those six more.
+
+What a unit's script switches off as it is made (`units/<id>/<id>_script.lua`;
+[`behaviour::birth`]): its weapons' `OnCreate` and its own `OnCreate` and `OnStopBeingBuilt`, in
+turn (`SetWeaponEnabled(false)`, `SetWeaponEnabledByLabel`, `EnableUnitIntel`,
+`DisableUnitIntel`). Switched by the layer it stands on (an `if` there, or its `OnLayerChange`:
+the Wagner's guns on land and torpedo under the water) counts as on. Off at birth in this copy:
+the Seraphim commanders' missiles (an enhancement's), the toggled second guns (the sniper's, the
+Cybran ships' and anti-air's ground guns), the Megalith's hack-peg launcher, the Cybran
+commanders' stealth, cloak and sonar, the Seraphim scout's stealth and cloak, the UEF support
+commander's jammer.
 
 A blueprint names its meshes and textures, or the game's own names hold: level `k`'s mesh
 `<id>_lod<k>.scm`, the first level's textures `<id>_albedo.dds`, `<id>_specteam.dds` and
@@ -129,8 +150,13 @@ Each unit's first level of detail becomes `objects3d/<id>.3do` with its surface
   the others have it. Their dark paint mirrors the sky over most of it (the specular map's red):
   TA Reborn draws strong mirroring as polished metal. The normal maps are Direct3D's (x along u, y
   along v, down the picture), as the panel seams of a factory's roof show under a low sun.
+- **Texture coordinates** run 0 to 1 (TA Reborn keeps them in 16 bits, and a texture's edge
+  clamps): a triangle the mesh paints from a repeat of its texture is moved by whole textures to
+  lie within it (the same texels), its corners copied where other triangles share them: 229 of
+  them (4 in the far models). A triangle straddling the texture's edge cannot be, and is left as
+  it is: 162 (59 in the far models), at most a few hundredths of a model's surface.
 - **Pictures:** a unit's build picture (`unitpics/<id>.pcx`, 64 × 64, 24-bit) is its icon (`textures/ui/common/icons/units/<id>_icon.dds`, every unit has one) laid over the frame of its kind (`land_up.dds`, `amph_`, `air_`, `sea_`, by `General.Icon`), as Forged Alliance's build buttons show it. `--preview <dir>` draws a sheet of them a faction.
-- **Far off:** the second level of detail (323 units; 687,000 vertices in all against 104,000)
+- **Far off:** the second level of detail (332 units; 717,000 vertices in all against 107,000)
   keeps a few bones of the first's skeleton, its root renamed `lod1_<id>`: it is laid onto the
   first's pieces (a bone the piece of its name, or of the nearest of its parents with one), painted
   with the first's paint, as `objects3d/<id>_lod1.3do`, which the first's surface names `far`.
@@ -147,36 +173,105 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
 - **Build time:** FA builds in `BuildTime / BuildRate` seconds, TA in `BuildTime /
   WorkerTime`: both taken ten times (`units::WORK`), so a unit takes as long as in FA and
   its builders' work stands beside TA's (a commander's 100 against TA's 300).
+- **Mending:** a unit that mends itself (`Defense.RegenRate`, 15 of them: the commanders, the
+  support commanders, the experimentals) has TA's `HealTime`, 100 / RegenRate (TA Reborn mends
+  100 hit points every `HealTime` seconds).
 - **Movement:** speeds × 32 / 30 (pixels a tick), turn rates in degrees a second to TA's
-  angle units a tick, TA's movement classes by how it moves and its footprint, and the fields
-  TA reads beside the class (hovercraft hover, ships float, submarines keep to deep water,
-  amphibians go to the sea bed). Mobile units take square footprints, as TA's do. Structures
-  stand where their build layers let them: on land, afloat (`Floater`), or on the sea bed
-  (extractors and hydrocarbon plants on deposits under water as well as on land).
-- **Transports:** an air transport carries as many units as its mesh has attach bones for small
-  ones (`…Attachpoint…`, `_sml` or `_Small` or plain, on either side; or its larger slots where
-  it has none: the UEF's T2 gunship carries one), as large as its largest slots take (TA's
-  `TransportSize`). The T1 transports carry 6 to 8, the T2 10 to 16, the UEF's T3 28.
+  angle units a tick (FA's own, however slow: the Atlantis's 12°), TA's movement classes by how
+  it moves and its footprint, and the fields TA reads beside the class (hovercraft hover, ships
+  float, submarines keep to deep water). An amphibian takes no class (TA's amphibious ones go
+  no deeper than 100): its own `MaxWaterDepth=255` and `MaxSlope`, to the deepest sea bed. Land
+  units take square footprints, as TA's do; a ship or a submarine a square of its footprint's
+  area (a frigate's 2 by 6 ogrids, 4 by 12 cells, 7 by 7; a battleship 18; TA's ships stand on
+  squares less than their length), its wreck blocking nothing, as TA's sea wrecks don't.
+  Structures stand where their build layers let them: on land, afloat (`Floater`), or on the
+  sea bed (extractors and hydrocarbon plants on deposits under water as well as on land).
+- **Aircraft** fly as FA flies them, at TA's scale (`Air`): their top speed `MaxAirspeed`; to it
+  in a second and a half times their `KMoveDamping` over their `KMove` (an interceptor 1.5 s,
+  0.36 px a tick², TA's Freedom Fighter's 0.35; a bomber 3, TA's Thunder 3.8; a transport 3.2),
+  braking ten times as fast; a winged one turning at its `TurnSpeed` (radians a second: an
+  interceptor 86° a second, TA's Freedom Fighter 84°; a bomber 40°), a hovering one at its
+  `Physics.TurnRate`, else twice its `KTurn`. Gunships (`GROUNDATTACK`) and the hovering craft
+  with guns (the CZAR) hover over what they attack (`HoverAttack`); fighters and bombers make
+  passes.
+- **Transports:** an air transport says it carries as many units as its mesh has attach bones
+  for small ones (`…Attachpoint…`, `_sml` or `_Small` or plain, on either side; or its larger
+  slots where it has none: the UEF's T2 gunship one), as large as its largest slots take (TA's
+  `TransportSize`): the T1 transports 6 to 8, the T2 10 to 16, the UEF's T3 28. TA Reborn's air
+  transports carry one unit, whatever their files say, as TA's did (TA's Atlas says 5 as well):
+  so do these.
 - **Economy:** power generators make energy as in FA; extractors switch on when built, cover a
-  metal spot (three cells a side, as TA's) and extract as TA's (0.001), three times that at T2
-  and nine times at T3 (FA's 2, 6 and 18 mass a second); fabricators make metal from energy
-  while on; radar, sonar, jammers, stealth and shields switch on when built and pay their
-  upkeep while on, as TA's do.
+  metal spot (three cells a side, as TA's), store nothing (as TA's) and extract as TA's (0.001),
+  three times that at T2 and nine times at T3 (FA's 2, 6 and 18 mass a second); fabricators
+  make metal from energy while on; radar and sonar stations (and sonar platforms) switch on when
+  built and pay their upkeep while on, as TA's do. A hydrocarbon plant stands on a vent (the
+  converted maps put one at each hydrocarbon point), every cell of its yard map a `G`, as TA's
+  geothermal plants. Upkeep for what TA Reborn does not play yet (shields, the Fatboy's among
+  them, stealth fields, a unit's own stealth and cloak, jamming, remote viewing) is left out
+  with it: a stealthy unit is hidden from radar for nothing, as TA's are.
 - **Weapons** (`weapons/supcom_<faction>.tdf`): up to eight slots, the most TA Reborn gives a
   unit (TA's three and five more: `Weapon4` to `Weapon8`). A commander's main gun goes first and
   its Overcharge second, as TA's D-gun (`commandfire`); otherwise the most damaging go first, an
-  anti-air one kept where there is one. 162 of the 357 units carry none, 130 one, 27 two, 15
-  three and 23 more than three; four fill all eight (the Fatboy, the CZAR, the Summit and the
-  Hauthuum). Weapons an enhancement brings, dummies
-  and anti-torpedo defences are left out; a death weapon is what the unit explodes as. Ranges ×
-  32, reloads 1 / rate of fire, muzzle velocities × 32, splash diameters twice the damage
-  radius × 32, salvos as bursts, damage as it is (a nuke's inner damage over its outer
-  radius). Each looks and sounds as TA's weapons of its kind (lasers, shells, artillery,
-  missiles, torpedoes, bombs, anti-air, the D-gun, nukes, anti-missiles), TA's own art. A
-  missile flies long enough to reach as far as its range (a nuke's, the whole map) half again,
-  with its climb to speed; a nuke at TA's nukes' 350 pixels a second at least (Forged
-  Alliance's leave their silo at 5 ogrids a second and speed up on the way, which a TA missile
-  cannot: at that crawl one took a minute to cross a 20 km map).
+  anti-air one kept where there is one. Weapons an enhancement brings, those the unit's script
+  switches off as it is made (a toggled second gun keeps the one it starts with), dummies,
+  anti-torpedo defences and weapons of a point a shot (the Galactic Colossus's tractor claws)
+  are left out; a death weapon is what the unit explodes as. Ranges × 32, muzzle velocities ×
+  32 (a missile's its projectile's top speed), splash diameters twice the damage radius × 32
+  (FA's blasts deal their damage evenly to their edge: flak's edge 0.9), a nuke's inner damage
+  over its outer radius. FA's minimum ranges are not TA's: a weapon fires as close as it likes.
+  Each looks and sounds as TA's weapons of its kind (lasers, shells, artillery, missiles,
+  torpedoes, bombs, anti-air, the D-gun, nukes, anti-missiles), TA's own art.
+- **Firing** as FA's rules fire it (its `lua/sim/defaultweapons.lua`: `units::cycle`): each time
+  it fires one rack fires, in turn, or all of them (`RackFireTogether`); a rack fires its
+  muzzles one after another `MuzzleSalvoSize` times, or all of them at once (`MuzzleSalvoDelay`
+  0); it fires `RateOfFire` times a second, no faster than its muzzles' charges and delays
+  allow, waits `RackSalvoReloadTime` and charges `RackSalvoChargeTime` once every rack has
+  fired, and fires no faster than its energy comes (`EnergyRequired` at
+  `EnergyDrainPerSecond`). A shot deals its `Damage` each of its damage over time's pulses
+  (`DoTPulses`), as many times as its projectile splits into pieces, all the way down (the
+  Salvation's 36), or as its beam hits (every `BeamCollisionDelay` and a tick for its
+  `BeamLifetime`; a beam kept on, `BeamLifetime` 0, every such while it has a target: the CZAR's
+  and the Galactic Colossus's). In TA's keys: a burst of the shots it fires each time, a reload
+  giving FA's damage a second (in whole ticks, the damage taken a little up or down for them):
+  every one of the 308 slots within half a percent of FA's. A shell's pieces land where it does,
+  together (TA has no shells that split).
+- **Missiles** its launcher builds and stores (`CountedProjectile`: the nukes, the subs' and the
+  Hauthuum's strategic missiles, the tactical missile launchers, the anti-nukes) are TA's
+  stockpile: each built at its projectile's price (`metalpershot`, `energypershot`) over its build
+  time at the launcher's build rate (`reloadtime`: a nuke 300 s, an anti-nuke 240, a tactical
+  missile 30), up to TA Reborn's ten. The strategic and tactical launchers' missiles fly as TA's
+  strategic ones: upright out of the tube (a nuke for five seconds, topping out some 1,300 px over
+  the ground; a tactical missile for three, some 670 px, about as high as TA's own
+  `CORTRON_WEAPON`'s 770), then level across the map (`cruise`), half a turn a second, down onto
+  their target from above; a nuke, without `tracks`, at the place it is sent (TA's nukes strike a
+  place), a tactical missile homing on what it is sent at. A missile leaving its tube upright (an
+  anti-nuke's too) leaves at 120 px a second at least, clear of the ground before it arms; where
+  its muzzle rests under the ground (FA's silos open and lift their missile: the Aeon's lies 100
+  px down), from the silo's foot. A submarine fires its missiles from under the water
+  (`firesubmersed`). A missile flies long enough to reach as far as its range (a nuke's, the whole
+  map) half again, with its climb to speed; a nuke at TA's nukes' 350 pixels a second at least
+  (FA's leave their silo at a crawl and speed up on the way, which a TA missile cannot).
+- **Missile defences** take what FA's take (TA's `interceptor` and `targetable` as classes,
+  docs/FORMATS.md): strategic missiles (`STRATEGIC MISSILE` projectiles) `targetable=1`, the
+  anti-nukes (`TargetRestrictOnlyAllow = 'STRATEGIC MISSILE'`) `interceptor=1`; tactical missiles
+  (`TACTICAL MISSILE`: the launchers', the missile trucks', the cruisers') `targetable=2`, the
+  tactical missile defences and ships' point defences (`'TACTICAL MISSILE'`, `'TACTICAL,MISSILE'`)
+  `interceptor=2`, at their own rate of fire and unstocked. A defence fires once a missile is
+  within its range (`MaxRadius`, as FA's), its shot leaving at full speed: its projectile's, and
+  at least the Seraphim's 2,880 px a second (`COUNTERMEASURE_SPEED`): the Cybran zapper is a beam
+  and the Aeon's flares draw missiles onto them, which TA Reborn's interceptors do not do (each
+  flies at the missile it takes), and at the flares' 160 px a second one never caught a tactical
+  missile coming down at 384.
+- **Anti-air** homes on its aircraft (TA Reborn's guns lead nothing: an unguided shot at where a
+  plane is now misses it), `toairweapon`: missiles at their projectile's speeds and turn (TA's
+  missile towers' turn at least), guns and flak as homing shots, flak bursting over its real
+  area. A weapon that shoots no aircraft in FA (its `FireTargetLayerCapsTable` names no `Air`)
+  and could hit one in TA Reborn (a straight shot, a laser, a guided missile) takes aircraft
+  last (its slot's bad targets, `VTOL`: TA's rule, bad targets last), and a unit none of whose
+  weapons shoots aircraft chases none (`NoChaseCategory=VTOL`).
+- **A crawling bomb** (the Fire Beetle, its `Kamikaze` weapon) is TA's: `Kamikaze=1`, blowing
+  itself up as its blast (`SelfDestructAs`) within its weapon's reach of an enemy
+  (`KamikazeDistance`).
 - **Scripts:** made by an assembler (`ta_formats::cob::Assembler`). A turret turns its yaw bone
   to the target's heading less the heading it rests at, and pitches its pitch bone about the
   axis square to the way it rests (an x turn and a z turn: exact for guns resting ahead,
@@ -186,15 +281,27 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
   (`AimWeapon4`... `FireWeapon8`). Each weapon's turrets turn
   back to rest twice the longest reload after its last aim, by a restore of its own that any
   weapon turning the same pieces stops when it aims. Engineers and commanders lift their build
-  stance and spray from their build effect bones, and reclaim; factories open their yards and
-  build on the bone their blueprint attaches units to. Fresh units hide what their
-  enhancements show.
+  stance and spray from their build effect bones, and reclaim; a weapon turning the pieces the
+  build turns (a commander's torso) declines to aim while it builds, as TA's Commander's does,
+  and leaves them to the build; factories open their yards and build on the bone their blueprint
+  attaches units to. Fresh units hide what their enhancements show, and all under it. A rack
+  kicks back as the muzzle on it fires.
 - **Builds:** each builder's build lists matched against the units' categories. A commander
-  builds its own tier (`BUILTBYCOMMANDER`: its engineering enhancements, which bring the others,
-  are not yet in TA Reborn); a factory builds units (the buildings its lists name are its own
-  upgrades, in place, as are a building's: later). The menus (`download/supcom_<faction>.tdf`)
-  put buildings before units, the lower tech first, economy, factories, defences, then the
-  rest; the same lists are the computer players' (`[CANBUILD]`).
+  builds its own tier (`BUILTBYCOMMANDER`), not what FA keeps from it until its engineering
+  enhancements (`BUILTBYTIER2COMMANDER`, `BUILTBYTIER3COMMANDER`: the Cybran commander's
+  Engineering Station; the enhancements are not yet in TA Reborn); a factory builds units (the
+  buildings its lists name are its own upgrades, in place: later). A building FA makes only by
+  upgrading the one below (no builder's lists reach it: the tech 2 and 3 factories) goes on the
+  menus of those that build the one below, a tier below it at most (a tech 2 factory for tech 1
+  engineers and up, a tech 3 one for tech 2 and up, the support commanders' as tech 3), not a
+  commander's: built where it stands, at its own cost. An engineering station (the Kennel, the
+  Hive) lends its build power to what is built round it (TA's assist turret: a builder with no
+  menu); an air staging platform repairs the aircraft landed on it, as TA's repair pads do
+  (`IsAirBase`). A mobile factory (the Fatboy, the carriers, the Atlantis, the Tempest, the CZAR)
+  builds its units out in the field round it, as an engineer does: TA Reborn has no factory that
+  moves. The menus (`download/supcom_<faction>.tdf`) put buildings before units, the lower tech
+  first, economy, factories, defences, then the rest; the same lists are the computer players'
+  (`[CANBUILD]`).
 - **Sides:** `gamedata/sidedata_supcom.tdf` adds UEF, CYBRAN, AEON and SERAPHIM to the game's
   sides (a side add-on: docs/MODDING.md), each with its commander.
 - **Wrecks** (`features/corpses/supcom_<faction>.tdf`): the unit's own model where it fell,
@@ -209,20 +316,27 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
   parent), each piece drawn where its bone has gone, turned by its bone's turn less its turn at rest,
   and kept as a script's move and turn under its parent piece. A walk's root keeps to where it
   stands (the unit's own movement carries it; its rise and fall kept), a death's goes with it.
-  102 of the 357 units have clips: 29 walks (the commanders, the support commanders, the bots, the
-  walking experimentals) and 93 with deaths; 6 MB in all.
+  A walk is a cycle, its last frame its first: five of FA's end out of step with their start
+  (UEL0106's knees 36° out, URL0107's leg 38°, UAL0106 14°, UEL0303 9°, URL0301 6°), eased back
+  over the cycle's last quarter rather than jumping there each step. 102 of the 357 units have
+  clips: 29 walks (the commanders, the support commanders, the bots, the walking experimentals)
+  and 93 with deaths; 6 MB in all.
 
-The computer players play them: UEF against Cybran on Coast To Coast, twelve minutes (`cargo test
---release -p ta_ai --test skirmish` with `TA_TEST_MOD` and `TA_TEST_SIDES=UEF,CYBRAN`), each
-builds an economy, land, air and naval factories, engineers, tanks, artillery, anti-air,
-bombers, interceptors and frigates and fights. All four play so: in twenty-minute runs the Aeon
-beat the Seraphim on Sherwood and the Cybran on Coast To Coast (the Seraphim's extractors raided,
-it was short of metal three quarters of the time).
+The computer players play them (`cargo test --release -p ta_ai --test skirmish` with
+`TA_TEST_MOD` and `TA_TEST_SIDES=UEF,CYBRAN`): each builds an economy, land, air and naval
+factories, engineers, tanks, artillery, anti-air, bombers, interceptors and frigates and fights,
+and with the tech 2 and 3 factories on their engineers' lists climbs the tiers: a factory's tier
+is the highest tech of the engineers it makes, and an engineer of the top tier puts up one
+factory of the next (`SkirmishAi::factory_tier`; on Sherwood the tech 2 plants come at 9 to 15
+minutes, the tech 3 at 18 to 28, where a side lasts that long). They fire a tactical launcher's
+missiles at what is worth one in reach (never a wall, nor what a tactical defence covers), and
+build anti-nukes against strategic silos alone. Experimentals they do not build yet.
 
-Not yet in TA Reborn: the units' own sounds (TA's of their kinds play), the commanders'
-enhancements and the buildings' upgrades in place, teleporting, stealth fields and shields, and
-tactical missile defences stopping tactical missiles (TA's interceptors take on only what is
-`targetable`, the nukes).
+Not yet in TA Reborn: Forged Alliance's own sounds and weapon effects (TA's of their kinds play),
+the commanders' enhancements, upgrading buildings in place, shields, stealth fields and
+teleporting; and, besides, jamming, remote viewing, a weapon's toggles (the sniper's second
+gun), FA's minimum ranges, factories that move and build within themselves, and air transports
+carrying more than one unit at a time.
 
 ## Animations (`.sca`, version 5)
 

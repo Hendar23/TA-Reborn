@@ -92,10 +92,12 @@ pub use transport::{Client, Host, HostEvent};
 /// radar contacts, torpedoes and surface weapons meet units where they meet the water, nothing
 /// but torpedoes takes on underwater buildings, weapons past the first keep to their own
 /// targets on attack orders; 106: what a factory builds turns with its pad, Commanders mend
-/// themselves (`HealTime`), wreckage pays its metal alone.)
+/// themselves (`HealTime`), wreckage pays its metal alone; 107: interceptors take only the
+/// missiles of their classes (`interceptor` and `targetable` read as sets of classes), once they
+/// are within their range.)
 /// [`Msg::Hello`] and [`Refusal::Version`] keep their layout, so builds of other protocols are
 /// still told why they cannot meet.
-pub const PROTOCOL: u32 = 106;
+pub const PROTOCOL: u32 = 107;
 pub const DEFAULT_PORT: u16 = 7890;
 /// Ticks between state hash reports (which double as progress reports).
 pub const HASH_INTERVAL: u64 = 15;

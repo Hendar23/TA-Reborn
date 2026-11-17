@@ -850,6 +850,21 @@ details. What mod makers ask about most:
   targets are `wpri_`, `wsec_` or `wspe_badTargetCategory` for the first three, or
   `BadTargetCategory<n>` for any slot (`n` from 1), else the unit's `BadTargetCategory`. TA
   itself never fires a fourth weapon, and the mod check reads the numbered functions too.
+- **Missile defences by class.** A weapon's `interceptor` and a missile's `targetable` are read
+  as sets of classes, bits of a number, as the Spring engine reads them: an interceptor shoots
+  down a missile whose `targetable` shares a bit with its `interceptor`. TA's own all say 1 (its
+  anti-nukes take its nukes, EMP and tactical missiles), so they play as ever; a mod may keep its
+  defences apart, say `targetable=1` on its nukes and `interceptor=1` on its anti-nukes,
+  `targetable=2` on its tactical missiles and `interceptor=2` on its tactical missile defences
+  (as the Supreme Commander factions do: an anti-nuke never wastes itself on a cruise missile,
+  and a tactical defence never stops a nuke), and `interceptor=3` takes both. A weapon whose
+  number is not 0 is an interceptor (or targetable) as before. An interceptor fires once the
+  missile is within its `range` (its `coverage`, where that is larger; with no range, wherever it
+  is): TA's anti-nukes reach across TA's maps, and a tactical defence with a range of a few hundred
+  px takes the missiles as they come down on what it covers, so give its shot the speed to meet
+  them there. The no-nukes mutator leaves out
+  what fires or stops the strategic class (bit 1), and the computer players build anti-nukes
+  against strategic silos alone and count only the defences of a missile's classes in its way.
 
 #### Sides of a mod's own
 

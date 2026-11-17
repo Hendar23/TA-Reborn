@@ -453,7 +453,13 @@ impl Sim {
     }
 
     /// Anti-missile defence: an interceptor with missiles in stock fires at enemy
-    /// interceptable projectiles (nukes) headed into its coverage.
+    /// interceptable projectiles of its classes (`WeaponDef::intercepts`: TA's nukes, a mod's
+    /// tactical missiles for its tactical defences) headed into its coverage, or crossing it,
+    /// once they are within its reach: its range (its coverage where that is larger; with no
+    /// range written, as far as they are). TA's anti-nukes reach across its maps (22,000 px and
+    /// more); a tactical defence a few hundred px across takes the missiles coming down on what
+    /// it covers as they come within it, as the Spring engine's and Forged Alliance's do, rather
+    /// than sending its shot across the map at one still climbing out of its tube.
     pub(crate) fn update_interceptors(&mut self) {
         if !self.tick.is_multiple_of(5) || !self.projectiles.iter().any(|p| self.weapon_types.get(p.weapon).def.targetable) {
             return;
@@ -488,13 +494,14 @@ impl Sim {
                 continue;
             }
             let coverage = w.interceptor_coverage();
+            let reach = (w.range > Fx::ZERO).then(|| w.range.max(coverage));
             let (pos, owner) = (u.pos, u.owner);
             let current = u.weapons[slot].target;
             let threat = self
                 .projectiles
                 .iter()
-                .filter(|p| !p.dead && self.is_enemy(p.owner_player, owner) && weapons.get(p.weapon).def.targetable && !self.intercepted.contains(&p.id) && !assigned.contains(&p.id))
-                .filter(|p| p.target_pos.within_xz(pos, coverage) || p.pos.within_xz(pos, coverage))
+                .filter(|p| !p.dead && self.is_enemy(p.owner_player, owner) && w.def.intercepts(&weapons.get(p.weapon).def) && !self.intercepted.contains(&p.id) && !assigned.contains(&p.id))
+                .filter(|p| (p.target_pos.within_xz(pos, coverage) || p.pos.within_xz(pos, coverage)) && reach.is_none_or(|r| p.pos.within_xz(pos, r)))
                 .min_by_key(|p| (current != Some(Target::Projectile(p.id)), (p.pos - pos).xz().length_sq_raw(), p.id))
                 .map(|p| (p.id, p.pos));
             let Some((pid, ppos)) = threat else {
@@ -591,7 +598,7 @@ impl Sim {
             if w.def.interceptor {
                 let pending = self.unit(id).and_then(|u| u.weapons[slot].target);
                 let valid = matches!(pending, Some(Target::Projectile(pid)) if !self.intercepted.contains(&pid)
-                    && self.projectiles.iter().any(|p| p.id == pid && !p.dead && self.is_enemy(owner, p.owner_player) && weapons.get(p.weapon).def.targetable));
+                    && self.projectiles.iter().any(|p| p.id == pid && !p.dead && self.is_enemy(owner, p.owner_player) && w.def.intercepts(&weapons.get(p.weapon).def)));
                 if !valid && let Some(u) = self.unit_mut(id) {
                     u.retarget(slot, None);
                 }
@@ -1283,7 +1290,7 @@ impl Sim {
 
     fn fire(&mut self, id: UnitId, slot: usize, w: &WeaponType, target: Target, tp: FxVec3, pitch: i32) {
         let Some(owner) = self.unit(id).map(|u| u.owner) else { return };
-        if w.def.interceptor && !matches!(target, Target::Projectile(pid) if self.projectiles.iter().any(|p| p.id == pid && !p.dead && self.is_enemy(owner, p.owner_player) && self.weapon_types.get(p.weapon).def.targetable)) {
+        if w.def.interceptor && !matches!(target, Target::Projectile(pid) if self.projectiles.iter().any(|p| p.id == pid && !p.dead && self.is_enemy(owner, p.owner_player) && w.def.intercepts(&self.weapon_types.get(p.weapon).def))) {
             return;
         }
         let (target, tp) = self.launch_target(w, target, tp);

@@ -1431,6 +1431,92 @@ fn a_nuke_sent_at_a_unit_comes_down_where_the_unit_stood_at_its_launch() {
     }
 }
 
+/// Interceptors take the missiles of their classes (TA's `interceptor` and `targetable` read as
+/// sets of classes, as the Spring engine reads them): an anti-nuke (1) a nuke (1) and no tactical
+/// missile (2), a tactical defence (2, unstocked, at its reload) the reverse, one of both (3)
+/// either; TA's own 1 and 1 as ever. A missile no interceptor takes flies on untouched.
+#[test]
+fn interceptors_take_only_the_missiles_of_their_classes() {
+    for (anti, missile, takes) in [(1, 1, true), (1, 2, false), (2, 2, true), (2, 1, false), (3, 2, true), (3, 1, true)] {
+        let stock = if anti == 1 { "stockpile=1;" } else { "" };
+        let data = data_of(&[
+            unit("DEFENDER", "Weapon1=ANTI;"),
+            unit("SILO", "Weapon1=MISSILE;"),
+            weapon_file("ANTI", &format!("interceptor={anti}; {stock} coverage=1000; range=1000; tracks=1; guidance=1; turnrate=32768; weaponvelocity=1500; flighttime=10; reloadtime=1;")),
+            weapon_file("MISSILE", &format!("targetable={missile}; stockpile=1; commandfire=1; guidance=1; turnrate=32768; weaponvelocity=200; flighttime=60;")),
+        ]);
+        let mut sim = sim_of(data, 2);
+        let defender = sim.spawn_unit(sim.types.id("DEFENDER").unwrap(), 0, FxVec3::from_ints(300, 60, 300), 0, true).unwrap();
+        let silo_type = sim.types.id("SILO").unwrap();
+        let silo = sim.spawn_unit(silo_type, 1, FxVec3::from_ints(900, 60, 900), 0, true).unwrap();
+        if anti == 1 {
+            sim.grant_stockpile(defender, 1);
+        }
+        let pos = FxVec3::from_ints(700, 400, 300);
+        sim.projectiles.push(crate::combat::Projectile {
+            id: 100, weapon: sim.types.get(silo_type).weapons[0].unwrap(), owner: silo, owner_player: 1,
+            pos, prev_pos: pos, vel: FxVec3::ZERO, target: None, target_pos: FxVec3::from_ints(300, 60, 300),
+            age: 0, ttl: 1800, hits: Vec::new(), dead: false,
+        });
+        sim.take_events();
+        let (mut fired, mut intercepted) = (false, false);
+        for _ in 0..120 {
+            sim.step(&[]);
+            for e in sim.take_events() {
+                match e {
+                    SimEvent::WeaponFired { unit, .. } if unit == defender => fired = true,
+                    SimEvent::Intercepted { defender: 0, attacker: 1, .. } => intercepted = true,
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!((fired, intercepted), (takes, takes), "interceptor {anti} against targetable {missile}");
+        assert_eq!(sim.projectiles.iter().any(|p| p.id == 100), !takes, "interceptor {anti} against targetable {missile}: the missile flies on unless taken");
+    }
+}
+
+/// An interceptor takes a missile coming down on what it covers once the missile is within its
+/// range: a tactical defence 200 px across holds its fire while the missile is still far off (its
+/// shot would run out before it got there) and takes it as it comes in. One with no range written
+/// (as the anti-nukes of the tests above) takes it wherever it is.
+#[test]
+fn a_tactical_defence_takes_a_missile_once_it_is_within_its_range() {
+    let data = data_of(&[
+        unit("DEFENDER", "Weapon1=ANTI;"),
+        unit("SILO", "Weapon1=MISSILE;"),
+        weapon_file("ANTI", "interceptor=2; coverage=200; range=200; tracks=1; guidance=1; turnrate=32768; weaponvelocity=1500; startvelocity=1500; flighttime=10; reloadtime=1;"),
+        weapon_file("MISSILE", "targetable=2; stockpile=1; commandfire=1; guidance=1; turnrate=32768; weaponvelocity=200; flighttime=60;"),
+    ]);
+    let mut sim = sim_of(data, 2);
+    let home = FxVec3::from_ints(100, 60, 500);
+    let defender = sim.spawn_unit(sim.types.id("DEFENDER").unwrap(), 0, home, 0, true).unwrap();
+    let silo_type = sim.types.id("SILO").unwrap();
+    let silo = sim.spawn_unit(silo_type, 1, FxVec3::from_ints(950, 60, 900), 0, true).unwrap();
+    let pos = FxVec3::from_ints(950, 300, 500);
+    sim.projectiles.push(crate::combat::Projectile {
+        id: 100, weapon: sim.types.get(silo_type).weapons[0].unwrap(), owner: silo, owner_player: 1,
+        pos, prev_pos: pos, vel: FxVec3::from_ints(-6, 0, 0), target: None, target_pos: home,
+        age: 3, ttl: 1800, hits: Vec::new(), dead: false,
+    });
+    sim.take_events();
+    let (mut fired, mut intercepted) = (None, false);
+    for tick in 0..300 {
+        let before = sim.projectiles.iter().find(|p| p.id == 100).map(|p| (p.pos - home).xz().length());
+        sim.step(&[]);
+        for e in sim.take_events() {
+            match e {
+                SimEvent::WeaponFired { unit, .. } if unit == defender => fired = fired.or(before.map(|far| (tick, far))),
+                SimEvent::Intercepted { defender: 0, attacker: 1, .. } => intercepted = true,
+                _ => {}
+            }
+        }
+    }
+    let (tick, far) = fired.expect("the defence fires");
+    // (It looks every fifth tick: the missile comes on some 33 px between looks.)
+    assert!(far <= Fx::from_int(207) && far > Fx::from_int(160) && tick > 80, "it fires as the missile comes within its range: {far:?} px off, tick {tick}");
+    assert!(intercepted && !sim.projectiles.iter().any(|p| p.id == 100), "and takes it");
+}
+
 #[test]
 fn interceptor_waits_for_emp_to_expire() {
     let data = data_of(&[

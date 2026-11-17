@@ -70,6 +70,10 @@ pub fn parse(b: &[u8]) -> Result<Animation> {
     if frame_size != 8 + bones_n * 28 {
         return Err(bad(&format!("frames of {frame_size} bytes for {bones_n} bones")));
     }
+    // (Its frames must be in the file before room is made for them.)
+    if first_at.checked_add(28).and_then(|at| at.checked_add((frame_count as usize).saturating_mul(frame_size))).is_none_or(|end| end > b.len()) {
+        return Err(bad(&format!("{frame_count} frames claimed, past the end of its {} bytes", b.len())));
+    }
     // The names: NUL-ended, one after another from `names_at` (any `NAME` mark before them).
     let mut bones = Vec::with_capacity(bones_n);
     let mut at = names_at;
@@ -200,5 +204,9 @@ pub(crate) mod tests {
         assert!(parse(&backwards).is_err(), "time going back");
         let own_parent = write(&[("Body", 0)], &[], 1.0);
         assert!(parse(&own_parent).is_err(), "a bone its own parent");
+        // Ninety thousand frames claimed in a short file: refused before room is made for them.
+        let mut claims = good.clone();
+        claims[8..12].copy_from_slice(&90_000u32.to_le_bytes());
+        assert!(parse(&claims).unwrap_err().to_string().contains("past the end"));
     }
 }

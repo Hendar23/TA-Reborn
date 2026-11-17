@@ -9,17 +9,32 @@
 //! - **Weapons:** up to eight slots ([`Weapons`], [`MAX_WEAPONS`]: TA's three and the five more TA
 //!   Reborn gives mods): a commander's main gun first and its Overcharge second, made TA's D-gun
 //!   (`commandfire`); otherwise the most damaging first, an anti-air one kept where there is one.
-//!   Weapons an enhancement brings, and dummies, are left out; the death weapon is what the unit
-//!   explodes as. Each looks as TA's weapon of its kind does (a
-//!   laser, a shell, a missile, a torpedo, a bomb) and hits as Forged Alliance's.
+//!   Weapons an enhancement brings, those the unit's script switches off as it is made, and
+//!   dummies are left out; the death weapon is what the unit explodes as. Each looks as TA's
+//!   weapon of its kind does (a laser, a shell, a missile, a torpedo, a bomb) and hits as Forged
+//!   Alliance's: its damage a second Forged Alliance's by its own firing rules ([`fa_dps`],
+//!   [`firing`]). A missile its launcher builds and stores (`CountedProjectile`) is TA's
+//!   stockpile, built at its projectile's price over its build time; missile defences take what
+//!   Forged Alliance's do (TA's `interceptor` and `targetable` as classes: [`STRATEGIC`],
+//!   [`TACTICAL`]).
 
 use std::fmt::Write as _;
 
 use super::UNIT_SCALE;
-use crate::unit::{Faction, Motion, Tech, UnitBlueprint, WeaponBlueprint};
+use crate::unit::{Faction, Motion, Rack, Tech, UnitBlueprint, WeaponBlueprint};
 
 /// Forged Alliance's build rates and build times, taken ten times.
 pub const WORK: f64 = 10.0;
+
+/// Ticks a second.
+const TICKS: f64 = 30.0;
+
+/// The class of strategic missiles (TA's `targetable` and `interceptor` bit 1: TA's own nukes and
+/// anti-nukes say 1), what anti-nukes take (`TargetRestrictOnlyAllow = 'STRATEGIC MISSILE'`).
+pub const STRATEGIC: u32 = 1;
+/// The class of tactical missiles (bit 2), what tactical missile defences and ships' point
+/// defences take (`'TACTICAL MISSILE'`, `'TACTICAL,MISSILE'`).
+pub const TACTICAL: u32 = 2;
 
 /// TA's side name for a faction.
 pub fn side(faction: &Faction) -> &'static str {
@@ -32,6 +47,25 @@ pub fn side(faction: &Faction) -> &'static str {
     }
 }
 
+/// Text made safe for a TDF value: none of TA's marks (`;` ends a value, `{`/`}` and `[`/`]`
+/// open and close sections, `//` and `/*` start comments), on one line.
+pub fn tdf_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        out.push(match c {
+            ';' => ',',
+            '{' | '[' => '(',
+            '}' | ']' => ')',
+            '\n' | '\r' | '\t' => ' ',
+            c => c,
+        });
+    }
+    while out.contains("//") || out.contains("/*") {
+        out = out.replace("//", "/").replace("/*", "/");
+    }
+    out.trim().to_string()
+}
+
 /// The most weapons a unit carries in TA Reborn (`Weapon1` to `Weapon8`: ta_data's `MAX_WEAPONS`).
 pub const MAX_WEAPONS: usize = 8;
 
@@ -41,6 +75,8 @@ pub struct Weapons<'a> {
     pub death: Option<&'a WeaponBlueprint>,
     /// The slot of the commander's Overcharge (TA's D-gun), if any.
     pub dgun: Option<usize>,
+    /// Its `Kamikaze` weapon (the Fire Beetle's): what it blows itself up as, near its enemy.
+    pub kamikaze: Option<&'a WeaponBlueprint>,
 }
 
 /// What a weapon does, by its category and its projectile's name.
@@ -58,6 +94,12 @@ pub enum Kind {
     AntiMissile,
 }
 
+/// Whether a target restriction (`TargetRestrictOnlyAllow`, categories joined by spaces, choices
+/// by commas) names `category`.
+fn restricts_to(w: &WeaponBlueprint, category: &str) -> bool {
+    w.only_allow.split([',', ' ']).any(|c| c.trim().eq_ignore_ascii_case(category))
+}
+
 pub fn kind(w: &WeaponBlueprint) -> Kind {
     let proj = w.projectile.as_deref().unwrap_or("").to_ascii_lowercase();
     let cat = w.category.to_ascii_lowercase();
@@ -67,7 +109,7 @@ pub fn kind(w: &WeaponBlueprint) -> Kind {
     if w.nuke.is_some() {
         return Kind::Nuke;
     }
-    if cat == "defense" || proj.contains("antimissile") || proj.contains("antinuke") || proj.contains("intercept") {
+    if restricts_to(w, "MISSILE") || (cat == "defense" && !restricts_to(w, "TORPEDO")) || proj.contains("antimissile") || proj.contains("antinuke") || proj.contains("intercept") {
         return Kind::AntiMissile;
     }
     if cat == "bomb" || proj.contains("bomb") {
@@ -76,38 +118,187 @@ pub fn kind(w: &WeaponBlueprint) -> Kind {
     if cat == "anti navy" || proj.contains("torpedo") || proj.contains("depthcharge") {
         return Kind::Torpedo;
     }
-    let air_only = !w.target_layers.is_empty() && w.target_layers.iter().all(|(_, to)| to.split('|').all(|l| l.trim().eq_ignore_ascii_case("air")));
-    if cat == "anti air" || air_only {
+    if cat == "anti air" || air_only(w) {
         return Kind::AntiAir;
     }
-    if cat == "missile" || proj.contains("missile") || proj.contains("rocket") {
+    if cat == "missile" || proj.contains("missile") || proj.contains("rocket") || w.shot.as_ref().is_some_and(|s| s.is("MISSILE")) {
         return Kind::Missile;
     }
     if cat == "artillery" || w.ballistic_arc.eq_ignore_ascii_case("RULEUBA_HighArc") {
         return Kind::Artillery;
     }
-    if w.beam_lifetime > 0.0 || w.continuous_beam || proj.contains("laser") || proj.contains("beam") || proj.contains("disintegrator") || proj.contains("sonic") {
+    if beam(w) || proj.contains("laser") || proj.contains("beam") || proj.contains("disintegrator") || proj.contains("sonic") {
         return Kind::Laser;
     }
     Kind::Shell
 }
 
-/// Damage a second, for choosing which weapons take the slots.
-fn power(w: &WeaponBlueprint) -> f64 {
-    w.damage.max(0.0) * w.salvo_size.max(1) as f64 * w.rate_of_fire.max(0.01) + w.nuke.as_ref().map_or(0.0, |n| n.inner_damage)
+/// Whether it shoots at aircraft alone (`FireTargetLayerCapsTable`: 'Air' from every layer).
+fn air_only(w: &WeaponBlueprint) -> bool {
+    !w.target_layers.is_empty() && w.target_layers.iter().all(|(_, to)| to.split('|').all(|l| l.trim().eq_ignore_ascii_case("air")))
 }
 
-/// The weapons that take its slots (eight at most), and the death weapon.
+/// Whether it may shoot at aircraft (its `FireTargetLayerCapsTable` names 'Air' from some layer;
+/// none given, it may).
+pub fn shoots_air(w: &WeaponBlueprint) -> bool {
+    w.target_layers.is_empty() || w.target_layers.iter().any(|(_, to)| to.split('|').any(|l| l.trim().eq_ignore_ascii_case("air")))
+}
+
+/// Whether it is a beam (Forged Alliance's beam weapons all give `BeamLifetime`, 0 for one kept on
+/// while it has a target).
+fn beam(w: &WeaponBlueprint) -> bool {
+    w.beam_lifetime > 0.0 || w.continuous_beam || w.table.get_ci("BeamLifetime").is_some()
+}
+
+/// The class of missile defence that takes its shots (0: none): a strategic missile's
+/// [`STRATEGIC`], a tactical missile's [`TACTICAL`] (its projectile's categories).
+pub fn targetable_class(w: &WeaponBlueprint) -> u32 {
+    match &w.shot {
+        Some(s) if s.strategic_missile() => STRATEGIC,
+        Some(s) if s.tactical_missile() => TACTICAL,
+        Some(_) => 0,
+        // (A nuke whose projectile the game lacks: a strategic missile still.)
+        None if w.nuke.is_some() => STRATEGIC,
+        None => 0,
+    }
+}
+
+/// The class of missiles a missile defence takes: anti-nukes the strategic (their restriction
+/// names `STRATEGIC`), the rest (tactical missile defences, ships' point defences) the tactical.
+pub fn interceptor_class(w: &WeaponBlueprint) -> u32 {
+    if kind(w) != Kind::AntiMissile {
+        0
+    } else if restricts_to(w, "STRATEGIC") {
+        STRATEGIC
+    } else {
+        TACTICAL
+    }
+}
+
+/// How a weapon fires, by Forged Alliance's rules (its `lua/sim/defaultweapons.lua`): each time it
+/// fires one rack fires, in turn, or all of them (`RackFireTogether`); a rack fires its muzzles
+/// one after another `MuzzleSalvoSize` times, or all of them at once (`MuzzleSalvoDelay` 0); it
+/// fires `RateOfFire` times a second, no faster than its muzzles' charges and delays allow, waits
+/// `RackSalvoReloadTime` and charges `RackSalvoChargeTime` once every rack has fired, and fires
+/// no faster than its energy (`EnergyRequired` at `EnergyDrainPerSecond`) comes. A shot deals its
+/// `Damage` each of its damage over time's pulses, as many times as its projectile splits into
+/// pieces (all the way down), or as its beam hits (every `BeamCollisionDelay` and a tick, for its
+/// `BeamLifetime`; a beam kept on while it has a target hits so for as long).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cycle {
+    /// What one shot deals (a beam's every hit).
+    pub per_shot: f64,
+    /// Shots each time it fires, on average.
+    pub shots: f64,
+    /// Seconds from one firing to the next, on average.
+    pub period: f64,
+    /// Seconds between the shots of one firing (0: all at once).
+    pub spacing: f64,
+    /// A beam kept on: `per_shot` every `period`.
+    pub continuous: bool,
+}
+
+/// One tick of Forged Alliance's simulation (seconds): a beam hits every `BeamCollisionDelay`
+/// and one of these.
+const FA_TICK: f64 = 0.1;
+
+pub fn cycle(w: &WeaponBlueprint) -> Cycle {
+    let is_beam = beam(w);
+    let continuous = is_beam && (w.continuous_beam || w.beam_lifetime <= 0.0);
+    let hit_every = w.beam_collision_delay.max(0.0) + FA_TICK;
+    let hits = if is_beam && !continuous { (w.beam_lifetime / hit_every).max(1.0) } else { 1.0 };
+    let per_shot = w.damage.max(0.0) * w.pulses() * w.hits_per_shot() * hits;
+    let all_at_once = w.salvo_delay <= 0.0;
+    let rack_shots = |r: &Rack| if all_at_once { r.muzzles.len().max(1) } else { w.salvo_size.max(1) as usize };
+    let racks: Vec<usize> = if w.racks.is_empty() { vec![if all_at_once { 1 } else { w.salvo_size.max(1) as usize }] } else { w.racks.iter().map(rack_shots).collect() };
+    let total: usize = racks.iter().sum();
+    if continuous {
+        return Cycle { per_shot, shots: total as f64, period: hit_every, spacing: 0.0, continuous };
+    }
+    let fires = if w.racks_together { 1 } else { racks.len() };
+    let shots = total as f64 / fires as f64;
+    let rate = if w.rate_of_fire > 0.0 { w.rate_of_fire } else { 1.0 };
+    // (A firing takes its muzzles' charges and delays, one after another.)
+    let firing = shots * (w.muzzle_charge.max(0.0) + w.salvo_delay.max(0.0));
+    let mut period = (1.0 / rate).max(firing) + (w.rack_reload.max(0.0) + w.rack_charge.max(0.0)) / fires as f64;
+    if w.energy_required > 0.0 && w.energy_drain > 0.0 {
+        period = period.max(w.energy_required / w.energy_drain);
+    }
+    let spacing = if all_at_once { w.muzzle_charge.max(0.0) } else { w.salvo_delay + w.muzzle_charge.max(0.0) };
+    Cycle { per_shot, shots, period, spacing, continuous }
+}
+
+/// Forged Alliance's damage a second for the weapon, by its own rules ([`Cycle`]).
+pub fn fa_dps(w: &WeaponBlueprint) -> f64 {
+    let c = cycle(w);
+    c.per_shot * c.shots / c.period.max(1e-6)
+}
+
+/// A weapon's firing in TA's keys: a burst of `burst` shots `burst_rate` seconds apart, each
+/// dealing `damage`, every `reload` seconds (a whole number of TA's ticks). The burst is the
+/// shots it fires each time (at least one); the reload is what gives Forged Alliance's damage a
+/// second, the damage taken a little up or down for the reload's ticks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Firing {
+    pub damage: f64,
+    pub burst: u32,
+    pub burst_rate: f64,
+    pub reload: f64,
+}
+
+/// A weapon's firing in TA's keys, its damage a second Forged Alliance's ([`fa_dps`]).
+pub fn firing(w: &WeaponBlueprint) -> Firing {
+    let c = cycle(w);
+    let dps = c.per_shot * c.shots / c.period.max(1e-6);
+    let burst = (c.shots.round() as u32).max(1);
+    if dps <= 0.0 || c.per_shot <= 0.0 {
+        return Firing { damage: c.per_shot, burst, burst_rate: 0.1, reload: ticks_of(c.period) };
+    }
+    let reload = ticks_of(c.per_shot * burst as f64 / dps);
+    let damage = dps * reload / burst as f64;
+    // (A burst done within its reload: its shots no further apart than the reload allows.)
+    let spacing = if c.spacing > 0.0 { c.spacing } else { 1.0 / TICKS };
+    let burst_rate = if burst > 1 { spacing.min(reload / burst as f64).max(1.0 / TICKS) } else { 0.1 };
+    Firing { damage, burst, burst_rate, reload }
+}
+
+/// `seconds` as a whole number of ticks (one at least), in seconds.
+fn ticks_of(seconds: f64) -> f64 {
+    (seconds * TICKS).round().max(1.0) / TICKS
+}
+
+/// A number as a TDF value: whole where it is within half a percent of a whole number, else to two
+/// places.
+fn number(v: f64) -> String {
+    let whole = v.round();
+    if (v - whole).abs() <= v.abs() * 0.005 || v.abs() >= 1000.0 { format!("{}", whole as i64) } else { format!("{v:.2}") }
+}
+
+/// Damage a second, for choosing which weapons take the slots.
+fn power(w: &WeaponBlueprint) -> f64 {
+    fa_dps(w) + w.nuke.as_ref().map_or(0.0, |n| n.inner_damage)
+}
+
+/// The weapons that take its slots (eight at most), the death weapon and its kamikaze blast.
 pub fn weapons(u: &UnitBlueprint) -> Weapons<'_> {
     let usable = |w: &&WeaponBlueprint| {
+        let k = kind(w);
         !w.category.eq_ignore_ascii_case("death")
+            && !w.category.eq_ignore_ascii_case("kamikaze")
             && w.table.get_ci("EnabledByEnhancement").is_none()
+            // (What its script switches off as it is made: a toggled second gun, a missile an
+            // enhancement switches on. The Overcharge, off until ordered, is TA's D-gun.)
+            && (k == Kind::Overcharge || !u.birth.weapon_off(&w.label))
             && !w.label.to_ascii_lowercase().contains("dummy")
             && !w.label.to_ascii_lowercase().contains("antitorpedo")
             && !w.projectile.as_deref().unwrap_or("").to_ascii_lowercase().contains("antitorpedo")
-            && (w.damage > 0.0 || w.nuke.is_some() || kind(w) == Kind::AntiMissile)
+            && !restricts_to(w, "TORPEDO")
+            // (A weapon dealing a point a shot at most is no gun: the Galactic Colossus's tractor
+            // claws.)
+            && (w.damage > 1.0 || w.nuke.is_some() || k == Kind::AntiMissile || k == Kind::Overcharge)
     };
     let death = u.weapons.iter().find(|w| w.category.eq_ignore_ascii_case("death") || w.label.eq_ignore_ascii_case("DeathWeapon"));
+    let kamikaze = u.weapons.iter().find(|w| w.category.eq_ignore_ascii_case("kamikaze") && w.damage > 0.0);
     let mut armed: Vec<&WeaponBlueprint> = u.weapons.iter().filter(usable).collect();
     let mut slots: Vec<&WeaponBlueprint> = Vec::new();
     let mut dgun = None;
@@ -135,7 +326,7 @@ pub fn weapons(u: &UnitBlueprint) -> Weapons<'_> {
         }
         slots.push(armed.remove(0));
     }
-    Weapons { slots, death, dgun }
+    Weapons { slots, death, dgun, kamikaze }
 }
 
 /// A weapon's section name: `<id>_<label>`, letters and digits; a label the unit's weapons give
@@ -159,8 +350,6 @@ fn explosion(diameter: f64) -> &'static str {
     }
 }
 
-/// A weapon's section: its range, reload, speed, blast and damage Forged Alliance's at TA's
-/// scale; how it flies and looks as TA's weapons of its kind.
 /// What an air transport carries, by its mesh's attach bones (`…Attachpoint…`: Forged Alliance
 /// sets its passengers there, small units on the plain or `_sml`/`_Small` ones, larger on `_Med`
 /// and `_Lrg` ones; a side's own named `Left_`, `Right_`):
@@ -194,6 +383,37 @@ const NUKE_RANGE: i64 = 32000;
 /// took a minute to cross a 20 km map.
 const NUKE_SPEED: i64 = 350;
 
+/// How long a missile launched upright climbs before it steers (seconds, TA's `weapontimer`), its
+/// strategic and tactical missiles' (`NUCLEAR_MISSILE`, `CRBLMSSL`, `CORTRON_WEAPON`): out of the
+/// tube high over everything, then level across the map (`cruise`) and down onto its target. A
+/// nuke's, leaving at `LAUNCH_START` and gathering `LAUNCH_ACCELERATION`, takes it some 1,200 px
+/// up (it tops out some 1,300 px over the ground as it turns over).
+const LAUNCH_CLIMB: i64 = 5;
+
+/// A tactical missile's climb (seconds): from `LAUNCH_START` some 590 px up, topping out some
+/// 670 px over the ground as it turns over, about as high as TA's own tactical missile
+/// (`CORTRON_WEAPON`, five seconds from rest: some 770 from its taller launcher).
+const TACTICAL_CLIMB: i64 = 3;
+
+/// How fast those missiles turn (TA's angle units a second): TA's strategic missiles' 32,768, half
+/// a turn.
+const CRUISE_TURN: i64 = 32768;
+
+/// How fast those missiles gather speed out of the tube (px a second squared): TA's strategic
+/// missiles' 50.
+const LAUNCH_ACCELERATION: i64 = 50;
+
+/// The least a homing anti-air shot turns (angle units a second): TA's missile towers' (`ARMRL`,
+/// `CORRL`: 50,000; the Arm's missile truck 30,000).
+const AA_TURN: i64 = 30000;
+
+/// The least speed a tactical missile defence's shot flies at, from its muzzle (px a second): the
+/// Seraphim's (90 ogrids a second; the UEF's Phalanx shoots at 100). The Cybran zapper is a beam
+/// and the Aeon's flares draw the missiles onto them (5 ogrids a second), neither of which TA
+/// Reborn's interceptors do: each flies at the missile it takes, and at the zapper's or the flares'
+/// own speed one never caught a tactical missile coming down at 12 ogrids a second.
+const COUNTERMEASURE_SPEED: i64 = 2880;
+
 /// How long a missile flies before it falls, seconds (TA's `flighttime`, its projectile's life):
 /// long enough to cover `range` pixels at its `speed` half again (it turns as it tracks), with
 /// its climb to speed from `start` at `acceleration` and a second to launch.
@@ -203,6 +423,34 @@ pub fn flight_time(range: i64, speed: i64, start: i64, acceleration: i64) -> i64
     (range as f64 / speed * 1.5 + climb + 1.0).ceil().max(3.0) as i64
 }
 
+/// Whether its missiles leave their tube upright (`vlaunch`): a launcher's stored missiles (the
+/// nukes, the tactical missiles) and the anti-nukes', as TA's strategic missiles and anti-nukes.
+pub fn launched_upright(w: &WeaponBlueprint) -> bool {
+    stockpiled(w) && matches!(kind(w), Kind::Missile | Kind::Nuke | Kind::AntiMissile)
+}
+
+/// The least speed a missile leaves its tube upright at (px a second): it arms on its third
+/// tick, by when it has risen 12 px over the ground at this speed, so it never goes off in its
+/// silo (the launch is from the silo's foot where its muzzle rests under the ground,
+/// `script::muzzles`).
+const LAUNCH_START: i64 = 120;
+
+/// Whether the weapon's missiles are stored by its launcher (`CountedProjectile`), at a price:
+/// TA's stockpile.
+pub fn stockpiled(w: &WeaponBlueprint) -> bool {
+    w.counted && (w.shot.as_ref().is_some_and(|s| s.priced()) || w.nuke.is_some())
+}
+
+/// A stored missile's price and the seconds its launcher takes to build one: its projectile's
+/// `Economy` at the launcher's `Economy.BuildRate` (a nuke, 324,000 at 1,080: 300 s).
+pub fn missile_price(u: &UnitBlueprint, w: &WeaponBlueprint) -> (f64, f64, f64) {
+    let Some(s) = w.shot.as_ref().filter(|s| s.priced()) else { return (0.0, 0.0, 1.0 / w.rate_of_fire.max(0.01)) };
+    let seconds = if u.build_rate > 0.0 { s.build_time / u.build_rate } else { s.build_time / 10.0 };
+    (s.cost_mass, s.cost_energy, seconds.max(1.0))
+}
+
+/// A weapon's section: its range, reload, speed, blast and damage Forged Alliance's at TA's
+/// scale; how it flies and looks as TA's weapons of its kind.
 pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
     let k = kind(w);
     let px = |ogrids: f64| (ogrids * UNIT_SCALE).round() as i64;
@@ -210,33 +458,55 @@ pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
     let mut put = |key: &str, value: String| {
         let _ = writeln!(s, "\t{key}={value};");
     };
-    put("name", if w.display_name.is_empty() { w.label.clone() } else { w.display_name.replace(';', ",") });
-    put("range", if k == Kind::Nuke { NUKE_RANGE } else { px(w.max_radius.max(1.0)) }.to_string());
-    if w.min_radius > 0.0 {
-        put("minbarrelangle", "-15".into());
+    put("name", tdf_text(if w.display_name.is_empty() { &w.label } else { &w.display_name }));
+    let range = if k == Kind::Nuke { NUKE_RANGE } else { px(w.max_radius.max(1.0)) };
+    put("range", range.to_string());
+    let stock = stockpiled(w);
+    let fire = firing(w);
+    if stock {
+        // A stored missile: built over its build time, paid for as it is built.
+        let (mass, energy, seconds) = missile_price(u, w);
+        put("reloadtime", format!("{:.3}", ticks_of(seconds)));
+        put("stockpile", "1".into());
+        put("metalpershot", (mass.round() as i64).to_string());
+        put("energypershot", (energy.round() as i64).to_string());
+    } else {
+        put("reloadtime", format!("{:.4}", fire.reload));
+        if fire.burst > 1 {
+            put("burst", fire.burst.to_string());
+            put("burstrate", format!("{:.4}", fire.burst_rate));
+        }
+        if w.energy_required > 0.0 {
+            put("energypershot", (w.energy_required.round() as i64).to_string());
+        }
     }
-    put("reloadtime", format!("{:.3}", 1.0 / w.rate_of_fire.max(0.01)));
-    let speed = (w.muzzle_velocity.max(5.0) * UNIT_SCALE).round() as i64;
-    let speed = if k == Kind::Nuke { speed.max(NUKE_SPEED) } else { speed };
+    // The projectile's own flight, where its blueprint gives it: its speed leaving the muzzle, its
+    // top speed and acceleration (ogrids a second).
+    let shot = w.shot.as_ref();
+    let muzzle = (w.muzzle_velocity.max(5.0) * UNIT_SCALE).round() as i64;
+    let top = shot.map(|s| s.max_speed).filter(|&v| v > 0.0).map_or(muzzle, |v| (v * UNIT_SCALE).round() as i64).max(muzzle);
+    let speed = match k {
+        Kind::Nuke => muzzle.max(NUKE_SPEED),
+        Kind::AntiMissile if !launched_upright(w) => top.max(COUNTERMEASURE_SPEED),
+        Kind::Missile | Kind::AntiAir | Kind::AntiMissile => top,
+        _ => muzzle,
+    };
     put("weaponvelocity", speed.to_string());
+    let flak = k == Kind::AntiAir && w.damage_radius > 0.0;
     let blast = match &w.nuke {
         Some(n) => n.outer_radius * 2.0 * UNIT_SCALE,
         None => (w.damage_radius * 2.0 * UNIT_SCALE).max(8.0),
     };
     put("areaofeffect", (blast.round() as i64).to_string());
-    put("edgeeffectiveness", if w.nuke.is_some() { "0.25".into() } else { "0.5".into() });
-    if w.salvo_size > 1 {
-        put("burst", w.salvo_size.to_string());
-        put("burstrate", format!("{:.3}", w.salvo_delay.max(0.05)));
-    }
+    // (Forged Alliance's blasts deal their damage evenly out to their edge: flak, which bursts by
+    // its target, hurts all that its burst reaches, as TA's flak does.)
+    put("edgeeffectiveness", if w.nuke.is_some() { "0.25" } else if flak { "0.9" } else { "0.5" }.into());
     // Firing tolerance, degrees to TA's angle units.
     put("tolerance", ((w.firing_tolerance.max(1.0) * 65536.0 / 360.0).round() as i64).max(500).to_string());
     if w.turreted {
         put("turret", "1".into());
     }
-    if w.energy_required > 0.0 {
-        put("energypershot", (w.energy_required.round() as i64).to_string());
-    }
+    let homing_aa = k == Kind::AntiAir && !beam(w);
     let (render, model, start, hit) = match k {
         Kind::Laser => (0, "", "lasrfir1", "lasrhit1"),
         Kind::Shell => (4, "", "cannon1", "xplomed2"),
@@ -244,7 +514,9 @@ pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
         Kind::Missile => (1, "missile", "rocklit3", "xplomed2"),
         Kind::Torpedo => (1, "torpedo", "torpedo1", "xplodep1"),
         Kind::Bomb => (6, "bomb", "bombrel", "xplomed2"),
-        Kind::AntiAir => (4, "", "cannon1", "xplosml2"),
+        Kind::AntiAir if shot.is_some_and(|s| s.is("MISSILE")) => (1, "missile", "rockhvy2", "xplomed2"),
+        Kind::AntiAir if beam(w) => (0, "", "lasrfir1", "lasrhit1"),
+        Kind::AntiAir => (4, "", if flak { "canlite2" } else { "cannon1" }, if flak { "xplomed2" } else { "xplosml2" }),
         Kind::Overcharge => (3, "dgun", "disigun1", "xplomas2"),
         Kind::Nuke => (1, "crblmssl", "misicbm1", "xplomas2"),
         Kind::AntiMissile => (1, "amdrocket", "Rockhvy1", "xplomed4"),
@@ -257,7 +529,8 @@ pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
         Kind::Laser => {
             put("lineofsight", "1".into());
             put("beamweapon", "1".into());
-            put("duration", format!("{:.2}", w.beam_lifetime.clamp(0.05, 1.0)));
+            let shown = if w.beam_lifetime > 0.0 { w.beam_lifetime } else { fire.reload };
+            put("duration", format!("{:.2}", shown.min(fire.reload).clamp(0.05, 1.0)));
             put("color", "180".into());
             put("color2", "181".into());
         }
@@ -268,31 +541,77 @@ pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
         }
         Kind::Artillery => put("ballistic", "1".into()),
         Kind::Missile | Kind::AntiMissile | Kind::Nuke => {
-            let (start, acceleration) = ((speed / 3).max(60), (speed / 2).max(60));
+            let strategic = k == Kind::Nuke;
+            // A stored missile of a launcher (a nuke, a tactical missile), launched upright: TA's
+            // strategic missiles' flight, high over everything and down onto the place it is sent
+            // at (no `tracks`: TA's nukes strike a place).
+            let launcher = stock && k == Kind::Missile || strategic;
+            let upright = launched_upright(w);
+            let (start, acceleration) = match shot {
+                // (Out of the tube gathering speed as TA's strategic missiles do: `LAUNCH_CLIMB`,
+                // `TACTICAL_CLIMB`.)
+                _ if launcher => (LAUNCH_START, LAUNCH_ACCELERATION),
+                // (A tactical defence's shot leaves its muzzle at full speed, as the Phalanx's
+                // rounds and the zapper's beam do: `COUNTERMEASURE_SPEED`.)
+                _ if k == Kind::AntiMissile && !upright => (speed, speed),
+                Some(s) if s.max_speed > 0.0 => ((s.initial_speed * UNIT_SCALE).round() as i64, ((s.acceleration * UNIT_SCALE).round() as i64).max(60)),
+                _ => ((speed / 3).max(60), (speed / 2).max(60)),
+            };
+            let start = if upright { start.max(LAUNCH_START) } else { start };
             put("lineofsight", "1".into());
             put("selfprop", "1".into());
             put("smoketrail", "1".into());
             put("startvelocity", start.to_string());
             put("weaponacceleration", acceleration.to_string());
-            put("turnrate", "16000".into());
-            put("tracks", "1".into());
             put("guidance", "1".into());
-            put("flighttime", flight_time(if k == Kind::Nuke { NUKE_RANGE } else { px(w.max_radius.max(1.0)) }, speed, start, acceleration).to_string());
-            if matches!(k, Kind::Nuke | Kind::AntiMissile) || w.manual_fire {
+            // (An anti-nuke's missile leaves its tube upright, as TA's do; a tactical defence's
+            // shot leaves its turret at what it chases.)
+            if upright {
                 put("vlaunch", "1".into());
             }
-            if k == Kind::Nuke {
-                put("stockpile", "1".into());
-                put("targetable", "1".into());
+            // (A submarine fires its missiles from under the water, as Forged Alliance's do.)
+            if u.motion == Motion::Sub {
+                put("firesubmersed", "1".into());
+            }
+            if launcher {
+                put("cruise", "1".into());
+                put("weapontimer", if strategic { LAUNCH_CLIMB } else { TACTICAL_CLIMB }.to_string());
+                put("turnrate", CRUISE_TURN.to_string());
+                // (A tactical missile homes on what it is sent at, as Forged Alliance's do; a nuke
+                // strikes the place, as TA's do: `WeaponType::strikes_a_place`.)
+                if !strategic && shot.is_some_and(|s| s.tracks) {
+                    put("tracks", "1".into());
+                }
+            } else {
+                put("tracks", "1".into());
+                // (A missile defence turns as TA's anti-nukes do, half a turn a second at least:
+                // the missiles it chases come down steeply from high over it.)
+                let least = if k == Kind::AntiMissile { CRUISE_TURN } else { 16000 };
+                let turn = shot.map(|s| (s.turn_rate * 65536.0 / 360.0).round() as i64).filter(|&t| t > 0).unwrap_or(least);
+                put("turnrate", turn.max(least).to_string());
+            }
+            let climb = match (launcher, strategic) {
+                (false, _) => 0,
+                (true, true) => LAUNCH_CLIMB,
+                (true, false) => TACTICAL_CLIMB,
+            };
+            // (A missile defence's shot lives long enough to climb to what it chases, as TA's
+            // anti-nukes' a minute: ten seconds at least.)
+            let least = if k == Kind::AntiMissile { 10 } else { 0 };
+            put("flighttime", (flight_time(range, speed, start, acceleration) + climb).max(least).to_string());
+            if (stock || w.manual_fire) && k != Kind::AntiMissile {
                 put("commandfire", "1".into());
+            }
+            if strategic || stock || k == Kind::AntiMissile {
                 put("noautorange", "1".into());
             }
+            match targetable_class(w) {
+                0 => {}
+                class => put("targetable", class.to_string()),
+            }
             if k == Kind::AntiMissile {
-                put("interceptor", "1".into());
+                put("interceptor", interceptor_class(w).to_string());
                 put("coverage", px(w.max_radius.max(1.0)).to_string());
-                put("noautorange", "1".into());
-            } else if w.manual_fire {
-                put("commandfire", "1".into());
             }
         }
         Kind::Torpedo => {
@@ -306,6 +625,29 @@ pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
         Kind::AntiAir => {
             put("toairweapon", "1".into());
             put("lineofsight", "1".into());
+            if homing_aa {
+                // Homing on its aircraft as TA's missile towers' do (the engine leads nothing: an
+                // unguided shot at a plane's place now misses it), from its projectile's own
+                // speeds and turn where it gives them; flak bursts where it meets it.
+                let start = shot.map(|s| (s.initial_speed * UNIT_SCALE).round() as i64).filter(|&v| v > 0).unwrap_or(speed).min(speed);
+                let acceleration = shot.map(|s| (s.acceleration * UNIT_SCALE).round() as i64).filter(|&a| a > 0).unwrap_or(speed);
+                let turn = shot.map(|s| (s.turn_rate * 65536.0 / 360.0).round() as i64).unwrap_or(0).max(AA_TURN);
+                put("selfprop", "1".into());
+                put("tracks", "1".into());
+                put("guidance", "1".into());
+                put("startvelocity", start.to_string());
+                put("weaponacceleration", acceleration.to_string());
+                put("turnrate", turn.to_string());
+                put("flighttime", flight_time(range, speed, start, acceleration).to_string());
+                if model == "missile" {
+                    put("smoketrail", "1".into());
+                }
+            } else {
+                put("beamweapon", "1".into());
+                put("duration", format!("{:.2}", w.beam_lifetime.clamp(0.05, 1.0)));
+                put("color", "180".into());
+                put("color2", "181".into());
+            }
         }
         Kind::Overcharge => {
             put("commandfire", "1".into());
@@ -321,13 +663,24 @@ pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
     put("waterexplosionart", "h2oboom1".into());
     let damage = match &w.nuke {
         Some(n) => n.inner_damage,
-        None => w.damage,
+        None if stock => cycle(w).per_shot,
+        None => fire.damage,
     };
-    format!("[{}]\n\t{{\n{s}\t[DAMAGE]\n\t\t{{\n\t\tdefault={};\n\t\t}}\n\t}}\n", weapon_name(u, w), damage.round().max(1.0) as i64)
+    format!("[{}]\n\t{{\n{s}\t[DAMAGE]\n\t\t{{\n\t\tdefault={};\n\t\t}}\n\t}}\n", weapon_name(u, w), number(damage.max(1.0)))
 }
 
 /// A unit's death: its death weapon's section (a blast where it falls), or none.
 pub fn death_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> Option<String> {
+    blast_section(u, w, "DEATH")
+}
+
+/// A kamikaze unit's blast (the Fire Beetle's `Suicide`): what it blows itself up as.
+pub fn kamikaze_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> Option<String> {
+    blast_section(u, w, "BLAST")
+}
+
+/// A blast where the unit is, as a weapon section `<id>_<what>`.
+fn blast_section(u: &UnitBlueprint, w: &WeaponBlueprint, what: &str) -> Option<String> {
     let (damage, radius) = match &w.nuke {
         Some(n) => (n.inner_damage, n.outer_radius),
         None => (w.damage, w.damage_radius),
@@ -336,26 +689,36 @@ pub fn death_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> Option<String> {
         return None;
     }
     let blast = (radius * 2.0 * UNIT_SCALE).max(16.0);
+    let name = tdf_text(if w.display_name.is_empty() { what } else { &w.display_name });
     Some(format!(
-        "[{}_DEATH]\n\t{{\n\tname={};\n\trendertype=4;\n\tballistic=1;\n\tturret=1;\n\trange=480;\n\treloadtime=3.45;\n\tweaponvelocity=250;\n\tareaofeffect={};\n\tedgeeffectiveness=0.5;\n\tsoundhit=xplolrg3;\n\texplosiongaf=fx;\n\texplosionart={};\n\t[DAMAGE]\n\t\t{{\n\t\tdefault={};\n\t\t}}\n\t}}\n",
+        "[{}_{what}]\n\t{{\n\tname={name};\n\trendertype=4;\n\tballistic=1;\n\tturret=1;\n\trange=480;\n\treloadtime=3.45;\n\tweaponvelocity=250;\n\tareaofeffect={};\n\tedgeeffectiveness=0.5;\n\tsoundhit=xplolrg3;\n\texplosiongaf=fx;\n\texplosionart={};\n\t[DAMAGE]\n\t\t{{\n\t\tdefault={};\n\t\t}}\n\t}}\n",
         u.id.to_ascii_uppercase(),
-        if w.display_name.is_empty() { "Death".to_string() } else { w.display_name.replace(';', ",") },
         blast.round() as i64,
         explosion(blast),
         damage.round() as i64
     ))
 }
 
-/// How it builds: none, standing in place (a factory) or moving (an engineer, a commander).
+/// How it builds: none, standing in place (a factory), moving (an engineer, a commander), or
+/// standing and lending its build power to what is built round it (an engineering station, TA's
+/// assist turret).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Builds {
     No,
     Factory,
     Mobile,
+    Assist,
 }
 
 pub fn builds(u: &UnitBlueprint) -> Builds {
-    if u.build_rate <= 0.0 || build_lists(u).is_empty() {
+    if u.build_rate <= 0.0 {
+        return Builds::No;
+    }
+    // (An engineering station builds nothing of its own: its drones lend their power round it.)
+    if u.motion == Motion::None && u.is("ENGINEERSTATION") {
+        return Builds::Assist;
+    }
+    if build_lists(u).is_empty() {
         return Builds::No;
     }
     // (A building that is no factory builds only its own upgrade in Forged Alliance, on itself:
@@ -381,6 +744,17 @@ pub fn build_lists(u: &UnitBlueprint) -> Vec<&str> {
         .collect()
 }
 
+/// Whether it moves on the water or under it (a ship, a submarine).
+fn naval(u: &UnitBlueprint) -> bool {
+    matches!(u.motion, Motion::Water | Motion::Sub)
+}
+
+/// The whole square root of `n`, rounded to the nearest.
+fn root(n: i64) -> i64 {
+    let s = (n.max(0) as u64).isqrt() as i64;
+    if (s + 1) * (s + 1) - n < n - s * s { s + 1 } else { s }
+}
+
 /// TA's footprint cells (16 pixels) of the unit's footprint (or its size where it gives none).
 pub fn footprint(u: &UnitBlueprint) -> (i64, i64) {
     let [x, z] = u.footprint.unwrap_or([u.size[0].max(0.5), u.size[2].max(0.5)]);
@@ -389,6 +763,12 @@ pub fn footprint(u: &UnitBlueprint) -> (i64, i64) {
     // metal under it.)
     if u.is("MASSEXTRACTION") {
         return (cells(x).max(3), cells(z).max(3));
+    }
+    // (A ship takes a square of its hull's footprint's area, as TA's ships stand on squares less
+    // than their length: a frigate 2 by 6 ogrids 7 by 7 cells, a battleship 18.)
+    if naval(u) {
+        let side = root(cells(x) * cells(z)).max(1);
+        return (side, side);
     }
     // (A unit that moves takes a square, as TA's do: it turns where it stands.)
     if u.motion != Motion::None {
@@ -412,6 +792,56 @@ pub fn yard_map(fx: i64, fz: i64) -> String {
     s
 }
 
+/// What its upkeep (`MaintenanceConsumptionPerSecondEnergy`) pays for that TA Reborn plays: an
+/// extractor's or a fabricator's work, or an intelligence unit's radar, sonar or omni (radar and
+/// sonar stations, sonar platforms). Shields, stealth fields, a unit's own stealth and cloak (TA's
+/// stealth costs nothing), jamming and remote viewing are not in TA Reborn yet: their upkeep is
+/// left out with them (the Fatboy's shield, the Monkeylord's stealth, a frigate's jamming: a
+/// counter-intelligence unit's upkeep is for those, its radar free).
+fn upkeep_pays(u: &UnitBlueprint) -> bool {
+    let watches = (u.intel.radar > 0.0 && !u.birth.intel_off("Radar")) || (u.intel.sonar > 0.0 && !u.birth.intel_off("Sonar"));
+    u.is("MASSEXTRACTION") || u.production_mass > 0.0 || watches && u.is("INTELLIGENCE") && (u.is("RADAR") || u.is("SONAR") || u.is("OMNI")) && !u.is("COUNTERINTELLIGENCE")
+}
+
+/// An aircraft's movement (`Air`): its top speed (px a tick), its acceleration and braking (px a
+/// tick squared) and its turn (TA's angle units a tick), as Forged Alliance flies it, at TA's scale.
+///
+/// - **Speed:** `MaxAirspeed`.
+/// - **Acceleration:** to full speed in a second and a half times its `KMoveDamping` over its
+///   `KMove` (Forged Alliance's thrust against its damping): an interceptor in 1.5 s (0.36 px a
+///   tick², TA's Freedom Fighter's 0.35), a bomber in 3 (TA's Thunder's 3.8), a gunship in 3.75,
+///   a transport in 3.2. Braking ten times that, as TA's aircraft brake many times faster than
+///   they gather speed.
+/// - **Turn:** a winged one's `TurnSpeed` (radians a second: an interceptor's 1.5, 86° a second,
+///   TA's Freedom Fighter's 84°; a bomber's 0.7, 40°); a hovering one (gunships, transports, the
+///   CZAR) its `Physics.TurnRate` where it gives one, else its `KTurn` as twice that.
+pub fn flight(u: &UnitBlueprint) -> (f64, f64, f64, f64) {
+    let air = |key: &str| u.table.path(&["Air"]).and_then(|a| a.get_ci(key));
+    let num = |key: &str| air(key).and_then(crate::lua::Value::num);
+    let speed = u.max_airspeed.unwrap_or(u.max_speed).max(0.1) * UNIT_SCALE / TICKS;
+    let thrust = num("KMove").filter(|&k| k > 0.0).unwrap_or(1.0);
+    let damping = num("KMoveDamping").filter(|&k| k > 0.0).unwrap_or(1.0);
+    let acceleration = speed * thrust / (damping * 1.5 * TICKS);
+    let brake = acceleration * 10.0;
+    let degrees = |radians: f64| radians * 180.0 / std::f64::consts::PI;
+    let turn = if winged(u) && let Some(t) = num("TurnSpeed").filter(|&t| t > 0.0) {
+        degrees(t)
+    } else if u.turn_rate > 0.0 {
+        u.turn_rate
+    } else if let Some(k) = num("KTurn").filter(|&k| k > 0.0) {
+        degrees(k) * 2.0
+    } else {
+        60.0
+    };
+    (speed, acceleration, brake, turn * 65536.0 / 360.0 / TICKS)
+}
+
+/// Whether Forged Alliance flies it with wings (`Air.Winged`: its fighters, bombers and scouts),
+/// making passes, rather than hovering (gunships, transports, the CZAR).
+fn winged(u: &UnitBlueprint) -> bool {
+    u.table.path(&["Air"]).and_then(|a| a.get_ci("Winged")).and_then(crate::lua::Value::bool).unwrap_or(false)
+}
+
 /// The unit's file.
 pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32)>) -> String {
     let id = u.id.to_ascii_uppercase();
@@ -429,8 +859,8 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
     put("Objectname", u.id.to_ascii_lowercase());
     // (The commanders have no name of their own: their description.)
     let named = if !u.name.is_empty() { &u.name } else if !u.description.is_empty() { &u.description } else { &id };
-    put("Name", named.replace(';', ","));
-    put("Description", u.description.replace(';', ","));
+    put("Name", tdf_text(named));
+    put("Description", tdf_text(&u.description));
     put("FootprintX", fx.to_string());
     put("FootprintZ", fz.to_string());
     put("MaxDamage", (u.health.round().max(1.0) as i64).to_string());
@@ -438,24 +868,27 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
     put("BuildCostEnergy", (u.cost_energy.round() as i64).to_string());
     put("BuildTime", ((u.build_time * WORK).round().max(1.0) as i64).to_string());
     put("SightDistance", ((u.intel.vision.max(u.intel.water_vision) * UNIT_SCALE).round() as i64).to_string());
-    if u.intel.radar > 0.0 {
+    // Intel, as it is once made (the Cybran commander's sonar and stealth come with enhancements).
+    if u.intel.radar > 0.0 && !u.birth.intel_off("Radar") {
         put("RadarDistance", ((u.intel.radar * UNIT_SCALE).round() as i64).to_string());
     }
-    if u.intel.sonar > 0.0 {
+    if u.intel.sonar > 0.0 && !u.birth.intel_off("Sonar") {
         put("SonarDistance", ((u.intel.sonar * UNIT_SCALE).round() as i64).to_string());
     }
-    if u.intel.jam > 0.0 {
-        put("RadarDistanceJam", ((u.intel.jam * UNIT_SCALE).round() as i64).to_string());
-    }
-    if u.intel.radar_stealth {
+    if u.intel.radar_stealth && !u.birth.intel_off("RadarStealth") {
         put("Stealth", "1".into());
     }
+    // (Self-repair: TA Reborn mends 100 hit points every `HealTime` seconds.)
+    if u.regen > 0.0 {
+        put("HealTime", format!("{:.2}", 100.0 / u.regen));
+    }
     // Economy.
+    let upkeep = if upkeep_pays(u) { u.upkeep_energy } else { 0.0 };
     if u.production_energy > 0.0 {
         put("EnergyMake", format!("{}", u.production_energy));
     }
-    if u.upkeep_energy > 0.0 {
-        put("EnergyUse", format!("{}", u.upkeep_energy));
+    if upkeep > 0.0 {
+        put("EnergyUse", format!("{upkeep}"));
     }
     if u.storage_energy > 0.0 {
         put("EnergyStorage", (u.storage_energy.round() as i64).to_string());
@@ -472,12 +905,11 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
             _ => 0.001,
         };
         put("ExtractsMetal", format!("{rate}"));
-        put("MetalStorage", "50".into());
         // (As TA's: working once built, its upkeep paid while it works.)
         put("ActivateWhenBuilt", "1".into());
         put("onoffable", "1".into());
     } else if u.production_mass > 0.0 {
-        if u.upkeep_energy > 0.0 {
+        if upkeep > 0.0 {
             // A fabricator: energy made mass while it works.
             put("MakesMetal", format!("{}", u.production_mass));
             put("OnOffable", "1".into());
@@ -485,11 +917,16 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
         } else {
             put("MetalMake", format!("{}", u.production_mass));
         }
-    } else if u.upkeep_energy > 0.0 {
-        // Kept working at an energy cost (radar, sonar, jammers, stealth, shields): as TA's, on
-        // once built and switchable, the upkeep paid while on.
+    } else if upkeep > 0.0 {
+        // Kept working at an energy cost (radar, sonar): as TA's, on once built and switchable,
+        // the upkeep paid while on.
         put("ActivateWhenBuilt", "1".into());
         put("OnOffable", "1".into());
+    }
+    // A hydrocarbon plant stands on a vent (the maps' hydrocarbon points), as TA's geothermal
+    // plants do: every cell of its yard one that may.
+    if u.is("HYDROCARBON") && u.motion == Motion::None {
+        put("YardMap", "G".repeat((fx * fz).max(1) as usize));
     }
     // Building.
     if builds != Builds::No {
@@ -502,6 +939,16 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
             put("YardMap", yard_map(fx, fz));
         }
     }
+    // An air staging platform repairs the aircraft landed on it, as TA's repair pads do (their
+    // 200 of work a second; no builder: the Cybran cruiser that is one stays a warship).
+    if u.is("AIRSTAGINGPLATFORM") && builds == Builds::No {
+        put("WorkerTime", "200".into());
+        put("IsAirBase", "1".into());
+        if u.motion == Motion::None {
+            put("ActivateWhenBuilt", "1".into());
+            put("onoffable", "1".into());
+        }
+    }
     let commander = u.is("COMMAND");
     if commander {
         put("Commander", "1".into());
@@ -512,24 +959,59 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
     for (slot, w) in weapons.slots.iter().enumerate() {
         put(&format!("Weapon{}", slot + 1), weapon_name(u, w));
     }
+    // A weapon that shoots no aircraft in Forged Alliance takes them last in TA Reborn (its bad
+    // targets, TA's rule: an anti-air weapon, a bomb, a shell or a torpedo cannot hit them at all).
+    let mut chases_air = false;
+    for (slot, w) in weapons.slots.iter().enumerate() {
+        let k = kind(w);
+        let hits_air_in_ta = matches!(k, Kind::Laser | Kind::Missile | Kind::Overcharge) || k == Kind::Shell && w.ballistic_arc.eq_ignore_ascii_case("RULEUBA_None");
+        if shoots_air(w) || k == Kind::AntiAir {
+            chases_air = true;
+        } else if hits_air_in_ta {
+            let key = match slot {
+                0 => "wpri_badTargetCategory".to_string(),
+                1 => "wsec_badTargetCategory".to_string(),
+                2 => "wspe_badTargetCategory".to_string(),
+                n => format!("BadTargetCategory{}", n + 1),
+            };
+            put(&key, "VTOL".into());
+        }
+    }
+    if !weapons.slots.is_empty() && !chases_air {
+        put("NoChaseCategory", "VTOL".into());
+    }
     if weapons.dgun.is_some() {
         put("canDgun", "1".into());
     }
-    if weapons.slots.iter().any(|w| kind(w) == Kind::Nuke) {
+    if weapons.slots.iter().any(|w| stockpiled(w)) {
         put("onoffable", "0".into());
     }
-    match weapons.death.and_then(|w| death_section(u, w).map(|_| w)) {
-        Some(_) => {
-            put("ExplodeAs", format!("{id}_DEATH"));
-            put("SelfDestructAs", format!("{id}_DEATH"));
+    let blast = |what: &str| format!("{id}_{what}");
+    match (weapons.kamikaze.and_then(|w| kamikaze_section(u, w)), weapons.death.and_then(|w| death_section(u, w))) {
+        (Some(_), death) => {
+            // A crawling bomb, as TA's are made: it blows itself up as its blast within half its
+            // blast's reach of an enemy, so the blast takes it in (TA's crawling bombs at 40 and
+            // 80 px, their blasts 278 across; at the blast's full reach the enemy stood just
+            // outside it).
+            let reach = weapons.kamikaze.map_or(1.0, |w| w.damage_radius.max(1.0));
+            put("Kamikaze", "1".into());
+            put("KamikazeDistance", (((reach * UNIT_SCALE / 2.0).round() as i64).max(16)).to_string());
+            put("ExplodeAs", if death.is_some() { blast("DEATH") } else { blast("BLAST") });
+            put("SelfDestructAs", blast("BLAST"));
         }
-        None => {
+        (None, Some(_)) => {
+            put("ExplodeAs", blast("DEATH"));
+            put("SelfDestructAs", blast("DEATH"));
+        }
+        (None, None) => {
             let big = fx * fz >= 16;
             put("ExplodeAs", if big { "BIG_UNITEX" } else { "SMALL_UNITEX" }.into());
             put("SelfDestructAs", if big { "BIG_UNIT" } else { "SMALL_UNIT" }.into());
         }
     }
-    put("Corpse", format!("{}_dead", u.id.to_ascii_lowercase()));
+    if super::faction::leaves_wreck(u) {
+        put("Corpse", format!("{}_dead", u.id.to_ascii_lowercase()));
+    }
     // Kinds, for targeting, the computer players and the menus.
     let level = match u.tech {
         Some(Tech::T2) => "LEVEL2",
@@ -547,9 +1029,11 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
     if commander {
         cats.push("COMMANDER".into());
     }
-    if u.motion == Motion::None {
+    if weapons.kamikaze.is_some() {
+        cats.push("KAMIKAZE".into());
+    }
+    if u.motion == Motion::None && weapons.slots.is_empty() {
         cats.push("NOWEAPON".into());
-        cats.retain(|c| c != "NOWEAPON" || weapons.slots.is_empty());
     }
     put("Category", cats.join(" "));
     let ted = match (u.motion, builds) {
@@ -570,18 +1054,27 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
     put("SoundCategory", sound_category(u, ted).into());
     put("ThreeD", "1".into());
     put("ShootMe", "1".into());
-    if !weapons.slots.is_empty() {
+    if !weapons.slots.is_empty() || weapons.kamikaze.is_some() {
         put("canattack", "1".into());
         put("firestandorders", "1".into());
         put("StandingFireOrder", "2".into());
     }
     // Movement.
     if u.motion != Motion::None {
-        let speed = if air { u.max_airspeed.unwrap_or(u.max_speed) } else { u.max_speed };
-        put("MaxVelocity", format!("{:.3}", speed * UNIT_SCALE / 30.0));
-        put("Acceleration", format!("{:.4}", (u.acceleration * UNIT_SCALE / 900.0).max(0.01)));
-        put("BrakeRate", format!("{:.4}", (u.brake.max(u.acceleration) * UNIT_SCALE / 900.0).max(0.01)));
-        put("TurnRate", ((u.turn_rate.max(30.0) * 65536.0 / 360.0 / 30.0).round() as i64).to_string());
+        if air {
+            let (speed, acceleration, brake, turn) = flight(u);
+            put("MaxVelocity", format!("{speed:.3}"));
+            put("Acceleration", format!("{acceleration:.4}"));
+            put("BrakeRate", format!("{brake:.4}"));
+            put("TurnRate", (turn.round().max(1.0) as i64).to_string());
+        } else {
+            put("MaxVelocity", format!("{:.3}", u.max_speed * UNIT_SCALE / TICKS));
+            put("Acceleration", format!("{:.4}", (u.acceleration * UNIT_SCALE / 900.0).max(0.01)));
+            put("BrakeRate", format!("{:.4}", (u.brake.max(u.acceleration) * UNIT_SCALE / 900.0).max(0.01)));
+            // (Forged Alliance's own turn, however slow: the Atlantis's 12° a second.)
+            let degrees = if u.turn_rate > 0.0 { u.turn_rate } else { 90.0 };
+            put("TurnRate", ((degrees * 65536.0 / 360.0 / TICKS).round().max(1.0) as i64).to_string());
+        }
         put("BMcode", "1".into());
         for k in ["canmove", "canpatrol", "canguard", "canstop", "mobilestandorders"] {
             put(k, "1".into());
@@ -606,7 +1099,12 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
                 put("WaterLine", "20".into());
                 put("Upright", "1".into());
             }
-            Motion::Amphibious => put("MaxWaterDepth", "255".into()),
+            // (No class of TA's lets a unit down past 100: an amphibian goes by its own limits,
+            // to the deepest sea bed.)
+            Motion::Amphibious => {
+                put("MaxWaterDepth", "255".into());
+                put("MaxSlope", if walks { "32" } else { "15" }.into());
+            }
             Motion::Air => {
                 put("canfly", "1".into());
                 put("cruisealt", ((u.elevation.unwrap_or(18.0) * 8.0).clamp(60.0, 250.0).round() as i64).to_string());
@@ -618,7 +1116,9 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
                     put("TransportMaxUnits", units.to_string());
                     put("TransportSize", size.to_string());
                 }
-                if weapons.slots.iter().any(|w| w.turreted) || u.is("GROUNDATTACK") {
+                // Gunships hover over what they attack; Forged Alliance's other hovering craft
+                // with guns (the CZAR) as well. Its fighters and bombers make passes.
+                if u.is("GROUNDATTACK") || !winged(u) && !weapons.slots.is_empty() {
                     put("HoverAttack", "1".into());
                 }
             }
@@ -667,10 +1167,11 @@ fn sound_category(u: &UnitBlueprint, ted: &str) -> &'static str {
     }
 }
 
-/// TA's movement class for the unit, by how it moves and its footprint.
+/// TA's movement class for the unit, by how it moves and its footprint (none for an amphibian:
+/// it goes by its own depth and slope, deeper than TA's amphibious classes' 100).
 pub fn movement_class(u: &UnitBlueprint, cells: i64) -> Option<&'static str> {
     Some(match u.motion {
-        Motion::None | Motion::Air => return None,
+        Motion::None | Motion::Air | Motion::Amphibious => return None,
         Motion::Water => {
             if cells <= 4 {
                 "BOATS4"
@@ -686,13 +1187,6 @@ pub fn movement_class(u: &UnitBlueprint, cells: i64) -> Option<&'static str> {
                 "TANKHOVER4"
             }
         }
-        Motion::Amphibious => {
-            if cells <= 2 {
-                "TANKDS2"
-            } else {
-                "TANKDH3"
-            }
-        }
         Motion::Land => match (u.display.walk.is_some(), cells) {
             (true, ..=2) => "KBOTSS2",
             (false, ..=2) => "TANKSH2",
@@ -704,6 +1198,7 @@ pub fn movement_class(u: &UnitBlueprint, cells: i64) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::projectile::ProjectileBlueprint;
     use crate::unit::{self, Rack};
 
     fn striker() -> UnitBlueprint {
@@ -725,6 +1220,11 @@ mod tests {
         .unwrap()
     }
 
+    /// A value of `key` in a TDF section's text.
+    fn value(section: &str, key: &str) -> Vec<String> {
+        section.lines().filter_map(|l| l.trim().strip_prefix(&format!("{key}="))).map(|v| v.trim_end_matches(';').to_string()).collect()
+    }
+
     /// The Striker's file: FA's health, costs, build time (ten times), speed at TA's scale, its
     /// gun's section; its weapon a shell, ballistic, its range 32 pixels an ogrid.
     #[test]
@@ -737,8 +1237,11 @@ mod tests {
             assert!(file.contains(line), "{line} in {file}");
         }
         assert!(file.contains("MaxVelocity=3.627;"), "{file}");
+        // (A ballistic gun that shoots no aircraft cannot hit them in TA Reborn: no bad target,
+        // but it chases none.)
+        assert!(!file.contains("badTargetCategory") && file.contains("NoChaseCategory=VTOL;"), "{file}");
         let gun = weapon_section(&u, w.slots[0]);
-        for line in ["[UEL0201_MAINGUN]", "range=576;", "reloadtime=1.000;", "weaponvelocity=800;", "rendertype=4;", "ballistic=1;", "default=24;"] {
+        for line in ["[UEL0201_MAINGUN]", "range=576;", "reloadtime=1.0000;", "weaponvelocity=800;", "rendertype=4;", "ballistic=1;", "default=24;"] {
             assert!(gun.contains(line), "{line} in {gun}");
         }
         // Read back as TA Reborn reads it.
@@ -747,7 +1250,8 @@ mod tests {
     }
 
     /// A commander: its main gun first, its Overcharge second as TA's D-gun; an enhancement's
-    /// missile and its death weapon not in its slots.
+    /// missile, a missile its script switches off as it is made and its death weapon not in its
+    /// slots.
     #[test]
     fn a_commanders_overcharge_is_its_dgun() {
         let gun = |label: &str, category: &str, damage: f64| WeaponBlueprint { label: label.into(), category: category.into(), damage, rate_of_fire: 1.0, max_radius: 20.0, ..Default::default() };
@@ -756,7 +1260,10 @@ mod tests {
         tac.table = crate::lua::parse("t = { EnabledByEnhancement = 'TacticalMissile' }").unwrap()[0].1.table().cloned().unwrap();
         let mut oc = gun("OverCharge", "Direct Fire", 12000.0);
         oc.damage_type = "Overcharge".into();
-        u.weapons = vec![gun("RightZephyr", "Direct Fire", 100.0), oc, tac, gun("DeathWeapon", "Death", 0.0)];
+        u.weapons = vec![gun("RightZephyr", "Direct Fire", 100.0), oc, tac, gun("Missile", "Missile", 6000.0), gun("DeathWeapon", "Death", 0.0)];
+        // (Its script switches the Overcharge and the second missile off as it is made: the
+        // first is the D-gun, the second left out.)
+        u.birth.weapons_off = vec!["OverCharge".into(), "Missile".into()];
         let w = weapons(&u);
         assert_eq!(w.slots.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(), ["RightZephyr", "OverCharge"]);
         assert_eq!(w.dgun, Some(1));
@@ -783,6 +1290,30 @@ mod tests {
         assert_eq!(transport(&mesh(&["Turret", "Muzzle"])), None);
     }
 
+    fn projectile(categories: &[&str], mass: f64, energy: f64, build_time: f64) -> ProjectileBlueprint {
+        ProjectileBlueprint { categories: categories.iter().map(|c| c.to_string()).collect(), cost_mass: mass, cost_energy: energy, build_time, ..Default::default() }
+    }
+
+    fn nuke_weapon() -> WeaponBlueprint {
+        WeaponBlueprint {
+            label: "NukeMissiles".into(),
+            category: "Missile".into(),
+            damage: 1.0,
+            rate_of_fire: 1.0,
+            max_radius: 20000.0,
+            muzzle_velocity: 0.0,
+            counted: true,
+            manual_fire: true,
+            nuke: Some(crate::unit::Nuke { inner_damage: 70000.0, inner_radius: 30.0, outer_damage: 500.0, outer_radius: 40.0 }),
+            shot: Some(projectile(&["UEF", "PROJECTILE", "STRATEGIC", "MISSILE"], 12000.0, 1350000.0, 324000.0)),
+            ..Default::default()
+        }
+    }
+
+    fn silo() -> UnitBlueprint {
+        UnitBlueprint { id: "UEB2305".into(), faction: Faction::Uef, build_rate: 1080.0, categories: vec!["STRUCTURE".into()], ..Default::default() }
+    }
+
     /// A missile lives long enough to reach as far as its range, a nuke across the map.
     #[test]
     fn missiles_fly_as_far_as_their_range() {
@@ -793,26 +1324,162 @@ mod tests {
         let mut missile = WeaponBlueprint { label: "Tac".into(), category: "Missile".into(), damage: 100.0, rate_of_fire: 0.1, max_radius: 120.0, muzzle_velocity: 10.0, ..Default::default() };
         missile.projectile = Some("/projectiles/TIFMissileCruise01/TIFMissileCruise01_proj.bp".into());
         let section = weapon_section(&striker(), &missile);
-        let life: f64 = section.lines().find_map(|l| l.trim().strip_prefix("flighttime=")).and_then(|v| v.trim_end_matches(';').parse().ok()).expect(&section);
+        let life: f64 = value(&section, "flighttime")[0].parse().unwrap();
         assert!(life * 320.0 >= 120.0 * 32.0, "{section}");
         // A strategic missile reaches across the map at TA's nukes' speed at least, its range given
         // once.
-        let nuke = WeaponBlueprint {
-            label: "NukeMissiles".into(),
+        let section = weapon_section(&silo(), &nuke_weapon());
+        assert_eq!(value(&section, "range"), [NUKE_RANGE.to_string()], "{section}");
+        assert_eq!(value(&section, "weaponvelocity"), [NUKE_SPEED.to_string()], "{section}");
+        let life: i64 = value(&section, "flighttime")[0].parse().unwrap();
+        assert!(life * NUKE_SPEED >= NUKE_RANGE && life < 200, "{life} s: {section}");
+    }
+
+    /// A nuke is a stored missile built at its projectile's price over its build time at its
+    /// silo's build rate (12,000 mass and 1,350,000 energy, 324,000 at 1,080: 300 s), launched
+    /// upright to cruise high as TA's nukes do (a climb of five seconds, half a turn a second) at
+    /// the place it is sent, a strategic missile for anti-nukes.
+    #[test]
+    fn a_nuke_is_built_at_its_price_and_flies_as_tas() {
+        let section = weapon_section(&silo(), &nuke_weapon());
+        for (key, want) in [("stockpile", "1"), ("metalpershot", "12000"), ("energypershot", "1350000"), ("reloadtime", "300.000"), ("targetable", "1"), ("commandfire", "1"), ("vlaunch", "1"), ("cruise", "1"), ("weapontimer", "5"), ("turnrate", "32768"), ("default", "70000")] {
+            assert_eq!(value(&section, key), [want], "{key} in {section}");
+        }
+        assert!(value(&section, "tracks").is_empty(), "a nuke strikes a place: {section}");
+        assert!(value(&section, "interceptor").is_empty(), "{section}");
+        assert!(unit_file(&silo(), &Weapons { slots: vec![&nuke_weapon()], death: None, dgun: None, kamikaze: None }, None).contains("onoffable=0;"));
+    }
+
+    /// A tactical missile launcher's missiles are stored too (180 mass and 3,600 energy, 2,400 at
+    /// 80: 30 s), ordered to fire, tactical missiles for missile defences.
+    #[test]
+    fn a_tactical_launcher_stores_its_missiles() {
+        let launcher = UnitBlueprint { id: "UEB2108".into(), faction: Faction::Uef, build_rate: 80.0, categories: vec!["STRUCTURE".into()], ..Default::default() };
+        let w = WeaponBlueprint {
+            label: "CruiseMissile".into(),
             category: "Missile".into(),
-            damage: 1.0,
-            rate_of_fire: 0.1,
-            max_radius: 20000.0,
-            muzzle_velocity: 5.0,
-            nuke: Some(crate::unit::Nuke { inner_damage: 70000.0, inner_radius: 30.0, outer_damage: 500.0, outer_radius: 40.0 }),
+            damage: 6000.0,
+            rate_of_fire: 3.0,
+            max_radius: 256.0,
+            min_radius: 15.0,
+            counted: true,
+            manual_fire: true,
+            shot: Some(projectile(&["UEF", "PROJECTILE", "TACTICAL", "MISSILE"], 180.0, 3600.0, 2400.0)),
             ..Default::default()
         };
-        let section = weapon_section(&striker(), &nuke);
-        let value = |key: &str| section.lines().filter_map(|l| l.trim().strip_prefix(key)).map(|v| v.trim_end_matches(';').to_string()).collect::<Vec<_>>();
-        assert_eq!(value("range="), [NUKE_RANGE.to_string()], "{section}");
-        assert_eq!(value("weaponvelocity="), [NUKE_SPEED.to_string()], "{section}");
-        let life: i64 = value("flighttime=")[0].parse().unwrap();
-        assert!(life * NUKE_SPEED >= NUKE_RANGE && life < 200, "{life} s: {section}");
+        let section = weapon_section(&launcher, &w);
+        for (key, want) in [("stockpile", "1"), ("metalpershot", "180"), ("energypershot", "3600"), ("reloadtime", "30.000"), ("targetable", "2"), ("commandfire", "1"), ("cruise", "1"), ("weapontimer", "3"), ("default", "6000")] {
+            assert_eq!(value(&section, key), [want], "{key} in {section}");
+        }
+        assert!(value(&section, "minbarrelangle").is_empty(), "its least range is not TA's");
+    }
+
+    /// Missile defences take what Forged Alliance's do: an anti-nuke the strategic missiles (a
+    /// stored missile of its own, at its price), a tactical missile defence and a ship's point
+    /// defence the tactical ones, each at its own rate.
+    #[test]
+    fn missile_defences_take_their_own_class() {
+        let station = UnitBlueprint { id: "UEB4302".into(), faction: Faction::Uef, build_rate: 1080.0, ..Default::default() };
+        let anti_nuke = WeaponBlueprint {
+            label: "AntiNuke".into(),
+            category: "Defense".into(),
+            damage: 30.0,
+            rate_of_fire: 0.6,
+            max_radius: 90.0,
+            counted: true,
+            only_allow: "STRATEGIC MISSILE".into(),
+            shot: Some(projectile(&["UEF", "PROJECTILE", "ANTIMISSILE"], 3600.0, 360000.0, 259200.0)),
+            ..Default::default()
+        };
+        let section = weapon_section(&station, &anti_nuke);
+        for (key, want) in [("interceptor", "1"), ("stockpile", "1"), ("metalpershot", "3600"), ("energypershot", "360000"), ("reloadtime", "240.000"), ("coverage", "2880")] {
+            assert_eq!(value(&section, key), [want], "{key} in {section}");
+        }
+        let tmd = WeaponBlueprint { label: "Turret01".into(), category: "Defense".into(), damage: 1.0, rate_of_fire: 0.5, max_radius: 30.0, only_allow: "TACTICAL MISSILE".into(), ..Default::default() };
+        let section = weapon_section(&station, &tmd);
+        assert_eq!((value(&section, "interceptor"), value(&section, "stockpile"), value(&section, "reloadtime")), (vec!["2".to_string()], vec![], vec!["2.0000".to_string()]), "{section}");
+        // (A beam, as the Cybran zapper: its shot leaves at full speed, quick enough to meet a
+        // missile; the anti-nuke's leaves its tube upright, at its own speed.)
+        for key in ["weaponvelocity", "startvelocity"] {
+            assert_eq!(value(&section, key), [COUNTERMEASURE_SPEED.to_string()], "{key} in {section}");
+        }
+        assert!(value(&section, "vlaunch").is_empty(), "{section}");
+        let flare = WeaponBlueprint { muzzle_velocity: 5.0, ..tmd.clone() };
+        assert_eq!(value(&weapon_section(&station, &flare), "weaponvelocity"), [COUNTERMEASURE_SPEED.to_string()]);
+        let rounds = WeaponBlueprint { muzzle_velocity: 100.0, ..tmd.clone() };
+        assert_eq!(value(&weapon_section(&station, &rounds), "weaponvelocity"), ["3200"], "the Phalanx's own, quicker");
+        assert_eq!(value(&weapon_section(&station, &anti_nuke), "vlaunch"), ["1"]);
+        let phalanx = WeaponBlueprint { only_allow: "TACTICAL,MISSILE".into(), ..tmd };
+        assert_eq!(interceptor_class(&phalanx), TACTICAL);
+        assert_eq!((targetable_class(&nuke_weapon()), interceptor_class(&nuke_weapon())), (STRATEGIC, 0));
+    }
+
+    /// Forged Alliance's firing rules: every muzzle of a rack at once where the muzzles fire
+    /// together, every rack at once where the racks do, a damage over time's pulses, a beam's
+    /// hits, a shell's pieces, the reload and charge after the racks; TA's keys give the same
+    /// damage a second.
+    #[test]
+    fn damage_a_second_follows_forged_alliances_firing_rules() {
+        let rack = |muzzles: usize| Rack { rack: "R".into(), muzzles: (0..muzzles).map(|m| format!("M{m}")).collect() };
+        let base = WeaponBlueprint { label: "Gun".into(), category: "Direct Fire".into(), damage: 10.0, rate_of_fire: 1.0, max_radius: 20.0, ..Default::default() };
+        // Two muzzles fired at once (no delay), once a second.
+        let both = WeaponBlueprint { racks: vec![rack(2)], salvo_size: 1, salvo_delay: 0.0, ..base.clone() };
+        assert!((fa_dps(&both) - 20.0).abs() < 1e-9);
+        // Three racks together, one muzzle each: three shots each time.
+        let together = WeaponBlueprint { racks: vec![rack(1), rack(1), rack(1)], racks_together: true, ..base.clone() };
+        assert!((fa_dps(&together) - 30.0).abs() < 1e-9);
+        // The same three in turn: one a second.
+        let in_turn = WeaponBlueprint { racks_together: false, ..together.clone() };
+        assert!((fa_dps(&in_turn) - 10.0).abs() < 1e-9);
+        // Five pulses of damage over time.
+        let dot = WeaponBlueprint { dot_time: 2.0, dot_pulses: 5, racks: vec![rack(1)], ..base.clone() };
+        assert!((fa_dps(&dot) - 50.0).abs() < 1e-9);
+        // A beam living a second, hitting every 0.1 s: ten hits a shot.
+        let mut pulse = WeaponBlueprint { beam_lifetime: 1.0, beam_collision_delay: 0.0, racks: vec![rack(1)], rate_of_fire: 0.25, ..base.clone() };
+        pulse.table = crate::lua::parse("t = { BeamLifetime = 1 }").unwrap()[0].1.table().cloned().unwrap();
+        assert!((fa_dps(&pulse) - 25.0).abs() < 1e-9);
+        // A beam kept on: every 0.3 s, whatever its rate of fire.
+        let mut kept = WeaponBlueprint { beam_lifetime: 0.0, beam_collision_delay: 0.2, racks: vec![rack(1)], rate_of_fire: 0.2, ..base.clone() };
+        kept.table = crate::lua::parse("t = { BeamLifetime = 0 }").unwrap()[0].1.table().cloned().unwrap();
+        assert!((fa_dps(&kept) - 10.0 / 0.3).abs() < 1e-9);
+        // A shell splitting into 36 pieces.
+        let salvation = WeaponBlueprint { split: Some(crate::unit::Split { pieces: 36, share: 1.0 }), racks: vec![rack(1)], ..base.clone() };
+        assert!((fa_dps(&salvation) - 360.0).abs() < 1e-9);
+        // Fifteen muzzles a third of a second apart, charged two seconds, reloaded three: a shot
+        // every 0.66 s over 9.95 s.
+        let ravager = WeaponBlueprint { racks: vec![rack(1)], salvo_size: 15, salvo_delay: 0.33, rack_charge: 2.0, rack_reload: 3.0, ..base.clone() };
+        assert!((fa_dps(&ravager) - 150.0 / 9.95).abs() < 1e-9, "{}", fa_dps(&ravager));
+        // TA's keys give the same damage a second, within its reload's whole ticks.
+        for w in [&both, &together, &in_turn, &dot, &pulse, &kept, &salvation, &ravager] {
+            let f = firing(w);
+            let ticks = (f.reload * 30.0).round();
+            let ta = f.damage * f.burst as f64 / (ticks / 30.0);
+            assert!((ta / fa_dps(w) - 1.0).abs() < 1e-6, "{f:?}: {ta} against {}", fa_dps(w));
+            let section = weapon_section(&striker(), w);
+            let written: f64 = value(&section, "default")[0].parse().unwrap();
+            let burst: f64 = value(&section, "burst").first().map_or(1.0, |b| b.parse().unwrap());
+            let reload: f64 = value(&section, "reloadtime")[0].parse().unwrap();
+            let ta = written * burst / ((reload * 30.0).round() / 30.0);
+            assert!((ta / fa_dps(w) - 1.0).abs() < 0.01, "{section}: {ta} against {}", fa_dps(w));
+        }
+        assert_eq!(firing(&together).burst, 3);
+    }
+
+    /// Anti-air shots home on their aircraft (the engine leads nothing): missiles at their
+    /// projectile's speeds and turn, flak bursting over a real area.
+    #[test]
+    fn anti_air_homes_on_aircraft() {
+        let mut sam = WeaponBlueprint { label: "MissileRack01".into(), category: "Anti Air".into(), damage: 200.0, rate_of_fire: 0.28, max_radius: 60.0, muzzle_velocity: 30.0, salvo_size: 6, salvo_delay: 0.2, ..Default::default() };
+        sam.shot = Some(ProjectileBlueprint { categories: vec!["ANTIAIR".into(), "MISSILE".into()], initial_speed: 30.0, max_speed: 50.0, acceleration: 6.0, turn_rate: 180.0, tracks: true, ..Default::default() });
+        let section = weapon_section(&striker(), &sam);
+        for (key, want) in [("tracks", "1"), ("guidance", "1"), ("toairweapon", "1"), ("startvelocity", "960"), ("weaponvelocity", "1600"), ("weaponacceleration", "192"), ("turnrate", "32768"), ("burst", "6"), ("model", "missile")] {
+            assert_eq!(value(&section, key), [want], "{key} in {section}");
+        }
+        let flak = WeaponBlueprint { label: "AAGun".into(), category: "Anti Air".into(), damage: 102.0, damage_radius: 4.0, rate_of_fire: 1.5, max_radius: 44.0, muzzle_velocity: 20.0, ..Default::default() };
+        let section = weapon_section(&striker(), &flak);
+        for (key, want) in [("tracks", "1"), ("toairweapon", "1"), ("areaofeffect", "256"), ("edgeeffectiveness", "0.9"), ("turnrate", "30000")] {
+            assert_eq!(value(&section, key), [want], "{key} in {section}");
+        }
     }
 
     /// The fields TA Reborn reads: builders reclaim (`CanReclamate`), a radar is on once built
@@ -821,10 +1488,10 @@ mod tests {
     #[test]
     fn builders_reclaim_sensors_switch_transports_carry_and_structures_stand_where_they_may() {
         use crate::unit::Layers;
-        let none = Weapons { slots: Vec::new(), death: None, dgun: None };
+        let none = Weapons { slots: Vec::new(), death: None, dgun: None, kamikaze: None };
         let engineer = UnitBlueprint { id: "UEL0105".into(), faction: Faction::Uef, motion: Motion::Land, build_rate: 5.0, buildable: vec!["BUILTBYTIER1ENGINEER UEF".into()], categories: vec!["ENGINEER".into()], ..Default::default() };
         assert!(unit_file(&engineer, &none, None).contains("CanReclamate=1;"));
-        let radar = UnitBlueprint { id: "UEB3101".into(), faction: Faction::Uef, categories: vec!["STRUCTURE".into(), "RADAR".into()], upkeep_energy: 20.0, layers: Layers { land: true, ..Default::default() }, ..Default::default() };
+        let radar = UnitBlueprint { id: "UEB3101".into(), faction: Faction::Uef, categories: vec!["STRUCTURE".into(), "INTELLIGENCE".into(), "RADAR".into()], upkeep_energy: 20.0, intel: crate::unit::Intel { radar: 115.0, ..Default::default() }, layers: Layers { land: true, ..Default::default() }, ..Default::default() };
         let file = unit_file(&radar, &none, None);
         assert!(file.contains("EnergyUse=20;") && file.contains("ActivateWhenBuilt=1;") && file.contains("OnOffable=1;") && file.contains("MaxWaterDepth=0;"), "{file}");
         let transport = UnitBlueprint { id: "UEA0107".into(), faction: Faction::Uef, motion: Motion::Air, categories: vec!["AIR".into(), "TRANSPORTATION".into()], ..Default::default() };
@@ -841,6 +1508,97 @@ mod tests {
         assert!(file.contains("MinWaterDepth=5;") && file.contains("Floater=1;"), "{file}");
     }
 
+    /// Upkeep only for what TA Reborn plays: a shield's (or the Fatboy's) and a stealth unit's is
+    /// left out, an extractor's and a radar's kept; an extractor stores nothing (TA's none).
+    #[test]
+    fn upkeep_is_paid_only_for_what_is_there() {
+        let none = Weapons { slots: Vec::new(), death: None, dgun: None, kamikaze: None };
+        let shield = UnitBlueprint { id: "UEB4202".into(), faction: Faction::Uef, categories: vec!["STRUCTURE".into(), "SHIELD".into()], upkeep_energy: 200.0, ..Default::default() };
+        let file = unit_file(&shield, &none, None);
+        assert!(!file.contains("EnergyUse") && !file.contains("OnOffable"), "{file}");
+        let stealthy = UnitBlueprint { id: "URA0303".into(), faction: Faction::Cybran, motion: Motion::Air, upkeep_energy: 25.0, intel: crate::unit::Intel { radar_stealth: true, ..Default::default() }, ..Default::default() };
+        let file = unit_file(&stealthy, &none, None);
+        assert!(file.contains("Stealth=1;") && !file.contains("EnergyUse"), "{file}");
+        let mex = UnitBlueprint { id: "UEB1103".into(), faction: Faction::Uef, categories: vec!["MASSEXTRACTION".into()], upkeep_energy: 2.0, production_mass: 2.0, ..Default::default() };
+        let file = unit_file(&mex, &none, None);
+        assert!(file.contains("EnergyUse=2;") && file.contains("ExtractsMetal=0.001;") && !file.contains("MetalStorage"), "{file}");
+    }
+
+    /// What a unit's script switches off as it is made is not given it: the Cybran commander's
+    /// sonar and stealth. Its regeneration is TA's healing.
+    #[test]
+    fn abilities_off_at_birth_are_left_out() {
+        let none = Weapons { slots: Vec::new(), death: None, dgun: None, kamikaze: None };
+        let mut acu = UnitBlueprint { id: "URL0001".into(), faction: Faction::Cybran, motion: Motion::Amphibious, regen: 15.0, intel: crate::unit::Intel { sonar: 60.0, radar_stealth: true, ..Default::default() }, ..Default::default() };
+        acu.birth.intel_off = vec!["RadarStealth".into(), "Sonar".into()];
+        let file = unit_file(&acu, &none, None);
+        assert!(!file.contains("SonarDistance") && !file.contains("Stealth=1;") && file.contains("HealTime=6.67;"), "{file}");
+        // An amphibian goes by its own limits, to the deepest sea bed.
+        assert!(file.contains("MaxWaterDepth=255;") && !file.contains("MovementClass"), "{file}");
+    }
+
+    /// Aircraft gather speed and turn as Forged Alliance's do, at TA's scale: an interceptor to
+    /// full speed in a second and a half, turning 86° a second as TA's Freedom Fighter does; only
+    /// gunships (and hovering craft with guns) hover to attack.
+    #[test]
+    fn aircraft_fly_as_forged_alliances() {
+        let plane = |id: &str, cats: &[&str], air: &str| {
+            let mut u = UnitBlueprint { id: id.into(), faction: Faction::Uef, motion: Motion::Air, max_airspeed: Some(15.0), categories: cats.iter().map(|c| c.to_string()).collect(), ..Default::default() };
+            u.table = crate::lua::parse(&format!("t = {{ Air = {{ {air} }} }}")).unwrap()[0].1.table().cloned().unwrap();
+            u
+        };
+        let fighter = plane("UEA0102", &["ANTIAIR"], "KMove = 1, KMoveDamping = 1, TurnSpeed = 1.5, Winged = true");
+        let (speed, acceleration, brake, turn) = flight(&fighter);
+        assert!((speed - 16.0).abs() < 1e-9 && (speed / acceleration - 45.0).abs() < 1e-6 && brake > acceleration, "{speed} {acceleration}");
+        assert_eq!(turn.round(), 522.0, "86° a second");
+        let gun = WeaponBlueprint { label: "Gun".into(), category: "Anti Air".into(), damage: 50.0, rate_of_fire: 1.0, turreted: true, ..Default::default() };
+        let armed = Weapons { slots: vec![&gun], death: None, dgun: None, kamikaze: None };
+        assert!(!unit_file(&fighter, &armed, None).contains("HoverAttack"), "a fighter makes passes");
+        let gunship = plane("UEA0203", &["GROUNDATTACK"], "KMove = 0.8, KMoveDamping = 2, KTurn = 0.8");
+        assert!(unit_file(&gunship, &armed, None).contains("HoverAttack=1;"));
+    }
+
+    /// A ship stands on a square of its hull's area (a frigate's 2 by 6 ogrids, 4 by 12 cells: 7);
+    /// a hydrocarbon plant on a vent; an engineering station lends its power; an air staging
+    /// platform repairs aircraft; a crawling bomb blows itself up near its enemy.
+    #[test]
+    fn ships_plants_stations_pads_and_bombs() {
+        let none = Weapons { slots: Vec::new(), death: None, dgun: None, kamikaze: None };
+        let frigate = UnitBlueprint { id: "UES0103".into(), faction: Faction::Uef, motion: Motion::Water, footprint: Some([2.0, 6.0]), ..Default::default() };
+        assert_eq!(footprint(&frigate), (7, 7));
+        let plant = UnitBlueprint { id: "UEB1102".into(), faction: Faction::Uef, categories: vec!["HYDROCARBON".into()], footprint: Some([1.0, 1.0]), ..Default::default() };
+        assert!(unit_file(&plant, &none, None).contains("YardMap=GGGG;"));
+        let station = UnitBlueprint { id: "XRB0104".into(), faction: Faction::Cybran, build_rate: 15.0, categories: vec!["ENGINEERSTATION".into()], buildable: vec!["xrb0204".into()], ..Default::default() };
+        assert_eq!(builds(&station), Builds::Assist);
+        let file = unit_file(&station, &none, None);
+        assert!(file.contains("Builder=1;") && file.contains("WorkerTime=150;") && !file.contains("YardMap"), "{file}");
+        let pad = UnitBlueprint { id: "UEB5202".into(), faction: Faction::Uef, categories: vec!["AIRSTAGINGPLATFORM".into()], ..Default::default() };
+        assert!(unit_file(&pad, &none, None).contains("IsAirBase=1;"));
+        let suicide = WeaponBlueprint { label: "Suicide".into(), category: "Kamikaze".into(), damage: 4500.0, damage_radius: 3.0, max_radius: 3.0, ..Default::default() };
+        let beetle = UnitBlueprint { id: "XRL0302".into(), faction: Faction::Cybran, motion: Motion::Land, weapons: vec![suicide], ..Default::default() };
+        let w = weapons(&beetle);
+        assert!(w.slots.is_empty() && w.kamikaze.is_some());
+        let file = unit_file(&beetle, &w, None);
+        for line in ["Kamikaze=1;", "KamikazeDistance=48;", "SelfDestructAs=XRL0302_BLAST;", "canattack=1;"] {
+            assert!(file.contains(line), "{line} in {file}");
+        }
+        assert!(kamikaze_section(&beetle, w.kamikaze.unwrap()).unwrap().contains("default=4500;"));
+    }
+
+    /// A gun that shoots no aircraft in Forged Alliance takes them last (its slot's bad targets),
+    /// and its unit chases none.
+    #[test]
+    fn ground_guns_take_aircraft_last() {
+        let gun = |label: &str, layers: &str| WeaponBlueprint { label: label.into(), category: "Direct Fire".into(), damage: 50.0, rate_of_fire: 1.0, ballistic_arc: "RULEUBA_None".into(), target_layers: vec![("Land".into(), layers.into())], ..Default::default() };
+        let (a, b) = (gun("A", "Land|Water"), gun("B", "Land|Air"));
+        let u = UnitBlueprint { id: "UEL0202".into(), faction: Faction::Uef, motion: Motion::Land, ..Default::default() };
+        let file = unit_file(&u, &Weapons { slots: vec![&a, &b], death: None, dgun: None, kamikaze: None }, None);
+        assert!(file.contains("wpri_badTargetCategory=VTOL;") && !file.contains("wsec_badTargetCategory") && !file.contains("NoChaseCategory"), "{file}");
+        let five: Vec<WeaponBlueprint> = (0..5).map(|k| gun(&format!("G{k}"), "Land")).collect();
+        let file = unit_file(&u, &Weapons { slots: five.iter().collect(), death: None, dgun: None, kamikaze: None }, None);
+        assert!(file.contains("BadTargetCategory5=VTOL;") && file.contains("wspe_badTargetCategory=VTOL;") && file.contains("NoChaseCategory=VTOL;"), "{file}");
+    }
+
     #[test]
     fn a_factorys_yard_opens_a_corridor_to_its_front() {
         // Six by six: the back two rows solid, the middle two columns open from there to the front.
@@ -849,4 +1607,9 @@ mod tests {
         assert_eq!(yard_map(2, 2), "cccc");
     }
 
+    #[test]
+    fn text_is_made_safe_for_a_tdf() {
+        assert_eq!(tdf_text("Gauss; Cannon {x} [y] // z\n"), "Gauss, Cannon (x) (y) / z");
+        assert_eq!(tdf_text("a///b /* c"), "a/b / c");
+    }
 }

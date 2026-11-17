@@ -171,8 +171,11 @@ pub const RECORD_VERSION: u32 = 46;
 /// an attack order's target keeps to its own targets; 101, a unit being built turns with its
 /// factory's pad (TA's plants spin it while they build), a unit with a `HealTime` (TA's
 /// Commanders) mends itself, 100 hit points in that many seconds, and wreckage (a unit's corpse
-/// and its heap) pays its metal alone when reclaimed.
-pub const SIMULATION_VERSION: u32 = 101;
+/// and its heap) pays its metal alone when reclaimed; 102, an interceptor's `interceptor` and a
+/// missile's `targetable` are sets of classes (as the Spring engine reads them): an interceptor
+/// shoots down only the missiles whose classes it shares (TA's own all class 1), and once they are
+/// within its range; the no-nukes mutator leaves out the strategic class alone.
+pub const SIMULATION_VERSION: u32 = 102;
 /// Records shorter than one year of simulated time are supported. Shared with the
 /// launcher's metadata reader so impossible durations cannot start endless save catch-up.
 pub const MAX_RECORD_TICKS: u64 = 30 * 3600 * 24 * 365;

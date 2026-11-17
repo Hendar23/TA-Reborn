@@ -14,6 +14,10 @@
 //! the ground over the cycle is taken out, its rise and fall kept. A death keeps all of its root's
 //! movement (a falling, toppling body).
 //!
+//! A walk is a cycle: its last frame, at its end, is its first again. Some of Forged Alliance's end
+//! elsewhere (UEL0106's knees 36° and 25° out, URL0107's upper leg 40°), which would jump back
+//! once a step: the difference is eased in over the cycle's last quarter ([`close_loop`]).
+//!
 //! In plain arithmetic, with our own arctangent ([`crate::convert::trig`]): the same bytes on every
 //! computer.
 
@@ -118,13 +122,55 @@ fn clip(name: &str, mesh: &Mesh, pieces: &[usize], pixels: f64, anim: &Animation
         return None;
     }
     let first = anim.frames[0].time;
+    let seconds = anim.duration.max(anim.frames.last().map_or(0.0, |f| f.time - first));
+    let times: Vec<f32> = anim.frames.iter().map(|f| (f.time - first).max(0.0)).collect();
+    if walk {
+        close_loop(&mut frames, &times, seconds);
+    }
     Some(Clip {
         name: name.to_string(),
-        seconds: anim.duration.max(anim.frames.last().map_or(0.0, |f| f.time - first)),
+        seconds,
         pieces: moved.iter().map(|&k| k as u32).collect(),
-        times: anim.frames.iter().map(|f| (f.time - first).max(0.0)).collect(),
+        times,
         keys: frames.iter().flat_map(|keys| moved.iter().map(|&k| keys[k])).collect(),
     })
+}
+
+/// The share of a walk's cycle over which a last frame out of step with its first is eased back.
+const EASE: f32 = 0.25;
+
+/// A cycle's last frame, where it ends the cycle (at its length: the next frame shown is its
+/// first), made its first again, the difference eased in over the cycle's last quarter (at least
+/// its last frame's step) so nothing jumps. A cycle whose last frame comes before its length is
+/// already closed: the clip goes back to its first frame over the time left.
+pub fn close_loop(frames: &mut [Vec<Key>], times: &[f32], seconds: f32) {
+    let n = frames.len().min(times.len());
+    if n < 2 || times[n - 1] + 1e-4 < seconds {
+        return;
+    }
+    let end = times[n - 1];
+    let window = (seconds * EASE).max(end - times[n - 2]).max(1e-6);
+    let from = end - window;
+    let wrap = |a: i64| -> i32 { (a.rem_euclid(65536) as i32 + 32768) % 65536 - 32768 };
+    for k in 0..frames[0].len() {
+        let (a, z) = (frames[0][k], frames[n - 1][k]);
+        let moved: [i64; 3] = std::array::from_fn(|c| a.moved[c] as i64 - z.moved[c] as i64);
+        let turned: [i64; 3] = std::array::from_fn(|c| wrap(a.turned[c] as i64 - z.turned[c] as i64) as i64);
+        if moved.iter().chain(&turned).all(|&d| d == 0) {
+            continue;
+        }
+        for f in 1..n {
+            if times[f] <= from {
+                continue;
+            }
+            let share = ((times[f] - from) / window).clamp(0.0, 1.0) as f64;
+            let key = &mut frames[f][k];
+            for c in 0..3 {
+                key.moved[c] = (key.moved[c] as i64 + (moved[c] as f64 * share).round() as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+                key.turned[c] = wrap(key.turned[c] as i64 + (turned[c] as f64 * share).round() as i64);
+            }
+        }
+    }
 }
 
 /// Each bone's place and turn at rest, its parents' composed with its own.
@@ -284,11 +330,36 @@ mod tests {
         assert!(x[0].abs() < 1e-9 && x[1].abs() < 1e-9 && (x[2] + 1.0).abs() < 1e-9, "{a} {b} {c}: {x:?}");
     }
 
+    /// A walk ending out of step with its start (its leg a quarter turn further at the end) is
+    /// eased back over its last quarter: its last frame its first, the frames before part way.
+    #[test]
+    fn a_walk_ends_where_it_starts() {
+        let key = |x: i32| Key { moved: [0; 3], turned: [x, 0, 0] };
+        let mut frames: Vec<Vec<Key>> = vec![vec![key(0)], vec![key(1000)], vec![key(2000)], vec![key(3000)], vec![key(16384)]];
+        let times = [0.0, 0.25, 0.5, 0.75, 1.0];
+        close_loop(&mut frames, &times, 1.0);
+        assert_eq!(frames[4][0], key(0), "the last frame the first");
+        assert_eq!((frames[0][0], frames[1][0], frames[2][0], frames[3][0]), (key(0), key(1000), key(2000), key(3000)), "only the last quarter eased");
+        // Eased over a longer stretch: the frames in it go part way.
+        let mut frames: Vec<Vec<Key>> = (0..9).map(|f| vec![key(if f == 8 { 8000 } else { f * 100 })]).collect();
+        let times: Vec<f32> = (0..9).map(|f| f as f32 * 0.125).collect();
+        close_loop(&mut frames, &times, 1.0);
+        assert_eq!(frames[8][0], key(0));
+        assert_eq!(frames[7][0], key(700 - 4000), "half the difference, half way through the quarter");
+        // Turned the short way round, and a cycle that ends before its length is already closed.
+        let mut frames = vec![vec![key(32000)], vec![key(32500)], vec![key(-32000)]];
+        close_loop(&mut frames, &[0.0, 0.5, 1.0], 1.0);
+        assert_eq!(frames[2][0], key(32000));
+        let mut frames = vec![vec![key(0)], vec![key(5000)]];
+        close_loop(&mut frames, &[0.0, 0.5], 1.0);
+        assert_eq!(frames[1][0], key(5000));
+    }
+
     #[test]
     fn an_animation_that_moves_nothing_is_no_clip() {
         let m = mesh();
         let s = std::f32::consts::FRAC_1_SQRT_2;
         let still = animation(vec![vec![([0.0, 2.0, 0.0], [1.0, 0.0, 0.0, 0.0]), ([0.0, 0.0, 1.0], [s, s, 0.0, 0.0])]; 3]);
-        assert!(anims(&m, &[0, 1], 32.0, Some(&still), &[still.clone()]).clips.is_empty());
+        assert!(anims(&m, &[0, 1], 32.0, Some(&still), std::slice::from_ref(&still)).clips.is_empty());
     }
 }
