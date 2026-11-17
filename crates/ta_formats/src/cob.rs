@@ -133,6 +133,8 @@ pub struct Function {
     /// (Where a jump's operand is, the label it names.)
     jumps: Vec<(usize, usize)>,
     locals: u32,
+    /// Where the last instruction starts (its opcode).
+    last: Option<usize>,
 }
 
 impl Function {
@@ -147,14 +149,23 @@ impl Function {
 
     /// A new local (its index).
     pub fn local(&mut self) -> u32 {
-        self.code.push(op::CREATE_LOCAL);
+        self.emit(&[op::CREATE_LOCAL]);
         self.locals += 1;
         self.locals - 1
     }
 
     fn emit(&mut self, words: &[u32]) -> &mut Self {
+        self.last = Some(self.code.len());
         self.code.extend_from_slice(words);
         self
+    }
+
+    /// Whether running off its end can happen: its last instruction is no `return`, or a jump
+    /// can land past it (a label marked at its very end). An operand of the value of `return`'s
+    /// opcode is no return: the last instruction is told by where it starts.
+    fn runs_off_its_end(&self) -> bool {
+        let end = self.code.len() as u32;
+        self.last.is_none_or(|at| self.code[at] != op::RETURN) || self.labels.iter().any(|&l| l == Some(end))
     }
 
     /// An opcode of no operands (arithmetic, comparisons, `return`, `signal`...: on the stack).
@@ -308,8 +319,9 @@ impl Assembler {
             for &(at, label) in &body.jumps {
                 body.code[at] = base + body.labels[label].unwrap_or_else(|| panic!("{name}: a jump to a label never marked"));
             }
-            // (A function that runs off its end returns 0.)
-            if body.code.last() != Some(&op::RETURN) {
+            // (A function that runs off its end returns 0: past its last instruction, or from a
+            // jump to its very end, it would run on into the next function's code.)
+            if body.runs_off_its_end() {
                 body.ret(0);
             }
             code.extend_from_slice(&body.code);
@@ -522,5 +534,37 @@ mod tests {
         let target = back.code[jump + 1] as usize;
         assert_eq!(&back.code[target..target + 3], &[op::PUSH_CONSTANT, 1, op::RETURN]);
         assert!(disassemble(&back).contains("AimPrimary:"));
+    }
+
+    /// A function never runs on into the next one's code: one whose last word only looks like a
+    /// `return` (an operand of its value) returns 0 after it, and so does one with a label marked
+    /// at its very end, after a `return`, which a jump would otherwise carry into the next
+    /// function. One that ends in a `return` no jump goes past is left as it is.
+    #[test]
+    fn a_function_never_runs_on_into_the_next() {
+        let mut asm = Assembler::new(vec![]);
+        // Its last instruction pushes the value of `return`'s opcode: no return.
+        let mut looks = Function::new(0);
+        looks.push(op::RETURN as i32);
+        asm.define("Looks", looks);
+        // `if (x) { return 1; }` with the label after the return, at the very end.
+        let mut ends = Function::new(1);
+        let after = ends.label();
+        ends.push_local(0).jump_if_false(after).ret(1).mark(after);
+        asm.define("Ends", ends);
+        // Ends in a return, as most do.
+        let mut whole = Function::new(0);
+        whole.ret(2);
+        asm.define("Whole", whole);
+        let script = asm.finish();
+        let start = |name: &str| script.functions[script.function(name).unwrap()].offset as usize;
+        let (looks, ends, whole) = (start("Looks"), start("Ends"), start("Whole"));
+        assert_eq!(&script.code[looks..ends], &[op::PUSH_CONSTANT, op::RETURN, op::PUSH_CONSTANT, 0, op::RETURN], "a return after the push");
+        // The jump lands on the return of 0 added at the end, not on the next function's code.
+        let jump = (ends..whole).find(|&i| script.code[i] == op::JUMP_IF_FALSE).unwrap();
+        let target = script.code[jump + 1] as usize;
+        assert!(target < whole, "within its own function: {target} (the next starts at {whole})");
+        assert_eq!(&script.code[target..target + 3], &[op::PUSH_CONSTANT, 0, op::RETURN]);
+        assert_eq!(&script.code[whole..], &[op::PUSH_CONSTANT, 2, op::RETURN], "nothing added");
     }
 }

@@ -26,7 +26,12 @@ pub enum Format {
 pub struct Header {
     pub width: u32,
     pub height: u32,
+    /// Its mip levels, the first among them: as many as the file claims, but never more than its
+    /// size halves to 1 by 1 in (a file claiming four billion kept the game looking through them
+    /// for seconds a frame).
     pub levels: u32,
+    /// The mip levels the file claims (0 read as 1), however many its size has.
+    pub claimed: u32,
     pub format: Format,
     /// Where the first level's texels start.
     data: usize,
@@ -68,10 +73,11 @@ impl Header {
         }
         let height = u32_at(bytes, 12);
         let width = u32_at(bytes, 16);
-        let levels = u32_at(bytes, 28).max(1);
         if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
             return Err(bad(&format!("bad size {width}x{height}")));
         }
+        let claimed = u32_at(bytes, 28).max(1);
+        let levels = claimed.min(width.max(height).ilog2() + 1);
         // The pixel format at 76: size, flags, FourCC, bits, then the R, G, B, A masks.
         let pf_flags = u32_at(bytes, 80);
         let fourcc = &bytes[84..88];
@@ -93,12 +99,12 @@ impl Header {
             let masks = if pf_flags & 0x20000 != 0 { [masks[0], masks[0], masks[0], masks[3]] } else { masks };
             Format::Masked { bits, masks }
         };
-        Ok(Header { width, height, levels, format, data: 128 })
+        Ok(Header { width, height, levels, claimed, format, data: 128 })
     }
 
     /// The size of mip level `level` (each half the last, at least 1).
     pub fn level_size(&self, level: u32) -> (u32, u32) {
-        ((self.width >> level).max(1), (self.height >> level).max(1))
+        (self.width.checked_shr(level).unwrap_or(0).max(1), self.height.checked_shr(level).unwrap_or(0).max(1))
     }
 
     fn level_bytes(&self, level: u32) -> usize {
@@ -126,6 +132,21 @@ impl Header {
         bytes.get(at..at.checked_add(len)?)
     }
 
+    /// How many of its mip levels, from the first, the file holds the texels of.
+    pub fn levels_held(&self, bytes: &[u8]) -> u32 {
+        (0..self.levels).take_while(|&l| self.level_data(bytes, l).is_some()).count() as u32
+    }
+
+    /// Whether [`to_bc3_levels`] takes the texture's blocks as they are for levels of `side`
+    /// (block-compressed, a level of `side` by `side` and every level below it in the file: DXT5's
+    /// copied, DXT1's and DXT3's made BC3 block by block) rather than decoding it and encoding it
+    /// again (another size, levels missing, uncompressed), which takes tens of milliseconds.
+    pub fn read_as_is(&self, bytes: &[u8], side: u32) -> bool {
+        let count = side.max(1).ilog2() + 1;
+        matches!(self.format, Format::Dxt1 | Format::Dxt3 | Format::Dxt5)
+            && (0..self.levels).find(|&l| self.level_size(l) == (side, side)).is_some_and(|first| first + count <= self.levels && (first..first + count).all(|l| self.level_data(bytes, l).is_some()))
+    }
+
     /// The level whose larger side is the smallest still at least `side` (or the first).
     pub fn level_for(&self, side: u32) -> u32 {
         (0..self.levels).rev().find(|&l| { let (w, h) = self.level_size(l); w.max(h) >= side }).unwrap_or(0)
@@ -136,12 +157,8 @@ impl Header {
 pub fn decode(bytes: &[u8], level: u32) -> Result<Image> {
     let header = Header::parse(bytes)?;
     let level = level.min(header.levels - 1);
-    let mut at = header.data;
-    for l in 0..level {
-        at += header.level_bytes(l);
-    }
-    let need = header.level_bytes(level);
-    let Some(data) = bytes.get(at..at + need) else {
+    let (at, need) = header.level_range(level);
+    let Some(data) = at.checked_add(need).and_then(|end| bytes.get(at..end)) else {
         // (A texture missing its smaller levels: its first, if that is there.)
         if level > 0 {
             return decode(bytes, 0);
@@ -192,13 +209,14 @@ pub fn decode(bytes: &[u8], level: u32) -> Result<Image> {
                 for b in 0..step {
                     v |= (data[i * step + b] as u32) << (8 * b);
                 }
+                // (In 64 bits: a channel's mask may be all 32 of a texel's.)
                 let channel = |mask: u32| -> u8 {
                     if mask == 0 {
                         return 0;
                     }
                     let shift = mask.trailing_zeros();
-                    let max = mask >> shift;
-                    (((v & mask) >> shift) * 255 / max) as u8
+                    let max = (mask >> shift) as u64;
+                    (((v & mask) >> shift) as u64 * 255 / max) as u8
                 };
                 *px = [channel(masks[0]), channel(masks[1]), channel(masks[2]), if masks[3] == 0 { 255 } else { channel(masks[3]) }];
             }
@@ -418,10 +436,8 @@ pub fn to_bc3_levels(bytes: &[u8], side: u32) -> Result<Vec<Vec<u8>>> {
     }
     let h = Header::parse(bytes)?;
     let count = side.ilog2() + 1;
-    if let Some(first) = (0..h.levels).find(|&l| h.level_size(l) == (side, side))
-        && first + count <= h.levels
-        && (first..first + count).all(|l| h.level_data(bytes, l).is_some())
-        && matches!(h.format, Format::Dxt1 | Format::Dxt3 | Format::Dxt5)
+    if h.read_as_is(bytes, side)
+        && let Some(first) = (0..h.levels).find(|&l| h.level_size(l) == (side, side))
     {
         return Ok((first..first + count).map(|l| blocks_to_bc3(h.format, h.level_data(bytes, l).unwrap())).collect());
     }
@@ -729,6 +745,68 @@ pub(crate) mod tests {
         assert_eq!(levels.iter().map(Vec::len).collect::<Vec<_>>(), [64, 16, 16, 16]);
         assert_eq!(decode_bc3(&levels[3], 1, 1)[0][..3], decode_bc3(&levels[0], 8, 8)[27][..3]);
         assert!(to_bc3_levels(&file, 6).is_err(), "not a power of two");
+    }
+
+    /// A file claiming more mip levels than its size halves into (the review's 300 x 300 claiming
+    /// four billion froze the game for seconds a frame, and the shift past 31 levels panicked in a
+    /// debug build) is read with the levels its size has, and those it holds.
+    #[test]
+    fn a_texture_claiming_endless_levels_is_read_with_those_it_has() {
+        let mut file = header(300, 300, 1, None);
+        file[28..32].copy_from_slice(&u32::MAX.to_le_bytes());
+        file.extend(std::iter::repeat_n(200u8, 300 * 300 * 4));
+        let h = Header::parse(&file).unwrap();
+        assert_eq!((h.levels, h.claimed), (9, u32::MAX), "300 halves to 1 in eight steps");
+        assert_eq!(h.levels_held(&file), 1, "only the first level's texels are there");
+        assert_eq!(h.level_size(40), (1, 1));
+        assert_eq!(h.level_size(u32::MAX), (1, 1));
+        assert_eq!(h.level_for(512), 0);
+        assert_eq!(decode(&file, u32::MAX).unwrap().width, 300, "the last level asked for: the first, the rest missing");
+        // (Made from its first level, the others missing: it looked through them for seconds.)
+        assert_eq!(to_bc3_levels(&file, 512).unwrap().len(), 10);
+        assert!(!h.read_as_is(&file, 512));
+        // A file cut short before its first level's texels: refused.
+        assert!(decode(&file[..1000], 0).is_err());
+    }
+
+    /// Uncompressed texels whose channel takes all 32 bits read without overflowing (a mask of
+    /// 0xFFFFFFFF times 255 does not fit 32 bits).
+    #[test]
+    fn a_channel_of_all_32_bits_decodes() {
+        let mut file = header(2, 1, 1, None);
+        // (Red all 32 bits; no green, blue or alpha.)
+        file[92..96].copy_from_slice(&u32::MAX.to_le_bytes());
+        file[96..108].fill(0);
+        file[80..84].copy_from_slice(&0x40u32.to_le_bytes());
+        file.extend_from_slice(&u32::MAX.to_le_bytes());
+        file.extend_from_slice(&0x8000_0000u32.to_le_bytes());
+        let image = decode(&file, 0).unwrap();
+        assert_eq!(image.rgba, [[255, 0, 0, 255], [127, 0, 0, 255]]);
+    }
+
+    /// What a model's paint is read as it is (block-compressed, 512 x 512 and every level below
+    /// it in the file), and what is made again.
+    #[test]
+    fn paint_is_read_as_it_is_only_whole() {
+        let levels = |side: u32| (0..=side.ilog2()).map(|l| (side >> l).max(1).div_ceil(4).pow(2) as usize * 16).sum::<usize>();
+        let mut whole = header(512, 512, 10, Some(b"DXT5"));
+        whole.extend(std::iter::repeat_n(0u8, levels(512)));
+        let h = Header::parse(&whole).unwrap();
+        assert!(h.read_as_is(&whole, 512));
+        assert_eq!(h.levels_held(&whole), 10);
+        assert_eq!(to_bc3_levels(&whole, 512).unwrap().len(), 10);
+        // Its last level missing from the file: decoded and made again.
+        let short = &whole[..whole.len() - 16];
+        assert!(!Header::parse(short).unwrap().read_as_is(short, 512));
+        assert_eq!(Header::parse(short).unwrap().levels_held(short), 9);
+        // Larger, with its levels: read from its 512 level down, as it is.
+        let mut large = header(1024, 1024, 11, Some(b"DXT1"));
+        large.extend(std::iter::repeat_n(0u8, levels(1024) / 2));
+        assert!(Header::parse(&large).unwrap().read_as_is(&large, 512));
+        // Uncompressed: made again.
+        let mut plain = header(512, 512, 1, None);
+        plain.extend(std::iter::repeat_n(0u8, 512 * 512 * 4));
+        assert!(!Header::parse(&plain).unwrap().read_as_is(&plain, 512));
     }
 
     #[test]

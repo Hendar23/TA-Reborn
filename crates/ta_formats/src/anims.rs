@@ -56,6 +56,16 @@ pub struct Clip {
 }
 
 impl Clip {
+    /// Whether it fits a model of `pieces` pieces: it moves pieces the model has, each once, and
+    /// holds a key for each at each frame, at times rising within its length.
+    pub fn fits(&self, pieces: usize) -> bool {
+        let mut seen = vec![false; pieces];
+        self.pieces.iter().all(|&p| (p as usize) < pieces && !std::mem::replace(&mut seen[p as usize], true))
+            && self.keys.len() == self.times.len() * self.pieces.len()
+            && self.times.windows(2).all(|w| w[0] <= w[1])
+            && self.times.iter().all(|t| t.is_finite() && *t >= 0.0 && *t <= self.seconds)
+    }
+
     /// The keys of frame `frame`, piece by piece.
     pub fn frame(&self, frame: usize) -> &[Key] {
         let n = self.pieces.len();
@@ -128,16 +138,9 @@ impl Anims {
         })
     }
 
-    /// Whether it fits a model of `pieces` pieces: every clip moves pieces it has, each once, and
-    /// holds a key for each at each frame, at times rising within its length.
+    /// Whether every clip fits a model of `pieces` pieces ([`Clip::fits`]).
     pub fn fits(&self, pieces: usize) -> bool {
-        self.clips.iter().all(|c| {
-            let mut seen = vec![false; pieces];
-            c.pieces.iter().all(|&p| (p as usize) < pieces && !std::mem::replace(&mut seen[p as usize], true))
-                && c.keys.len() == c.times.len() * c.pieces.len()
-                && c.times.windows(2).all(|w| w[0] <= w[1])
-                && c.times.iter().all(|t| t.is_finite() && *t >= 0.0)
-        })
+        self.clips.iter().all(|c| c.fits(pieces))
     }
 
     pub fn parse(b: &[u8]) -> Result<Anims> {
@@ -257,6 +260,14 @@ mod tests {
         let back = Anims::parse(&a.to_bytes()).unwrap();
         assert_eq!(back, a);
         assert!(back.fits(3) && !back.fits(2), "the walk moves piece 2");
+        // Clip by clip: the death moves piece 1 alone, which a model of two pieces has.
+        assert_eq!(back.clips.iter().map(|c| c.fits(2)).collect::<Vec<_>>(), [false, true, true, true, true]);
+        // A key past the clip's length, or before its start, or out of order: no fit.
+        for times in [vec![0.0, 2.5], vec![-0.5, 1.0], vec![1.0, 0.5], vec![0.0, f32::NAN]] {
+            let mut death = back.clip("death").unwrap().clone();
+            death.times = times.clone();
+            assert!(!death.fits(3), "{times:?}");
+        }
         assert_eq!(back.clip("WALK").map(|c| c.pieces.len()), Some(2));
         assert_eq!(back.deaths().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["death", "Death2"], "names in other scripts are no deaths");
     }
