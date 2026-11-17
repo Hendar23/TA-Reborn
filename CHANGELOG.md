@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Added
+- Optional Minimalist First Person View in Interface settings: only a small crosshair and a
+  health bar at the top, without a cockpit or other instruments.
 - Models can be painted beyond TA's palette and textures: a 3DO with a surface beside it
   (`objects3d/<name>.surface`) takes texture coordinates and smooth normals for its vertices and
   materials for its polygons, each a colour map, a specular map (gloss, mirroring, lights and where

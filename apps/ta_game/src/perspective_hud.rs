@@ -81,6 +81,29 @@ impl View {
     }
 }
 
+fn draw_minimalist(ctx: &egui::Context, health: f32) {
+    let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("minimalist_first_person")));
+    painter.extend(minimalist_shapes(ctx.content_rect(), health));
+}
+
+fn minimalist_shapes(rect: Rect, health: f32) -> Vec<Shape> {
+    let center = rect.center();
+    let mut shapes = Vec::new();
+    for width in [3.0, 1.0] {
+        let color = if width > 1.0 { Color32::BLACK } else { Color32::WHITE };
+        for direction in [vec2(5.0, 0.0), vec2(0.0, 5.0)] {
+            shapes.push(Shape::line_segment([center - direction, center + direction], Stroke::new(width, color)));
+        }
+    }
+    let width = (rect.width() - 32.0).clamp(0.0, 480.0);
+    let bar = Rect::from_center_size(pos2(center.x, rect.top() + 20.0), vec2(width, 8.0));
+    shapes.push(Shape::rect_filled(bar, 0.0, Color32::from_black_alpha(190)));
+    let fill = Rect::from_min_size(bar.min, vec2(bar.width() * health.clamp(0.0, 1.0), bar.height()));
+    shapes.push(Shape::rect_filled(fill, 0.0, Color32::from_rgb(140, 220, 160)));
+    shapes.push(Shape::rect_stroke(bar, 0.0, Stroke::new(1.0, Color32::WHITE), egui::StrokeKind::Inside));
+    shapes
+}
+
 /// The side's colour on the cockpit's trim.
 fn accent(side: &str) -> Color32 {
     if side.eq_ignore_ascii_case("ARM") {
@@ -113,6 +136,13 @@ fn on_screen(c: Color32) -> Color32 {
 /// unit drawn from its model, so many points across, once it is drawn (the HUD's portraits).
 #[allow(clippy::too_many_arguments)]
 pub fn draw(p: &Perspective, ctx: &egui::Context, game: &Game, camera: &Camera, pics: &mut rustc_hash::FxHashMap<usize, Option<egui::TextureHandle>>, vfs: &ta_vfs::Vfs, now: f64, on_glass: bool, portrait: &mut dyn FnMut(f32) -> Option<egui::TextureId>) {
+    if p.minimalist {
+        if let Some(unit) = game.sim.unit(p.unit).filter(|_| p.lost.is_none() && !p.leaving) {
+            let maximum = game.sim.types.get(unit.type_id).max_health.max(Fx::ONE);
+            draw_minimalist(ctx, (unit.health / maximum).to_f32());
+        }
+        return;
+    }
     let rect = ctx.content_rect();
     let view = View { rect, vp: camera.view_proj(), ppp: ctx.pixels_per_point(), viewport: camera.viewport };
     let back = ctx.layer_painter(LayerId::new(Order::Background, Id::new("perspective_back")));
@@ -1736,6 +1766,28 @@ fn hash(mut x: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minimalist_view_contains_only_a_centered_crosshair_and_clamped_health_bar() {
+        for size in [vec2(320.0, 240.0), vec2(1920.0, 1080.0), vec2(3440.0, 1440.0)] {
+            let rect = Rect::from_min_size(pos2(10.0, 30.0), size);
+            for health in [-0.5_f32, 0.0, 0.5, 1.0, 1.5] {
+                let shapes = minimalist_shapes(rect, health);
+                assert_eq!(shapes.len(), 7);
+                for shape in &shapes[..4] {
+                    let Shape::LineSegment { points, .. } = shape else { panic!("crosshair must be lines") };
+                    assert_eq!(points[0].lerp(points[1], 0.5), rect.center());
+                    assert_eq!(points[0].distance(points[1]), 10.0);
+                }
+                let Shape::Rect(background) = &shapes[4] else { panic!("health background") };
+                let Shape::Rect(fill) = &shapes[5] else { panic!("health fill") };
+                assert_eq!(fill.rect.width(), background.rect.width() * health.clamp(0.0, 1.0));
+                assert!(rect.contains_rect(background.rect));
+                assert_eq!(background.rect.center().x, rect.center().x);
+                assert_eq!(background.rect.top(), rect.top() + 16.0);
+            }
+        }
+    }
 
     #[test]
     fn the_panoramic_displays_panes_stand_side_by_side_across_its_glass() {

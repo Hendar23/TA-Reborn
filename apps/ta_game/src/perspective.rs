@@ -383,6 +383,7 @@ impl HudState {
 }
 
 pub struct Perspective {
+    pub minimalist: bool,
     pub reduced_motion: bool,
     pub reduced_flashes: bool,
     pub unit: UnitId,
@@ -496,6 +497,7 @@ impl Perspective {
         let model = cockpit.model();
         let mut p = Perspective {
             reduced_motion: false,
+            minimalist: false,
             reduced_flashes: false,
             unit: id,
             type_id,
@@ -687,6 +689,9 @@ impl Perspective {
 
     /// How the modelled cockpit is drawn this frame; none while it is down.
     pub fn cockpit_frame(&self, game: &Game, now: f64) -> Option<CockpitFrame> {
+        if self.minimalist {
+            return None;
+        }
         let rain = game.effects.rain(crate::scene::game_seconds(game.sim.tick, game.alpha()) as f32);
         let model = self.model.as_ref()?;
         if self.seat <= 0.0 {
