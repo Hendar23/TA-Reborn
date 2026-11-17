@@ -19,7 +19,7 @@ pub const DESCRIPTION: &str = "Supreme Commander: Forged Alliance's four faction
 pub const TAGS: [&str; 3] = ["units", "factions", "supreme commander"];
 /// The converter's version, the mod's own (its manifest's `version`): a mod made by an older one
 /// is offered to be made again. Raised whenever what is made changes.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 /// What was made.
 #[derive(Clone, Debug, Default)]
@@ -55,7 +55,8 @@ pub fn make(files: &Files, units: &[UnitBlueprint], reborn: &str, write: &mut dy
         write(path, bytes)
     };
     put("mod.toml", manifest(reborn).as_bytes(), &mut made)?;
-    let mut done: Vec<&UnitBlueprint> = Vec::new();
+    // (Each unit made, with the footprint its model was given: its wreck lies on as much.)
+    let mut done: Vec<std::borrow::Cow<UnitBlueprint>> = Vec::new();
     for (i, u) in units.iter().enumerate() {
         if !watch(i, &u.id) {
             made.stopped = true;
@@ -63,14 +64,15 @@ pub fn make(files: &Files, units: &[UnitBlueprint], reborn: &str, write: &mut dy
             return Ok(made);
         }
         match unit(files, u, &mut |path, bytes| put(path, bytes, &mut made))? {
-            Ok(()) => done.push(u),
+            Ok(None) => done.push(std::borrow::Cow::Borrowed(u)),
+            Ok(Some(footprint)) => done.push(std::borrow::Cow::Owned(UnitBlueprint { footprint: Some(footprint), ..u.clone() })),
             Err(why) => made.skipped.push((u.id.clone(), why)),
         }
     }
     made.units = done.len();
     // The factions' files.
     let factions: Vec<(Faction, Vec<&UnitBlueprint>)> = Faction::PLAYABLE.into_iter().map(|f| {
-        let theirs = done.iter().copied().filter(|u| u.faction == f).collect();
+        let theirs = done.iter().map(|u| u.as_ref()).filter(|u| u.faction == f).collect();
         (f, theirs)
     }).filter(|(_, u): &(Faction, Vec<&UnitBlueprint>)| !u.is_empty()).collect();
     put("gamedata/sidedata_supcom.tdf", faction::side_add_on(&factions).as_bytes(), &mut made)?;
@@ -126,24 +128,32 @@ fn read(files: &Files, u: &UnitBlueprint) -> std::result::Result<Read, String> {
 }
 
 /// One unit's files: its model with its surface and its model for far off, its paint, its build
-/// picture, its unit file and its script. `Err(why)` (inside the Ok) when it is left out: what it
-/// is made of does not read, or its model cannot be written (nothing of it written then).
-fn unit(files: &Files, u: &UnitBlueprint, put: &mut dyn FnMut(&str, &[u8]) -> Result<()>) -> Result<std::result::Result<(), String>> {
+/// picture, its unit file and its script; the footprint (ogrids) its model was given where it is
+/// not its blueprint's (`units::fitted_footprint`). `Err(why)` (inside the Ok) when it is left
+/// out: what it is made of does not read, or its model cannot be written (nothing of it written
+/// then).
+fn unit(files: &Files, u: &UnitBlueprint, put: &mut dyn FnMut(&str, &[u8]) -> Result<()>) -> Result<std::result::Result<Option<[f64; 2]>, String>> {
     let read = match read(files, u) {
         Ok(r) => r,
         Err(why) => return Ok(Err(why)),
     };
     let lod0 = &u.display.lods[0];
     let mesh = &read.mesh;
+    // A building's footprint covers what of its model stands on the ground.
+    let footprint = units::fitted_footprint(u, model::ground_extent(mesh, u.display.uniform_scale));
+    let fitted = footprint.map(|f| UnitBlueprint { footprint: Some(f), ..u.clone() });
+    let u = fitted.as_ref().unwrap_or(u);
     let name = u.id.to_ascii_lowercase();
-    // Its paint: each texture made the surface's, or a plain one where it has none; the
-    // Seraphim's team colour moved from their albedo's alpha into the specular map's.
+    // Its paint: each texture made the surface's, or a plain one where it has none; the colour
+    // map as bright as Forged Alliance lights it (by its shader); the Seraphim's team colour moved
+    // from their albedo's alpha into the specular map's.
     let mut paint: Vec<(String, Vec<u8>)> = Vec::new();
     for ((kind, plain), source) in [("albedo", textures::PLAIN_ALBEDO), ("specteam", textures::PLAIN_SPECULAR), ("normals", textures::PLAIN_NORMALS)].into_iter().zip(&read.paint) {
         let bytes = match source {
             Some(b) => textures::texture(b).unwrap_or_else(|_| textures::plain(plain)),
             None => textures::plain(plain),
         };
+        let bytes = if kind == "albedo" && source.is_some() { textures::brightened(&bytes, textures::paint_gain(&lod0.shader)) } else { bytes };
         paint.push((format!("textures/supcom/{name}_{kind}.dds"), bytes));
     }
     if lod0.shader.eq_ignore_ascii_case("seraphim") {
@@ -196,7 +206,7 @@ fn unit(files: &Files, u: &UnitBlueprint, put: &mut dyn FnMut(&str, &[u8]) -> Re
         pixels: u.display.uniform_scale * UNIT_SCALE,
     };
     put(&format!("scripts/{name}.cob"), &script::script(&plan).to_bytes())?;
-    Ok(Ok(()))
+    Ok(Ok(footprint))
 }
 
 #[cfg(test)]
@@ -306,7 +316,7 @@ mod tests {
     }
 
     /// The hash of the test faction's mod (see the test above).
-    const EXPECTED: &str = "7154a5d8d73cfd11301699739563c052d272bc7ad3a50b45f6b511b40d3fef75";
+    const EXPECTED: &str = "8e461fa3ed52a3809f1ebf6481fb4048a85d3204274957ae9e3251e26a2a6fb1";
 
     /// A unit whose mesh does not read is left out, with its reason; the rest are made.
     #[test]

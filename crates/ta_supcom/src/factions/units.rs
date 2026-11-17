@@ -778,6 +778,25 @@ pub fn footprint(u: &UnitBlueprint) -> (i64, i64) {
     (cells(x), cells(z))
 }
 
+/// A structure's footprint (ogrids) widened to what of its model stands on the ground (`ground`:
+/// its extent there, `model::ground_extent`), where that is wider than its blueprint's: none where
+/// it is not. Forged Alliance's footprints are what its units may not cross, smaller than many of
+/// its buildings (a point defence's half an ogrid against its turret's whole one), the ground round
+/// them levelled for them and kept clear (their skirts). TA Reborn levels the ground drawn under a
+/// footprint, and a model reaching past its footprint ran into the hillside beside it (the
+/// placement's grid smaller than the building, as well, and its neighbours built into it). A wall
+/// keeps its own, to stand in line with the next; a building on the water or the sea bed alone
+/// meets no hillside.
+pub fn fitted_footprint(u: &UnitBlueprint, ground: Option<[f64; 2]>) -> Option<[f64; 2]> {
+    let ground = ground?;
+    if u.motion != Motion::None || !u.layers.land || u.is("WALL") {
+        return None;
+    }
+    let [x, z] = u.footprint.unwrap_or([u.size[0].max(0.5), u.size[2].max(0.5)]);
+    let fitted = [x.max(ground[0]), z.max(ground[1])];
+    (fitted != [x, z]).then_some(fitted)
+}
+
 /// A factory's yard: a corridor of cells open while it works, from the middle to its front edge
 /// (TA's buildings face +z, the yard map's last rows), the rest solid.
 pub fn yard_map(fx: i64, fz: i64) -> String {
@@ -1126,7 +1145,9 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
         }
     } else {
         put("BMcode", "0".into());
-        put("MaxSlope", "15".into());
+        // (As steep as TA's own buildings stand on: Forged Alliance levels the ground under its
+        // buildings, TA Reborn the ground drawn under a footprint, a slope taken up round it.)
+        put("MaxSlope", "10".into());
         // On the water (floating), under it (on the sea bed, or below the surface: extractors and
         // power plants on deposits there too), or on land.
         let under = u.layers.seabed || u.layers.sub;
@@ -1556,6 +1577,31 @@ mod tests {
         assert!(!unit_file(&fighter, &armed, None).contains("HoverAttack"), "a fighter makes passes");
         let gunship = plane("UEA0203", &["GROUNDATTACK"], "KMove = 0.8, KMoveDamping = 2, KTurn = 0.8");
         assert!(unit_file(&gunship, &armed, None).contains("HoverAttack=1;"));
+    }
+
+    /// A building's footprint covers what of its model stands on the ground where its blueprint's
+    /// is smaller (a point defence's 0.6 ogrids, a cell, round a turret of almost an ogrid: 2 by 2
+    /// cells), one way or both; a wall's, a unit's and a building's at sea alone stay as they are;
+    /// and a building stands on slopes as steep as TA's own do.
+    #[test]
+    fn a_buildings_footprint_covers_its_model_on_the_ground() {
+        let land = crate::unit::Layers { land: true, ..Default::default() };
+        let pd = UnitBlueprint { id: "UEB2101".into(), faction: Faction::Uef, categories: vec!["STRUCTURE".into()], footprint: Some([0.6, 0.6]), layers: land, ..Default::default() };
+        assert_eq!(footprint(&pd), (1, 1));
+        let fitted = fitted_footprint(&pd, Some([0.98, 0.98]));
+        assert_eq!(fitted, Some([0.98, 0.98]));
+        assert_eq!(footprint(&UnitBlueprint { footprint: fitted, ..pd.clone() }), (2, 2));
+        assert_eq!(fitted_footprint(&pd, Some([0.4, 1.3])), Some([0.6, 1.3]), "wider one way");
+        assert_eq!(fitted_footprint(&pd, Some([0.5, 0.6])), None, "no wider");
+        assert_eq!(fitted_footprint(&pd, None), None, "nothing on the ground");
+        let wall = UnitBlueprint { categories: vec!["STRUCTURE".into(), "WALL".into()], ..pd.clone() };
+        let tank = UnitBlueprint { motion: Motion::Land, ..pd.clone() };
+        let sonar = UnitBlueprint { layers: crate::unit::Layers { water: true, ..Default::default() }, ..pd.clone() };
+        for other in [&wall, &tank, &sonar] {
+            assert_eq!(fitted_footprint(other, Some([2.0, 2.0])), None, "{:?}", other.categories);
+        }
+        let none = Weapons { slots: Vec::new(), death: None, dgun: None, kamikaze: None };
+        assert!(unit_file(&pd, &none, None).contains("MaxSlope=10;"));
     }
 
     /// A ship stands on a square of its hull's area (a frigate's 2 by 6 ogrids, 4 by 12 cells: 7);

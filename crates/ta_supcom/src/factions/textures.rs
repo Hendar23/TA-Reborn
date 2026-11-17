@@ -21,6 +21,64 @@ pub fn texture(bytes: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// How much brighter Forged Alliance draws a colour map than its texels hold it, in 256ths, by the
+/// shader its unit is drawn with (its first level of detail's `ShaderName`). Forged Alliance's
+/// light multiplies the paint in the texels' own (gamma) space: by its map's lighting multiplier
+/// and the sun (about 1.3 and 1.3 on its maps, a lit face's paint some 1.6 times as bright as its
+/// texel), the UEF's `Unit` adding twice the sky its specular map's red mirrors, the Cybran's
+/// `Insect` taking the sun twice (some 2.3 times), the Aeon's `Aeon` six tenths of it (about as
+/// bright as the texel, its mirrored sky on top) and the Seraphim's `Seraphim` the shadows' light
+/// alone (their look the sky they mirror). TA Reborn lights a colour map as the colour of what is
+/// painted (its sun and sky together bringing a lit face to about 1.3 times its colour, in light's
+/// own measure): these bring a lit face of each as bright as Forged Alliance draws it.
+pub fn paint_gain(shader: &str) -> u32 {
+    match shader.to_ascii_lowercase().as_str() {
+        "unit" | "metal" => 371,
+        "insect" => 512,
+        _ => 256,
+    }
+}
+
+/// A paint texture (a DDS of BC3 levels, as [`texture`] makes them) brightened by `gain` 256ths:
+/// each block's two colour ends multiplied, short of white, which brightens every texel the block
+/// gives as much (its other two colours are blends of the ends); the alpha as it is. Forged
+/// Alliance's blocks stay as they were made, and the ends keep their order.
+pub fn brightened(texture: &[u8], gain: u32) -> Vec<u8> {
+    let mut out = texture.to_vec();
+    let Ok(header) = dds::Header::parse(texture) else { return out };
+    if gain == 256 || header.format != dds::Format::Dxt5 {
+        return out;
+    }
+    for level in 0..header.levels {
+        let (at, len) = header.level_range(level);
+        let Some(blocks) = out.get_mut(at..at + len) else { break };
+        for block in blocks.as_chunks_mut::<16>().0 {
+            brighten_block(&mut block[8..], gain);
+        }
+    }
+    out
+}
+
+/// A colour block (BC3's colour half: two 565 ends, then sixteen 2-bit indices) brightened.
+fn brighten_block(colour: &mut [u8], gain: u32) {
+    let scale = |c: u16| -> u16 {
+        let up = |v: u16, most: u32| ((v as u32 * gain + 128) >> 8).min(most) as u16;
+        (up(c >> 11, 31) << 11) | (up((c >> 5) & 63, 63) << 5) | up(c & 31, 31)
+    };
+    let (c0, c1) = (u16::from_le_bytes([colour[0], colour[1]]), u16::from_le_bytes([colour[2], colour[3]]));
+    let (mut n0, mut n1) = (scale(c0), scale(c1));
+    let mut bits = u32::from_le_bytes([colour[4], colour[5], colour[6], colour[7]]);
+    // (Ends whose order brightening turned round are swapped back, each index to the same colour:
+    // the first end's and the second's, and the two blends.)
+    if n0 != n1 && (c0 > c1) != (n0 > n1) {
+        std::mem::swap(&mut n0, &mut n1);
+        bits ^= 0x5555_5555;
+    }
+    colour[..2].copy_from_slice(&n0.to_le_bytes());
+    colour[2..4].copy_from_slice(&n1.to_le_bytes());
+    colour[4..].copy_from_slice(&bits.to_le_bytes());
+}
+
 /// A specular map with the player's colour where an albedo's alpha says (both the paint's):
 /// how the Seraphim's are painted (their specular maps' alpha empty), as the others' are.
 pub fn team_from_alpha(specular: &[u8], albedo: &[u8]) -> Result<Vec<u8>> {
@@ -86,6 +144,60 @@ mod tests {
         assert!(r.abs_diff(200) <= 4 && g.abs_diff(100) <= 2 && b.abs_diff(50) <= 4, "{r} {g} {b}");
         // Made again, the same bytes.
         assert_eq!(texture(&paint).unwrap(), paint);
+    }
+
+    /// A colour map brightened as Forged Alliance lights it: every texel half as bright again,
+    /// white staying white, its alpha and its blocks' indices as they were (to the end colours'
+    /// 565 steps); the gain by the shader.
+    #[test]
+    fn a_colour_map_is_brightened_by_its_ends() {
+        let mut file = dds::header(8, 8, 1, None);
+        for i in 0..64u32 {
+            let v = (i * 2) as u8;
+            let texel = if i == 63 { [250, 250, 250, 7] } else { [v, v / 2, 255 - v, 200] };
+            file.extend_from_slice(&[texel[2], texel[1], texel[0], texel[3]]);
+        }
+        let paint = texture(&file).unwrap();
+        let bright = brightened(&paint, 384);
+        assert_eq!(bright.len(), paint.len());
+        assert_eq!(brightened(&paint, 256), paint, "no gain, no change");
+        let (before, after) = (dds::decode(&paint, 0).unwrap(), dds::decode(&bright, 0).unwrap());
+        for (b, a) in before.rgba.iter().zip(&after.rgba) {
+            assert_eq!(a[3], b[3], "alpha untouched");
+            for c in 0..3 {
+                let want = (b[c] as u32 * 3 / 2).min(255);
+                assert!(a[c] as u32 + 9 >= want && a[c] as u32 <= want + 9, "{b:?} -> {a:?}");
+            }
+        }
+        // Every level, down to the last.
+        let header = dds::Header::parse(&bright).unwrap();
+        let last = header.levels - 1;
+        assert_ne!(header.level_data(&bright, last), header.level_data(&paint, last));
+        assert_eq!((paint_gain("Unit"), paint_gain("INSECT"), paint_gain("Aeon"), paint_gain("Seraphim")), (371, 512, 256, 256));
+    }
+
+    /// Ends whose order brightening turns round (both reds run past white, the second's green
+    /// does not) are swapped back with their indices: each texel the same colour.
+    #[test]
+    fn a_brightened_block_keeps_its_ends_order() {
+        // (First end red 20, no green; second red 19, green 10: the first the greater. Doubled,
+        // both reds are full, so the second, its green over the first's, would be the greater.)
+        let c0: u16 = 20 << 11;
+        let c1: u16 = (19 << 11) | (10 << 5);
+        let mut block = [0u8; 8];
+        block[..2].copy_from_slice(&c0.to_le_bytes());
+        block[2..4].copy_from_slice(&c1.to_le_bytes());
+        block[4..].copy_from_slice(&0b11_10_01_00u32.to_le_bytes());
+        let mut bright = block;
+        brighten_block(&mut bright, 512);
+        let (n0, n1) = (u16::from_le_bytes([bright[0], bright[1]]), u16::from_le_bytes([bright[2], bright[3]]));
+        assert!(n0 > n1, "{n0:#x} {n1:#x}");
+        let (before, after) = (dds::decode_colour_block(&block, false), dds::decode_colour_block(&bright, false));
+        // (The first texel takes the first end, no green: now full red, still no green; the
+        // second the second end, its green doubled; the blends between, in order.)
+        assert_eq!(after[0][..3], [255, 0, 0]);
+        assert_eq!(after[1][..3], [255, 81, 0]);
+        assert!(before[2][1] < before[3][1] && after[2][1] < after[3][1] && after[3][1] < after[1][1]);
     }
 
     /// The Seraphim's team colour, from the albedo's alpha into the specular map's.

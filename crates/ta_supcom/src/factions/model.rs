@@ -49,6 +49,28 @@ pub struct Converted {
 /// The most vertices a piece may hold: a 3DO's polygons name them in 16 bits.
 const MAX_PIECE_VERTICES: usize = u16::MAX as usize + 1;
 
+/// What of a model counts as standing on the ground ([`ground_extent`]): from this far under its
+/// foot (ogrids; deeper is a foundation, meant to stay in the ground)...
+pub const GROUND_UNDER: f64 = 0.25;
+/// ...to this far over it (what the ground beside a building on a slope would run into).
+pub const GROUND_OVER: f64 = 0.5;
+
+/// How wide (ogrids, across and along, about its middle) what of `mesh` stands on the ground is,
+/// at `uniform_scale`: what lies from [`GROUND_UNDER`] under its foot (the mesh's y 0, the ground
+/// Forged Alliance stands it on) to [`GROUND_OVER`] over it. None when nothing does.
+pub fn ground_extent(mesh: &Mesh, uniform_scale: f64) -> Option<[f64; 2]> {
+    let mut reach: Option<[f64; 2]> = None;
+    for v in &mesh.vertices {
+        let y = v.position[1] as f64 * uniform_scale;
+        if (-GROUND_UNDER..=GROUND_OVER).contains(&y) {
+            let r = reach.get_or_insert([0.0; 2]);
+            r[0] = r[0].max((v.position[0] as f64 * uniform_scale).abs());
+            r[1] = r[1].max((v.position[2] as f64 * uniform_scale).abs());
+        }
+    }
+    reach.map(|[x, z]| [2.0 * x, 2.0 * z])
+}
+
 /// Each triangle whose texture coordinates all lie within one repeat of the texture moved by whole
 /// textures into 0..1 (its corners copied, once each, where another triangle shares them unmoved):
 /// how many were moved, and how many straddle a texture's edge (left as they are). `Err` when a
@@ -256,6 +278,21 @@ mod tests {
 
     fn paint() -> Material {
         Material { name: "tank".into(), albedo: "a.dds".into(), specular: "s.dds".into(), normals: "n.dds".into(), mean: [1, 2, 3] }
+    }
+
+    /// What of a mesh stands on the ground: what lies from a quarter of an ogrid under its foot to
+    /// half an ogrid over it, as wide each way as it reaches from its middle; its foundations and
+    /// what stands higher left out; none when nothing is there.
+    #[test]
+    fn a_meshs_ground_extent_is_what_stands_on_the_ground() {
+        let at = |x: f32, y: f32, z: f32| scm::Vertex { position: [x, y, z], normal: [0.0, 1.0, 0.0], tangent: [1.0, 0.0, 0.0], binormal: [0.0, 0.0, 1.0], uv0: [0.0; 2], uv1: [0.0; 2], bone: 0 };
+        // (Ten mesh units an ogrid.)
+        let vertices = vec![at(-4.0, 0.0, 3.0), at(6.0, 4.0, -2.0), at(1.0, -2.0, -5.0), at(20.0, 30.0, 0.0), at(0.0, -9.0, 25.0)];
+        let mesh = Mesh { bones: Vec::new(), vertices, triangles: Vec::new(), info: String::new() };
+        let [x, z] = ground_extent(&mesh, 0.1).unwrap();
+        assert!((x - 1.2).abs() < 1e-6 && (z - 1.0).abs() < 1e-6, "{x} {z}");
+        let high = Mesh { vertices: vec![at(0.0, 10.0, 0.0)], ..mesh.clone() };
+        assert_eq!(ground_extent(&high, 0.1), None);
     }
 
     /// The test tank (crates/ta_supcom/src/scm.rs): its bones its pieces, at their places, z
