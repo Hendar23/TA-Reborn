@@ -62,10 +62,11 @@
   upgrading the one below, are on their engineers' menus, so every unit can now be built, and the
   computer players climb the tiers to tech 3 (TA's own sides, whose factories stop at tech 2,
   play as before). Nukes, anti-nukes and tactical missiles are built one at a time at their price
-  (a nuke 12,000 metal and 1,350,000 energy over five minutes), and a nuke flies high and comes
-  down on its target. Missile defences take what they do in the game: an anti-nuke the nukes, a
-  tactical missile defence or a ship's point defence the tactical missiles, and their tactical
-  missiles no longer set off the nuclear launch warnings. Anti-air homes on its aircraft, flak bursts over its area, and aircraft gather
+  (a nuke 12,000 metal and 1,350,000 energy over five minutes); a nuke flies high and comes down
+  on its target, a tactical missile at TA's tactical missiles' height. Missile defences take what
+  they do in the game: an anti-nuke the nukes, a tactical missile defence or a ship's point
+  defence the tactical missiles, and their tactical missiles no longer set off the nuclear
+  launch warnings. Anti-air homes on its aircraft, flak bursts over its area, and aircraft gather
   speed, turn and attack as theirs do (only gunships hover to attack). Every weapon deals the
   game's own damage a second, its racks, muzzles, beams, damage over time and splitting shells
   counted. Upkeep is paid only for what TA Reborn plays (no shields yet: the Fatboy's costs

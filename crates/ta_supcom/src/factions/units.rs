@@ -385,8 +385,15 @@ const NUKE_SPEED: i64 = 350;
 
 /// How long a missile launched upright climbs before it steers (seconds, TA's `weapontimer`), its
 /// strategic and tactical missiles' (`NUCLEAR_MISSILE`, `CRBLMSSL`, `CORTRON_WEAPON`): out of the
-/// tube high over everything, then level across the map (`cruise`) and down onto its target.
+/// tube high over everything, then level across the map (`cruise`) and down onto its target. A
+/// nuke's, leaving at `LAUNCH_START` and gathering `LAUNCH_ACCELERATION`, takes it some 1,200 px
+/// up (it tops out some 1,300 px over the ground as it turns over).
 const LAUNCH_CLIMB: i64 = 5;
+
+/// A tactical missile's climb (seconds): from `LAUNCH_START` some 590 px up, topping out some
+/// 670 px over the ground as it turns over, about as high as TA's own tactical missile
+/// (`CORTRON_WEAPON`, five seconds from rest: some 770 from its taller launcher).
+const TACTICAL_CLIMB: i64 = 3;
 
 /// How fast those missiles turn (TA's angle units a second): TA's strategic missiles' 32,768, half
 /// a turn.
@@ -541,8 +548,8 @@ pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
             let launcher = stock && k == Kind::Missile || strategic;
             let upright = launched_upright(w);
             let (start, acceleration) = match shot {
-                // (Out of the tube gathering speed as TA's strategic missiles do, some 1,300 px up
-                // by the end of its climb.)
+                // (Out of the tube gathering speed as TA's strategic missiles do: `LAUNCH_CLIMB`,
+                // `TACTICAL_CLIMB`.)
                 _ if launcher => (LAUNCH_START, LAUNCH_ACCELERATION),
                 // (A tactical defence's shot leaves its muzzle at full speed, as the Phalanx's
                 // rounds and the zapper's beam do: `COUNTERMEASURE_SPEED`.)
@@ -568,7 +575,7 @@ pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
             }
             if launcher {
                 put("cruise", "1".into());
-                put("weapontimer", LAUNCH_CLIMB.to_string());
+                put("weapontimer", if strategic { LAUNCH_CLIMB } else { TACTICAL_CLIMB }.to_string());
                 put("turnrate", CRUISE_TURN.to_string());
                 // (A tactical missile homes on what it is sent at, as Forged Alliance's do; a nuke
                 // strikes the place, as TA's do: `WeaponType::strikes_a_place`.)
@@ -583,7 +590,11 @@ pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
                 let turn = shot.map(|s| (s.turn_rate * 65536.0 / 360.0).round() as i64).filter(|&t| t > 0).unwrap_or(least);
                 put("turnrate", turn.max(least).to_string());
             }
-            let climb = if launcher { LAUNCH_CLIMB } else { 0 };
+            let climb = match (launcher, strategic) {
+                (false, _) => 0,
+                (true, true) => LAUNCH_CLIMB,
+                (true, false) => TACTICAL_CLIMB,
+            };
             // (A missile defence's shot lives long enough to climb to what it chases, as TA's
             // anti-nukes' a minute: ten seconds at least.)
             let least = if k == Kind::AntiMissile { 10 } else { 0 };
@@ -1357,7 +1368,7 @@ mod tests {
             ..Default::default()
         };
         let section = weapon_section(&launcher, &w);
-        for (key, want) in [("stockpile", "1"), ("metalpershot", "180"), ("energypershot", "3600"), ("reloadtime", "30.000"), ("targetable", "2"), ("commandfire", "1"), ("cruise", "1"), ("default", "6000")] {
+        for (key, want) in [("stockpile", "1"), ("metalpershot", "180"), ("energypershot", "3600"), ("reloadtime", "30.000"), ("targetable", "2"), ("commandfire", "1"), ("cruise", "1"), ("weapontimer", "3"), ("default", "6000")] {
             assert_eq!(value(&section, key), [want], "{key} in {section}");
         }
         assert!(value(&section, "minbarrelangle").is_empty(), "its least range is not TA's");

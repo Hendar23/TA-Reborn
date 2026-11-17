@@ -237,18 +237,20 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
   together (TA has no shells that split).
 - **Missiles** its launcher builds and stores (`CountedProjectile`: the nukes, the subs' and the
   Hauthuum's strategic missiles, the tactical missile launchers, the anti-nukes) are TA's
-  stockpile: each built at its projectile's price (`metalpershot`, `energypershot`) over its
-  build time at the launcher's build rate (`reloadtime`: a nuke 300 s, an anti-nuke 240, a
-  tactical missile 30), up to TA Reborn's ten. The strategic and tactical launchers' missiles fly
-  as TA's strategic ones: upright out of the tube for five seconds, then high and level across
-  the map (`cruise`), half a turn a second, down onto their target from above; a nuke, without
-  `tracks`, at the place it is sent (TA's nukes strike a place), a tactical missile homing on
-  what it is sent at. A missile leaving its tube upright (an anti-nuke's too) leaves at 120 px a
-  second at least, clear of the ground before it arms; where its muzzle rests under the ground
-  (FA's silos open and lift their missile: the Aeon's lies 100 px down), from the silo's foot. A
-  submarine fires its missiles from under the water (`firesubmersed`). A missile flies long enough to reach as far as its range (a nuke's, the
-  whole map) half again, with its climb to speed; a nuke at TA's nukes' 350 pixels a second at
-  least (FA's leave their silo at a crawl and speed up on the way, which a TA missile cannot).
+  stockpile: each built at its projectile's price (`metalpershot`, `energypershot`) over its build
+  time at the launcher's build rate (`reloadtime`: a nuke 300 s, an anti-nuke 240, a tactical
+  missile 30), up to TA Reborn's ten. The strategic and tactical launchers' missiles fly as TA's
+  strategic ones: upright out of the tube (a nuke for five seconds, topping out some 1,300 px over
+  the ground; a tactical missile for three, some 670 px, about as high as TA's own
+  `CORTRON_WEAPON`'s 770), then level across the map (`cruise`), half a turn a second, down onto
+  their target from above; a nuke, without `tracks`, at the place it is sent (TA's nukes strike a
+  place), a tactical missile homing on what it is sent at. A missile leaving its tube upright (an
+  anti-nuke's too) leaves at 120 px a second at least, clear of the ground before it arms; where
+  its muzzle rests under the ground (FA's silos open and lift their missile: the Aeon's lies 100
+  px down), from the silo's foot. A submarine fires its missiles from under the water
+  (`firesubmersed`). A missile flies long enough to reach as far as its range (a nuke's, the whole
+  map) half again, with its climb to speed; a nuke at TA's nukes' 350 pixels a second at least
+  (FA's leave their silo at a crawl and speed up on the way, which a TA missile cannot).
 - **Missile defences** take what FA's take (TA's `interceptor` and `targetable` as classes,
   docs/FORMATS.md): strategic missiles (`STRATEGIC MISSILE` projectiles) `targetable=1`, the
   anti-nukes (`TargetRestrictOnlyAllow = 'STRATEGIC MISSILE'`) `interceptor=1`; tactical missiles
