@@ -292,6 +292,9 @@ pub struct LauncherApp {
     /// Settings page: the settings screen (shared with the game's options).
     pub(crate) settings_view: ta_ui::settings::SettingsView,
     pretend_missing: bool,
+    /// The experimental features shown this run whatever the settings say (`--experimental`, or
+    /// `--show` at an experimental dialog): [`LauncherApp::experimental`].
+    pub(crate) experimental_forced: bool,
     notice: Option<Notice>,
     /// Notices waiting their turn (a few at most).
     notices: std::collections::VecDeque<Notice>,
@@ -644,6 +647,7 @@ impl LauncherApp {
                 view
             },
             pretend_missing: args.pretend_missing,
+            experimental_forced: args.experimental,
             notice: None,
             notices: std::collections::VecDeque::new(),
             toasts_in_capture: false,
@@ -737,6 +741,8 @@ impl LauncherApp {
             ("maps-list", _) => self.maps.view = crate::maps::View::List,
             // (The dialog that imports Supreme Commander's maps, the game looked for.)
             ("supcom", maps) => {
+                // (An experimental feature's: shown this run whatever the settings say.)
+                self.experimental_forced = true;
                 self.open_supcom(crate::supcom::Tab::Maps);
                 if !maps.is_empty() {
                     self.supcom.auto_start = Some(maps.split(',').map(|m| m.trim().to_string()).filter(|m| !m.is_empty()).collect());
@@ -745,6 +751,7 @@ impl LauncherApp {
             }
             // (The same dialog at the game's factions; those named imported once listed: `all`.)
             ("supcom-factions", sides) => {
+                self.experimental_forced = true;
                 self.open_supcom(crate::supcom::Tab::Factions);
                 if !sides.is_empty() {
                     self.supcom.factions.auto_start = Some(sides.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect());
@@ -1370,9 +1377,26 @@ impl LauncherApp {
 
     /// Opens the Supreme Commander dialog at `tab` (or at the other, where only its import is under
     /// way), looking for the game where the tab's look is not current.
+    ///
+    /// It is an experimental feature's ([`crate::experimental::Feature::SupremeCommander`]): with
+    /// experimental features off it opens only to show an import still under way (one started
+    /// before they were turned off).
     pub(crate) fn open_supcom(&mut self, tab: crate::supcom::Tab) {
+        if !self.experimental(crate::experimental::Feature::SupremeCommander) && !self.supcom.importing() && !self.supcom.factions.importing() {
+            return;
+        }
         let roots = self.supcom_roots();
         self.supcom.show(tab, roots);
+    }
+
+    /// The tab of the Supreme Commander dialog that makes the mod `id` again: one of its imports'
+    /// made by an older converter ([`crate::supcom::update_tab`]), with the import shown
+    /// (experimental features on); else none, the mod listed as any other.
+    pub(crate) fn supcom_update(&self, id: &str) -> Option<crate::supcom::Tab> {
+        if !self.experimental(crate::experimental::Feature::SupremeCommander) {
+            return None;
+        }
+        crate::supcom::update_tab(&self.mods, id)
     }
 
     /// IMPORT on a tab of the Supreme Commander dialog: started, unless something keeps it from
@@ -2059,7 +2083,7 @@ impl LauncherApp {
                 let updates = self.mods.mods.iter()
                     .filter(|m| !self.config.mods.is_hidden(m.id()))
                     .filter(|m| crate::catalogue::get(m.id()).is_some_and(|entry| crate::mod_library::waiting_update(entry, self.mods.updatable_version(m.id())).is_some())
-                        || crate::supcom::update_tab(&self.mods, m.id()).is_some())
+                        || self.supcom_update(m.id()).is_some())
                     .count();
                 if updates > 0 {
                     (Some((updates.to_string(), AMBER)), Some(tf("Updates waiting: {n}", &[("n", &updates)])))
@@ -3439,6 +3463,77 @@ mod tests {
             egui::Shape::Vec(shapes) => for shape in shapes { text_shapes(shape, texts); },
             _ => {}
         }
+    }
+
+    /// The Supreme Commander import is an experimental feature. With experimental features off,
+    /// as they come, the Maps and Mods pages have no SUPREME COMMANDER… and its dialog does not
+    /// open, unless to show an import already under way. Turned on in the settings, they are
+    /// there. `--experimental` and `--show` at the dialog show them for one run, the setting left
+    /// as it is.
+    #[test]
+    fn the_supreme_commander_import_is_shown_only_with_experimental_features_on() {
+        let dir = temp_dir("experimental_features");
+        let (ctx, mut app) = launcher(&dir.join("config.toml"), &["--pretend-missing"]);
+        app.skins.shutdown();
+        let painted = |ctx: &egui::Context, app: &mut LauncherApp, page: Page| -> Vec<String> {
+            app.page = page;
+            let mut texts = Vec::new();
+            // (A few frames: a page lays itself out over its first.)
+            for _ in 0..3 {
+                let output = frame(ctx, app, RawInput::default());
+                let mut shapes = Vec::new();
+                for clipped in &output.shapes {
+                    text_shapes(&clipped.shape, &mut shapes);
+                }
+                texts = shapes.into_iter().map(|(text, _)| text).collect();
+            }
+            texts
+        };
+        let open = |app: &mut LauncherApp, tab: crate::supcom::Tab| app.apply(Action::SupcomOpen(tab), &eframe::Frame::_new_kittest());
+        assert!(!app.config.launcher.experimental_features, "off as they come");
+        for page in [Page::Maps, Page::Mods] {
+            let texts = painted(&ctx, &mut app, page);
+            assert!(texts.iter().any(|text| text == "RESCAN"), "{page:?} drawn: {texts:?}");
+            assert!(!texts.iter().any(|text| text == "SUPREME COMMANDER…"), "{page:?}: {texts:?}");
+        }
+        open(&mut app, crate::supcom::Tab::Maps);
+        assert!(!app.supcom.open, "no way in with experimental features off");
+        // An import started before they were turned off is still seen through.
+        app.supcom.factions.pretend_importing();
+        open(&mut app, crate::supcom::Tab::Factions);
+        assert!(app.supcom.open, "an import under way is shown");
+        app.supcom.factions.stop();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while app.supcom.factions.importing() && std::time::Instant::now() < deadline {
+            app.supcom.factions.poll(&ctx, false);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        app.supcom.close();
+        // Turned on in the settings: there.
+        app.config.launcher.experimental_features = true;
+        for page in [Page::Maps, Page::Mods] {
+            let texts = painted(&ctx, &mut app, page);
+            assert!(texts.iter().any(|text| text == "SUPREME COMMANDER…"), "{page:?}: {texts:?}");
+        }
+        open(&mut app, crate::supcom::Tab::Maps);
+        assert!(app.supcom.open);
+        app.supcom.close();
+        app.skins.shutdown();
+        drop((ctx, app));
+        // For one run, the setting left off.
+        for extra in [&["--pretend-missing", "--experimental"][..], &["--pretend-missing", "--page", "maps", "--show", "supcom"][..]] {
+            let (_ctx, mut app) = launcher(&dir.join("config_run.toml"), extra);
+            app.skins.shutdown();
+            if let Some(what) = extra.iter().position(|a| *a == "--show").map(|i| extra[i + 1]) {
+                app.show(what);
+                assert!(app.supcom.open, "{extra:?}");
+                app.supcom.close();
+            }
+            assert!(app.experimental(crate::experimental::Feature::SupremeCommander), "{extra:?}");
+            assert!(!app.config.launcher.experimental_features, "{extra:?}: the setting as it was");
+            app.skins.shutdown();
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

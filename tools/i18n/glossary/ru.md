@@ -596,3 +596,4 @@ Supreme Commander and Forged Alliance stay as written, feminine as игра ("о
 | the launcher's footer | строка состояния лаунчера (as "в строке состояния") |
 | a side to play in skirmish / a side each | отдельная сторона в схватке / каждая фракция — отдельная сторона |
 | stealth fields / shields / teleporting / upgrading buildings in place | поля скрытности (as Скрытный: не виден на радаре; not маскировка, the cloak) / щиты / телепортация / модернизация зданий на месте |
+| experimental features / EXPERIMENTAL (tag) | экспериментальные функции / ЭКСПЕРИМЕНТАЛЬНО |

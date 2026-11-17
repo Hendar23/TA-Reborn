@@ -601,3 +601,4 @@ follows a colon, so its items stay nominative noun phrases: "ayrıca şunlar kul
 | the launcher's footer | başlatıcının durum çubuğu (as "status bar") |
 | commanders' enhancements / upgrading buildings in place | komutan geliştirmeleri / binaların yerinde yükseltilmesi |
 | shields / stealth fields / teleporting | kalkanlar / gizlilik alanları (not hayalet, TA's stealthy units) / ışınlanma |
+| experimental features / EXPERIMENTAL (tag) | deneysel özellikler / DENEYSEL |

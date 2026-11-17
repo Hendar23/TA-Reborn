@@ -666,3 +666,4 @@ AEON, SERAPHIM) are followed by 진영 ({faction} 진영을); units count in 기
 | Held until the import ends (amber note beside the greyed controls) | 가져오기가 끝날 때까지 변경 불가 |
 | the launcher's footer (its bar of activity chips) | 런처 하단 표시줄 |
 | shields / stealth fields / teleporting / upgrading buildings in place | 방어막 / 스텔스 필드 / 순간이동 / 건물의 제자리 업그레이드 |
+| experimental features / EXPERIMENTAL (tag) | 실험적 기능 / 실험적 |

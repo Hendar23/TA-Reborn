@@ -630,3 +630,4 @@ A faction made playable is "uno schieramento da giocare in schermaglia". Straigh
 | UPDATE… / Update: import it again (a mod made by an older TA Reborn) | AGGIORNA… / Aggiornamento: reimportala |
 | the commanders' enhancements / upgrading buildings in place | i potenziamenti dei comandanti / gli edifici che salgono di livello sul posto |
 | shields / stealth fields / teleporting | scudi / campi di furtività (as "Furtiva: invisibile al radar") / teletrasporto |
+| experimental features / EXPERIMENTAL (tag) | funzioni sperimentali / SPERIMENTALE |

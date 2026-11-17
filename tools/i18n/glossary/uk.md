@@ -635,3 +635,4 @@ A button named in a launcher sentence goes in «», with кнопка where it i
 | Held until the import ends (amber note by greyed controls, also their tip) / Still to come | Недоступно до кінця імпорту / Ще в планах |
 | SC's commanders' enhancements / upgrading buildings in place / stealth fields / teleporting | удосконалення командирів / модернізація будівель на місці / поля невидимості (not маскування: TA's cloak) / телепортація |
 | then import these (a greyed IMPORT's tip, shared by the maps' and factions' tabs) | потім імпортуйте вибране (вибрані карти / вибрані фракції where one tab alone says it) |
+| experimental features / EXPERIMENTAL (tag) | експериментальні функції / ЕКСПЕРИМЕНТАЛЬНО |

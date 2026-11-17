@@ -600,3 +600,4 @@ and are joined by a comma ("com fonte própria, imagens de fundo nos painéis").
 | look through (a folder) / the launcher's footer | examinar ("Examinando {folder}…") / o rodapé do inicializador |
 | Imported 1 map / the {faction} faction (the singular keys) | 1 mapa importado / Facção {faction} importada; failures stay count-safe ("não criados: {failed}", "unidades não criadas: {failed}") |
 | the commanders' enhancements / upgrading buildings in place / shields / stealth fields / teleporting (Forged Alliance's, still to come) | as melhorias dos comandantes / o aprimoramento de edifícios no próprio lugar / escudos / campos de furtividade / teletransporte |
+| experimental features / EXPERIMENTAL (tag) | recursos experimentais / EXPERIMENTAL |

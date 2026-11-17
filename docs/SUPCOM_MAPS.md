@@ -5,6 +5,11 @@ skirmish. The maps are made on the player's computer from their own copy of the 
 Steam's), into a map pack in their mods folder; nothing of Supreme Commander's is shipped with
 TA Reborn or kept in this repository.
 
+The import is an **experimental feature**: the launcher shows it with **ENABLE EXPERIMENTAL
+FEATURES** on (Settings, LAUNCHER; off by default). Off, its SUPREME COMMANDER… buttons and the
+Mods page's UPDATE… for its pack are left out; maps it made before stay installed and play as
+any map pack's. `--experimental`, or `--show supcom`, shows it for one run (captures, tests).
+
 - **Players:** the launcher's Maps page, **SUPREME COMMANDER…** (its MAPS tab; the Mods page's
   opens the same dialog at its FACTIONS). The dialog finds the game (a folder chosen with CHANGE
   FOLDER…, or the copy switched to, is kept for the next start in the launcher's settings folder,

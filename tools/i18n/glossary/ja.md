@@ -570,3 +570,4 @@ End). Words only a screen reader says are natural spoken phrases ({content}を�
 | {seconds} s / SHOW {count} MORE / SHOW THE LATEST TEN | {seconds}秒 / 残り{count}件を表示 / 最新10件のみ表示 |
 | LEGAL / THE PROJECT (About page headings) / MUSIC OPTIONS | 法的情報 / プロジェクト / 音楽のオプション |
 | the launcher crashed / exception {code} | ランチャーがクラッシュしました / 例外{code} |
+| experimental features / EXPERIMENTAL (tag) | 試験的な機能 / 試験的 |

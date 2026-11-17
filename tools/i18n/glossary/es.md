@@ -665,3 +665,4 @@ como etiqueta válida para cualquier número: "sin crear: {failed}", "unidades s
 | Held until the import ends (nota junto a controles atenuados) / the launcher's footer | Bloqueado durante la importación / la barra de estado del lanzador |
 | import it again (un mod hecho por un TA Reborn anterior) / UPDATE… | importar de nuevo, vuelve a importarlo / ACTUALIZAR… |
 | the commanders' enhancements / upgrading buildings in place / stealth fields / teleporting | las mejoras de los comandantes / la mejora de edificios in situ / los campos de sigilo / el teletransporte |
+| experimental features / EXPERIMENTAL (tag) | funciones experimentales / EXPERIMENTAL |
