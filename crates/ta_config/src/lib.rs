@@ -174,8 +174,10 @@ pub const RECORD_VERSION: u32 = 46;
 /// and its heap) pays its metal alone when reclaimed; 102, an interceptor's `interceptor` and a
 /// missile's `targetable` are sets of classes (as the Spring engine reads them): an interceptor
 /// shoots down only the missiles whose classes it shares (TA's own all class 1), and once they are
-/// within its range; the no-nukes mutator leaves out the strategic class alone.
-pub const SIMULATION_VERSION: u32 = 102;
+/// within its range; the no-nukes mutator leaves out the strategic class alone; 103, a builder whose
+/// `DefaultMissionType` is `RepairPatrol` (TA: Escalation's repair tower upgrades) mends the damaged
+/// units round it by itself when idle, and works as a module on the pad that took it on.
+pub const SIMULATION_VERSION: u32 = 103;
 /// Records shorter than one year of simulated time are supported. Shared with the
 /// launcher's metadata reader so impossible durations cannot start endless save catch-up.
 pub const MAX_RECORD_TICKS: u64 = 30 * 3600 * 24 * 365;
@@ -364,6 +366,7 @@ impl Keys {
         ("players", "Players panel (hold)", "Tab"),
         ("share", "Share resources and units with an ally", "H"),
         ("health_bars", "Health bars: damaged units, every damaged unit, the selection", "Backtick"),
+        ("range_overlays", "Ranges: all, radar, sonar and jammers only, none", "Alt+O"),
         ("quick_save", "Quick save (single player)", "Ctrl+Shift+S"),
         ("cheats", "Cheats (single player)", "Ctrl+Alt+C"),
         ("scroll_up", "Scroll up (Ctrl: tilt)", "Up"),
@@ -612,6 +615,19 @@ pub enum HealthBars {
     Damaged,
     /// Only selected and hovered units.
     Selected,
+}
+
+/// Which ranges show round the selected units, the building being placed and the unit the
+/// pointer rests on (on the battlefield and the minimap).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RangeOverlays {
+    /// What they reach with their weapons, sight, radar, sonar, jammers and missile defence.
+    #[default]
+    All,
+    /// Their radar, sonar and jammers' reach only.
+    Sensors,
+    /// None.
+    Off,
 }
 
 /// What plays behind the game's title menu.
@@ -1226,6 +1242,8 @@ pub struct Gameplay {
     /// Single-player games save themselves every five minutes of game time.
     pub autosave: bool,
     pub health_bars: HealthBars,
+    /// Which ranges the selected units (the building being placed, the unit pointed at) show.
+    pub range_overlays: RangeOverlays,
     /// Far out, each unit also shows as an icon in its owner's colour (strategic zoom); off: the
     /// units alone at every height.
     pub strategic_icons: bool,
@@ -1315,6 +1333,7 @@ impl Default for Gameplay {
             ui_scale: 1.0,
             autosave: true,
             health_bars: HealthBars::Auto,
+            range_overlays: RangeOverlays::All,
             strategic_icons: true,
             ta_cursors: true,
             classic_interface: false,

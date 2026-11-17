@@ -615,6 +615,12 @@ take up to all 32 bits of a texel.
     `CORASP_UPGRADE`'s 3,009,819 (its own module is 1,711,415), Big Bertha's for
     `CORINT_UPGRADE`'s 3,781,490 (its own 1,820,443). Their modules are made and stand by,
     never taken on, as they did in TA.
+  * ESC's repair tower upgrades (`ARMASP_UPGRADE`, `CORASP_UPGRADE`: `WorkerTime=360`,
+    `Builddistance=448`, `canmove=0`, `canpatrol=0`, `canguard=0`) say
+    `DefaultMissionType=RepairPatrol`, a mission none of TA's own units gives: on
+    their own (the Arm one standing by its pad, the Core one taken on) they mend the damaged
+    units of their side and its allies round them, the nearest first, whenever they have no
+    orders (`sim/repair_round.rs`; `mod_upgrades.rs`'s `mod_repair_report`).
   * TM's mines cloak themselves (`UNIT_CLOAKED` 111, from a later patch; free, their files
     giving no `CloakCost`). TA's own mines (Core Contingency's) start cloaked from
     `init_cloaked=1`, as TA spells it.

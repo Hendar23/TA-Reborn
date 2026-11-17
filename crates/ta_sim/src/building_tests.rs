@@ -39,6 +39,24 @@ fn geothermal_plants_are_solid_and_reserve_their_site() {
     assert!(!sim.can_place(sim.types.id("WALL").unwrap(), u.pos), "a geothermal plant cannot be built through");
 }
 
+/// A building being placed shows which cells of its footprint it may have, row by row from the
+/// north-west: those another building stands on may not, the rest may; where the site will not do
+/// as a whole (a geothermal plant off a vent), none may; on open ground, all.
+#[test]
+fn placement_cells_say_which_cells_will_do() {
+    let mut sim = buildings();
+    // (The wall's cell (18, 18); the yard's at (300, 310) takes (17..20, 18..20).)
+    put(&mut sim, "WALL", 300);
+    let yard = sim.types.id("YARD").unwrap();
+    let at = FxVec3::from_ints(300, 60, 310);
+    assert_eq!(sim.placement_cells(yard, at), [true, false, true, true, true, true]);
+    assert!(!sim.can_place(yard, at));
+    assert_eq!(sim.placement_cells(yard, FxVec3::from_ints(600, 60, 600)), [true; 6]);
+    let geo = sim.types.id("GEO").unwrap();
+    assert_eq!(sim.placement_error(geo, FxVec3::from_ints(600, 60, 600)), Some(crate::world::PlacementError::NeedsGeothermal));
+    assert_eq!(sim.placement_cells(geo, FxVec3::from_ints(600, 60, 600)), [false; 4], "no vent under it: none of it will do");
+}
+
 #[test]
 fn script_yard_state_changes_movement_and_invalidates_routes() {
     let mut sim = buildings();

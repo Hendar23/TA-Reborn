@@ -16,6 +16,7 @@ use ta_ui::i18n::n;
 
 pub(crate) mod anchors;
 mod cast;
+mod ground_line;
 mod cheats;
 mod comms;
 mod companion;
@@ -1181,7 +1182,7 @@ impl Hud {
                         continue;
                     }
                     let cells = crate::game::footprint_rect(game.sim.types.get(*type_id), *pos);
-                    footprint_on_ground(&painter, &project, &ground_at, cells, FootprintLook { colour, cells: false, fill: 0.0 });
+                    plan_on_ground(&painter, &project, &ground_at, cells, colour);
                 }
             }
         }
@@ -1536,18 +1537,23 @@ impl Hud {
                 hover_card(view, &painter, mouse, lines, None, Vec::new());
             }
         }
-        // Placing a building: the ground it will take, TA's grid of the cells it snaps to, under
-        // its ghost and each site of a row being dragged out, in the colour of whether it may go
-        // there (as the ghost). It goes once the building is put down.
+        // Placing a building: the cells of the ground it will take, as TA showed them, under its
+        // ghost and each site of a row being dragged out: each green where it may stand and red
+        // where it may not (the colour-blind marks' blue and orange). Nothing round them, and
+        // nothing once it is put down.
         if let Some(pl) = game.placement.as_ref() {
             let t = game.sim.types.get(pl.type_id);
-            let sites: Vec<(Vec3, bool)> = if pl.row.is_empty() { pl.pos.map(|p| (p, pl.valid)).into_iter().collect() } else { pl.row.clone() };
-            for (at, ok) in sites {
-                footprint_on_ground(&painter, &project, &ground_at, crate::game::footprint_rect(t, crate::game::fx_vec(at)), FootprintLook::placing(ok));
+            let sites: Vec<(Vec3, bool, &[bool])> = if pl.row.is_empty() {
+                pl.pos.map(|p| (p, pl.valid, pl.cells.as_slice())).into_iter().collect()
+            } else {
+                pl.row.iter().enumerate().map(|(i, &(p, ok))| (p, ok, pl.row_cells.get(i).map_or(&[][..], |c| c.as_slice()))).collect()
+            };
+            for (at, ok, cells) in sites {
+                footprint_cells(&painter, &project, &ground_at, crate::game::footprint_rect(t, crate::game::fx_vec(at)), cells, ok);
             }
         }
-        // (The words over a building being placed: over its ghost, and clear of its grid, above
-        // the highest of the grid's corners on the screen.)
+        // (The words over a building being placed: over its ghost, and clear of its cells, above
+        // the highest of their corners on the screen.)
         let label_at = |pos: Vec3, t: &ta_sim::UnitType| -> Option<Pos2> {
             let p = project(pos + Vec3::Y * (t.model.height.to_f32() + 14.0))?;
             let (x0, z0, x1, z1) = crate::game::footprint_rect(t, crate::game::fx_vec(pos));
@@ -1620,21 +1626,14 @@ impl Hud {
             painter.rect_filled(r, 2.0, pal().accent);
             painter.galley(at, galley, Color32::BLACK);
         }
-        // A circle on the ground, following the terrain: a side every few points round it however
-        // large it is on the screen (sides by its size in the world showed as corners on a wide
-        // one), its line edged dark to read on pale ground.
+        // A circle on the ground, following the terrain, a point every few screen points of what
+        // is in view however large it is (`ground_line`: a weapon reaching across the map seen
+        // from low down is no more), its line edged dark to read on pale ground.
+        let lens = ground_line::Lens::new(camera, ppp);
         let ring = |c: Vec3, r: f32, stroke: Stroke| {
-            let across = [Vec3::X, Vec3::Z].iter().filter_map(|d| Some(project(c + *d * r)?.distance(project(c)?))).fold(0.0f32, f32::max);
-            let n = (std::f32::consts::TAU * across / 4.0).clamp(48.0, 720.0) as usize;
-            let pts: Vec<Pos2> = (0..=n)
-                .filter_map(|k| {
-                    let a = k as f32 / n as f32 * std::f32::consts::TAU;
-                    let (x, z) = (c.x + a.cos() * r, c.z + a.sin() * r);
-                    project(Vec3::new(x, ground_at(x, z) + 2.0, z))
-                })
-                .collect();
-            painter.add(egui::Shape::line(pts.clone(), Stroke::new(stroke.width + 2.0, Color32::from_black_alpha((stroke.color.a() as f32 * 0.3) as u8))));
-            painter.add(egui::Shape::line(pts, stroke));
+            let runs = ground_line::circle(&lens, &ground_at, c, r, 2.0);
+            ground_line::stroke(&painter, &runs, Stroke::new(stroke.width + 2.0, Color32::from_black_alpha((stroke.color.a() as f32 * 0.3) as u8)));
+            ground_line::stroke(&painter, &runs, stroke);
         };
         // An area order being dragged.
         if let (Some((c, r)), Some(mode)) = (game.area, game.command_mode) {
@@ -1656,14 +1655,15 @@ impl Hud {
         // vehicle, a jammer); the Commander's and the fighters' show when the pointer rests on one.
         let ranged = ranges::collect(game, alpha, (rest >= HOVER_CARD_AFTER).then_some(game.hovered).flatten());
         let still = ta_ui::motion::still(ctx);
-        let canvas = ranges::Canvas { painter: &painter, project: &project, ground: &ground_at, free: free.intersect(view), clock, still, placed: std::cell::RefCell::new(self.minimap_rect.filter(|_| !self.classic).map(|m| vec![m.expand(6.0)]).unwrap_or_default()) };
+        let canvas = ranges::Canvas { painter: &painter, lens, ground: &ground_at, free: free.intersect(view), clock, still, placed: std::cell::RefCell::new(self.minimap_rect.filter(|_| !self.classic).map(|m| vec![m.expand(6.0)]).unwrap_or_default()) };
         for r in ranged {
             let t = game.sim.types.get(r.type_id);
             let weapon = t.weapons.iter().flatten().map(|&w| game.sim.weapon_types.get(w)).filter(|w| !w.def.stockpile && !w.def.interceptor).map(|w| w.range.to_f32()).fold(0.0, f32::max);
-            if r.weapons && weapon > 0.0 {
+            // (The weapons' reach shows with all the ranges, not with the sensors' alone.)
+            if r.weapons && weapon > 0.0 && game.range_overlays == ta_config::RangeOverlays::All {
                 ring(r.at, weapon, Stroke::new(1.5, Color32::from_rgba_unmultiplied(255, 90, 70, 170)));
             }
-            for range in ranges::display_ranges(t, &game.sim.weapon_types) {
+            for range in ranges::shown_ranges(t, &game.sim.weapon_types, game.range_overlays) {
                 ranges::draw(&canvas, r.at, range, r.power);
                 if !still && r.power == ranges::Power::On {
                     ctx.request_repaint();
@@ -2544,104 +2544,79 @@ pub(crate) fn stockpile(sim: &ta_sim::Sim, u: &ta_sim::Unit) -> Option<(String, 
     Some((line, next))
 }
 
-/// How a building's footprint is laid on the ground (see [`footprint_on_ground`]): its colour,
-/// whether the cells it takes are drawn (a building being placed, TA's grid) or its outline
-/// alone (a plan, TA's square), and how strongly it is filled (0: not at all).
-#[derive(Clone, Copy)]
-struct FootprintLook {
-    colour: Color32,
-    cells: bool,
-    fill: f32,
-}
-
-impl FootprintLook {
-    /// A building being placed: its cells in the colour of whether it may go there, as its
-    /// ghost (green or red, or the colour-blind marks' blue or orange).
-    fn placing(ok: bool) -> FootprintLook {
-        let [r, g, b, _] = if ok { crate::palette::allowed_rgba() } else { crate::palette::blocked_rgba() };
-        // (A little brighter than the overlays' cells: a line, not a wash.)
-        let lift = |c: u8| c.saturating_add(25);
-        FootprintLook { colour: Color32::from_rgb(lift(r), lift(g), lift(b)), cells: true, fill: 0.16 }
-    }
-}
-
-/// Cells a footprint's grid is drawn for at most a side (a mod's huge building: its outline).
+/// Cells a footprint is drawn by at most a side (a mod's huge building: its cells in blocks).
 const FOOTPRINT_CELLS_MOST: i32 = 32;
-/// Screen points a cell must be across for its lines to be drawn (further out, the outline).
-const FOOTPRINT_CELL_LEAST: f32 = 5.0;
 
-/// A building's footprint lying on the ground: the cells `(x0, z0)..(x1, z1)` (16 px each, the
-/// grid buildings snap to), its lines through every cell's corner so that they follow the ground
-/// (on the water's surface at sea), a dark edge under each to read on snow as on lava and the
-/// sea, at a few points' width whatever the zoom. Where a cell is only a few points across (far
-/// out), the outline alone.
-fn footprint_on_ground(painter: &egui::Painter, project: &impl Fn(Vec3) -> Option<Pos2>, ground_at: &impl Fn(f32, f32) -> f32, (x0, z0, x1, z1): (i32, i32, i32, i32), look: FootprintLook) {
-    let (nx, nz) = ((x1 - x0).clamp(1, FOOTPRINT_CELLS_MOST) as usize, (z1 - z0).clamp(1, FOOTPRINT_CELLS_MOST) as usize);
-    // The corners of the cells on the ground, projected, row by row.
-    let step = |n: usize, cells: i32, k: usize| (k as f32 * cells as f32 / n as f32) * 16.0;
-    let corners: Vec<Option<Pos2>> = (0..=nz)
-        .flat_map(|j| (0..=nx).map(move |i| (i, j)))
-        .map(|(i, j)| {
-            let (x, z) = (x0 as f32 * 16.0 + step(nx, x1 - x0, i), z0 as f32 * 16.0 + step(nz, z1 - z0, j));
-            project(Vec3::new(x, ground_at(x, z) + 1.5, z))
-        })
-        .collect();
-    let at = |i: usize, j: usize| corners[j * (nx + 1) + i];
-    // Lines through corners, broken where one is off the screen's side of the eye: each run of
-    // points with its width and colour, painted once all are found (the dark edges first, so
-    // that no line's edge notches another's colour where they cross).
-    let mut lines: Vec<(Vec<Pos2>, f32, Color32)> = Vec::new();
-    let mut line = |points: &mut dyn Iterator<Item = Option<Pos2>>, width: f32, colour: Color32| {
-        let mut run: Vec<Pos2> = Vec::new();
-        for p in points.chain(std::iter::once(None)) {
-            match p {
-                Some(p) => run.push(p),
-                None if run.len() >= 2 => lines.push((std::mem::take(&mut run), width, colour)),
-                None => run.clear(),
+/// The colour of a cell of a building being placed: green where it may stand (the ghost's
+/// colour), red where it may not (the colour-blind marks' blue and orange), a square of it a
+/// little in from the cell's edges.
+fn placing_colour(ok: bool) -> Color32 {
+    let [r, g, b, _] = if ok { crate::palette::allowed_rgba() } else { crate::palette::blocked_rgba() };
+    Color32::from_rgba_unmultiplied(r, g, b, if ok { 105 } else { 135 })
+}
+
+/// A building being placed, cell by cell, as TA showed it: each of the cells `(x0, z0)..(x1, z1)`
+/// it will take (16 px each, the grid buildings snap to) a square on the ground (on the water's
+/// surface at sea), a little in from the cell's edges and edged dark to read on snow as on lava
+/// and the sea, green where the building may have it and red where it may not (`cells`, row by
+/// row from the north-west; `ok` for every cell where they are not known). Nothing round it.
+/// (A mod's building more than [`FOOTPRINT_CELLS_MOST`] cells a side: its cells in blocks, a
+/// block red where any of its cells is.)
+fn footprint_cells(painter: &egui::Painter, project: &impl Fn(Vec3) -> Option<Pos2>, ground_at: &impl Fn(f32, f32) -> f32, (x0, z0, x1, z1): (i32, i32, i32, i32), cells: &[bool], ok: bool) {
+    let (w, h) = ((x1 - x0).max(1), (z1 - z0).max(1));
+    let (nx, nz) = (w.min(FOOTPRINT_CELLS_MOST), h.min(FOOTPRINT_CELLS_MOST));
+    let known = cells.len() == (w * h) as usize;
+    let mut fill = egui::Mesh::default();
+    let mut edges: Vec<Vec<Pos2>> = Vec::new();
+    for j in 0..nz {
+        for i in 0..nx {
+            let (cx0, cx1, cz0, cz1) = (i * w / nx, (i + 1) * w / nx, j * h / nz, (j + 1) * h / nz);
+            let here = if known { (cz0..cz1).all(|z| (cx0..cx1).all(|x| cells[(z * w + x) as usize])) } else { ok };
+            // (A sixteenth of a cell in from each edge: the ground shows between the squares.)
+            let inset = 1.5;
+            let (ax, bx) = ((x0 + cx0) as f32 * 16.0 + inset, (x0 + cx1) as f32 * 16.0 - inset);
+            let (az, bz) = ((z0 + cz0) as f32 * 16.0 + inset, (z0 + cz1) as f32 * 16.0 - inset);
+            let corner = |x: f32, z: f32| project(Vec3::new(x, ground_at(x, z) + 1.5, z));
+            let (Some(a), Some(b), Some(c), Some(d)) = (corner(ax, az), corner(bx, az), corner(bx, bz), corner(ax, bz)) else { continue };
+            let k = fill.vertices.len() as u32;
+            for p in [a, b, c, d] {
+                fill.colored_vertex(p, placing_colour(here));
             }
+            fill.add_triangle(k, k + 1, k + 2);
+            fill.add_triangle(k, k + 2, k + 3);
+            edges.push(vec![a, b, c, d, a]);
         }
+    }
+    painter.add(egui::Shape::mesh(fill));
+    for edge in edges {
+        painter.add(egui::Shape::line(edge, Stroke::new(1.0, Color32::from_black_alpha(110))));
+    }
+}
+
+/// A planned building's square on the ground, as TA drew the plans with Shift held: the outline of
+/// the cells `(x0, z0)..(x1, z1)` (16 px each) through every cell's corner, so that it follows
+/// the ground (on the water's surface at sea), edged dark to read on snow as on lava and the sea.
+fn plan_on_ground(painter: &egui::Painter, project: &impl Fn(Vec3) -> Option<Pos2>, ground_at: &impl Fn(f32, f32) -> f32, (x0, z0, x1, z1): (i32, i32, i32, i32), colour: Color32) {
+    let (nx, nz) = ((x1 - x0).clamp(1, FOOTPRINT_CELLS_MOST), (z1 - z0).clamp(1, FOOTPRINT_CELLS_MOST));
+    let at = |i: i32, j: i32| {
+        let (x, z) = ((x0 as f32 + (i * (x1 - x0)) as f32 / nx as f32) * 16.0, (z0 as f32 + (j * (z1 - z0)) as f32 / nz as f32) * 16.0);
+        project(Vec3::new(x, ground_at(x, z) + 1.5, z))
     };
-    // How large a cell is on the screen: the mean of its sides along each way.
-    let across = {
-        let sides: Vec<f32> = (0..nz).flat_map(|j| (0..nx).map(move |i| (i, j))).filter_map(|(i, j)| Some(at(i, j)?.distance(at(i + 1, j)?).max(at(i, j)?.distance(at(i, j + 1)?)))).collect();
-        sides.iter().sum::<f32>() / sides.len().max(1) as f32
-    };
-    let whole = (x1 - x0) as usize == nx && (z1 - z0) as usize == nz;
-    let cells = look.cells && whole && across >= FOOTPRINT_CELL_LEAST;
-    if look.fill > 0.0 {
-        let mut mesh = egui::Mesh::default();
-        let fill = look.colour.gamma_multiply(look.fill);
-        for j in 0..nz {
-            for i in 0..nx {
-                let (Some(a), Some(b), Some(c), Some(d)) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)) else { continue };
-                let k = mesh.vertices.len() as u32;
-                for p in [a, b, c, d] {
-                    mesh.colored_vertex(p, fill);
-                }
-                mesh.add_triangle(k, k + 1, k + 2);
-                mesh.add_triangle(k, k + 2, k + 3);
-            }
-        }
-        painter.add(egui::Shape::mesh(mesh));
-    }
-    if cells {
-        // The cells' lines inside, fainter than the outline.
-        let inner = look.colour.gamma_multiply(0.7);
-        for i in 1..nx {
-            line(&mut (0..=nz).map(|j| at(i, j)), 1.1, inner);
-        }
-        for j in 1..nz {
-            line(&mut (0..=nx).map(|i| at(i, j)), 1.1, inner);
+    let round = (0..nx).map(|i| at(i, 0)).chain((0..nz).map(|j| at(nx, j))).chain((1..=nx).rev().map(|i| at(i, nz))).chain((1..=nz).rev().map(|j| at(0, j))).chain(std::iter::once(at(0, 0)));
+    // (Broken where a corner is behind the eye.)
+    let mut runs: Vec<Vec<Pos2>> = vec![Vec::new()];
+    for p in round {
+        match p {
+            Some(p) => runs.last_mut().unwrap().push(p),
+            None => runs.push(Vec::new()),
         }
     }
-    // The outline, all the way round.
-    let mut round = (0..nx).map(|i| at(i, 0)).chain((0..nz).map(|j| at(nx, j))).chain((1..=nx).rev().map(|i| at(i, nz))).chain((1..=nz).rev().map(|j| at(0, j))).chain(std::iter::once(at(0, 0)));
-    line(&mut round, 1.8, look.colour);
-    for (run, width, colour) in &lines {
-        painter.add(egui::Shape::line(run.clone(), Stroke::new(width + 2.2, Color32::from_black_alpha((colour.a() as f32 * 0.55) as u8))));
+    runs.retain(|run| run.len() >= 2);
+    for run in &runs {
+        painter.add(egui::Shape::line(run.clone(), Stroke::new(1.8 + 2.2, Color32::from_black_alpha((colour.a() as f32 * 0.55) as u8))));
     }
-    for (run, width, colour) in lines {
-        painter.add(egui::Shape::line(run, Stroke::new(width, colour)));
+    for run in runs {
+        painter.add(egui::Shape::line(run, Stroke::new(1.8, colour)));
     }
 }
 
@@ -3384,39 +3359,51 @@ mod tests {
         assert_eq!(text(flows(0.0, 0.0, 5.0, 5.0)), ["ENERGY   +5.0/s   -5.0/s   = 0.0/s"]);
     }
 
-    /// A building being placed shows the cells it will take as a grid on the ground: lines
-    /// through every cell's corner (the cells' lines between, then the outline) over a faint
-    /// fill, each line edged dark first; far out, where a cell is a few points across, the
-    /// outline alone; a plan's square is its outline, unfilled.
+    /// A building being placed shows the cells it will take, each a square of its own on the
+    /// ground (no lines through the ground round it, no grid): green where it may stand, red
+    /// where it may not, each edged dark. A plan's square (Shift) is its outline, unfilled.
     #[test]
-    fn a_footprint_is_a_grid_of_its_cells_on_the_ground() {
+    fn a_footprint_being_placed_is_its_cells_green_and_red() {
         let ctx = egui::Context::default();
-        let shapes = |scale: f32, look: FootprintLook| {
-            let project = move |p: Vec3| Some(Pos2::new(p.x * scale, p.z * scale));
-            let ground = |_: f32, _: f32| 10.0;
-            let out = ctx.run_ui(Default::default(), |ui| footprint_on_ground(ui.painter(), &project, &ground, (2, 3, 4, 6), look));
+        let run = |draw: &dyn Fn(&egui::Painter)| {
+            let out = ctx.run_ui(Default::default(), |ui| draw(ui.painter()));
             let shapes: Vec<egui::Shape> = out.shapes.iter().map(|c| c.shape.clone()).collect();
             out.drop_without_applying_deltas();
             shapes
         };
+        let project = |p: Vec3| Some(Pos2::new(p.x, p.z));
+        let ground = |_: f32, _: f32| 10.0;
         let paths = |shapes: &[egui::Shape]| -> Vec<Vec<Pos2>> {
             shapes.iter().filter_map(|s| if let egui::Shape::Path(p) = s { Some(p.points.clone()) } else { None }).collect()
         };
-        // Two cells by three: a line between the columns, two between the rows and the outline,
-        // each twice (its dark edge, then its colour), over the fill of the six cells.
-        let near = shapes(1.0, FootprintLook::placing(true));
-        let lines = paths(&near);
-        assert_eq!(lines.len(), 8);
-        assert!(near.iter().any(|s| matches!(s, egui::Shape::Mesh(m) if m.indices.len() == 6 * 6)));
-        let outline = lines.last().unwrap();
-        assert_eq!(outline.first(), Some(&Pos2::new(32.0, 48.0)), "from the first cell's corner, 16 px a cell");
-        assert_eq!(outline.last(), outline.first(), "all the way round");
-        assert!(outline.contains(&Pos2::new(64.0, 96.0)), "to the last cell's far corner");
-        // Far out (a cell 1.6 points across): the outline alone.
-        assert_eq!(paths(&shapes(0.1, FootprintLook::placing(false))).len(), 2);
+        // Two cells by three, the middle row's eastern cell taken.
+        let cells = [true, true, true, false, true, true];
+        let shapes = run(&|painter| footprint_cells(painter, &project, &ground, (2, 3, 4, 6), &cells, false));
+        let mesh = shapes.iter().find_map(|s| if let egui::Shape::Mesh(m) = s { Some(m.clone()) } else { None }).expect("the cells' squares");
+        assert_eq!(mesh.indices.len(), 6 * 6, "a square of two triangles each");
+        let colours: Vec<Color32> = mesh.vertices.chunks(4).map(|v| v[0].color).collect();
+        assert_eq!(colours.iter().filter(|&&c| c == placing_colour(false)).count(), 1, "the taken cell red");
+        assert_eq!(colours.iter().filter(|&&c| c == placing_colour(true)).count(), 5, "the others green");
+        assert_eq!(colours[3], placing_colour(false), "row by row from the north-west");
+        // Each square within its own cell, the ground showing between them: nothing reaches past
+        // the footprint or along a whole row of it.
+        let edges = paths(&shapes);
+        assert_eq!(edges.len(), 6, "an edge round each cell");
+        for edge in &edges {
+            let (lo, hi) = edge.iter().fold((Pos2::new(f32::MAX, f32::MAX), Pos2::new(f32::MIN, f32::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+            assert!(hi.x - lo.x < 16.0 && hi.y - lo.y < 16.0, "within one cell: {lo:?} {hi:?}");
+            assert!(lo.x > 32.0 && hi.x < 64.0 && lo.y > 48.0 && hi.y < 96.0, "inside the footprint");
+        }
+        // Not known (a stale site): every cell as the site is.
+        let shapes = run(&|painter| footprint_cells(painter, &project, &ground, (2, 3, 4, 6), &[], true));
+        let mesh = shapes.iter().find_map(|s| if let egui::Shape::Mesh(m) = s { Some(m.clone()) } else { None }).unwrap();
+        assert!(mesh.vertices.iter().all(|v| v.color == placing_colour(true)));
         // A plan's square: its outline, unfilled.
-        let plan = shapes(1.0, FootprintLook { colour: Color32::WHITE, cells: false, fill: 0.0 });
-        assert_eq!(paths(&plan).len(), 2);
+        let plan = run(&|painter| plan_on_ground(painter, &project, &ground, (2, 3, 4, 6), Color32::WHITE));
+        let lines = paths(&plan);
+        assert_eq!(lines.len(), 2, "its dark edge, then its colour");
+        assert_eq!(lines[1].first(), Some(&Pos2::new(32.0, 48.0)), "from the first cell's corner, 16 px a cell");
+        assert_eq!(lines[1].last(), lines[1].first(), "all the way round");
         assert!(!plan.iter().any(|s| matches!(s, egui::Shape::Mesh(_))));
     }
 

@@ -812,33 +812,10 @@ impl World {
     /// `origin`, or `None` if it fits.
     pub fn placement_error(&self, t: &UnitType, max_slope: i32, origin: (i32, i32)) -> Option<PlacementError> {
         let (fx, fz) = t.footprint;
-        let d = &t.def;
-        // Land buildings say `MaxWaterDepth=0` (dry land only); water buildings (shipyards,
-        // tidal generators, underwater extractors, platforms) give a minimum depth and leave
-        // the maximum out or at 0, which puts no limit on it.
-        let max_depth = if d.min_water_depth > 0.0 && d.max_water_depth <= d.min_water_depth { i32::MAX } else { d.max_water_depth as i32 };
         for z in origin.1..origin.1 + fz as i32 {
             for x in origin.0..origin.0 + fx as i32 {
-                if self.is_void(x, z) {
-                    return Some(PlacementError::OutOfBounds);
-                }
-                if self.reservations[self.idx(x, z)].is_some() {
-                    return Some(PlacementError::Occupied);
-                }
-                match self.occupancy[self.idx(x, z)] {
-                    Occupant::Free => {}
-                    Occupant::Unit(_) => return Some(PlacementError::Occupied),
-                    Occupant::Feature(_) => return Some(PlacementError::Feature),
-                }
-                let depth = self.cell_depth(x, z);
-                if depth > max_depth {
-                    return Some(PlacementError::TooDeep);
-                }
-                if depth < d.min_water_depth as i32 {
-                    return Some(PlacementError::NeedsWater);
-                }
-                if depth <= 0 && self.slope(x, z) as i32 > max_slope {
-                    return Some(PlacementError::TooSteep);
+                if let Some(error) = self.cell_placement_error(t, max_slope, x, z) {
+                    return Some(error);
                 }
             }
         }
@@ -847,6 +824,39 @@ impl World {
         }
         if t.extracts_metal > Fx::ZERO && !t.needs_geo && !self.metal_world() && !self.ore_under(origin, t.footprint) {
             return Some(PlacementError::NeedsMetal);
+        }
+        None
+    }
+
+    /// Why a building of type `t` cannot have the cell (x, z) under it, or `None` if that cell
+    /// will do: free, on the map, dry or as deep as it needs, and flat enough. (What it needs under
+    /// it as a whole, a vent or a deposit, is [`World::placement_error`]'s.)
+    pub fn cell_placement_error(&self, t: &UnitType, max_slope: i32, x: i32, z: i32) -> Option<PlacementError> {
+        let d = &t.def;
+        // Land buildings say `MaxWaterDepth=0` (dry land only); water buildings (shipyards,
+        // tidal generators, underwater extractors, platforms) give a minimum depth and leave
+        // the maximum out or at 0, which puts no limit on it.
+        let max_depth = if d.min_water_depth > 0.0 && d.max_water_depth <= d.min_water_depth { i32::MAX } else { d.max_water_depth as i32 };
+        if self.is_void(x, z) {
+            return Some(PlacementError::OutOfBounds);
+        }
+        if self.reservations[self.idx(x, z)].is_some() {
+            return Some(PlacementError::Occupied);
+        }
+        match self.occupancy[self.idx(x, z)] {
+            Occupant::Free => {}
+            Occupant::Unit(_) => return Some(PlacementError::Occupied),
+            Occupant::Feature(_) => return Some(PlacementError::Feature),
+        }
+        let depth = self.cell_depth(x, z);
+        if depth > max_depth {
+            return Some(PlacementError::TooDeep);
+        }
+        if depth < d.min_water_depth as i32 {
+            return Some(PlacementError::NeedsWater);
+        }
+        if depth <= 0 && self.slope(x, z) as i32 > max_slope {
+            return Some(PlacementError::TooSteep);
         }
         None
     }

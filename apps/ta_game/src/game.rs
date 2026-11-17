@@ -40,25 +40,37 @@ fn wrecks_by_unit(events: &[SimEvent]) -> rustc_hash::FxHashMap<UnitId, usize> {
 }
 
 /// A building being placed with the mouse.
+#[derive(Default)]
 pub struct Placement {
     pub type_id: usize,
     pub pos: Option<Vec3>,
     pub valid: bool,
+    /// Which cells of its footprint it may have there, row by row from the north-west
+    /// (`Sim::placement_cells`, and clear of the plans of other constructors): green and red
+    /// under its ghost, as TA showed them.
+    pub cells: Vec<bool>,
     pub matrices: Vec<Mat4>,
     /// Dragging out a row: where the drag began, the sites along it (and whether each is
-    /// buildable), and a ghost's matrices per site.
+    /// buildable, and which of its cells), and a ghost's matrices per site.
     pub line_start: Option<Vec3>,
     pub row: Vec<(Vec3, bool)>,
+    pub row_cells: Vec<Vec<bool>>,
     row_matrices: Vec<Vec<Mat4>>,
 }
 
 impl Placement {
+    pub fn new(type_id: usize) -> Placement {
+        Placement { type_id, ..Default::default() }
+    }
+
     fn cancel_drag(&mut self) {
         self.line_start = None;
         self.row.clear();
+        self.row_cells.clear();
         self.row_matrices.clear();
         self.pos = None;
         self.valid = false;
+        self.cells.clear();
         self.matrices.clear();
     }
 }
@@ -625,6 +637,8 @@ pub struct Game {
     pub show_players: bool,
     /// When units show health bars (from the settings).
     pub health_bars: ta_config::HealthBars,
+    /// Which ranges the selection shows (from the settings).
+    pub range_overlays: ta_config::RangeOverlays,
     /// Key bindings (from the settings).
     pub keys: crate::keys::Bindings,
     /// Spectators and replays: the camera drifts to where the fighting is.
@@ -1007,6 +1021,7 @@ impl Game {
             request_rewind: None,
             show_players: false,
             health_bars: ta_config::HealthBars::Auto,
+            range_overlays: ta_config::RangeOverlays::All,
             keys: crate::keys::Bindings::from_config(&ta_config::Keys::default()),
             action_camera: false,
             action_spread: 600.0,
@@ -1936,7 +1951,7 @@ impl Game {
     fn unit_at_screen(&self, camera: &Camera, screen: Vec2) -> Option<UnitId> {
         let (o, d) = camera.screen_ray(screen);
         let alpha = self.alpha();
-        let mut best: Option<(f32, UnitId)> = None;
+        let mut hits: Vec<Hit> = Vec::new();
         // (Whether the pointer is on it first: the viewer's sight is asked of those only.)
         for u in self.sim.units() {
             if u.carried_by.is_some() {
@@ -1955,12 +1970,13 @@ impl Game {
                 continue;
             }
             let t_hit = -b - disc.sqrt();
-            if t_hit > 0.0 && best.is_none_or(|(bt, _)| t_hit < bt) && self.seen(u) == Seen::Visible {
-                best = Some((t_hit, u.id));
+            if t_hit > 0.0 && self.seen(u) == Seen::Visible {
+                hits.push(Hit { along: t_hit, id: u.id, centre: c, radius: r, finished: u.is_complete() });
             }
         }
+        let best = pick_hit(&mut hits);
         if best.is_some() || crate::strategic::amount(camera, self.ppp) < 0.25 {
-            return best.map(|(_, id)| id);
+            return best;
         }
         // Far out, where units are a pixel or two: the strategic icon under the pointer.
         let mut nearest: Option<(f32, UnitId)> = None;
@@ -2077,8 +2093,24 @@ impl Game {
                 !planned.iter().any(|q| r.0 < q.2 && q.0 < r.2 && r.1 < q.3 && q.1 < r.3)
             };
             let free = |p: Vec3| clear_of(&planned, p);
+            // (Which of its cells it may have: those the map gives it, out of the others' plans.)
+            let (sim, type_id) = (&self.sim, pl.type_id);
+            let cells_at = |planned: &[(i32, i32, i32, i32)], p: Vec3| {
+                let r = footprint_rect(t, fx_vec(p));
+                let mut cells = sim.placement_cells(type_id, fx_vec(p));
+                let width = (r.2 - r.0).max(1);
+                for (i, ok) in cells.iter_mut().enumerate() {
+                    let (x, z) = (r.0 + i as i32 % width, r.1 + i as i32 / width);
+                    if planned.iter().any(|q| q.0 <= x && x < q.2 && q.1 <= z && z < q.3) {
+                        *ok = false;
+                    }
+                }
+                cells
+            };
             pl.valid = pl.pos.is_some_and(|p| self.sim.can_place(pl.type_id, fx_vec(p)) && clear_of(&others_planned, p));
+            pl.cells = pl.pos.map(|p| cells_at(&others_planned, p)).unwrap_or_default();
             pl.row.clear();
+            pl.row_cells.clear();
             if let (Some(a), Some(b)) = (pl.line_start, pl.pos) {
                 let t = self.sim.types.get(pl.type_id);
                 let footprint = Vec2::new(t.footprint.0 as f32 * 16.0, t.footprint.1 as f32 * 16.0);
@@ -2091,6 +2123,7 @@ impl Game {
                     }
                     let ok = self.sim.can_place(pl.type_id, fx_vec(site)) && free(site);
                     pl.row.push((site, ok));
+                    pl.row_cells.push(cells_at(&planned, site));
                 }
             }
         }
@@ -2466,6 +2499,7 @@ impl Game {
                 let mut sites: Vec<Vec3> = pl.row.iter().filter(|(_, ok)| *ok).map(|(p, _)| *p).collect();
                 pl.line_start = None;
                 pl.row.clear();
+                pl.row_cells.clear();
                 let builders: Vec<UnitId> = self
                     .selection
                     .iter()
@@ -4181,7 +4215,7 @@ impl Game {
     pub fn begin_placement(&mut self, type_id: usize) {
         self.repeat_order = false;
         self.command_mode = None;
-        self.placement = Some(Placement { type_id, pos: None, valid: false, matrices: Vec::new(), line_start: None, row: Vec::new(), row_matrices: Vec::new() });
+        self.placement = Some(Placement::new(type_id));
     }
 
     /// Render instances for units, 3DO features and the placement ghost; also refreshes the
@@ -4562,6 +4596,33 @@ pub(crate) fn footprint_rect(t: &ta_sim::UnitType, pos: ta_sim::FxVec3) -> (i32,
     (x0, z0, x0 + t.footprint.0 as i32, z0 + t.footprint.1 as i32)
 }
 
+/// A unit the pointer's ray passes through (`Game::unit_at_screen`): how far along the ray it
+/// meets its sphere, and the sphere.
+#[derive(Clone, Copy, Debug)]
+struct Hit {
+    along: f32,
+    id: UnitId,
+    centre: Vec3,
+    radius: f32,
+    finished: bool,
+}
+
+/// The unit the pointer is on, of those its ray passes through: the nearest, unless a finished
+/// unit it passes through lies inside that one's sphere and is smaller, resting on it or in it (an
+/// aircraft landed on a carrier's deck, which the carrier's sphere took in, a unit on a
+/// building's pad): that one, the smallest of them, while the big one is clicked anywhere else on
+/// it. (Not a unit being built in a factory: a click there is the factory's.)
+fn pick_hit(hits: &mut [Hit]) -> Option<UnitId> {
+    hits.sort_by(|a, b| a.along.total_cmp(&b.along));
+    let mut best = *hits.first()?;
+    for h in hits.iter().skip(1) {
+        if h.finished && h.radius < best.radius && h.centre.distance(best.centre) < best.radius {
+            best = *h;
+        }
+    }
+    Some(best.id)
+}
+
 /// Where a building's ghost is drawn from: where the building will stand once put down there
 /// (`Sim::resting_pos`: a shipyard at the surface, not on the sea floor), its model as the
 /// scene draws a unit's (`Unit::model_pos`).
@@ -4876,10 +4937,7 @@ mod tests {
     fn releasing_shift_finishes_build_repetition_but_preserves_a_fresh_build_choice() {
         let mut repeated = false;
         let mut mode = None;
-        let mut placement = Some(Placement {
-            type_id: 7, pos: Some(Vec3::X), valid: true, matrices: Vec::new(),
-            line_start: None, row: Vec::new(), row_matrices: Vec::new(),
-        });
+        let mut placement = Some(Placement { pos: Some(Vec3::X), valid: true, ..Placement::new(7) });
         finish_repeat_mode(&mut repeated, &mut mode, &mut placement, false, false);
         assert!(placement.is_some(), "opening a build tool with Shift held still permits its first placement");
         repeated = true;
@@ -4996,18 +5054,47 @@ mod tests {
         assert!(attack_is_news(&mut told, b, 52.0), "and one that has gone on for a while is told again");
     }
 
+    /// A click on a small unit resting on a big one (a construction aircraft landed on TA:
+    /// Escalation's flying carrier, whose sphere takes in its whole deck) picks the small one; the
+    /// big one anywhere else on it, and the nearer of two apart, as before.
+    #[test]
+    fn a_click_on_a_unit_resting_on_a_bigger_one_picks_it() {
+        let id = |slot| UnitId { slot, generation: 0 };
+        let hit = |slot, along, centre: Vec3, radius, finished| Hit { along, id: id(slot), centre, radius, finished };
+        // The carrier's sphere is met first; the plane on its deck lies inside it.
+        let carrier = hit(1, 900.0, Vec3::new(0.0, 230.0, 0.0), 136.0, true);
+        let plane = hit(2, 960.0, Vec3::new(40.0, 262.0, -30.0), 22.0, true);
+        assert_eq!(pick_hit(&mut [carrier, plane]), Some(id(2)));
+        assert_eq!(pick_hit(&mut [plane, carrier]), Some(id(2)), "in whatever order they were found");
+        assert_eq!(pick_hit(&mut [carrier]), Some(id(1)), "the carrier clicked off its planes");
+        // Two planes on its deck the ray passes through: the nearer of those.
+        let other = hit(3, 1010.0, Vec3::new(-60.0, 262.0, 20.0), 22.0, true);
+        assert_eq!(pick_hit(&mut [other, carrier, plane]), Some(id(2)));
+        // A unit being built in a factory: a click there is still the factory's.
+        let factory = hit(4, 500.0, Vec3::new(0.0, 25.0, 0.0), 70.0, true);
+        let frame = hit(5, 540.0, Vec3::new(0.0, 12.0, 10.0), 14.0, false);
+        assert_eq!(pick_hit(&mut [factory, frame]), Some(id(4)));
+        // Apart (the small one outside the big one's sphere, behind it): the nearer.
+        let tank = hit(6, 700.0, Vec3::new(0.0, 10.0, 200.0), 12.0, true);
+        assert_eq!(pick_hit(&mut [factory, tank]), Some(id(4)));
+        // A big one behind a small one: the small one, nearer anyway.
+        assert_eq!(pick_hit(&mut [hit(7, 300.0, Vec3::ZERO, 12.0, true), factory]), Some(id(7)));
+        assert_eq!(pick_hit(&mut []), None);
+    }
+
     #[test]
     fn cancelled_placement_drag_keeps_the_build_choice_without_stale_sites() {
         let mut placement = Placement {
-            type_id: 7, pos: Some(Vec3::X), valid: true, matrices: vec![Mat4::IDENTITY],
-            line_start: Some(Vec3::ZERO), row: vec![(Vec3::X, true), (Vec3::Z, false)],
+            pos: Some(Vec3::X), valid: true, cells: vec![true; 4], matrices: vec![Mat4::IDENTITY],
+            line_start: Some(Vec3::ZERO), row: vec![(Vec3::X, true), (Vec3::Z, false)], row_cells: vec![vec![true; 4], vec![false; 4]],
             row_matrices: vec![vec![Mat4::IDENTITY]; 2],
+            ..Placement::new(7)
         };
         placement.cancel_drag();
         assert_eq!(placement.type_id, 7);
         assert!(placement.line_start.is_none() && placement.pos.is_none());
-        assert!(!placement.valid);
-        assert!(placement.row.is_empty() && placement.row_matrices.is_empty() && placement.matrices.is_empty());
+        assert!(!placement.valid && placement.cells.is_empty());
+        assert!(placement.row.is_empty() && placement.row_cells.is_empty() && placement.row_matrices.is_empty() && placement.matrices.is_empty());
     }
 
     #[test]

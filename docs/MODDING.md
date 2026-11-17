@@ -1026,6 +1026,10 @@ pad and takes on through its scripts. TA Reborn plays them as those engines did:
   the stance in `StartBuilding`.
 - A building that builds only its own upgrade is no factory to the player's idle factories or to
   the computer players.
+- A module with build power and `DefaultMissionType=RepairPatrol` (TA: Escalation's repair tower
+  upgrades) mends the damaged units of its side and its allies within its `BuildDistance` by
+  itself whenever it has no orders, the nearest first, standing loose or on its building. Any
+  builder with that mission does the same, standing where it is.
 
 [FORMATS.md](FORMATS.md) gives the details, mod by mod; `crates/ta_sim/tests/mod_upgrades.rs` plays
 every building of a mod that offers an upgrade ([testing](#from-the-source-tree)).

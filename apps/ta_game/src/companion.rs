@@ -47,6 +47,18 @@ pub struct Companion {
     pub snapshot: Option<std::path::PathBuf>,
 }
 
+/// What the companion screen does when its setting (`gameplay.companion`) is changed to `on`:
+/// close at once (`Some(false)`) when turned off while it is `open`, however it was opened; open
+/// (`Some(true)`) when turned on in a `battle` where a battle's start would open it (`opens`: a
+/// second display); else nothing.
+pub fn follows_setting(on: bool, open: bool, battle: bool, opens: impl FnOnce() -> bool) -> Option<bool> {
+    match (on, open) {
+        (false, true) => Some(false),
+        (true, false) if battle && opens() => Some(true),
+        _ => None,
+    }
+}
+
 /// The display a companion opens on: one other than the battle's (`main`), if there is one.
 pub fn other_display(event_loop: &ActiveEventLoop, main: &Window) -> Option<winit::monitor::MonitorHandle> {
     let current = main.current_monitor();
@@ -300,6 +312,20 @@ fn keep_the_keyboard_away(window: &Window) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Turned off in the options, an open companion screen closes at once (it used to stay open
+    /// till the battle ended); turned on in a battle, it opens as at a battle's start, where that
+    /// would open it.
+    #[test]
+    fn the_setting_closes_and_opens_it_at_once() {
+        assert_eq!(follows_setting(false, true, true, || true), Some(false));
+        assert_eq!(follows_setting(false, true, false, || false), Some(false), "however it was opened, wherever");
+        assert_eq!(follows_setting(true, false, true, || true), Some(true));
+        assert_eq!(follows_setting(true, false, true, || false), None, "no second display: as at a battle's start");
+        assert_eq!(follows_setting(true, false, false, || true), None, "not on a menu");
+        assert_eq!(follows_setting(true, true, true, || true), None, "open already");
+        assert_eq!(follows_setting(false, false, true, || true), None);
+    }
 
     #[test]
     fn it_is_drawn_at_most_every_other_refresh() {
