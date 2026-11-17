@@ -94,8 +94,6 @@
   or solar collectors) some on and some off. It now says ON/OFF, its lamp half lit, as the classic
   interface shows both, and a press turns them all off when the first is on and all on otherwise,
   as the classic button and the X key do.
-
-### Fixed
 - A unit being built in a factory stood still while the factory's pad turned under it. As in TA,
   it now turns with the pad (the plants, labs and aircraft plants spin it while they build) and
   is finished facing the way the pad left it.
@@ -120,8 +118,6 @@
   alike as one ("Gauss Cannon x4"); the map editor draws their wrecks in their paint. The mod check
   now reads DDS textures' mip levels and texels, notes paint that is made again as it is read, and
   checks far models' pieces, that surfaces name DDS textures, and each clip.
-
-### Fixed
 - The launcher's Supreme Commander dialog, opened again from the Mods page, showed its MAPS tab's
   maps as dark squares, still marked as they were (IMPORTED after REMOVE MAP PACK). Each tab now
   looks for the game again whenever it is shown after the dialog was closed, the factions' too
