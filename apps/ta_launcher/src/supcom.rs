@@ -1253,10 +1253,19 @@ fn make_pack(
         };
         match made {
             Ok(map) => {
-                // (An older version of this map, under another name, goes.)
-                remove_made_from(&maps_out, &m_source(folder));
+                // (An older version of this map, under its name or another, goes; it comes back,
+                // as the pack installed has it, if the new one is not written whole.)
+                let older = remove_made_from(&maps_out, &m_source(folder));
+                let restore = |maps_out: &Path| {
+                    if let Some(pack) = existing {
+                        for stem in &older {
+                            restore_map_files(&pack.join("maps"), maps_out, stem);
+                        }
+                    }
+                };
                 // (Another map's files of the same name are never written over.)
                 if taken(&maps_out, &map.stem) {
+                    restore(&maps_out);
                     outcome.failed.push((name.clone(), tf("Another map in the pack has the file name {stem}.", &[("stem", &map.stem)])));
                     continue;
                 }
@@ -1266,9 +1275,11 @@ fn make_pack(
                         outcome.made.push(m_source(folder));
                     }
                     Err(e) => {
-                        // (The disk full, most likely: what this map wrote goes, the maps made are
-                        // installed, the rest left chosen for later.)
+                        // (The disk full, most likely: what this map wrote goes and its older
+                        // version comes back, the maps made are installed, the rest left chosen
+                        // for later.)
                         remove_map_files(&maps_out, &map.stem);
+                        restore(&maps_out);
                         outcome.failed.push((name.clone(), tf("It could not be written: {why}", &[("why", &e)])));
                         outcome.cut_short = Some(e.to_string());
                         break;
@@ -1356,9 +1367,11 @@ fn m_source(folder: &Path) -> String {
     folder.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
 }
 
-/// Removes the files of the map made from `source` (its OTA saying so) from `maps`.
-fn remove_made_from(maps: &Path, source: &str) {
-    let Ok(entries) = std::fs::read_dir(maps) else { return };
+/// Removes the files of the map made from `source` (its OTA saying so) from `maps`: the stems
+/// of those removed.
+fn remove_made_from(maps: &Path, source: &str) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(maps) else { return Vec::new() };
+    let mut removed = Vec::new();
     for e in entries.flatten() {
         let path = e.path();
         if !path.extension().is_some_and(|x| x.eq_ignore_ascii_case("ota")) {
@@ -1370,6 +1383,22 @@ fn remove_made_from(maps: &Path, source: &str) {
             for ext in ["tnt", "ota", "features"] {
                 let _ = std::fs::remove_file(path.with_extension(ext));
             }
+            if let Some(stem) = path.file_stem() {
+                removed.push(stem.to_string_lossy().into_owned());
+            }
+        }
+    }
+    removed.sort();
+    removed
+}
+
+/// Puts the files a map of stem `stem` has in `from` (the pack installed's maps) back in `maps`,
+/// each where `maps` has none: linked, as the pack's maps kept are ([`link_or_copy`]).
+fn restore_map_files(from: &Path, maps: &Path, stem: &str) {
+    for ext in ["tnt", "ota", "features"] {
+        let (source, target) = (from.join(format!("{stem}.{ext}")), maps.join(format!("{stem}.{ext}")));
+        if source.is_file() && !target.exists() {
+            let _ = link_or_copy(&source, &target);
         }
     }
 }
@@ -1716,6 +1745,9 @@ mod tests {
         std::fs::write(pack.join("maps/Kept (SC).ota"), "[GlobalHeader]{supcommap=scmp_009;supcomversion=0;}").unwrap();
         std::fs::write(pack.join("maps/Again (SC).tnt"), b"old tnt").unwrap();
         std::fs::write(pack.join("maps/Again (SC).ota"), "[GlobalHeader]{supcommap=scmp_001;supcomversion=0;}").unwrap();
+        // (The third map is in the pack already: made again, it cannot be written.)
+        std::fs::write(pack.join("maps/Third (SC).tnt"), b"old third tnt").unwrap();
+        std::fs::write(pack.join("maps/Third (SC).ota"), "[GlobalHeader]{supcommap=scmp_003;supcomversion=0;}").unwrap();
         let maps: Vec<(PathBuf, bool, String)> = ["SCMP_001", "SCMP_002", "SCMP_003"].iter().map(|f| (PathBuf::from(format!("C:/Game/maps/{f}")), false, f.to_string())).collect();
         let stems = |folder: &Path| match m_source(folder).as_str() { "scmp_001" => "Again (SC)", "scmp_002" => "Second (SC)", _ => "Third (SC)" };
         let progress = Mutex::new(Progress::default());
@@ -1736,7 +1768,13 @@ mod tests {
         assert!(outcome.failed[0].0 == "SCMP_003" && outcome.failed[0].1.starts_with("It could not be written: "), "{:?}", outcome.failed);
         assert!(outcome.cut_short.is_some() && outcome.went() == Went::Partly);
         let (files, version) = installed.borrow_mut().take().expect("the maps made are installed");
-        assert_eq!(files, ["Again (SC).features", "Again (SC).ota", "Again (SC).tnt", "Kept (SC).ota", "Kept (SC).tnt", "Second (SC).features", "Second (SC).ota", "Second (SC).tnt", "Third (SC).features"], "the third map's own files gone (its folder in the way is not one)");
+        assert_eq!(
+            files,
+            ["Again (SC).features", "Again (SC).ota", "Again (SC).tnt", "Kept (SC).ota", "Kept (SC).tnt", "Second (SC).features", "Second (SC).ota", "Second (SC).tnt", "Third (SC).features", "Third (SC).ota", "Third (SC).tnt"],
+            "the third map's new files gone (its folder in the way is not one), its older version back"
+        );
+        assert_eq!(std::fs::read(work.join("payload/maps/Third (SC).tnt")).unwrap(), b"old third tnt", "the map that could not be written keeps the version the pack had");
+        assert_eq!(std::fs::read(pack.join("maps/Third (SC).tnt")).unwrap(), b"old third tnt");
         assert_eq!(version, "0", "the pack's version is its oldest map's");
         assert_eq!(std::fs::read(pack.join("maps/Again (SC).tnt")).unwrap(), b"old tnt", "the pack installed is not written through");
         assert_eq!(std::fs::read(work.join("payload/maps/Kept (SC).tnt")).unwrap(), b"kept tnt", "the maps kept are in the new pack");
@@ -1756,6 +1794,40 @@ mod tests {
         let outcome = make_pack(&dir.join("work-none"), None, &maps, &mut convert, &progress, &Ending::default(), install).unwrap();
         assert!(outcome.imported.is_empty() && outcome.failed.len() == 3 && outcome.went() == Went::Badly);
         assert!(installed.borrow().is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A map made again under a name another map of the pack has is not written, and its own
+    /// older version, under its old name, stays in the pack.
+    #[test]
+    fn a_map_made_again_under_a_name_taken_keeps_its_older_version() {
+        let dir = temp("taken");
+        let pack = dir.join("mods").join(PACK_ID);
+        std::fs::create_dir_all(pack.join("maps")).unwrap();
+        std::fs::write(pack.join("maps/Kept (SC).tnt"), b"kept tnt").unwrap();
+        std::fs::write(pack.join("maps/Kept (SC).ota"), "[GlobalHeader]{supcommap=scmp_009;supcomversion=0;}").unwrap();
+        std::fs::write(pack.join("maps/Old Name (SC).tnt"), b"old tnt").unwrap();
+        std::fs::write(pack.join("maps/Old Name (SC).ota"), "[GlobalHeader]{supcommap=scmp_002;supcomversion=0;}").unwrap();
+        let maps = vec![(PathBuf::from("C:/Game/maps/SCMP_002"), false, "SCMP_002".to_string())];
+        let progress = Mutex::new(Progress::default());
+        let installed = std::cell::RefCell::new(None::<Vec<String>>);
+        let install = |payload: &Path, _: &ModManifest| {
+            let mut files: Vec<String> = std::fs::read_dir(payload.join("maps")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+            files.sort();
+            *installed.borrow_mut() = Some(files);
+            Ok::<(), anyhow::Error>(())
+        };
+        // (Made again, it would take the other map's name.)
+        let mut convert = |folder: &Path, _: bool| Some(Ok::<_, anyhow::Error>(made("Kept (SC)", &m_source(folder))));
+        let work = dir.join("work");
+        let outcome = make_pack(&work, Some(&pack), &maps, &mut convert, &progress, &Ending::default(), install).unwrap();
+        assert!(outcome.imported.is_empty() && outcome.failed.len() == 1, "{:?}", outcome.failed);
+        assert!(outcome.failed[0].1.starts_with("Another map in the pack has the file name"), "{:?}", outcome.failed);
+        assert!(installed.borrow().is_none(), "nothing made, nothing installed");
+        let mut files: Vec<String> = std::fs::read_dir(work.join("payload/maps")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        files.sort();
+        assert_eq!(files, ["Kept (SC).ota", "Kept (SC).tnt", "Old Name (SC).ota", "Old Name (SC).tnt"], "its older version back beside the other map");
+        assert_eq!(std::fs::read(work.join("payload/maps/Kept (SC).tnt")).unwrap(), b"kept tnt", "the other map is not written over");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
