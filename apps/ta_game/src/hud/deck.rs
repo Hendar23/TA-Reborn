@@ -25,7 +25,7 @@ use ta_ui::i18n::{n, t, tf};
 use ta_ui::metal::{self, Slab};
 use ta_vfs::Vfs;
 
-use super::{ACCENT, ENERGY, Hud, METAL, count, duration, pic_button, pic_frame, unit_facts};
+use super::{Hud, count, duration, pic_button, pic_frame, unit_facts};
 use crate::game::Game;
 use crate::hud_skin;
 use crate::theme::*;
@@ -101,6 +101,19 @@ pub(super) struct SelectionSummary {
     damaged: usize,
     /// What the constructors in it do by themselves.
     duty: crate::game::duty::SelectionDuty,
+    /// What it makes and uses of metal and energy a second now, all of it together (its
+    /// finished units: the figures TA's unit bar gives, `Sim::unit_flows`).
+    flows: ta_sim::flows::UnitFlows,
+}
+
+/// What `units` make and use a second now, together: the finished ones the player may look
+/// into (ours, an ally's).
+fn flows_of<'a>(game: &Game, units: impl IntoIterator<Item = &'a Unit>) -> ta_sim::flows::UnitFlows {
+    let mut total = ta_sim::flows::UnitFlows::default();
+    for u in units.into_iter().filter(|u| game.may_inspect(u.owner) && u.is_complete()) {
+        total += game.sim.unit_flows(u);
+    }
+    total
 }
 
 impl SelectionSummary {
@@ -118,7 +131,8 @@ impl SelectionSummary {
         // (One on duty has its own work, and waits for it when there is none.)
         let idle = units.iter().filter(|o| o.orders.is_empty() && o.build.is_none() && o.factory_queue.is_empty() && !game.on_duty(o.id)).count();
         let damaged = units.iter().filter(|o| o.health < game.sim.unit_type(o).max_health).count();
-        SelectionSummary { kinds, many: units.len(), health, max_health, idle, damaged, duty: game.selection_duty() }
+        let flows = flows_of(game, units.iter().copied());
+        SelectionSummary { kinds, many: units.len(), health, max_health, idle, damaged, duty: game.selection_duty(), flows }
     }
 }
 
@@ -142,7 +156,7 @@ impl EconomyTrend {
         self.fraction = (game.sim.tick % 30) as f32 / 30.0;
         let Some(p) = game.sim.players.get(player as usize) else { return };
         let e = &p.economy;
-        self.now = [e.metal_income, e.metal_expense, e.energy_income, e.energy_expense].map(|v| v.to_f32());
+        self.now = [e.metal_income, e.metal_wanted, e.energy_income, e.energy_wanted].map(|v| v.to_f32());
         for (sum, v) in self.sum.iter_mut().zip(self.now) {
             *sum += v;
         }
@@ -318,7 +332,7 @@ impl Hud {
         let selected = game.selection.iter().any(|&id| game.sim.unit(id).is_some());
         let commanding = selected && !game.spectator;
         // The forces (in the cast, the scoreboard has those).
-        let forces_key = (game.hud_player(), game.sim.tick / FORCES_EVERY);
+        let forces_key = (game.hud_player(), game.sim.tick / FORCES_EVERY, game.shown_version);
         let forces = if game.cast { None } else { Some(self.forces_now(game, forces_key)) };
         let layout = deck_layout(ctx.content_rect(), forces.as_ref().map(|f| f.len()), selected, commanding, if commanding { self.build_width(game) } else { 0.0 });
         self.minimap_plate(&ctx, game, camera, minimap);
@@ -469,7 +483,7 @@ impl Hud {
     /// The player's forces for this frame: the groups as they were within the last few ticks (a
     /// pass over every unit of a big battle was not to be made every frame), the selection's
     /// share as it is now. (`deck` keeps them again when it has drawn them.)
-    fn forces_now(&mut self, game: &Game, key: (u8, u64)) -> Vec<Force> {
+    fn forces_now(&mut self, game: &Game, key: (u8, u64, u64)) -> Vec<Force> {
         let mut forces = match self.forces_cache.take() {
             Some((k, forces)) if k == key => forces,
             _ => force_list(game),
@@ -485,7 +499,7 @@ impl Hud {
     fn forces_plate(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, vfs: &Vfs, game: &mut Game, forces: &[Force], columns: usize) {
         section(ui, "FORCES");
         if forces.is_empty() {
-            ui.label(RichText::new(t("No units left.")).font(body(12.0)).color(STEEL_DIM));
+            ui.label(RichText::new(t("No units left.")).font(body(12.0)).color(pal().steel_dim));
             return;
         }
         self.force_grid(ui, ctx, vfs, game, forces, columns, FORCE_ROW_LEAST);
@@ -495,7 +509,7 @@ impl Hud {
     pub(super) fn forces(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, vfs: &Vfs, game: &mut Game, forces: &[Force]) {
         section(ui, "FORCES");
         if forces.is_empty() {
-            ui.label(RichText::new(t("No units left.")).font(body(12.0)).color(STEEL_DIM));
+            ui.label(RichText::new(t("No units left.")).font(body(12.0)).color(pal().steel_dim));
             return;
         }
         // (Two columns past four groups, unless one column of them fits: the companion screen's.)
@@ -551,9 +565,9 @@ impl Hud {
         // (The charts share the room the row under them leaves.)
         let under = if building { 52.0 } else { 34.0 };
         let chart = ((ui.available_height() - under - 4.0) / 2.0).floor().clamp(30.0, tallest.max(30.0));
-        self.trend_chart(ui, n("METAL"), METAL, 0, chart);
+        self.trend_chart(ui, n("METAL"), pal().metal_bar, 0, chart);
         ui.add_space(4.0);
-        self.trend_chart(ui, n("ENERGY"), ENERGY, 2, chart);
+        self.trend_chart(ui, n("ENERGY"), pal().energy_bar, 2, chart);
         if building {
             self.under_construction(ui, ctx, vfs, game);
         } else if let Some(p) = game.sim.players.get(owner as usize) {
@@ -563,8 +577,8 @@ impl Hud {
             let third = rect.width() / 3.0;
             for (i, (label, value)) in [(n("BUILT"), p.stats.built), (n("LOST"), p.stats.lost), (n("KILLS"), p.stats.kills)].into_iter().enumerate() {
                 let x = rect.left() + third * (i as f32 + 0.5);
-                painter.text(Pos2::new(x, rect.top()), Align2::CENTER_TOP, value.to_string(), display(16.0), TEXT_BRIGHT);
-                painter.text(Pos2::new(x, rect.bottom()), Align2::CENTER_BOTTOM, t(label), strong(9.5), STEEL);
+                painter.text(Pos2::new(x, rect.top()), Align2::CENTER_TOP, value.to_string(), display(16.0), pal().text_bright);
+                painter.text(Pos2::new(x, rect.bottom()), Align2::CENTER_BOTTOM, t(label), strong(9.5), pal().steel);
                 if i > 0 {
                     painter.add(metal::seam_down((rect.left() + third * i as f32).round(), rect.y_range().shrink(3.0)));
                 }
@@ -597,14 +611,14 @@ impl Hud {
                 let r = resp.rect;
                 let bar = Rect::from_min_max(Pos2::new(r.min.x + 1.0, r.max.y - 5.0), Pos2::new(r.max.x - 1.0, r.max.y - 1.0));
                 ui.painter().rect_filled(bar, CornerRadius::ZERO, Color32::from_black_alpha(180));
-                ui.painter().rect_filled(Rect::from_min_size(bar.min, EVec2::new(bar.width() * done, bar.height())), CornerRadius::ZERO, GREEN);
+                ui.painter().rect_filled(Rect::from_min_size(bar.min, EVec2::new(bar.width() * done, bar.height())), CornerRadius::ZERO, pal().good);
                 let pct = format!("{:.0}", (done * 100.0).floor());
                 if resp.on_hover_text(tf("{name}: {pct}% built. Click to select those building it and look at it", &[("name", &label), ("pct", &pct)])).clicked() {
                     chosen = Some(id);
                 }
             }
             if frames.len() > SHOWN {
-                ui.label(RichText::new(format!("+{}", frames.len() - SHOWN)).font(strong(12.0)).color(TEXT));
+                ui.label(RichText::new(format!("+{}", frames.len() - SHOWN)).font(strong(12.0)).color(pal().text));
             }
         });
         if let Some(id) = chosen.filter(|_| !game.spectator) {
@@ -627,7 +641,7 @@ impl Hud {
         // The group the selection is (a brass edge) or has some of (a dimmer one).
         if f.selected > 0 {
             let all = f.selected >= f.ids.len();
-            ui.painter().rect_stroke(rect.shrink(1.0), CornerRadius::same(2), Stroke::new(if all { 1.6 } else { 1.0 }, if all { AMBER_BRIGHT } else { AMBER_DIM }), egui::StrokeKind::Inside);
+            ui.painter().rect_stroke(rect.shrink(1.0), CornerRadius::same(2), Stroke::new(if all { 1.6 } else { 1.0 }, if all { pal().accent_bright } else { pal().accent_dim }), egui::StrokeKind::Inside);
         }
         // (A narrow row's picture smaller, to leave the name room.)
         let side = (rect.height() - 8.0).min(if rect.width() < 150.0 { 22.0 } else { f32::MAX });
@@ -635,7 +649,7 @@ impl Hud {
         match f.picture().and_then(|ty| self.unit_pic(ctx, vfs, game, ty, pic.width())) {
             Some(p) => p.paint(ui.painter(), pic, Color32::WHITE),
             None => {
-                ui.painter().rect_filled(pic, CornerRadius::same(1), INSET);
+                ui.painter().rect_filled(pic, CornerRadius::same(1), pal().inset);
             }
         }
         ui.painter().add(pic_frame(pic, false));
@@ -643,7 +657,7 @@ impl Hud {
         let x = pic.right() + 7.0;
         let mid = rect.center().y - 1.0;
         let name = t(f.group.label()).to_string();
-        let name_color = if hot { AMBER_BRIGHT } else { CREAM };
+        let name_color = if hot { pal().accent_bright } else { pal().button_text };
         let name_width = painter.layout_no_wrap(name.clone(), strong(11.0), name_color).size().x;
         let fraction = if f.max_health > 0.0 { (f.health / f.max_health).clamp(0.0, 1.0) } else { 1.0 };
         let foot = Rect::from_min_max(Pos2::new(x, rect.bottom() - 7.0), Pos2::new(rect.right() - 7.0, rect.bottom() - 5.0));
@@ -651,20 +665,20 @@ impl Hud {
         painter.rect_filled(Rect::from_min_size(foot.min, EVec2::new(foot.width() * fraction, foot.height())), CornerRadius::ZERO, hud_skin::health_color(fraction));
         // The size at the end (the Commander's health instead, when there is one).
         let size = if f.group == Group::Commander && f.ids.len() == 1 { format!("{:.0}%", (fraction * 100.0).floor()) } else { f.ids.len().to_string() };
-        let size = painter.text(Pos2::new(rect.right() - 8.0, mid), Align2::RIGHT_CENTER, size, display(16.0), TEXT_BRIGHT);
+        let size = painter.text(Pos2::new(rect.right() - 8.0, mid), Align2::RIGHT_CENTER, size, display(16.0), pal().text_bright);
         let mut idle = None;
         if f.idle > 0 {
             // (The mark's word goes where the name would not fit beside it: its lamp and number.)
-            let galley = painter.layout_no_wrap(tf("{n} idle", &[("n", &f.idle)]), strong(10.5), AMBER_BRIGHT);
-            let galley = if size.left() - 27.0 - galley.size().x - x >= name_width { galley } else { painter.layout_no_wrap(f.idle.to_string(), strong(10.5), AMBER_BRIGHT) };
+            let galley = painter.layout_no_wrap(tf("{n} idle", &[("n", &f.idle)]), strong(10.5), pal().accent_bright);
+            let galley = if size.left() - 27.0 - galley.size().x - x >= name_width { galley } else { painter.layout_no_wrap(f.idle.to_string(), strong(10.5), pal().accent_bright) };
             let text = Align2::RIGHT_CENTER.anchor_size(Pos2::new(size.left() - 9.0, mid), galley.size());
             let lamp = Pos2::new(text.left() - 6.0, text.center().y);
             let area = Rect::from_min_max(Pos2::new(lamp.x - 6.0, rect.top() + 4.0), Pos2::new(text.right() + 4.0, rect.bottom() - 9.0));
             if active && resp.hover_pos().is_some_and(|p| area.contains(p)) {
                 painter.rect_filled(area, CornerRadius::same(2), Color32::from_white_alpha(18));
             }
-            painter.add(metal::lamp(lamp, 2.5, AMBER, 1.0));
-            painter.galley(text.min, galley, AMBER_BRIGHT);
+            painter.add(metal::lamp(lamp, 2.5, pal().accent, 1.0));
+            painter.galley(text.min, galley, pal().accent_bright);
             idle = Some(area);
         }
         // The name in the room the count and the idle mark leave it: smaller (to 9 points), then
@@ -702,10 +716,10 @@ impl Hud {
         let name = ta_ui::widgets::galley(ui, ta_ui::widgets::caption(label).font(strong(10.0)).color(color));
         let text = if net >= 0.0 { format!("+{net:.1}") } else { format!("{net:.1}") };
         // Growing, steady or shrinking: green, grey, amber (the top bar warns when it runs dry).
-        let tone = if net > 0.05 { GREEN } else if net < -0.05 { AMBER_BRIGHT } else { STEEL };
+        let tone = if net > 0.05 { pal().good } else if net < -0.05 { pal().accent_bright } else { pal().steel };
         let rate = ta_ui::widgets::galley(ui, RichText::new(tf("{rate}/s", &[("rate", &text)])).font(strong(11.5)).color(tone));
         let painter = ui.painter();
-        painter.add(metal::well(rect, INSET));
+        painter.add(metal::well(rect, pal().inset));
         let inner = Rect::from_min_max(Pos2::new(rect.left() + 3.0, rect.top() + 3.0 + name.size().y.max(rate.size().y)), rect.max - EVec2::splat(3.0));
         for k in 1..4 {
             painter.hline(inner.x_range(), (inner.top() + inner.height() * k as f32 / 4.0).round() + 0.5, Stroke::new(1.0, Color32::from_white_alpha(9)));
@@ -732,7 +746,7 @@ impl Hud {
         painter.add(egui::Shape::mesh(fill));
         painter.add(egui::Shape::line(made, Stroke::new(1.5, color)));
         let spent: Vec<Pos2> = readings.iter().map(|(t, s)| Pos2::new(x(*t), y(s[index + 1]))).collect();
-        painter.add(egui::Shape::line(spent, Stroke::new(1.2, RED)));
+        painter.add(egui::Shape::line(spent, Stroke::new(1.2, pal().bad)));
         painter.galley(rect.left_top() + EVec2::new(6.0, 3.0), name, color);
         painter.galley(Pos2::new(rect.right() - 6.0 - rate.size().x, rect.top() + 2.0), rate, tone);
         resp.on_hover_text(tf(
@@ -756,7 +770,7 @@ impl Hud {
                 s
             }
         };
-        let SelectionSummary { kinds, many, health, max_health, idle, damaged, duty: duty_sel } = summary;
+        let SelectionSummary { kinds, many, health, max_health, idle, damaged, duty: duty_sel, flows } = summary;
         let all_same = kinds.len() == 1;
         let doing = (many == 1).then(|| activity(game, u));
         let rank = (many == 1 && u.kills > 0).then(|| (u.rank(), u.kills));
@@ -784,7 +798,7 @@ impl Hud {
                     match self.unit_pic_of(ctx, vfs, game, kinds[0].0, r.width(), owner) {
                         Some(pic) => pic.paint(ui.painter(), r, Color32::WHITE),
                         None => {
-                            ui.painter().rect_filled(r, CornerRadius::ZERO, INSET);
+                            ui.painter().rect_filled(r, CornerRadius::ZERO, pal().inset);
                         }
                     }
                     ui.painter().add(hud_skin::bezel(r, 3.0, false));
@@ -802,7 +816,7 @@ impl Hud {
                         match self.unit_pic_of(ctx, vfs, game, kinds[i].0, card.width(), owner) {
                             Some(pic) => pic.paint(ui.painter(), card, if i == 0 { Color32::WHITE } else { Color32::from_gray(170) }),
                             None => {
-                                ui.painter().rect_filled(card, CornerRadius::ZERO, INSET);
+                                ui.painter().rect_filled(card, CornerRadius::ZERO, pal().inset);
                             }
                         }
                         ui.painter().add(pic_frame(card, false));
@@ -817,7 +831,7 @@ impl Hud {
                     } else {
                         tf("{n} units", &[("n", &many)])
                     };
-                    embossed_wrapped(ui, &title, strong(14.0), CREAM);
+                    embossed_wrapped(ui, &title, strong(14.0), pal().button_text);
                     let about = if all_same {
                         let d = ty.def.description.trim();
                         (!d.is_empty() && !d.eq_ignore_ascii_case(&name)).then(|| d.to_string())
@@ -825,7 +839,7 @@ impl Hud {
                         Some(tf("{n} kinds of unit", &[("n", &kinds.len())]))
                     };
                     if let Some(about) = about {
-                        ui.label(RichText::new(about).font(body(11.5)).color(STEEL));
+                        ui.label(RichText::new(about).font(body(11.5)).color(pal().steel));
                     }
                     match &doing {
                         Some((text, color)) => {
@@ -845,7 +859,7 @@ impl Hud {
                                 parts.push(tf("{n} on duty", &[("n", &duty_sel.on_duty)]));
                             }
                             if !parts.is_empty() {
-                                ui.label(RichText::new(parts.join("  ·  ")).font(strong(11.5)).color(STEEL));
+                                ui.label(RichText::new(parts.join("  ·  ")).font(strong(11.5)).color(pal().steel));
                             }
                         }
                     }
@@ -853,7 +867,7 @@ impl Hud {
                     if many == 1
                         && let Some(duty) = game.duty_of(first)
                     {
-                        ui.label(RichText::new(tf("ON DUTY · {duty}", &[("duty", &t(crate::game::duty::label(duty)))])).font(strong(11.5)).color(SKY));
+                        ui.label(RichText::new(tf("ON DUTY · {duty}", &[("duty", &t(crate::game::duty::label(duty)))])).font(strong(11.5)).color(pal().info));
                     }
                     // Health (a group's together).
                     ui.add_space(2.0);
@@ -861,7 +875,7 @@ impl Hud {
                     let (bar, _) = ui.allocate_exact_size(EVec2::new(ui.available_width(), 16.0), egui::Sense::hover());
                     ui.painter().add(hud_skin::gauge(bar, fraction, hud_skin::health_color(fraction), 1));
                     let text = ta_ui::widgets::galley(ui, RichText::new(format!("{health:.0} / {max_health:.0}")).font(strong(11.5)));
-                    metal::slab_text(ui.painter(), bar.center(), text, true, TEXT_BRIGHT, false);
+                    metal::slab_text(ui.painter(), bar.center(), text, true, pal().text_bright, false);
                 });
             });
             if !facts.is_empty() {
@@ -874,11 +888,11 @@ impl Hud {
                     let (r, _) = ui.allocate_exact_size(EVec2::new(40.0, 14.0), egui::Sense::hover());
                     for i in 0..3u8 {
                         let lit = i < rank;
-                        star(ui.painter(), Pos2::new(r.left() + 7.0 + 13.0 * f32::from(i), r.center().y), 5.5, if lit { AMBER_BRIGHT } else { Color32::from_black_alpha(90) }, if lit { AMBER_DIM } else { STEEL_DIM });
+                        star(ui.painter(), Pos2::new(r.left() + 7.0 + 13.0 * f32::from(i), r.center().y), 5.5, if lit { pal().accent_bright } else { Color32::from_black_alpha(90) }, if lit { pal().accent_dim } else { pal().steel_dim });
                     }
                     let title = t([n("Recruit"), n("Veteran"), n("Hardened"), n("Elite")][usize::from(rank.min(3))]);
                     let line = if kills == 1 { tf("{rank}  ·  1 kill", &[("rank", &title)]) } else { tf("{rank}  ·  {n} kills", &[("rank", &title), ("n", &kills)]) };
-                    ui.label(RichText::new(line).font(strong(11.5)).color(ACCENT));
+                    ui.label(RichText::new(line).font(strong(11.5)).color(pal().accent));
                 });
             }
             if let Some((text, next)) = stockpile {
@@ -886,10 +900,10 @@ impl Hud {
                 let (bar, _) = ui.allocate_exact_size(EVec2::new(ui.available_width(), 15.0), egui::Sense::hover());
                 ui.painter().add(hud_skin::gauge(bar, next, Color32::from_rgb(200, 120, 60), 4));
                 let galley = ta_ui::widgets::galley(ui, RichText::new(text).font(strong(10.5)));
-                metal::slab_text(ui.painter(), bar.center(), galley, true, TEXT_BRIGHT, false);
+                metal::slab_text(ui.painter(), bar.center(), galley, true, pal().text_bright, false);
             }
             if let Some((aboard, room)) = cargo {
-                ui.label(RichText::new(tf("Cargo: {n} of {room}", &[("n", &aboard), ("room", &room)])).font(strong(11.5)).color(ACCENT));
+                ui.label(RichText::new(tf("Cargo: {n} of {room}", &[("n", &aboard), ("room", &room)])).font(strong(11.5)).color(pal().accent));
             }
             ui.add_space(3.0);
         }
@@ -978,7 +992,7 @@ impl Hud {
                         if i == 0 {
                             let r = resp.rect;
                             let done = producing.map_or(0.0, |(_, p)| p);
-                            ui.painter().rect_filled(Rect::from_min_size(Pos2::new(r.min.x, r.max.y - 3.0), EVec2::new(r.width() * done, 3.0)), 0.0, GREEN);
+                            ui.painter().rect_filled(Rect::from_min_size(Pos2::new(r.min.x, r.max.y - 3.0), EVec2::new(r.width() * done, 3.0)), 0.0, pal().good);
                         }
                         let resp = resp.on_hover_text(tf("{name}: click to build it next, right-click to remove it", &[("name", &label)]));
                         if resp.secondary_clicked() {
@@ -988,7 +1002,7 @@ impl Hud {
                         }
                     }
                     if queue.len() > 14 {
-                        ui.label(RichText::new(format!("+{}", queue.len() - 14)).font(strong(12.0)).color(TEXT));
+                        ui.label(RichText::new(format!("+{}", queue.len() - 14)).font(strong(12.0)).color(pal().text));
                     }
                 });
             }
@@ -1019,7 +1033,7 @@ impl Hud {
                             }
                         }
                         if later.len() > 14 {
-                            ui.label(RichText::new(format!("+{}", later.len() - 14)).font(strong(12.0)).color(TEXT));
+                            ui.label(RichText::new(format!("+{}", later.len() - 14)).font(strong(12.0)).color(pal().text));
                         }
                     });
                     if let Some((k, to_front)) = edit {
@@ -1028,23 +1042,41 @@ impl Hud {
                 }
             }
             // One kind with nothing queued: what it is good for at a glance, and its key for the
-            // information page.
+            // information page. First, for any selection that makes or uses something (a metal
+            // extractor, a power plant, the Commander, a factory at work), what it does now, as
+            // TA's unit bar gives it: a whole selection's together.
             let queues = if ty.is_factory { !queue.is_empty() } else { ty.is_builder && many == 1 && game.builder_queue(first).len() > 1 };
-            if all_same && !queues {
+            let output = super::figure_rows(&flows);
+            let summary = all_same && !queues;
+            if summary || !output.is_empty() {
                 ui.add_space(4.0);
                 let mut more = false;
                 section_with(ui, n("DETAILS"), |ui| {
                     more = key_button(ui, game.keys.text("help")).on_hover_text(t("Information on the selected unit (with none, the controls reference)")).clicked();
                 });
-                let figures = super::info::summary_figures(game, &ty);
-                let width = ui.available_width();
-                let rows = super::info::figure_rows(ui.painter(), &figures, width);
-                let (table, _) = ui.allocate_exact_size(EVec2::new(width, rows.len() as f32 * super::info::FIGURE_ROW), egui::Sense::hover());
-                super::info::paint_figures(ui, table.min, width, &figures, &rows);
-                let economy = super::info::economy_lines(&ty);
-                if !economy.is_empty() {
-                    ui.add_space(2.0);
-                    ui.label(RichText::new(economy.join("  ·  ")).font(body(11.5)).color(STEEL));
+                let about = if many == 1 { t("What it makes and uses a second now") } else { t("What they make and use a second now, all together") };
+                // (Side by side where they fit, the metal's then the energy's: in a short plate a
+                // line apiece pushed the figures below out of sight.)
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 18.0;
+                    for row in &output {
+                        ui.label(super::figure_job(row)).on_hover_text(about);
+                    }
+                });
+                if summary {
+                    if !output.is_empty() {
+                        ui.add_space(3.0);
+                    }
+                    let figures = super::info::summary_figures(game, &ty);
+                    let width = ui.available_width();
+                    let rows = super::info::figure_rows(ui.painter(), &figures, width);
+                    let (table, _) = ui.allocate_exact_size(EVec2::new(width, rows.len() as f32 * super::info::FIGURE_ROW), egui::Sense::hover());
+                    super::info::paint_figures(ui, table.min, width, &figures, &rows);
+                    let economy = super::info::economy_lines(&ty);
+                    if !economy.is_empty() {
+                        ui.add_space(2.0);
+                        ui.label(RichText::new(economy.join("  ·  ")).font(body(11.5)).color(pal().steel));
+                    }
                 }
                 if more {
                     game.unit_info = Some(crate::game::UnitInfo { type_id: ty.id, unit: (many == 1).then_some(first) });
@@ -1137,12 +1169,12 @@ impl Hud {
         let gunner = first(&|t| t.weapons.iter().any(|w| w.is_some()));
         let mover = first(&|t| t.weapons.iter().any(|w| w.is_some()) && t.locomotion != Locomotion::Static);
         let cloaker = first(&|t| t.def.cloak_cost > 0.0);
-        let switch = first(&|t| t.def.on_offable);
+        // (The switches: all on, all off, or some of each, which the button says as TA's does.)
+        let power = game.selection_power();
         let (armed, mobile) = (gunner.is_some(), mover.is_some());
         let fire = gunner.map_or(0, |x| x.fire_state);
         let movement = mover.map_or(0, |x| x.move_state);
         let cloak_on = cloaker.is_some_and(|x| x.cloak_on);
-        let active = switch.is_some_and(|x| x.activated);
         let counting = u.self_destruct_at.is_some() && u.self_destruct_manual;
         let cloak = cloaker.map(|x| {
             let ty = game.sim.unit_type(x);
@@ -1155,7 +1187,6 @@ impl Hud {
         } else {
             tf("Self-destruct: blow up the selection after a five-second countdown ({key}); again to cancel", &[("key", &game.keys.text("self_destruct"))])
         };
-        let on_offable = switch.is_some();
         /// What a standing order's button does.
         enum State {
             Fire,
@@ -1166,14 +1197,15 @@ impl Hud {
             Destruct,
         }
         /// A standing order's button: what it does, its glyph, what it is set to and what that
-        /// does, lit (a cloak that is on), rusted (a countdown running), which of its settings it
-        /// is at.
+        /// does, lit (a cloak that is on), half lit (switches some on and some off), rusted (a
+        /// countdown running), which of its settings it is at.
         struct Button {
             state: State,
             glyph: Glyph,
             label: String,
             tip: String,
             lit: bool,
+            mixed: bool,
             warn: bool,
             steps: Option<(u8, u8)>,
         }
@@ -1185,7 +1217,7 @@ impl Hud {
                 (Glyph::FireAtWill, n("FIRE AT WILL"), n("Fire at will: shoots whatever comes in range")),
             ][usize::from(fire.min(2))];
             let tip = format!("{}\n{}", t(what), tf("Click for the next fire order ({key})", &[("key", &game.keys.text("fire_orders"))]));
-            states.push(Button { state: State::Fire, glyph, label: t(label).to_string(), tip, lit: false, warn: false, steps: Some((fire.min(2), 3)) });
+            states.push(Button { state: State::Fire, glyph, label: t(label).to_string(), tip, lit: false, mixed: false, warn: false, steps: Some((fire.min(2), 3)) });
         }
         if armed && mobile {
             let (glyph, label, what) = [
@@ -1194,23 +1226,24 @@ impl Hud {
                 (Glyph::Roam, n("ROAM"), n("Roam: chases the enemy anywhere")),
             ][usize::from(movement.min(2))];
             let tip = format!("{}\n{}", t(what), tf("Click for the next move order ({key})", &[("key", &game.keys.text("move_orders"))]));
-            states.push(Button { state: State::Move, glyph, label: t(label).to_string(), tip, lit: false, warn: false, steps: Some((movement.min(2), 3)) });
+            states.push(Button { state: State::Move, glyph, label: t(label).to_string(), tip, lit: false, mixed: false, warn: false, steps: Some((movement.min(2), 3)) });
         }
         if let Some(tip) = cloak {
             let (glyph, label) = if cloak_on { (Glyph::Cloaked, t("CLOAKED")) } else { (Glyph::Visible, t("VISIBLE")) };
-            states.push(Button { state: State::Cloak, glyph, label: label.to_string(), tip, lit: cloak_on, warn: false, steps: None });
+            states.push(Button { state: State::Cloak, glyph, label: label.to_string(), tip, lit: cloak_on, mixed: false, warn: false, steps: None });
         }
-        if on_offable {
-            let tip = if active { tf("On: click to turn off ({key})", &[("key", &game.keys.text("on_off"))]) } else { tf("Off: click to turn on ({key})", &[("key", &game.keys.text("on_off"))]) };
-            states.push(Button { state: State::Power, glyph: Glyph::Power, label: if active { t("ON") } else { t("OFF") }.to_string(), tip, lit: active, warn: false, steps: None });
+        if let Some(power) = power {
+            let (label, tip) = crate::hud::power_words(power, game.keys.text("on_off"));
+            let (lit, mixed) = (power == crate::game::Power::On, matches!(power, crate::game::Power::Mixed { .. }));
+            states.push(Button { state: State::Power, glyph: Glyph::Power, label, tip, lit, mixed, warn: false, steps: None });
         }
         // The constructors' duty: what they do by themselves (a menu of them opens from it).
         if let Some(duty) = game.duty_control() {
-            states.push(Button { state: State::Duty, glyph: Glyph::Duty, label: duty.label, tip: duty.tip, lit: duty.lit, warn: false, steps: None });
+            states.push(Button { state: State::Duty, glyph: Glyph::Duty, label: duty.label, tip: duty.tip, lit: duty.lit, mixed: false, warn: false, steps: None });
         }
         // Self-destruct last, quiet (red while it counts down).
         let label = if counting { t("CANCEL") } else { t("SELF-DESTRUCT") };
-        states.push(Button { state: State::Destruct, glyph: Glyph::SelfDestruct, label: label.to_string(), tip: destruct, lit: false, warn: counting, steps: None });
+        states.push(Button { state: State::Destruct, glyph: Glyph::SelfDestruct, label: label.to_string(), tip: destruct, lit: false, mixed: false, warn: counting, steps: None });
         ui.painter().add(metal::seam_down(grid.right() + GAP + 0.5, room.y_range().shrink(4.0)));
         let column = Rect::from_min_max(Pos2::new(room.right() - stance, room.top()), room.max);
         let mut right = ui.new_child(egui::UiBuilder::new().max_rect(column).layout(egui::Layout::top_down(egui::Align::Min)));
@@ -1235,10 +1268,11 @@ impl Hud {
             if wide && i == last && i > 0 {
                 right.add_space(apart);
             }
+            let lamp = crate::hud_icons::Lamp::of(b.lit, b.mixed);
             let resp = if wide {
-                stance_button(&mut right, b.glyph, &b.label, EVec2::new(stance, tall), b.lit, b.warn, b.steps, text_size)
+                stance_button(&mut right, b.glyph, &b.label, EVec2::new(stance, tall), lamp, b.warn, b.steps, text_size)
             } else {
-                state_icon_button(&mut right, b.glyph, EVec2::new(stance, tall), b.lit, b.warn, b.steps)
+                state_icon_button(&mut right, b.glyph, EVec2::new(stance, tall), lamp, b.warn, b.steps)
             };
             if matches!(b.state, State::Fire) {
                 self.anchors.order("fire_state", resp.rect);
@@ -1254,7 +1288,12 @@ impl Hud {
             Some(State::Fire) => game.set_states(Some((fire + 1) % 3), None),
             Some(State::Move) => game.set_states(None, Some((movement + 1) % 3)),
             Some(State::Cloak) => game.toggle_cloak(),
-            Some(State::Power) => game.set_active(!active),
+            // (Some on and some off: all one way, as TA's button and its key do.)
+            Some(State::Power) => {
+                if let Some(power) = power {
+                    game.set_active(power.pressed());
+                }
+            }
             Some(State::Destruct) => game.self_destruct_selection(),
             // (The duty button opens its menu by itself.)
             Some(State::Duty) | None => {}
@@ -1452,18 +1491,18 @@ impl Hud {
                 for (k, (_, zone)) in zones.iter().enumerate() {
                     let at = Pos2::new(rect.min.x + zone.center().x * rect.width(), rect.min.y + zone.center().y * rect.height());
                     let lit = pointed == Some(k);
-                    painter.circle_filled(at, if lit { 2.5 } else { 1.8 }, if lit { AMBER_BRIGHT } else { Color32::from_white_alpha(150) });
+                    painter.circle_filled(at, if lit { 2.5 } else { 1.8 }, if lit { pal().accent_bright } else { Color32::from_white_alpha(150) });
                 }
             }
             cost_strip(painter, rect, kind.cost_metal.to_f32(), kind.cost_energy.to_f32(), cost_size);
             if let Some(done) = on_pad {
                 let bar = Rect::from_min_size(rect.min + EVec2::new(1.0, 1.0), EVec2::new(rect.width() - 2.0, 4.0));
                 painter.rect_filled(bar, CornerRadius::ZERO, Color32::from_black_alpha(170));
-                painter.rect_filled(Rect::from_min_size(bar.min, EVec2::new(bar.width() * done, bar.height())), CornerRadius::ZERO, GREEN);
+                painter.rect_filled(Rect::from_min_size(bar.min, EVec2::new(bar.width() * done, bar.height())), CornerRadius::ZERO, pal().good);
             }
             if placing {
-                painter.rect_stroke(rect.shrink(1.0), CornerRadius::same(1), Stroke::new(2.0, AMBER_BRIGHT), egui::StrokeKind::Inside);
-                painter.add(metal::lamp(rect.left_top() + EVec2::new(8.0, 8.0), 3.0, GREEN, 1.0));
+                painter.rect_stroke(rect.shrink(1.0), CornerRadius::same(1), Stroke::new(2.0, pal().accent_bright), egui::StrokeKind::Inside);
+                painter.add(metal::lamp(rect.left_top() + EVec2::new(8.0, 8.0), 3.0, pal().good, 1.0));
             }
             if let Some(k) = queued {
                 count(ui, rect.right_top() + EVec2::new(-4.0, 5.0), Align2::RIGHT_TOP, k, 17.0);
@@ -1663,7 +1702,7 @@ fn pager(ui: &mut egui::Ui, page: usize, pages: usize) -> (Option<i32>, Option<R
         // A chevron up for the page before, down for the one after.
         let c = r.center() + EVec2::new(0.0, if resp.is_pointer_button_down_on() { 1.0 } else { 0.0 });
         let (w, h) = (6.0, if step < 0 { -3.0 } else { 3.0 });
-        let colour = if usable { Slab::Steel.text(hot) } else { STEEL_DIM };
+        let colour = if usable { Slab::Steel.text(hot) } else { pal().steel_dim };
         let chevron = vec![Pos2::new(c.x - w, c.y - h), Pos2::new(c.x, c.y + h), Pos2::new(c.x + w, c.y - h)];
         ui.painter().add(egui::Shape::line(chevron, Stroke::new(2.0, colour)));
         if usable && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -1677,10 +1716,10 @@ fn pager(ui: &mut egui::Ui, page: usize, pages: usize) -> (Option<i32>, Option<R
         let spacing = 11.0;
         let first = middle.center().x - spacing * (pages - 1) as f32 / 2.0;
         for k in 0..pages {
-            ui.painter().add(metal::lamp(Pos2::new(first + spacing * k as f32, middle.center().y), 2.5, AMBER, if k == page { 1.0 } else { 0.0 }));
+            ui.painter().add(metal::lamp(Pos2::new(first + spacing * k as f32, middle.center().y), 2.5, pal().accent, if k == page { 1.0 } else { 0.0 }));
         }
     } else {
-        ui.painter().text(middle.center(), Align2::CENTER_CENTER, format!("{} / {pages}", page + 1), strong(11.0), TEXT_BRIGHT);
+        ui.painter().text(middle.center(), Align2::CENTER_CENTER, format!("{} / {pages}", page + 1), strong(11.0), pal().text_bright);
     }
     (turn, buttons[0], buttons[1])
 }
@@ -1709,7 +1748,7 @@ fn duty_menu(button: &egui::Response, game: &mut Game) {
         }
         ui.add_space(4.0);
         let hint = tf("Any order you give a constructor takes it off duty. {key} goes through the duties.", &[("key", &game.keys.text("duty"))]);
-        ui.label(RichText::new(hint).font(body(10.5)).color(STEEL_DIM));
+        ui.label(RichText::new(hint).font(body(10.5)).color(pal().steel_dim));
     });
     if let Some(duty) = chosen {
         game.set_duty(duty);
@@ -1721,21 +1760,21 @@ fn duty_menu(button: &egui::Response, game: &mut Game) {
 fn duty_row(ui: &mut egui::Ui, glyph: crate::hud_icons::Glyph, title: &str, about: &str, on: bool) -> egui::Response {
     const LEFT: f32 = 36.0;
     let width = ui.available_width();
-    let galley = ui.painter().layout(about.to_string(), body(11.0), STEEL, width - LEFT - 26.0);
+    let galley = ui.painter().layout(about.to_string(), body(11.0), pal().steel, width - LEFT - 26.0);
     let (rect, response) = ui.allocate_exact_size(EVec2::new(width, (26.0 + galley.size().y + 8.0).max(42.0)), egui::Sense::click());
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         if response.hovered() {
-            painter.rect_filled(rect, 3.0, AMBER_DEEP);
+            painter.rect_filled(rect, 3.0, pal().accent_deep);
         } else if on {
             painter.rect_filled(rect, 3.0, Color32::from_white_alpha(12));
         }
-        let ink = if on { AMBER_BRIGHT } else { CREAM };
+        let ink = if on { pal().accent_bright } else { pal().button_text };
         crate::hud_icons::paint(painter, Rect::from_center_size(Pos2::new(rect.left() + 18.0, rect.top() + 21.0), EVec2::splat(20.0)), glyph, ink);
-        painter.text(Pos2::new(rect.left() + LEFT, rect.top() + 7.0), Align2::LEFT_TOP, title, strong(12.0), if on { AMBER_BRIGHT } else { TEXT_BRIGHT });
-        painter.galley(Pos2::new(rect.left() + LEFT, rect.top() + 24.0), galley, STEEL);
+        painter.text(Pos2::new(rect.left() + LEFT, rect.top() + 7.0), Align2::LEFT_TOP, title, strong(12.0), if on { pal().accent_bright } else { pal().text_bright });
+        painter.galley(Pos2::new(rect.left() + LEFT, rect.top() + 24.0), galley, pal().steel);
         if on {
-            painter.add(metal::lamp(Pos2::new(rect.right() - 12.0, rect.top() + 14.0), 2.6, GREEN, 1.0));
+            painter.add(metal::lamp(Pos2::new(rect.right() - 12.0, rect.top() + 14.0), 2.6, pal().good, 1.0));
         }
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -1743,7 +1782,7 @@ fn duty_row(ui: &mut egui::Ui, glyph: crate::hud_icons::Glyph, title: &str, abou
 
 /// A key as a small steel button (the information page's), lettered with it.
 fn key_button(ui: &mut egui::Ui, key: &str) -> egui::Response {
-    let galley = ui.painter().layout_no_wrap(key.to_uppercase(), strong(9.5), TEXT_BRIGHT);
+    let galley = ui.painter().layout_no_wrap(key.to_uppercase(), strong(9.5), pal().text_bright);
     let (rect, resp) = ui.allocate_exact_size(EVec2::new(galley.size().x + 12.0, 16.0), egui::Sense::click());
     let hot = if resp.hovered() { 1.0 } else { 0.0 };
     let down = resp.is_pointer_button_down_on();
@@ -1796,12 +1835,12 @@ fn build_tab(ui: &mut egui::Ui, label: &str, width: f32, (size, spacing): (f32, 
     if ui.is_rect_visible(rect) {
         let hot = if response.hovered() { 1.0 } else { 0.0 };
         ui.painter().add(metal::slab(ui.ctx(), rect, Slab::Steel, hot, on || response.is_pointer_button_down_on()));
-        let color = if on { AMBER_BRIGHT } else { Slab::Steel.text(hot) };
+        let color = if on { pal().accent_bright } else { Slab::Steel.text(hot) };
         let galley = ta_ui::widgets::galley(ui, RichText::new(label).font(strong(size)).extra_letter_spacing(spacing));
         metal::slab_text(&ui.painter().with_clip_rect(rect.shrink(1.0)), rect.center(), galley, true, color, on);
         if on {
             let bar = Rect::from_min_max(Pos2::new(rect.left() + 6.0, rect.bottom() - 3.0), Pos2::new(rect.right() - 6.0, rect.bottom() - 1.5));
-            ui.painter().rect_filled(bar, CornerRadius::ZERO, AMBER);
+            ui.painter().rect_filled(bar, CornerRadius::ZERO, pal().accent);
         }
     }
     if response.clicked() && !on {
@@ -1819,7 +1858,7 @@ pub(super) fn section(ui: &mut egui::Ui, title: &str) {
 fn section_with(ui: &mut egui::Ui, title: &str, right: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        ui.label(ta_ui::widgets::caption(title).color(ACCENT));
+        ui.label(ta_ui::widgets::caption(title).color(pal().accent));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             right(ui);
             let (rect, _) = ui.allocate_exact_size(EVec2::new(ui.available_width(), 10.0), egui::Sense::hover());
@@ -1882,7 +1921,7 @@ fn cost_strip(painter: &egui::Painter, rect: Rect, metal_cost: f32, energy_cost:
     painter.add(metal::vgrad(band, Color32::from_black_alpha(40), Color32::from_black_alpha(210)));
     let (metal_text, energy_text) = (short_cost(metal_cost), short_cost(energy_cost));
     let y = band.bottom() - 1.0;
-    for (text, at, align, color) in [(metal_text, band.left() + 3.0, Align2::LEFT_BOTTOM, METAL), (energy_text, band.right() - 3.0, Align2::RIGHT_BOTTOM, ENERGY)] {
+    for (text, at, align, color) in [(metal_text, band.left() + 3.0, Align2::LEFT_BOTTOM, pal().metal_bar), (energy_text, band.right() - 3.0, Align2::RIGHT_BOTTOM, pal().energy_bar)] {
         painter.text(Pos2::new(at + 1.0, y + 1.0), align, &text, strong(size), Color32::from_black_alpha(230));
         painter.text(Pos2::new(at, y), align, &text, strong(size), color);
     }
@@ -1908,23 +1947,23 @@ pub(crate) fn activity(game: &Game, u: &Unit) -> (String, Color32) {
     let known = |id: UnitId| sim.unit(id).filter(|o| o.owner == u.owner || game.seen(o) == Seen::Visible).map(|o| crate::chat::unit_label(sim, o.type_id));
     let named = |id: UnitId, text: &str, unseen: &str| known(id).map_or_else(|| t(unseen).to_string(), |name| tf(text, &[("name", &name)]));
     if !u.is_complete() {
-        return (tf("Under construction: {pct}%", &[("pct", &percent(u.build_progress))]), AMBER);
+        return (tf("Under construction: {pct}%", &[("pct", &percent(u.build_progress))]), pal().accent);
     }
     if u.carried_by.is_some() {
-        return (t("Aboard a transport").to_string(), TEXT);
+        return (t("Aboard a transport").to_string(), pal().text);
     }
     if u.paralyzed_until > sim.tick {
-        return (t("Paralyzed").to_string(), AMBER_BRIGHT);
+        return (t("Paralyzed").to_string(), pal().accent_bright);
     }
     if u.self_destruct_manual
         && let Some(at) = u.self_destruct_at
     {
-        return (tf("Self-destructing in {secs} s", &[("secs", &at.saturating_sub(sim.tick).div_ceil(30))]), RED);
+        return (tf("Self-destructing in {secs} s", &[("secs", &at.saturating_sub(sim.tick).div_ceil(30))]), pal().bad);
     }
     let ty = sim.unit_type(u);
     // (A unit taking a wreck or a tree apart works on itself, as far as its build job says.)
     if u.build.is_some_and(|job| job.target == u.id) {
-        return (t("Reclaiming").to_string(), GREEN);
+        return (t("Reclaiming").to_string(), pal().good);
     }
     if let Some(job) = u.build
         && let Some(target) = sim.unit(job.target)
@@ -1938,36 +1977,36 @@ pub(crate) fn activity(game: &Game, u: &Unit) -> (String, Color32) {
         } else {
             tf("Building: {name} {pct}%", &[("name", &what), ("pct", &pct)])
         };
-        return (text, GREEN);
+        return (text, pal().good);
     }
     // (A constructor on duty that is getting away from enemies says so, not just that it moves.)
     if matches!(u.orders.front(), Some(Order::Move(_))) && game.duty_status(u.id) == Some(ta_ai::DutyStatus::GettingAway) {
-        return (t("Getting away from enemies").to_string(), AMBER);
+        return (t("Getting away from enemies").to_string(), pal().accent);
     }
     match u.orders.front() {
-        Some(Order::Move(_)) => (t("Moving").to_string(), TEXT),
+        Some(Order::Move(_)) => (t("Moving").to_string(), pal().text),
         Some(Order::Attack(Target::Unit(id)) | Order::ManualFire(Target::Unit(id))) => (named(*id, n("Attacking: {name}"), n("Attacking a radar contact")), FIGHTING),
         Some(Order::Attack(_) | Order::ManualFire(_)) => (t("Attacking the ground").to_string(), FIGHTING),
         Some(Order::AttackType(_)) => (t("Hunting").to_string(), FIGHTING),
         Some(Order::Fight(_)) => (t("Fighting its way forward").to_string(), FIGHTING),
-        Some(Order::Patrol(_)) => (t("Patrolling").to_string(), TEXT),
-        Some(Order::Guard(id)) => (named(*id, n("Guarding: {name}"), n("Guarding")), TEXT),
-        Some(Order::Build { type_id, .. }) => (tf("On the way to build: {name}", &[("name", &crate::chat::unit_label(sim, *type_id))]), GREEN),
-        Some(Order::Repair(id)) => (named(*id, n("Repairing: {name}"), n("Repairing")), GREEN),
-        Some(Order::Reclaim(_) | Order::ReclaimUnit(_)) => (t("Reclaiming").to_string(), GREEN),
-        Some(Order::Resurrect(_)) => (t("Resurrecting a wreck").to_string(), GREEN),
+        Some(Order::Patrol(_)) => (t("Patrolling").to_string(), pal().text),
+        Some(Order::Guard(id)) => (named(*id, n("Guarding: {name}"), n("Guarding")), pal().text),
+        Some(Order::Build { type_id, .. }) => (tf("On the way to build: {name}", &[("name", &crate::chat::unit_label(sim, *type_id))]), pal().good),
+        Some(Order::Repair(id)) => (named(*id, n("Repairing: {name}"), n("Repairing")), pal().good),
+        Some(Order::Reclaim(_) | Order::ReclaimUnit(_)) => (t("Reclaiming").to_string(), pal().good),
+        Some(Order::Resurrect(_)) => (t("Resurrecting a wreck").to_string(), pal().good),
         Some(Order::Capture(id)) => (named(*id, n("Capturing: {name}"), n("Capturing")), FIGHTING),
-        Some(Order::Load(_)) => (t("Picking a unit up").to_string(), TEXT),
-        Some(Order::Unload(_)) => (t("Setting its cargo down").to_string(), TEXT),
-        Some(Order::Wait(_) | Order::WaitAttacked(_)) => (t("Waiting").to_string(), TEXT),
-        Some(Order::SetStates { .. } | Order::Stop) => (t("Idle").to_string(), STEEL),
-        None if ty.is_factory && !u.factory_queue.is_empty() => (t("Starting the next unit").to_string(), GREEN),
-        None if ty.is_factory => (t("Idle: nothing queued").to_string(), STEEL),
+        Some(Order::Load(_)) => (t("Picking a unit up").to_string(), pal().text),
+        Some(Order::Unload(_)) => (t("Setting its cargo down").to_string(), pal().text),
+        Some(Order::Wait(_) | Order::WaitAttacked(_)) => (t("Waiting").to_string(), pal().text),
+        Some(Order::SetStates { .. } | Order::Stop) => (t("Idle").to_string(), pal().steel),
+        None if ty.is_factory && !u.factory_queue.is_empty() => (t("Starting the next unit").to_string(), pal().good),
+        None if ty.is_factory => (t("Idle: nothing queued").to_string(), pal().steel),
         None => match u.weapons.iter().find_map(|w| w.target) {
             Some(Target::Unit(id)) => (named(id, n("Engaging: {name}"), n("Engaging a radar contact")), FIGHTING),
             // (On duty with nothing to do: it looks again every few seconds, and says why.)
-            _ if game.on_duty(u.id) => (game.duty_line(u.id).unwrap_or_else(|| t("Waiting for work").to_string()), SKY),
-            _ => (t("Idle").to_string(), STEEL),
+            _ if game.on_duty(u.id) => (game.duty_line(u.id).unwrap_or_else(|| t("Waiting for work").to_string()), pal().info),
+            _ => (t("Idle").to_string(), pal().steel),
         },
     }
 }

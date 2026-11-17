@@ -443,7 +443,7 @@ impl State {
         self.renderer.set_lights(&lights);
         self.renderer.prepare_beams(&beams);
         self.renderer.prepare_sprites(&[], &[], &effects, &[], &[]);
-        let instances = self.units.iter().map(|u| DrawInstance { model: u.model, pieces: &u.matrices, team: u.team, flags: 0, build: 1.0, damage: 0.0, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL });
+        let instances = self.units.iter().map(|u| DrawInstance { model: u.model, pieces: &u.matrices, team: u.team, flags: 0, build: 1.0, damage: 0.0, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL, key: 0 });
         self.renderer.prepare_models(instances);
 
         if o.bench {

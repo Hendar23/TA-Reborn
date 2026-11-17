@@ -159,7 +159,14 @@ pub fn set_still(ctx: &Context, still: bool) {
 
 /// Whether idle animations are held still.
 pub fn still(ctx: &Context) -> bool {
-    reduced(ctx) || ctx.data(|d| d.get_temp(id())).unwrap_or(false)
+    reduced(ctx) || held(ctx)
+}
+
+/// Whether animations are held for the window's sake ([`set_still`]: in the background,
+/// minimised, idle), whatever the player's preference: what the player asked to see move (a
+/// mod's gameplay preview played with reduced motion) holds then too.
+pub fn held(ctx: &Context) -> bool {
+    ctx.data(|d| d.get_temp(id())).unwrap_or(false)
 }
 
 /// Asks for an idle animation's next frame `after` from now, unless they are held still.

@@ -555,6 +555,70 @@ impl SideLayout {
     }
 }
 
+/// Every side's layout from side data (`ta_data::side_data`: the game's sides, then those of
+/// mods' `sidedata_*.tdf` add-ons), by side name (upper case), in order. What a side does not
+/// give of its own, box by box (and its fonts), it takes from a side before it drawn with the same
+/// interface art (`intgaf`: a mod's side in Core's panels takes Core's lettering), else from the
+/// first side: the Supreme Commander factions' sides name their art and nothing more, and drew
+/// a top bar without its metal and energy (`METALBAR`, `METALNUM`...) or logo.
+pub(crate) fn side_layouts(doc: &tdf::TdfDocument) -> Vec<(String, Arc<SideLayout>)> {
+    struct Own {
+        name: String,
+        art: String,
+        font: Option<String>,
+        font_gui: Option<String>,
+        boxes: Vec<(String, Rect)>,
+    }
+    let own: Vec<Own> = doc
+        .sections
+        .iter()
+        .filter(|s| s.name.to_ascii_uppercase().starts_with("SIDE"))
+        .map(|s| {
+            let boxes = s
+                .sections
+                .iter()
+                .map(|b| {
+                    let (x1, y1) = (b.get_i32_or("x1", 0) as f32, b.get_i32_or("y1", 0) as f32);
+                    let (x2, y2) = (b.get_i32_or("x2", 0) as f32, b.get_i32_or("y2", 0) as f32);
+                    // Some boxes only mean their first corner (the second is junk).
+                    (b.name.to_ascii_uppercase(), Rect::from_min_max(pos2(x1, y1), pos2(x2.max(x1), y2.max(y1))))
+                })
+                .collect();
+            let given = |key: &str| s.get(key).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+            Own {
+                name: s.get_str("name", "").trim().to_ascii_uppercase(),
+                art: s.get("intgaf").unwrap_or("").trim().to_ascii_uppercase(),
+                font: given("font"),
+                font_gui: given("fontgui"),
+                boxes,
+            }
+        })
+        .collect();
+    (0..own.len())
+        .map(|i| {
+            let side = &own[i];
+            // (Who lends what it lacks: a side before it in the same panels, else the first.)
+            let lender = (0..i).find(|&j| !side.art.is_empty() && own[j].art == side.art).unwrap_or(0);
+            let lenders = [lender, 0];
+            let lent = |pick: fn(&Own) -> &Option<String>| lenders.iter().find_map(|&j| pick(&own[j]).clone());
+            let mut boxes = side.boxes.clone();
+            for &j in lenders.iter().filter(|&&j| j != i) {
+                for (name, rect) in &own[j].boxes {
+                    if !boxes.iter().any(|(n, _)| n == name) {
+                        boxes.push((name.clone(), *rect));
+                    }
+                }
+            }
+            let layout = SideLayout {
+                font: side.font.clone().or_else(|| lent(|s| &s.font)).unwrap_or_else(|| "console".into()),
+                font_gui: side.font_gui.clone().or_else(|| lent(|s| &s.font_gui)).unwrap_or_else(|| "armbutt".into()),
+                boxes,
+            };
+            (side.name.clone(), Arc::new(layout))
+        })
+        .collect()
+}
+
 /// A place of a builder's own build page that several of its units share ([`Grid::share_of`]):
 /// each unit with its zone, the share of the place its button is seen over (0..1 across and
 /// down), in the page's order. A point of the place is the first zone's that holds it, as TA
@@ -810,30 +874,10 @@ impl Art {
         self.guis.entry(name.clone()).or_insert_with(|| vfs.read_opt(&format!("guis/{name}.gui")).map(|b| Arc::new(Gui::parse(&b)))).clone()
     }
 
-    /// A side's layout (by side name, e.g. `ARM`); sides sidedata.tdf doesn't lay out
-    /// borrow the first side's.
+    /// A side's layout (by side name, e.g. `ARM`); a side sidedata.tdf doesn't lay out borrows
+    /// the first side's (see [`side_layouts`]).
     pub fn side_layout(&mut self, vfs: &Vfs, side: &str) -> Option<Arc<SideLayout>> {
-        let sides = self.sides.get_or_insert_with(|| {
-            let Some(doc) = vfs.read_opt("gamedata/sidedata.tdf").map(|b| tdf::parse_bytes(&b)) else { return Vec::new() };
-            doc.sections
-                .iter()
-                .filter(|s| s.name.to_ascii_uppercase().starts_with("SIDE"))
-                .map(|s| {
-                    let boxes = s
-                        .sections
-                        .iter()
-                        .map(|b| {
-                            let (x1, y1) = (b.get_i32_or("x1", 0) as f32, b.get_i32_or("y1", 0) as f32);
-                            let (x2, y2) = (b.get_i32_or("x2", 0) as f32, b.get_i32_or("y2", 0) as f32);
-                            // Some boxes only mean their first corner (the second is junk).
-                            (b.name.to_ascii_uppercase(), Rect::from_min_max(pos2(x1, y1), pos2(x2.max(x1), y2.max(y1))))
-                        })
-                        .collect();
-                    let layout = SideLayout { font: s.get_str("font", "console"), font_gui: s.get_str("fontgui", "armbutt"), boxes };
-                    (s.get_str("name", "").trim().to_ascii_uppercase(), Arc::new(layout))
-                })
-                .collect()
-        });
+        let sides = self.sides.get_or_insert_with(|| ta_data::side_data(vfs).map(|doc| side_layouts(&doc)).unwrap_or_default());
         sides.iter().find(|(n, _)| n.eq_ignore_ascii_case(side)).or(sides.first()).map(|(_, l)| l.clone())
     }
 
@@ -966,6 +1010,31 @@ mod tests {
         assert_eq!(phases(2.25), [0, 1, 2, 3]);
         assert_eq!(phases(2.0), [0]);
         assert_eq!(phases(2.6), [0, 1, 2, 3]);
+    }
+
+    /// A mod's side that lays out nothing of its own (the Supreme Commander factions name their
+    /// art alone) takes every box and its lettering from a side before it in the same panels,
+    /// else from the first; what it does give stays its own.
+    #[test]
+    fn sides_without_boxes_borrow_them_box_by_box() {
+        let doc = tdf::parse_bytes(
+            b"[SIDE0]{name=ARM;intgaf=ARMINT;font=console;fontgui=armbutt;[METALBAR]{x1=218;y1=12;x2=345;y2=14;}[LOGO]{x1=132;y1=5;x2=152;y2=25;}}\n\
+              [SIDE1]{name=CORE;intgaf=CORINT;font=console;fontgui=corbutt;[METALBAR]{x1=218;y1=12;x2=345;y2=14;}[LOGO]{x1=132;y1=5;x2=152;y2=25;}}\n\
+              [SIDE2]{name=UEF;intgaf=ARMINT;}\n\
+              [SIDE3]{name=CYBRAN;intgaf=CORINT;[LOGO]{x1=10;y1=5;x2=30;y2=25;}}\n\
+              [SIDE4]{name=OTHER;intgaf=OTHERINT;fontgui=otherbutt;}",
+        );
+        let sides = side_layouts(&doc);
+        let side = |name: &str| sides.iter().find(|(n, _)| n == name).map(|(_, l)| l.clone()).unwrap();
+        let bar = Some(Rect::from_min_max(pos2(218.0, 12.0), pos2(345.0, 14.0)));
+        let (uef, cybran, other) = (side("UEF"), side("CYBRAN"), side("OTHER"));
+        assert_eq!((uef.get("METALBAR"), uef.get("logo")), (bar, Some(Rect::from_min_max(pos2(132.0, 5.0), pos2(152.0, 25.0)))), "the first side's boxes");
+        assert_eq!((uef.font.as_str(), uef.font_gui.as_str()), ("console", "armbutt"));
+        assert_eq!(cybran.get("METALBAR"), bar, "Core's, in Core's panels");
+        assert_eq!(cybran.get("LOGO"), Some(Rect::from_min_max(pos2(10.0, 5.0), pos2(30.0, 25.0))), "its own box stays");
+        assert_eq!(cybran.font_gui, "corbutt", "Core's lettering");
+        assert_eq!((other.get("METALBAR"), other.font_gui.as_str(), other.font.as_str()), (bar, "otherbutt", "console"), "the first side's, its own lettering kept");
+        assert_eq!(side("CORE").font_gui, "corbutt");
     }
 
     #[test]

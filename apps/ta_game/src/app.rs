@@ -32,6 +32,11 @@ use crate::minimap::Minimap;
 use crate::setup::{Assets, Controller, GameSetup, SlotSetup};
 
 pub fn run(args: Args, vfs: Vfs, mods: crate::record_mods::InPlay, config: ta_config::Config, profile: Option<ta_config::profiles::Profile>) -> Result<()> {
+    // (A film captured on a fixed clock, `TA_CAPTURE_FPS`, waits for the paint of the models with
+    // surfaces it draws: it shows a unit in its paint from its first frame, whatever the workers
+    // making it take. Other captures take the paint as the game does, as it comes.)
+    let film = std::env::var("TA_CAPTURE_FPS").ok().and_then(|v| v.parse::<f32>().ok()).is_some_and(|f| f > 0.0);
+    ta_render::model::surfaced::set_paint_waits(args.screenshot.is_some() && film);
     let event_loop = EventLoop::<egui_winit::accesskit_winit::Event>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App { args, vfs: Arc::new(vfs), mods, config, profile, state: None, active_load: None, error: None, proxy: event_loop.create_proxy(), accessibility_active: false };
@@ -184,6 +189,10 @@ struct State {
     menu: Menu,
     minimap: Minimap,
     hud: Hud,
+    /// The battle's interface in its mod's theme, as drawn now (`mod_theme`), and the theme of
+    /// the mods in play (worked out again when they change: the editor's saved maps).
+    theme_applied: crate::mod_theme::Applied,
+    theme_of: Option<(usize, Option<crate::mod_theme::ModTheme>)>,
     dev: DevPanel,
     movie: Option<MoviePlayer>,
     /// Captures: `TA_ROOM_TUBE=<dir>` plays that folder's frames (`f_0.png`, `f_1.png`...) on the
@@ -734,6 +743,13 @@ enum DemoAction {
     Gallery,
     /// A staged scene, for filming (`--demo stage`, the scene in `TA_STAGE`; see `stage.rs`).
     Stage,
+    /// Pauses the battle (true) or lets it go on (false), as the pause key does.
+    Pause(bool),
+    /// `--demo paused-orders`: orders of every kind given to the units `SpawnNear` put down (the
+    /// Stumpies move, queue a patrol and one attacks the nearest enemy, the Commander plans two
+    /// buildings, the lab queues Peewees and sends them somewhere), then the Stumpies and the
+    /// Commander selected, Shift held: their routes and plans.
+    PausedOrders,
 }
 
 /// Maps that make good backdrops for the menu.
@@ -937,6 +953,9 @@ impl App {
             // (What the screen showed went with it: no page or dialog of it goes out over the
             // next one.)
             ta_ui::panel::forget_exits(&state.egui.ctx);
+            // (Nor a battle's theme: the loading screen and what comes after it, the menu, a
+            // lobby, the next battle until its HUD takes its own, are TA Reborn's.)
+            state.leave_mod_theme();
         }
         // (The game's own start: a battlefield's or a benchmark pass's is checked before its
         // renderer is lent, in `draw`.)
@@ -964,7 +983,9 @@ impl App {
         let (tx, result) = std::sync::mpsc::channel();
         let (status, progress) = std::sync::mpsc::channel();
         let (ballast_device, ballast_queue, battle) = (host_device.clone(), host_queue.clone(), self.state.is_some());
-        std::thread::Builder::new().name("battlefield-loader".into()).spawn(move || {
+        // (It builds the battlefield's pipelines: the graphics driver compiles their shaders on
+        // it, with the room the main thread has, `build.rs`, not a thread's usual 2 MiB.)
+        std::thread::Builder::new().name("battlefield-loader".into()).stack_size(16 << 20).spawn(move || {
             let refused = ta_render::out_of_memory_events();
             hold_ballast(&ballast_device, &ballast_queue, battle, true);
             let loaded = work(status);
@@ -1315,8 +1336,6 @@ impl ApplicationHandler<egui_winit::accesskit_winit::Event> for App {
             return;
         }
         match event {
-            WindowEvent::CursorEntered { .. } => state.input.cursor_inside = true,
-            WindowEvent::CursorLeft { .. } => state.input.cursor_inside = false,
             WindowEvent::Focused(false) => {
                 // Losing focus cancels a drag; it must never look like a release that
                 // commits a formation or a row of buildings, even if egui consumes it.
@@ -1345,8 +1364,10 @@ impl ApplicationHandler<egui_winit::accesskit_winit::Event> for App {
         let game_key = keyboard_pointer_key || history_key;
         if !response.consumed || (tab && !wants_keyboard && state.screen == Screen::Playing) || game_key {
             state.input.on_event(&event, wants_pointer, wants_keyboard && !game_key);
-        } else if let WindowEvent::MouseInput { .. } | WindowEvent::KeyboardInput { .. } = event {
-            // Still track releases so buttons never get stuck.
+        } else if let WindowEvent::MouseInput { .. } | WindowEvent::KeyboardInput { .. }
+            | WindowEvent::CursorMoved { .. } | WindowEvent::CursorEntered { .. } | WindowEvent::CursorLeft { .. } = event {
+            // Still track releases so buttons never get stuck, and the cursor (egui keeps a
+            // slider's drag to itself): where it is, and whether it is over the window.
             state.input.on_event(&event, true, true);
         }
         match event {
@@ -1505,6 +1526,16 @@ fn attract_setup(assets: &Assets, seed: u64) -> GameSetup {
     GameSetup { map, players, local_player: None, seed, mission: None, rules: Default::default(), conquest: None, scenario: None }
 }
 
+/// The very first start, the launcher never run: the game set up for this computer
+/// (`Config::set_up_for`), and this version taken as the one the player has seen, as the
+/// launcher's own first start takes it (opened later, it would else tell of an update).
+fn set_up_first_start(config: &mut ta_config::Config, hw: &ta_config::hardware::Hardware) {
+    config.set_up_for(hw);
+    if config.launcher.seen_version.is_empty() {
+        config.launcher.seen_version = env!("CARGO_PKG_VERSION").to_string();
+    }
+}
+
 impl State {
     fn begin(event_loop: &ActiveEventLoop, args: &Args, config: &ta_config::Config) -> Result<(Arc<Window>, ta_render::Gpu, ta_config::Config)> {
         // The very first start (the launcher never ran): set up for this computer, its
@@ -1514,7 +1545,7 @@ impl State {
         if first.graphics.preset == ta_config::Preset::Auto && args.screenshot.is_none() {
             let hw = ta_config::hardware::Hardware::detect();
             if first.first_start() {
-                first.set_up_for(&hw);
+                set_up_first_start(&mut first, &hw);
                 log::info!("first start on {}: {} graphics", hw.summary(), first.graphics.preset.label());
                 // The menus in the computer's own language, when there is a translation of it.
                 let dirs = ta_ui::i18n::language_dirs(&ta_config::config_dir());
@@ -1710,8 +1741,7 @@ impl State {
         let staged = crate::stage::current().filter(|_| args.demo.as_deref() == Some("stage"));
         let mut audio = GameAudio::new(assets.vfs.clone(), &config.audio);
         audio.set_user_music(&ta_config::music_files(&config.audio), config.audio.user_music);
-        let mut camera = Camera::new(Vec2::new(size.width as f32, size.height as f32));
-        camera.zoom = 1.6;
+        let mut camera = battle_camera(Vec2::new(size.width as f32, size.height as f32));
         if let Some(c) = game.local_commander().filter(|_| !game.spectator) {
             crate::hud::focus_on(&mut camera, &game, c);
             camera.focus.z += 60.0;
@@ -1980,11 +2010,14 @@ impl State {
             Some("fire") => vec![(5, DemoAction::Ignite)],
             // Multiplayer: one line to everyone, one to allies only.
             Some("chat") => vec![(1500, DemoAction::Say("hello everyone", false)), (1510, DemoAction::Say("our secret plan", true))],
-            // A building held over the ground, with its ranges and what it would make and use
-            // (`TA_RANGES_UNIT=ARMRAD`: another; the Light Laser Tower by default).
+            // A building held over the ground, with its ranges, what it would make and use and the
+            // cells it would take (`TA_RANGES_UNIT=ARMRAD`: another; the Light Laser Tower by
+            // default; `TA_RANGES_AT=dx,dz`: that far from the Commander, 160,60 by default).
             Some("ranges") => {
                 let unit: &'static str = std::env::var("TA_RANGES_UNIT").map(|s| &*Box::leak(s.to_ascii_uppercase().into_boxed_str())).unwrap_or("ARMLLT");
-                vec![(5, DemoAction::SelectCommander), (8, DemoAction::PlaceNear(unit, 160.0, 60.0))]
+                let at = std::env::var("TA_RANGES_AT").ok().and_then(|v| v.split_once(',').and_then(|(x, z)| Some((x.trim().parse::<f32>().ok()?, z.trim().parse::<f32>().ok()?))));
+                let (dx, dz) = at.unwrap_or((160.0, 60.0));
+                vec![(5, DemoAction::SelectCommander), (8, DemoAction::PlaceNear(unit, dx, dz))]
             }
             Some("areamex") => vec![(5, DemoAction::SelectCommander), (8, DemoAction::AreaMex(420.0))],
             // Two solars planned, then a wind generator held over the second (it must not fit).
@@ -1993,6 +2026,20 @@ impl State {
                 (10, DemoAction::BuildNear("ARMSOLAR", 120.0, 40.0)),
                 (11, DemoAction::BuildNear("ARMSOLAR", 260.0, 40.0)),
                 (60, DemoAction::PlaceOnPlan("ARMWIN")),
+            ],
+            // Orders given while the battle is paused, shown at once: Stumpies moving, patrolling
+            // and attacking, the Commander's plans (selected, Shift held), then the lab's queue
+            // and route (selected), and the battle going on with them at frame 160
+            // (`TA_SHOTS=3 TA_SHOT_STEP=50` from `--frames 80`).
+            Some("paused-orders") => vec![
+                (3, DemoAction::SpawnNear("ARMSTUMP", 0, 3, 150.0, 40.0)),
+                (3, DemoAction::SpawnNear("ARMLAB", 0, 1, -230.0, 140.0)),
+                (3, DemoAction::SpawnNear("CORAK", 1, 2, 330.0, -40.0)),
+                (20, DemoAction::Pause(true)),
+                (40, DemoAction::PausedOrders),
+                (110, DemoAction::ClearMods),
+                (110, DemoAction::SelectType("ARMLAB")),
+                (160, DemoAction::Pause(false)),
             ],
             // TA's squares round the plans: Shift over the Commander with plans queued.
             Some("plan-squares") => vec![
@@ -2249,6 +2296,8 @@ impl State {
             menu,
             minimap: Minimap::default(),
             hud: Hud::new(args.classic_ui),
+            theme_applied: Default::default(),
+            theme_of: None,
             dev: DevPanel {
                 visible: args.dev_panel,
                 fps: 0.0,
@@ -2852,6 +2901,8 @@ impl State {
             }
             Transition::Editor(start, panel) => match crate::editor::Editor::start(&self.assets, &mut self.renderer, start, panel.as_deref()) {
                 Ok(editor) => {
+                    // (Not the menu film's lens: see `battle_camera`; the editor frames the map.)
+                    self.camera = Camera::new(self.camera.viewport);
                     self.audio.reset_scene();
                     self.editor = Some(editor);
                     self.screen = Screen::Editor;
@@ -2985,9 +3036,8 @@ impl State {
                 meet_the_enemy(&mut self.game, &self.settings, self.profile_eligible);
                 self.screen = Screen::Playing;
                 self.in_game_menu = false;
-                self.camera.zoom = 1.6;
-                self.camera.pitch = ta_render::camera::TA_ELEVATION;
-                self.camera.yaw = 0.0;
+                // (Not the camera the menu's film had: see `battle_camera`.)
+                self.camera = battle_camera(self.camera.viewport);
                 // (The menu's backdrop had the modern camera: every battle, replay and lesson
                 // is seen the way the player chose.)
                 set_camera_style(&mut self.camera, self.settings.graphics.camera);
@@ -3321,6 +3371,46 @@ impl State {
         }
     }
 
+    /// `--demo paused-orders` (see [`DemoAction::PausedOrders`]): orders given as the interface
+    /// gives them (`Game::issue`), with the battle paused.
+    fn paused_orders_demo(&mut self) {
+        use ta_sim::{Command, FxVec3, Order, Target};
+        let me = self.game.local_player;
+        let Some(commander) = self.game.local_commander() else { return };
+        let Some(base) = self.game.sim.unit(commander).map(|u| u.pos) else { return };
+        let at = |dx: i64, dz: i64| base + FxVec3::from_ints(dx, 0, dz);
+        let ours = |game: &Game, name: &str| -> Vec<ta_sim::UnitId> {
+            let t = game.sim.types.id(name);
+            game.sim.units().filter(|u| u.owner == me && Some(u.type_id) == t).map(|u| u.id).collect()
+        };
+        let stumps = ours(&self.game, "ARMSTUMP");
+        let enemy = self.game.sim.units().filter(|u| self.game.sim.is_enemy(me, u.owner)).min_by_key(|u| (u.pos - base).length_sq_raw()).map(|u| u.id);
+        // The Stumpies: a move, a patrol queued after it; the first attacks the nearest enemy.
+        if let Some((first, rest)) = stumps.split_first() {
+            self.game.issue(Command::Order { player: me, units: rest.to_vec(), order: Order::Move(at(300, 230)), queue: false });
+            self.game.issue(Command::Order { player: me, units: rest.to_vec(), order: Order::Patrol(at(480, 90)), queue: true });
+            if let Some(e) = enemy {
+                self.game.issue(Command::Order { player: me, units: vec![*first], order: Order::Attack(Target::Unit(e)), queue: false });
+            }
+        }
+        // The Commander: two buildings planned.
+        for (name, dx, dz) in [("ARMSOLAR", -40, 210), ("ARMWIN", 70, 250)] {
+            let Some(t) = self.game.sim.types.id(name) else { continue };
+            if let Some(site) = self.game.sim.find_build_site(t, at(dx, dz), 20) {
+                self.game.issue(Command::Order { player: me, units: vec![commander], order: Order::Build { type_id: t, pos: site }, queue: true });
+            }
+        }
+        // The lab: four Peewees, and where they go.
+        if let (Some(&lab), Some(peewee)) = (ours(&self.game, "ARMLAB").first(), self.game.sim.types.id("ARMPW")) {
+            self.game.issue(Command::Produce { player: me, factory: lab, type_id: peewee, count: 4 });
+            self.game.issue(Command::SetRally { player: me, factory: lab, pos: at(-320, 330) });
+        }
+        // The Stumpies and the Commander selected, Shift held: their routes and the plans.
+        self.game.selection = stumps.into_iter().chain(std::iter::once(commander)).collect();
+        self.input.modifiers = winit::keyboard::ModifiersState::SHIFT;
+        self.game.demo_shift = true;
+    }
+
     /// `TA_RADIAL`: opens the radial menu on our first unit of that type (see
     /// [`DemoAction::OpenRadial`]), at the unit's place on the screen.
     fn open_radial_demo(&mut self) {
@@ -3552,6 +3642,8 @@ impl State {
                     self.game.scene.after_tick(&self.game.sim);
                 }
                 DemoAction::Speed(s) => self.game.speed = s,
+                DemoAction::Pause(on) => self.game.set_pace(Some(on), None),
+                DemoAction::PausedOrders => self.paused_orders_demo(),
                 DemoAction::TutorialFight => {
                     if let Some(p) = self.tutorial.as_ref().and_then(|t| t.outpost_centre(&self.game)) {
                         let (player, units) = (self.game.local_player, self.game.selection.clone());
@@ -3578,7 +3670,7 @@ impl State {
                     let nearest = sim
                         .features
                         .iter()
-                        .filter(|f| f.alive && sim.data.features[f.def].reclaimable && sim.data.features[f.def].metal + sim.data.features[f.def].energy > 0.0)
+                        .filter(|f| f.alive && sim.data.features[f.def].reclaimable && { let (m, e) = sim.reclaim_value(f.def); m + e > ta_sim::Fx::ZERO })
                         .map(|f| Vec3::from_array(f.pos.to_f32()))
                         .min_by(|a, b| a.distance_squared(base).total_cmp(&b.distance_squared(base)));
                     if let Some(p) = nearest {
@@ -4221,15 +4313,13 @@ impl State {
             cam.pan_pixels(pan * scroll);
         }
         // The screen's edges: the cursor within a few pixels of one (inside the window, which
-        // has the keyboard) scrolls that way. (Not in captures: where the mouse happens to be
+        // has the keyboard) scrolls that way, though not while the interface holds it (a slider
+        // or a scroll bar dragged to the edge). (Not in captures: where the mouse happens to be
         // must not move their view.)
-        if self.settings.gameplay.edge_scroll && input.cursor_inside && self.window.has_focus() && self.screenshot_path.is_none() {
-            const EDGE: f32 = 3.0;
-            let (m, size) = (input.mouse, cam.viewport);
-            let edge = Vec2::new(
-                if m.x <= EDGE { -1.0 } else if m.x >= size.x - 1.0 - EDGE { 1.0 } else { 0.0 },
-                if m.y <= EDGE { -1.0 } else if m.y >= size.y - 1.0 - EDGE { 1.0 } else { 0.0 },
-            );
+        if self.settings.gameplay.edge_scroll && self.window.has_focus() && self.screenshot_path.is_none()
+            && !self.egui.ctx.egui_is_using_pointer()
+        {
+            let edge = input.edge_scroll(cam.viewport);
             cam.pan_pixels(edge * scroll);
             // (Scrolling the view takes it back from a unit followed or the action camera.)
             if edge != Vec2::ZERO {
@@ -4241,7 +4331,9 @@ impl State {
         // (Ctrl+right-drag draws a formation when the right button gives orders.)
         let right_orders = self.game.order_button == ta_config::OrderButton::Right;
         let drawing = self.photo.is_none() && (self.game.formation.is_some() || right_orders && input.modifiers.control_key() && !self.game.selection.is_empty());
-        let orbiting = input.button_held(MouseButtonId::Right) && !drawing && self.game.radial.is_none() || (input.button_held(MouseButtonId::Middle) && input.modifiers.alt_key());
+        // (Past a click's few pixels: a click's order never turns it. Photo mode and the map
+        // editor turn it so too, though they take no orders.)
+        let orbiting = input.right_dragging() && !drawing && self.game.radial.is_none() || (input.button_held(MouseButtonId::Middle) && input.modifiers.alt_key());
         if orbiting && cam.mode == CameraMode::Perspective {
             cam.yaw += input.mouse_delta.x * 0.006;
             cam.pitch = (cam.pitch - input.mouse_delta.y * 0.004).clamp(min_pitch, max_pitch);
@@ -4438,7 +4530,7 @@ impl State {
                 cam.focus.x = cam.focus.x.clamp(margins.x, size.x - margins.x);
                 cam.focus.z = cam.focus.z.clamp(margins.y, size.y - margins.y);
                 let ground = t.field.sample(cam.focus.x, cam.focus.z).max(t.field.sea_level);
-                cam.focus.y += (ground - cam.focus.y) * (1.0 - (-dt * 3.0).exp());
+                cam.focus.y = ease_focus_height(cam.focus.y, ground, dt);
             }
             cam.keep_above_ground(|x, z| camera_ground(&t.field, x, z), dt);
         } else {
@@ -5131,6 +5223,33 @@ impl State {
         }
     }
 
+    /// The battle's interface in the theme of the mods in play, for the side of the player whose
+    /// interface is shown: TA Reborn's own off the battlefield, with MODS' INTERFACE THEMES off,
+    /// or (captures) with `TA_MOD_THEME=0`. (Each frame: nothing is made or copied unless the
+    /// theme or the side changed.)
+    fn apply_mod_theme(&mut self) {
+        let mods = self.assets.mods.mods();
+        let key = mods.as_ptr() as usize ^ mods.len();
+        if self.theme_of.as_ref().is_none_or(|(at, _)| *at != key) {
+            self.theme_of = Some((key, crate::mod_theme::of(mods)));
+        }
+        let allowed = self.settings.gameplay.mod_themes && crate::mod_theme::allowed_here();
+        let side = (allowed && self.screen == Screen::Playing)
+            .then(|| self.game.sim.players.get(self.game.hud_player() as usize).map(|p| p.side.as_str())).flatten();
+        let theme = self.theme_of.as_ref().and_then(|(_, theme)| theme.as_ref());
+        self.theme_applied.apply(&self.egui.ctx, theme, side);
+        if !Arc::ptr_eq(&self.hud.theme_pictures, &self.theme_applied.pictures) {
+            self.hud.theme_pictures = self.theme_applied.pictures.clone();
+        }
+    }
+
+    /// The battle's theme put away before a loading screen: the battle's window lettered and
+    /// coloured as TA Reborn's until the next battle draws its HUD (which takes its theme again).
+    fn leave_mod_theme(&mut self) {
+        self.theme_applied.apply(&self.egui.ctx, None, None);
+        self.hud.theme_pictures = self.theme_applied.pictures.clone();
+    }
+
     fn frame(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
         if self.backdrop_retry.is_some_and(|at| Instant::now() >= at) && self.pending.is_none() {
             self.backdrop_retry = None;
@@ -5141,6 +5260,7 @@ impl State {
         self.renderer.post.settings.reduced_flashes = self.settings.gameplay.reduced_flashes;
         ta_ui::motion::set_reduced(&self.egui.ctx, self.settings.gameplay.reduced_motion);
         ta_ui::motion::set_reduced_flashes(&self.egui.ctx, self.settings.gameplay.reduced_flashes);
+        self.apply_mod_theme();
         // (`TA_SOUND_LOG`: the sounds this frame starts are at its time on a capture's clock.)
         self.audio.set_frame(self.frames, self.capture_dt().is_some());
         self.audio.set_background(!self.focused() && self.screenshot_path.is_none());
@@ -5706,6 +5826,10 @@ impl State {
         self.feed_pad_to_egui(&mut raw);
         self.ui_script();
         raw.events.append(&mut self.demo_ui);
+        // (A demo's Shift, held for the interface too: the routes it shows while planning.)
+        if self.game.demo_shift {
+            raw.events.push(egui::Event::ModifiersChanged(egui::Modifiers { shift: true, ..Default::default() }));
+        }
         self.battle_keys_only(&mut raw);
         let screen = self.screen;
         // (The hints on the interface come when the pointer rests a moment, a little longer in a
@@ -5803,6 +5927,9 @@ impl State {
         let seeking = game.catch_up_progress();
         let film = &mut self.film;
         let mut film_action = None;
+        // (The Options' and the profile editor's file dialogs stand over the game's window, never
+        // behind it: in full screen one behind would leave the game looking frozen.)
+        ta_ui::settings::set_dialog_parent(&self.egui.ctx, rfd::FileDialog::new().set_parent(&*self.window));
         let output = self.egui.ctx.run_ui(raw, |ui| {
             // A replay being made into a film: how it goes, nothing else.
             if let Some(film) = film.as_mut() {
@@ -5930,7 +6057,9 @@ impl State {
                 Screen::Playing => {
                     hud.accessibility.show(ui.ctx(), game, settings.gameplay.screen_reader_announcements);
                     game.menu_open = *in_game_menu;
-                    hud.draw(ui, &assets.vfs, game, camera, minimap);
+                    // The HUD in the battle's theme, where its mod has one; what comes after it, the
+                    // tutorial, the tips, the battle menu and its pages, is TA Reborn's own.
+                    ta_ui::theme::hud(ui, |ui| hud.draw(ui, &assets.vfs, game, camera, minimap));
                     if hud.take_open_menu() {
                         *in_game_menu = true;
                     }
@@ -7671,7 +7800,9 @@ impl State {
     fn companion_frame(&mut self) {
         let Some(companion) = self.companion.as_mut() else { return };
         // (Captures: `TA_COMPANION_SHOT=<file>` at `TA_COMPANION_AT=<frame>` saves its picture.)
-        let snapshot = std::env::var("TA_COMPANION_AT").ok().and_then(|v| v.parse::<u32>().ok()).filter(|&at| at == self.frames).and(std::env::var_os("TA_COMPANION_SHOT")).map(std::path::PathBuf::from);
+        static SHOT: std::sync::OnceLock<Option<(u32, std::path::PathBuf)>> = std::sync::OnceLock::new();
+        let shot = SHOT.get_or_init(|| std::env::var("TA_COMPANION_AT").ok().and_then(|v| v.parse::<u32>().ok()).zip(std::env::var_os("TA_COMPANION_SHOT").map(std::path::PathBuf::from)));
+        let snapshot = shot.as_ref().filter(|(at, _)| *at == self.frames).map(|(_, path)| path.clone());
         if !companion.due() && snapshot.is_none() {
             return;
         }
@@ -7692,10 +7823,16 @@ impl State {
         }
         let battle = self.screen == Screen::Playing;
         let key = self.game.keys.text("companion").to_string();
+        // (Its HUD a HUD of its own: the theme's pictures behind its plates too, or none, as the
+        // main one's are this frame; its palette is the battle's, and its font follows the battle
+        // window's, `Companion::frame`.)
+        if !Arc::ptr_eq(&companion.hud.theme_pictures, &self.theme_applied.pictures) {
+            companion.hud.theme_pictures = self.theme_applied.pictures.clone();
+        }
         let (game, camera, vfs) = (&mut self.game, &mut self.camera, &self.assets.vfs);
         companion.snapshot = snapshot;
         let waiting = (!battle).then_some(key.as_str());
-        if let Some(sound) = companion.frame(&self.renderer.gpu, |ui, hud, minimap| hud.companion_page(ui, vfs, game, camera, minimap, waiting)) {
+        if let Some(sound) = companion.frame(&self.renderer.gpu, &self.egui.ctx, |ui, hud, minimap| hud.companion_page(ui, vfs, game, camera, minimap, waiting)) {
             self.audio.play_interface(sound.event());
         }
         // (Its own close button.)
@@ -7942,8 +8079,11 @@ impl State {
         let cast = film.settings.scoreboard && film.clip.is_none();
         let armies = if film.clip.is_some() { crate::clips::armies(game) } else { Vec::new() };
         let shown: &crate::film::Film = film;
+        // (The cast's scoreboard and kill feed are the battle's HUD, in its theme as on the screen;
+        // the film's own titles are TA Reborn's.)
+        ta_ui::theme::follow_fonts(ctx, &self.egui.ctx);
         let output = ctx.run_ui(raw, |ui| {
-            hud.film_overlay(ui.ctx(), vfs, game, cast, seconds as f64);
+            ta_ui::theme::hud(ui, |ui| hud.film_overlay(ui.ctx(), vfs, game, cast, seconds as f64));
             shown.overlay(ui.ctx(), fade, tick, &armies);
         });
         let out_ppp = output.pixels_per_point;
@@ -8599,6 +8739,28 @@ impl Shots {
     }
 }
 
+/// The camera a battle starts with on `viewport`, before it is put on the player's Commander:
+/// the game's own, whether the battle was started straight away or from the menu. The menu's film
+/// shares the camera and leaves its lens on it (its field of view, its roll and its near plane, a
+/// few units in front of an eye low over the ground): over a battlefield seen from thousands of
+/// units away, a near plane that close left the depth no precision, and the trees in a wood traded
+/// places and the water along the shores streaked white as the camera settled after every move.
+fn battle_camera(viewport: Vec2) -> Camera {
+    let mut camera = Camera::new(viewport);
+    camera.zoom = 1.6;
+    camera
+}
+
+/// The perspective camera's focus `dt` seconds on from height `y` towards the `ground` under it:
+/// eased there (most of the way in a second), and once within a twentieth of a unit, there. Eased
+/// on alone it crept nearer by ever smaller steps for seconds after the camera looked still, and
+/// all that time whatever the picture decides by a hair (two trees side by side, which in front)
+/// could decide it the other way from one frame to the next.
+fn ease_focus_height(y: f32, ground: f32, dt: f32) -> f32 {
+    let eased = y + (ground - y) * (1.0 - (-dt * 3.0).exp());
+    if (ground - eased).abs() < 0.05 { ground } else { eased }
+}
+
 /// Sets the camera to the player's chosen way of seeing the battle: the modern 3D camera, or
 /// TA's own top-down view, which never turns or tilts (it is TA's oblique projection, the
 /// maps as painted).
@@ -8986,7 +9148,7 @@ impl State {
             cam.focus.z = cam.focus.z.clamp(0.0, size.y);
             if cam.mode == CameraMode::Perspective {
                 let ground = t.field.sample(cam.focus.x, cam.focus.z).max(t.field.sea_level);
-                cam.focus.y += (ground - cam.focus.y) * (1.0 - (-dt * 3.0).exp());
+                cam.focus.y = ease_focus_height(cam.focus.y, ground, dt);
             }
             cam.keep_above_ground(|x, z| camera_ground(&t.field, x, z), dt);
         }
@@ -9184,6 +9346,52 @@ mod tests {
         assert_eq!(zoom_out_limit(hd, Some(wide)), FARTHEST_ZOOM_1080);
         assert!((zoom_out_limit(Vec2::new(3840.0, 2160.0), Some(wide)) - 2.0 * FARTHEST_ZOOM_1080).abs() < 1e-6, "4K sees as much as 1080p");
         assert_eq!(zoom_out_limit(hd, None), FARTHEST_ZOOM_1080);
+    }
+
+    /// A battle started from the menu has the game's own camera, as one started straight away
+    /// does, not the lens the menu's film left on it (its field of view, its roll, its near plane
+    /// a few units off): zoomed out over the battlefield, that near plane left the depth too coarse
+    /// to tell a tree from the one beside it, or the water from the shore under it.
+    #[test]
+    fn a_battle_does_not_keep_the_menu_films_lens() {
+        let viewport = Vec2::new(3840.0, 2160.0);
+        let mut film = Camera::new(viewport);
+        (film.fov_y, film.roll, film.near) = (55f32.to_radians(), 0.08, Some(2.0));
+        let battle = battle_camera(film.viewport);
+        assert_eq!((battle.near, battle.roll, battle.fov_y, battle.zoom), (None, 0.0, Camera::new(viewport).fov_y, 1.6));
+        // How far apart (world units) two depths lie that the depth buffer can still tell apart, at
+        // the focus of a view zoomed out as a player does (a 32-bit float depth, 0 near, 1 far).
+        let step = |camera: &Camera| {
+            let mut c = camera.clone();
+            c.zoom = 0.3;
+            let (near, _) = c.clip_range();
+            c.distance() * c.distance() / near * f32::EPSILON * 0.5
+        };
+        assert!(step(&film) > 1.0, "the film's lens: {}", step(&film));
+        assert!(step(&battle) < 0.05, "the battle's: {}", step(&battle));
+    }
+
+    /// After a move the camera's focus comes down to the ground under it and is still there: most
+    /// of the way in a second, all of it soon after, and then it stays put frame after frame
+    /// (eased on alone it was still creeping by thousandths of a unit four seconds later).
+    #[test]
+    fn the_camera_comes_to_rest_on_the_ground() {
+        let (ground, dt) = (148.0f32, 1.0 / 60.0);
+        let mut y = 153.0f32;
+        let mut frames = 0;
+        while y != ground {
+            y = ease_focus_height(y, ground, dt);
+            frames += 1;
+            assert!(frames < 200, "still {y} after {frames} frames");
+        }
+        assert!(frames > 60, "eased, not jumped: {frames} frames");
+        assert_eq!(ease_focus_height(y, ground, dt), ground, "at rest");
+        // Within a second most of the way down (as before).
+        let mut y = 153.0f32;
+        for _ in 0..60 {
+            y = ease_focus_height(y, ground, dt);
+        }
+        assert!((y - ground).abs() < 0.3, "{y}");
     }
 
     /// Zoomed in, the focus goes anywhere on the map; zoomed out over all of it, to its middle;
@@ -9480,6 +9688,23 @@ mod tests {
         assert_eq!(ui_zoom_for(scale, (1280, 800), 1.0, true), 1.25, "the options and Conquest");
         assert_eq!(ui_zoom_for(1.5, (1280, 800), 1.0, false), 1.25);
         assert_eq!(ui_zoom_for(scale, (1280, 800), 1.25, false) * 1.25, 1.25);
+    }
+
+    /// The game started before the launcher ever was: its first start takes this version as the
+    /// one the player has seen, so the launcher opened next tells of no update (it does after a
+    /// real one); a version the launcher saw already is kept.
+    #[test]
+    fn the_games_first_start_takes_this_version_as_seen() {
+        let hw = ta_config::hardware::Hardware { os: "windows", threads: 8, ram_mb: 16_000, ..Default::default() };
+        let mut config = ta_config::Config::default();
+        assert!(config.first_start() && config.launcher.seen_version.is_empty());
+        set_up_first_start(&mut config, &hw);
+        assert!(!config.first_start(), "set up");
+        assert_eq!(config.launcher.seen_version, env!("CARGO_PKG_VERSION"));
+        let mut seen = ta_config::Config::default();
+        seen.launcher.seen_version = "0.9.0".into();
+        set_up_first_start(&mut seen, &hw);
+        assert_eq!(seen.launcher.seen_version, "0.9.0", "the launcher's own word is left as it is");
     }
 }
 

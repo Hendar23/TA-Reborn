@@ -249,6 +249,42 @@ One rank every five levels, in ROC (Taiwan) rank names; every title distinct.
 | sides / campaigns of its own; programs (a mod brings) | 自有陣營 / 自有戰役；程式 |
 | the map library | 地圖庫 |
 
+## A mod's pictures and links in the launcher (`pages/mods.rs`, the check's PRESENTATION, `presentation.rs`)
+
+| English | 繁體中文 |
+|---|---|
+| PRESENTATION (the mod check's group: its pictures and links) | 展示 |
+| banner / icon / screenshot(s), SCREENSHOTS (a mod's pictures) | 橫幅 / 圖示 / 螢幕截圖 (as SCREENSHOT) |
+| gameplay preview (an animated GIF of the mod in play) / PLAY PREVIEW | 實機預覽 / 播放預覽 (the early-release tag PREVIEW stays 預覽版) |
+| animated GIF / still picture | GIF 動畫 / 靜態圖片 |
+| MOD PAGE (a link to the mod's web page) | 模組網頁 (not 模組頁面: that is the launcher's Mods page) |
+| link / web address | 連結 / 網址 |
+| Screenshot {n} of {count} (screen reader) / {n} of {count} (over a screenshot on the whole window) | 第 {n} 張螢幕截圖，共 {count} 張 / {n}/{count} |
+| is {w} × {h} (a picture's size in a sentence) | 尺寸為 {w} × {h} |
+| shows blurred / shows sharp | 顯示模糊 / 顯示清晰 |
+| Give it more pixels / at best (the ideal size) | 請提高解析度 / 最好是 |
+| named from the mod's folder (a path) | 相對於模組資料夾的路徑 |
+| the launcher shows the mod without it | 啟動器顯示此模組時會略過它 |
+| picture editor | 圖片編輯軟體 |
+
+## A mod's interface theme (`pages/mods.rs`, the setting MODS' INTERFACE THEMES, the check's notes in `presentation.rs`)
+
+| English | 繁體中文 |
+|---|---|
+| HUD (the battle's interface) | HUD (kept: HUD 會以這些顏色顯示) |
+| interface theme / INTERFACE THEME (the mod page's caption) / MODS' INTERFACE THEMES (the switch) | 介面主題 / 介面主題 / 模組介面主題 |
+| the game's Interface options | 遊戲內的「選項 · 介面」 (as 「選項 · 遊戲」) |
+| Off: TA Reborn's own always / keeps TA Reborn's own (a colour, the font) | 關閉後：一律使用 TA Reborn 自己的外觀 / 沿用 TA Reborn 自己的顏色、字型 |
+| its own font / pictures behind its panels (the {extras}; the code joins them with ", ") | 專屬字型 / 面板背景圖片 |
+| accent (colour) / panel(s) / a contrast of {ratio}:1 | 強調色 / 面板 / 對比度為 {ratio}:1 |
+| font / font file (.ttf, .otf) / a font's makers | 字型 (as TYPEFACE) / 字型檔 / 字型製作者 |
+| (the HUD) draws its own metal there (the side's metal tiles in place of the picture) | （HUD 會）在此處改用自己的金屬底紋 |
+| a tile repeated across the panels | 重複鋪滿整個面板 |
+| # and six hexadecimal digits, red, green and blue | # 加上六位十六進位數字，依序代表紅、綠、藍 |
+| not a colour as a theme writes them | 不符合主題的顏色寫法 |
+| the HUD does without it | HUD 會略過它 (as the launcher's 略過) |
+| colours of its own (a side's) / Its sides: {sides} (the game's) | 專屬顏色 / 遊戲中的陣營：{sides} |
+
 ## Conquest (the galaxy campaign: briefing, galaxy map, side panel, debrief, in-battle strip)
 
 | English | 繁體中文 |
@@ -460,3 +496,51 @@ Record: 紀錄 as a noun, 記錄 as a verb.
 
 Mod check (findings): build option 建造選項, wreckage 殘骸, faction 陣營, feature 地物, texture 材質,
 script 腳本, piece 零件, archive 壓縮檔, manifest 資訊清單; lists 「、」「和」「或」.
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | 繁體中文 |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} 無法與 {other} 同時啟用：請停用其中一個 / 無法與 {mods} 同時啟用 |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} 或以上版本 (not 或更新版本: it would sit beside 請更新, update) / 目前為 {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | 需要較新版本的 TA REBORN |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / 此模組可執行的最低 TA Reborn 版本 (not a version: 不是版本號) |
+
+## A mod's mod.toml as read, its load order (`presentation.rs`, `validation.rs`, `modlist.rs`)
+
+`[table]`, `[{table}]`, `depends`, `load_after`, `conflicts`, `panel_texture` and `docs/MODDING.md`
+stay as they are. {found} and {expected} hold Chinese words, so no space around them: mod.toml 的
+{key} 的值是{found}，但該鍵需要的是{expected}.
+
+| English | 繁體中文 |
+|---|---|
+| key (mod.toml's) / the key's name / a [table] line / table | 鍵 / 鍵名 / [table] 行 / 表 |
+| reads past it (a key it does not know) / leaves it out (a value of another kind) | 會被跳過 / 會略過此值 |
+| text in quotes / a whole number / a number / true or false / a date / a list in square brackets / a table | 以引號括住的文字 / 整數 / 數字 / 布林值（true 或 false） / 日期 / 以方括號括住的清單 / 表 |
+| a later TA Reborn / older TA Reborns / a slip of the pen | 較新版本 TA Reborn / 舊版 TA Reborn / 筆誤 |
+| need each other in a circle / nest more than 64 deep (dependencies) | 互相需要、形成循環 / 巢狀超過 64 層（相依關係） |
+| plates (the HUD's, panel_texture tiled on them; beside 面板, the panels' colour) / the side's own metal plates | 底板（底板圖片） / 陣營本身的金屬底板 |
+| TURN OFF {name} / STOP PREVIEW (beside 啟用 {name}, 播放預覽) | 停用 {name} / 停止預覽 |
+
+## The launcher's QA fixes: a damaged service record, unreadable profiles, skins, errors (`profile_page.rs`, `profiles.rs`, `play.rs`, `skins.rs`, `http.rs`, `widgets.rs`)
+
+Reasons inserted after "……：{error}" or {why} are short clauses without 。 (連線逾時, 無法連線到伺服器);
+an inner colon becomes a comma (找不到伺服器，電腦是否已連上網路？). Shortcut key names stay as keyboards
+print them (Alt, Ctrl, Shift, Cmd, Option, Enter, Esc, Tab, Home, End).
+
+| English | 繁體中文 |
+|---|---|
+| START A FRESH CAREER / PUT IT RIGHT | 開始新的生涯 / 修復問題 |
+| set aside (the damaged record kept in the profile folder) / career file (career.toml) | 另外存放 / 生涯紀錄檔 |
+| unreadable profile, PROFILES THAT CANNOT BE READ / MOVE TO RECYCLE BIN | 無法讀取的個人檔案 / 移至資源回收筒 |
+| SERVICE RECORD UNREADABLE / CAREER NEEDS ATTENTION (the Play page's title) | 戰績無法讀取 / 生涯紀錄需要處理 |
+| YOURS AND ALLIES / ENEMY UNITS / YOUR SKINS (filter) / KEEP BOTH (an id already installed) | 己方和盟友 / 敵方單位 / 我的造型 / 兩者都保留 |
+| Hue / Saturation and brightness (the skin editor's colour picker) | 色相 / 飽和度與亮度 |
+| screen-reader marks OK / Not present / Error | 正常 / 不存在 / 錯誤 |
+| RUNNING (the PLAY button while the game runs) | 執行中 |
+| SHOW {count} MORE / SHOW THE LATEST TEN | 顯示其餘 {count} 項 / 只顯示最近 10 項 |
+| LEGAL / THE PROJECT (About page headings) / MUSIC OPTIONS | 法律資訊 / 本專案 / 音樂選項 |
+| a Supreme Commander map's scenario file | 場景檔 (TA Reborn's scenarios stay 劇本) |
+| proxy / redirect / timed out / exception / the launcher crashed | 代理伺服器 / 重新導向 / 逾時 / 例外狀況 / 啟動器當機 |
+| stealth field (Forged Alliance's) / teleporting / upgrading buildings in place | 匿蹤力場 (as Stealthy 匿蹤; cloak stays 隱形) / 傳送 / 建築原地升級 |
+| the launcher's footer (its activity chips) / Held until the import ends | 啟動器底部的狀態列 / 匯入結束前無法變更 |

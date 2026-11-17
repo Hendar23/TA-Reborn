@@ -63,6 +63,7 @@ mod map_list;
 mod map_preview;
 mod menu;
 mod minimap;
+mod mod_theme;
 mod night;
 mod ore;
 mod orders;
@@ -318,6 +319,8 @@ fn describe_mod_problem(e: &ta_vfs::mods::ModError, available: &[ta_vfs::mods::M
         ModError::MissingDependency { module, dependency } => tf("{name} needs {other}, which is not on", &[("name", &name(module)), ("other", &name(dependency))]),
         ModError::Cycle(ids) => tf("These mods each need another loaded before them: {mods}", &[("mods", ids)]),
         ModError::Unreadable { id, message } => tf("{name} could not be read: {error}", &[("name", &name(id)), ("error", message)]),
+        ModError::Conflict { module, other } => tf("{name} cannot be on with {other}: turn one of them off", &[("name", &name(module)), ("other", &name(other))]),
+        ModError::NeedsNewer { module, version } => tf("{name} needs TA Reborn {version} or later: update TA Reborn, or turn the mod off", &[("name", &name(module)), ("version", version)]),
         ModError::Manifest { .. } | ModError::Depth(_) | ModError::Duplicate { .. } => e.to_string(),
     }
 }
@@ -456,7 +459,9 @@ fn message_box(title: &str, text: &str) {
 fn main() {
     // The settings folder kept under the game's old name moves to the new one first.
     let moved = ta_config::adopt_old_folder();
-    let log_dir = ta_config::config_dir().join("logs");
+    // (The logs of the settings the game plays with: the launcher's folder, `TA_PROFILE_ROOT`,
+    // where it looks for the crash report, else the usual one.)
+    let log_dir = ta_config::running::profile_root().join("logs");
     let mut logger = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn,naga=warn"));
     // The launcher captures our output into logs\game.log itself; started any other way,
     // we write it.

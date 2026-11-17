@@ -1,6 +1,7 @@
 //! In-game HUD (egui): resources, selection info, build menus, unit overlays.
 
 use std::collections::HashMap;
+use crate::theme::pal;
 
 use egui::{Color32, CornerRadius, Pos2, Rect, Stroke, TextureHandle, Vec2 as EVec2};
 use glam::{Vec2, Vec3, Vec4Swizzles};
@@ -30,9 +31,6 @@ mod deck;
 
 pub(crate) use deck::{Purpose, activity};
 
-const ACCENT: Color32 = crate::theme::AMBER;
-const METAL: Color32 = Color32::from_rgb(170, 184, 196);
-const ENERGY: Color32 = Color32::from_rgb(242, 212, 60);
 
 /// Seconds the pointer rests on a unit before its card comes (not as it passes over units on its
 /// way across the battlefield).
@@ -71,6 +69,9 @@ pub struct Hud {
     anchors: anchors::Anchors,
     /// The panel metal of the side shown.
     skin: hud_skin::Skin,
+    /// A mod's interface theme's pictures behind the plates and the top bar, in place of the
+    /// side's metal (`mod_theme`; the app hands them over when they change).
+    pub theme_pictures: std::sync::Arc<hud_skin::ThemePictures>,
     /// The cheat panel's spawn picker.
     cheats: cheats::CheatPanel,
     /// The economy's last minutes, for the deck's charts.
@@ -147,7 +148,7 @@ pub struct Hud {
     radar_contacts: (Option<(u64, Option<u8>)>, Vec<UnitId>),
     /// The forces' groups as the deck last drew them, and for which player and tick (see
     /// `Hud::forces_now`).
-    forces_cache: Option<((u8, u64), Vec<deck::Force>)>,
+    forces_cache: Option<((u8, u64, u64), Vec<deck::Force>)>,
     /// The deck's sums over the selection, as of a frame (see `deck::SelectionSummary`).
     selection_summary: Option<(u64, deck::SelectionSummary)>,
     /// The column of messages under the top bar, as laid out last frame (none when empty): the
@@ -484,11 +485,13 @@ impl Hud {
     pub fn draw(&mut self, ui: &mut egui::Ui, vfs: &Vfs, game: &mut Game, camera: &mut Camera, minimap: &mut crate::minimap::Minimap) {
         let ctx = ui.ctx().clone();
         self.anchors.clear(false);
+        // (The minimap says again, as it is drawn, what an order given on it would aim at.)
+        game.minimap_aim = None;
         // Register the modal before other HUD areas so their controls cannot act behind it.
         let summary = if game.history_open { crate::accessibility::battle_summary(game) } else { String::new() };
         self.history.show(&ctx, &game.event_history, &mut game.history_open, &summary);
         if !self.classic {
-            self.skin.load(&ctx, vfs, &game.sim.players[game.hud_player() as usize].side);
+            self.skin.load(&ctx, vfs, &game.sim.players[game.hud_player() as usize].side, &self.theme_pictures);
             self.trend.sample(game);
             self.top_bar(ui, game);
             self.lay_out_minimap(&ctx, game);
@@ -573,13 +576,13 @@ impl Hud {
             let controls = ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing = EVec2::new(6.0, 8.0);
                 let top = ui.horizontal(|ui| {
-                    ui.label(ta_ui::widgets::caption("REPLAY").color(ACCENT));
+                    ui.label(ta_ui::widgets::caption("REPLAY").color(pal().accent));
                     let width = (self.replay_width - 160.0 - self.film_button - self.clip_button - 14.0).max(240.0);
                     let scan = game.replay_scan.as_ref().and_then(|s| s.state().lock().ok().map(|s| s.clone()));
                     if let Some(to) = timeline(ui, game.sim.tick, end, width, scan.as_ref()) {
                         game.seek_replay(to);
                     }
-                    ui.label(egui::RichText::new(format!("{} / {}", clock(game.sim.tick), clock(end))).font(crate::theme::strong(12.5)).color(crate::theme::TEXT_BRIGHT));
+                    ui.label(egui::RichText::new(format!("{} / {}", clock(game.sim.tick), clock(end))).font(crate::theme::strong(12.5)).color(pal().text_bright));
                     ui.add_space(4.0);
                     let clip = ui.add(ta_ui::widgets::ActionButton::secondary(ta_ui::i18n::n("EXPORT CLIP")).height(26.0)).on_hover_text(t("A 30 or 60 second clip for social media, vertical or horizontal, its best moment chosen for you"));
                     if clip.clicked() {
@@ -600,7 +603,7 @@ impl Hud {
                 });
                 let _ = top;
                 if game.replay_approximate {
-                    ui.label(egui::RichText::new(t("Compatibility playback")).font(crate::theme::strong(12.0)).color(crate::theme::AMBER))
+                    ui.label(egui::RichText::new(t("Compatibility playback")).font(crate::theme::strong(12.0)).color(pal().accent))
                         .on_hover_text(t("Recorded with different game data or an older engine. AI, physics and outcomes may differ."));
                 }
                 let row = ui.horizontal(|ui| {
@@ -634,7 +637,7 @@ impl Hud {
                     vision_picker(ui, game);
                     ui.add_space(4.0);
                     ta_ui::widgets::check_box(ui, &mut game.action_camera);
-                    ui.label(egui::RichText::new(t("Follow the action")).font(crate::theme::body(13.0)).color(crate::theme::TEXT))
+                    ui.label(egui::RichText::new(t("Follow the action")).font(crate::theme::body(13.0)).color(pal().text))
                         .on_hover_text(t("The camera goes where the fighting is; scrolling takes back control"));
                     ui.add_space(4.0);
                     cast_switch(ui, game);
@@ -773,7 +776,7 @@ impl Hud {
         }
         ta_ui::panel::strip_shown(ctx, "spectator_bar", egui::Align2::CENTER_BOTTOM, EVec2::new(clear.left / 2.0, -clear.bottom - 14.0), shown, |ui| {
             ui.horizontal(|ui| {
-                ui.label(ta_ui::widgets::caption("SPECTATING").color(ACCENT));
+                ui.label(ta_ui::widgets::caption("SPECTATING").color(pal().accent));
                 vision_picker(ui, game);
                 ui.checkbox(&mut game.action_camera, ta_ui::i18n::t("Follow the action")).on_hover_text(ta_ui::i18n::t("The camera goes where the fighting is; scrolling takes back control"));
                 cast_switch(ui, game);
@@ -799,7 +802,7 @@ impl Hud {
                 let width = ui.available_width() - (self.top_right_width - 80.0).max(0.0);
                 let tier = economy::Tier::of(width);
                 let (narrow, tight) = (tier <= economy::Tier::Narrow, tier == economy::Tier::Tight);
-                ta_ui::metal::embossed_label(ui, egui::RichText::new(p.side.to_uppercase()).font(crate::theme::display(20.0)).extra_letter_spacing(ta_ui::i18n::tracking(1.5)), ACCENT);
+                ta_ui::metal::embossed_label(ui, egui::RichText::new(p.side.to_uppercase()).font(crate::theme::display(20.0)).extra_letter_spacing(ta_ui::i18n::tracking(1.5)), pal().accent);
                 ui.add_space(10.0);
                 let gap = if tight { 12.0 } else { 22.0 };
                 // The economy: metal and energy, what is stored, what comes in and goes out.
@@ -808,20 +811,20 @@ impl Hud {
                 let units = p.unit_count;
                 if game.sim.unit_limit < u32::MAX {
                     let full = units >= game.sim.unit_limit;
-                    let value = egui::RichText::new(format!("{units} / {}", game.sim.unit_limit)).color(if full { crate::theme::RED } else { crate::theme::TEXT });
+                    let value = egui::RichText::new(format!("{units} / {}", game.sim.unit_limit)).color(if full { pal().bad } else { pal().text });
                     stat(ui, n("UNITS"), value).on_hover_text(t("Factories and builders wait while you are at the unit limit."));
                 } else {
-                    stat(ui, n("UNITS"), egui::RichText::new(units.to_string()).color(crate::theme::TEXT));
+                    stat(ui, n("UNITS"), egui::RichText::new(units.to_string()).color(pal().text));
                 }
                 let secs = game.sim.tick / 30;
                 if !tight {
                     ui.add_space(10.0);
                     let clock = if secs >= 3600 { format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60) } else { format!("{:02}:{:02}", secs / 60, secs % 60) };
-                    stat(ui, n("TIME"), egui::RichText::new(clock).color(crate::theme::TEXT));
+                    stat(ui, n("TIME"), egui::RichText::new(clock).color(pal().text));
                 }
                 if !narrow {
                     ui.add_space(10.0);
-                    stat(ui, n("WIND"), egui::RichText::new(format!("{:.0}", game.sim.wind.to_f32())).color(crate::theme::TEXT))
+                    stat(ui, n("WIND"), egui::RichText::new(format!("{:.0}", game.sim.wind.to_f32())).color(pal().text))
                         .on_hover_text(t("How hard the wind blows now: what each wind generator makes"));
                 }
                 ui.add_space(10.0);
@@ -863,7 +866,7 @@ impl Hud {
                 // On the right: the pace when it is not normal, and the map overlays in one menu
                 // (the one shown named on it).
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let menu = ui.add(egui::Button::new(egui::RichText::new(t("MENU")).font(crate::theme::strong(11.0)).color(crate::theme::STEEL)).frame(false))
+                    let menu = ui.add(egui::Button::new(egui::RichText::new(t("MENU")).font(crate::theme::strong(11.0)).color(pal().steel)).frame(false))
                         .on_hover_text(t("Pause, save, options and the way out (Esc)"));
                     if menu.clicked() {
                         self.open_menu = true;
@@ -873,7 +876,7 @@ impl Hud {
                         Some(o) => format!("{} · {} ▾", t("MAP"), t(o.label())),
                         None => format!("{} ▾", t("MAP")),
                     };
-                    let map = ui.menu_button(egui::RichText::new(label).font(crate::theme::strong(11.0)).color(if shown.is_some() { ACCENT } else { crate::theme::STEEL }), |ui| {
+                    let map = ui.menu_button(egui::RichText::new(label).font(crate::theme::strong(11.0)).color(if shown.is_some() { pal().accent } else { pal().steel }), |ui| {
                         for o in crate::overlay::Overlay::ALL {
                             let key = game.keys.text(o.action());
                             if ui.selectable_label(shown == Some(o), format!("{}  ({key})", t(o.label()))).on_hover_text(t(o.legend())).clicked() {
@@ -886,9 +889,9 @@ impl Hud {
                     .on_hover_text(t("Map overlays: where units can go, the heights, the metal, what your units see"));
                     self.anchors.map_menu = Some(map.rect);
                     if game.paused {
-                        ta_ui::widgets::tag(ui, n("PAUSED"), ACCENT);
+                        ta_ui::widgets::tag(ui, n("PAUSED"), pal().accent);
                     } else if (game.speed - 1.0).abs() > 0.01 {
-                        ta_ui::widgets::tag(ui, &tf("SPEED ×{speed}", &[("speed", &format!("{:.2}", game.speed))]), ACCENT);
+                        ta_ui::widgets::tag(ui, &tf("SPEED ×{speed}", &[("speed", &format!("{:.2}", game.speed))]), pal().accent);
                     }
                     net_signal(ui, game);
                     let used = ui.min_rect().width();
@@ -1167,16 +1170,8 @@ impl Hud {
                     if k == 0 && u.build.is_some() {
                         continue;
                     }
-                    let t = game.sim.types.get(*type_id);
-                    let (hx, hz) = (t.footprint.0 as f32 * 8.0, t.footprint.1 as f32 * 8.0);
-                    let c = Vec3::from_array(pos.to_f32());
-                    let corners: Vec<Pos2> = [(-hx, -hz), (hx, -hz), (hx, hz), (-hx, hz), (-hx, -hz)]
-                        .iter()
-                        .filter_map(|&(dx, dz)| project(Vec3::new(c.x + dx, ground_at(c.x + dx, c.z + dz) + 1.5, c.z + dz)))
-                        .collect();
-                    if corners.len() == 5 {
-                        painter.add(egui::Shape::line(corners, Stroke::new(1.5, colour)));
-                    }
+                    let cells = crate::game::footprint_rect(game.sim.types.get(*type_id), *pos);
+                    footprint_on_ground(&painter, &project, &ground_at, cells, FootprintLook { colour, cells: false, fill: 0.0 });
                 }
             }
         }
@@ -1288,8 +1283,8 @@ impl Hud {
                 const DIGITS: [&str; 10] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
                 let badge = Rect::from_center_size(Pos2::new(s.x + w / 2.0 + 8.0, s.y - 4.0), EVec2::new(11.0, 13.0));
                 painter.rect_filled(badge, 2.0 * round, Color32::from_black_alpha(190));
-                painter.rect_stroke(badge, 2.0 * round, Stroke::new(1.0, crate::theme::AMBER_DIM), egui::StrokeKind::Inside);
-                painter.text(badge.center() + EVec2::new(0.0, 0.5), egui::Align2::CENTER_CENTER, DIGITS.get(g).copied().unwrap_or("?"), crate::theme::display(11.0), crate::theme::CREAM);
+                painter.rect_stroke(badge, 2.0 * round, Stroke::new(1.0, pal().accent_dim), egui::StrokeKind::Inside);
+                painter.text(badge.center() + EVec2::new(0.0, 0.5), egui::Align2::CENTER_CENTER, DIGITS.get(g).copied().unwrap_or("?"), crate::theme::display(11.0), pal().button_text);
             }
             // (Far out a selected unit at full health shows none: the strategic icons' rings
             // mark the selection.)
@@ -1362,7 +1357,7 @@ impl Hud {
                 let x = bar.min.x - 7.0 - k as f32 * 5.0;
                 let (y, h) = (bar.center().y, 3.5);
                 let chevron = vec![Pos2::new(x - 2.5, y - h), Pos2::new(x + 1.5, y), Pos2::new(x - 2.5, y + h)];
-                painter.add(egui::Shape::line(chevron, Stroke::new(1.8, ACCENT)));
+                painter.add(egui::Shape::line(chevron, Stroke::new(1.8, pal().accent)));
             }
             if !u.is_complete() {
                 let b = u.build_progress.to_f32().clamp(0.0, 1.0);
@@ -1491,7 +1486,7 @@ impl Hud {
                     lines.push((facts.join("  ·  "), Color32::from_gray(200), 11.0));
                 }
                 if duty.is_some() && let Some(line) = game.duty_line(id) {
-                    lines.push((line, crate::theme::SKY, 11.0));
+                    lines.push((line, pal().info, 11.0));
                 }
                 // What a finished unit of ours (or an ally's) makes and uses of metal and energy
                 // now, under its health; the type's storage and sensors in the lines below.
@@ -1513,15 +1508,17 @@ impl Hud {
                 let left = (1.0 - feature.reclaimed.to_f32()).clamp(0.0, 1.0);
                 let name = if def.description.is_empty() { def.name.clone() } else { def.description.clone() };
                 let mut lines = vec![(name, Color32::WHITE, 13.0)];
-                let (metal, energy) = (format!("{:.0}", def.metal * left as f64), format!("{:.0}", def.energy * left as f64));
-                let worth = match (def.metal > 0.0, def.energy > 0.0) {
+                // (A wreck's metal alone, whatever its file gives: `Sim::reclaim_value`.)
+                let (metal_worth, energy_worth) = game.sim.reclaim_value(feature.def);
+                let (metal, energy) = (format!("{:.0}", metal_worth.to_f64() * left as f64), format!("{:.0}", energy_worth.to_f64() * left as f64));
+                let worth = match (metal_worth > Fx::ZERO, energy_worth > Fx::ZERO) {
                     (true, true) => Some(ta_ui::i18n::tf("Reclaim for {metal} metal and {energy} energy", &[("metal", &metal), ("energy", &energy)])),
                     (true, false) => Some(ta_ui::i18n::tf("Reclaim for {metal} metal", &[("metal", &metal)])),
                     (false, true) => Some(ta_ui::i18n::tf("Reclaim for {energy} energy", &[("energy", &energy)])),
                     (false, false) => None,
                 };
                 if let Some(worth) = worth {
-                    lines.push((worth, METAL, 11.0));
+                    lines.push((worth, pal().metal_bar, 11.0));
                 }
                 if let Some(t) = game.sim.wreck_type(f) {
                     lines.push((ta_ui::i18n::tf("Can be resurrected as {unit}", &[("unit", &game.sim.types.get(t).def.display_name)]), Color32::from_rgb(150, 220, 150), 11.0));
@@ -1529,6 +1526,30 @@ impl Hud {
                 hover_card(view, &painter, mouse, lines, None, Vec::new());
             }
         }
+        // Placing a building: the ground it will take, TA's grid of the cells it snaps to, under
+        // its ghost and each site of a row being dragged out, in the colour of whether it may go
+        // there (as the ghost). It goes once the building is put down.
+        if let Some(pl) = game.placement.as_ref() {
+            let t = game.sim.types.get(pl.type_id);
+            let sites: Vec<(Vec3, bool)> = if pl.row.is_empty() { pl.pos.map(|p| (p, pl.valid)).into_iter().collect() } else { pl.row.clone() };
+            for (at, ok) in sites {
+                footprint_on_ground(&painter, &project, &ground_at, crate::game::footprint_rect(t, crate::game::fx_vec(at)), FootprintLook::placing(ok));
+            }
+        }
+        // (The words over a building being placed: over its ghost, and clear of its grid, above
+        // the highest of the grid's corners on the screen.)
+        let label_at = |pos: Vec3, t: &ta_sim::UnitType| -> Option<Pos2> {
+            let p = project(pos + Vec3::Y * (t.model.height.to_f32() + 14.0))?;
+            let (x0, z0, x1, z1) = crate::game::footprint_rect(t, crate::game::fx_vec(pos));
+            let top = [(x0, z0), (x1, z0), (x0, z1), (x1, z1)]
+                .iter()
+                .filter_map(|&(x, z)| {
+                    let (x, z) = (x as f32 * 16.0, z as f32 * 16.0);
+                    project(Vec3::new(x, ground_at(x, z) + 1.5, z))
+                })
+                .fold(f32::INFINITY, |top, c| top.min(c.y));
+            Some(Pos2::new(p.x, p.y.min(top - 3.0)))
+        };
         // Placing an extractor: the deposits around, and what this site would yield.
         if let Some((type_id, pos)) = game.placement.as_ref().and_then(|pl| pl.pos.map(|p| (pl.type_id, p))) {
             let t = game.sim.types.get(type_id);
@@ -1558,7 +1579,7 @@ impl Hud {
                 }
                 let rate = game.sim.extraction_at(type_id, crate::game::fx_vec(pos)).to_f32();
                 let off_ore = game.sim.placement_error(type_id, crate::game::fx_vec(pos)) == Some(ta_sim::world::PlacementError::NeedsMetal);
-                if let Some(p) = project(pos + Vec3::Y * (t.model.height.to_f32() + 14.0)) {
+                if let Some(p) = label_at(pos, t) {
                     let bad = Color32::from_rgb(240, 120, 100);
                     let (text, color) = if off_ore {
                         (ta_ui::i18n::t("Needs a metal deposit").to_string(), bad)
@@ -1574,7 +1595,7 @@ impl Hud {
             } else {
                 // Any other building: what it would make and use there.
                 let flows = game.sim.type_flows(type_id, crate::game::fx_vec(pos));
-                if flows.any() && let Some(p) = project(pos + Vec3::Y * (t.model.height.to_f32() + 14.0)) {
+                if flows.any() && let Some(p) = label_at(pos, t) {
                     let (text, font) = (ghost_figures(&flows), egui::FontId::proportional(15.0));
                     painter.text(p + EVec2::new(1.0, 1.0), egui::Align2::CENTER_BOTTOM, &text, font.clone(), Color32::from_black_alpha(200));
                     painter.text(p, egui::Align2::CENTER_BOTTOM, text, font, Color32::from_rgb(205, 220, 240));
@@ -1586,7 +1607,7 @@ impl Hud {
             let at = mouse + EVec2::new(14.0, 10.0);
             let galley = painter.layout_no_wrap(ta_ui::i18n::upper(ta_ui::i18n::t(mode.label_for(game))), egui::FontId::proportional(13.0), Color32::BLACK);
             let r = Rect::from_min_size(at, galley.size()).expand2(EVec2::new(5.0, 2.0));
-            painter.rect_filled(r, 2.0, ACCENT);
+            painter.rect_filled(r, 2.0, pal().accent);
             painter.galley(at, galley, Color32::BLACK);
         }
         // A circle on the ground, following the terrain: a side every few points round it however
@@ -1654,7 +1675,7 @@ impl Hud {
     /// "IDLE" and a duller tag; those of one duty (and state) close together share one tag with their
     /// number, and tags of different duties that meet are stacked.
     fn duty_tags(&self, ctx: &egui::Context, game: &Game, camera: &Camera, painter: &egui::Painter) {
-        use crate::theme::{SKY, STEEL, strong};
+        use crate::theme::{pal, strong};
         let (ppp, alpha, free) = (ctx.pixels_per_point(), game.alpha(), painter.clip_rect());
         struct Tag {
             at: Pos2,
@@ -1683,7 +1704,7 @@ impl Hud {
         }
         let mut placed: Vec<Rect> = Vec::new();
         for tag in tags {
-            let color = if tag.idle { STEEL } else { SKY };
+            let color = if tag.idle { pal().steel } else { pal().info };
             let mut text = ta_ui::i18n::t(crate::game::duty::label(tag.duty)).to_string();
             if tag.count > 1 {
                 text = format!("{text} \u{d7}{}", tag.count);
@@ -1744,8 +1765,8 @@ impl Hud {
                 // whole lamp fading in and out (its dark glass alone read as a black ball on the
                 // bar).
                 let s = s - EVec2::new(0.0, 18.0);
-                let color = crate::theme::AMBER.gamma_multiply(fade);
-                painter.add(ta_ui::metal::faded_lamp(s, 3.5, crate::theme::AMBER, fade * pulse, fade));
+                let color = pal().accent.gamma_multiply(fade);
+                painter.add(ta_ui::metal::faded_lamp(s, 3.5, pal().accent, fade * pulse, fade));
                 let text = ta_ui::i18n::t("IDLE");
                 let galley = painter.layout_no_wrap(text.to_string(), crate::theme::strong(10.0), color);
                 let at = s + EVec2::new(7.0, -galley.size().y / 2.0);
@@ -1788,13 +1809,13 @@ impl Hud {
                 // The pointer outside the disc, towards the unit.
                 let tip = centre + dir * 24.0;
                 let side = EVec2::new(-dir.y, dir.x);
-                p.add(egui::Shape::convex_polygon(vec![tip, centre + dir * 15.0 + side * 6.0, centre + dir * 15.0 - side * 6.0], crate::theme::AMBER_BRIGHT.gamma_multiply(fade * pulse), Stroke::NONE));
+                p.add(egui::Shape::convex_polygon(vec![tip, centre + dir * 15.0 + side * 6.0, centre + dir * 15.0 - side * 6.0], pal().accent_bright.gamma_multiply(fade * pulse), Stroke::NONE));
                 p.circle_filled(centre, 16.0, Color32::from_black_alpha((200.0 * fade) as u8));
                 if let Some(pic) = self.unit_pic(ctx, vfs, game, u.type_id, 24.0) {
                     let r = Rect::from_center_size(centre, EVec2::splat(24.0));
                     pic.paint(p, r, Color32::WHITE.gamma_multiply(fade));
                 }
-                p.circle_stroke(centre, 16.0, Stroke::new(if hot { 2.5 } else { 1.8 }, crate::theme::AMBER_BRIGHT.gamma_multiply(fade * if hot { 1.0 } else { pulse })));
+                p.circle_stroke(centre, 16.0, Stroke::new(if hot { 2.5 } else { 1.8 }, pal().accent_bright.gamma_multiply(fade * if hot { 1.0 } else { pulse })));
                 resp
             });
             let name = crate::chat::unit_label(&game.sim, u.type_id);
@@ -1846,15 +1867,15 @@ impl Hud {
                         pic.paint(p, r, Color32::WHITE);
                         p.add(pic_frame(r, false));
                     }
-                    let digit = if chosen { crate::theme::AMBER_BRIGHT } else { crate::theme::CREAM };
+                    let digit = if chosen { pal().accent_bright } else { pal().button_text };
                     p.text(Pos2::new(rect.right() - 6.0, rect.top() + 3.0), egui::Align2::RIGHT_TOP, g.to_string(), crate::theme::display(17.0), digit);
-                    p.text(Pos2::new(rect.right() - 6.0, rect.bottom() - 7.0), egui::Align2::RIGHT_BOTTOM, units.len().to_string(), crate::theme::strong(11.5), crate::theme::TEXT_BRIGHT);
+                    p.text(Pos2::new(rect.right() - 6.0, rect.bottom() - 7.0), egui::Align2::RIGHT_BOTTOM, units.len().to_string(), crate::theme::strong(11.5), pal().text_bright);
                     let fraction = if max > 0.0 { (health / max).clamp(0.0, 1.0) } else { 1.0 };
                     let bar = Rect::from_min_max(Pos2::new(rect.left() + 5.0, rect.bottom() - 5.0), Pos2::new(rect.right() - 5.0, rect.bottom() - 3.0));
                     p.rect_filled(bar, CornerRadius::ZERO, Color32::from_black_alpha(160));
                     p.rect_filled(Rect::from_min_size(bar.min, EVec2::new(bar.width() * fraction, bar.height())), CornerRadius::ZERO, hud_skin::health_color(fraction));
                     if chosen {
-                        p.rect_stroke(rect.shrink(1.0), CornerRadius::same(2), Stroke::new(1.5, crate::theme::AMBER_BRIGHT), egui::StrokeKind::Inside);
+                        p.rect_stroke(rect.shrink(1.0), CornerRadius::same(2), Stroke::new(1.5, pal().accent_bright), egui::StrokeKind::Inside);
                     }
                     let tip = tf("Group {g}: {n} units. Click to select it (Shift adds it), double-click to look at it; Ctrl+click makes it the selection", &[("g", g), ("n", &units.len())]);
                     let resp = resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -1899,14 +1920,14 @@ impl Hud {
         // A line: on a plate of its own (`plated`; in the history they share one), with a bar
         // of the speaker's colour down its left edge and their picture.
         let line_ui = |ui: &mut egui::Ui, line: &crate::chat::ChatLine, fade: f32, plated: bool| {
-            let color = line.player.and_then(|p| game.sim.players.get(p as usize)).map_or(if line.from.is_empty() { crate::theme::GREEN } else { ACCENT }, |p| crate::palette::team_color(p.color));
+            let color = line.player.and_then(|p| game.sim.players.get(p as usize)).map_or(if line.from.is_empty() { pal().good } else { pal().accent }, |p| crate::palette::team_color(p.color));
             let frame = if plated { egui::Frame::new().fill(Color32::from_black_alpha((165.0 * fade) as u8)).corner_radius(2) } else { egui::Frame::new() };
             let shown = frame.inner_margin(egui::Margin { left: 10, right: 8, top: 3, bottom: 3 }).show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     if line.from.is_empty() {
                         // The game's own answers (cheat codes).
-                        ui.label(egui::RichText::new(&line.text).color(crate::theme::GREEN.gamma_multiply(fade)).italics());
+                        ui.label(egui::RichText::new(&line.text).color(pal().good.gamma_multiply(fade)).italics());
                     } else {
                         // Speakers with their pictures, in their colours.
                         if let Some(pic) = picture(line.player) {
@@ -1915,7 +1936,7 @@ impl Hud {
                             ui.painter().rect_stroke(rect, 1.0, Stroke::new(1.0, Color32::from_black_alpha((200.0 * fade) as u8)), egui::StrokeKind::Outside);
                         }
                         ui.label(egui::RichText::new(&line.from).font(crate::theme::strong(13.0)).color(readable(color).gamma_multiply(fade)));
-                        ui.label(egui::RichText::new(&line.text).font(crate::theme::body(13.5)).color(crate::theme::TEXT_BRIGHT.gamma_multiply(fade)));
+                        ui.label(egui::RichText::new(&line.text).font(crate::theme::body(13.5)).color(pal().text_bright.gamma_multiply(fade)));
                     }
                 });
             });
@@ -1924,7 +1945,7 @@ impl Hud {
         };
         // Someone typing (the computer players think before they answer).
         let typing_ui = |ui: &mut egui::Ui, name: &str, player: u8| {
-            let color = game.sim.players.get(player as usize).map_or(ACCENT, |p| crate::palette::team_color(p.color));
+            let color = game.sim.players.get(player as usize).map_or(pal().accent, |p| crate::palette::team_color(p.color));
             let dots = ".".repeat(1 + (ctx.input(|i| i.time) * 3.0) as usize % 3);
             let shown = egui::Frame::new().fill(Color32::from_black_alpha(140)).inner_margin(egui::Margin { left: 10, right: 8, top: 3, bottom: 3 }).corner_radius(2).show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -1934,7 +1955,7 @@ impl Hud {
                         pic.paint(ui.painter(), rect, Color32::from_gray(200));
                         ui.painter().rect_stroke(rect, 1.0, Stroke::new(1.0, Color32::from_black_alpha(200)), egui::StrokeKind::Outside);
                     }
-                    ui.label(egui::RichText::new(format!("{}{dots}", tf("{name} is typing", &[("name", &name)]))).font(crate::theme::body(13.0)).color(crate::theme::STEEL).italics());
+                    ui.label(egui::RichText::new(format!("{}{dots}", tf("{name} is typing", &[("name", &name)]))).font(crate::theme::body(13.0)).color(pal().steel).italics());
                 });
             });
             let r = shown.response.rect;
@@ -1966,7 +1987,7 @@ impl Hud {
             let inner = width - ta_ui::panel::strip_margin().sum().x;
             ui.set_width(inner);
             if !chat_history.is_empty() {
-                egui::Frame::new().fill(crate::theme::INSET).corner_radius(2).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
+                egui::Frame::new().fill(pal().inset).corner_radius(2).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
                     egui::ScrollArea::vertical().max_height(260.0).stick_to_bottom(true).show(ui, |ui| {
                         ui.set_width(inner - 12.0);
                         ui.spacing_mut().item_spacing.y = 2.0;
@@ -1985,11 +2006,14 @@ impl Hud {
                     if multiplayer {
                         // Who hears it: click to switch (Shift+Enter opens the chat to allies).
                         let to = t(if *allies { "To allies:" } else { "To all:" });
-                        if ui.add(egui::Label::new(egui::RichText::new(to).color(if *allies { Color32::from_rgb(120, 220, 140) } else { ACCENT })).sense(egui::Sense::click())).on_hover_text(t("Click to switch between everyone and your allies")).clicked() && !spectator {
+                        // (Allies in TA Reborn's green, or as a theme moved its allies' colour, `info`;
+                        // either readable on the chat's plate, a theme's panel.)
+                        let colour = if *allies { crate::theme::legible(crate::theme::retinted(Color32::from_rgb(120, 220, 140), crate::theme::SKY, pal().info), pal().panel, 4.5) } else { pal().accent };
+                        if ui.add(egui::Label::new(egui::RichText::new(to).color(colour)).sense(egui::Sense::click())).on_hover_text(t("Click to switch between everyone and your allies")).clicked() && !spectator {
                             *allies = !*allies;
                         }
                     } else {
-                        ui.label(egui::RichText::new(t("Message:")).color(ACCENT));
+                        ui.label(egui::RichText::new(t("Message:")).color(pal().accent));
                     }
                     let hint = if multiplayer { t("A line starting with + is a command (+help)") } else { t("A line starting with + is a command or cheat code (+help)") };
                     let resp = ui.add(egui::TextEdit::singleline(line).desired_width(ui.available_width()).char_limit(200).hint_text(hint));
@@ -2063,7 +2087,7 @@ impl Hud {
                         ui.add(egui::Label::new(egui::RichText::new(game.player_label(a)).font(crate::theme::strong(13.0)).color(Color32::WHITE)).truncate());
                         if attacked.is_some() {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ta_ui::widgets::tag(ui, "UNDER ATTACK", crate::theme::RED);
+                                ta_ui::widgets::tag(ui, "UNDER ATTACK", pal().bad);
                             });
                         }
                     });
@@ -2073,11 +2097,11 @@ impl Hud {
                         Some((health, _)) => tf("ARMY {army} · COMMANDER {health}%", &[("army", &worth), ("health", &((health * 100.0).round() as i32))]),
                         None => tf("ARMY {army}", &[("army", &worth)]),
                     };
-                    ui.label(egui::RichText::new(line).font(crate::theme::strong(10.5)).color(crate::theme::STEEL).extra_letter_spacing(ta_ui::i18n::tracking(0.8)));
+                    ui.label(egui::RichText::new(line).font(crate::theme::strong(10.5)).color(pal().steel).extra_letter_spacing(ta_ui::i18n::tracking(0.8)));
                     if let Some((health, _)) = commander[a as usize] {
                         let (bar, _) = ui.allocate_exact_size(EVec2::new(ui.available_width(), 3.0), egui::Sense::hover());
                         ui.painter().rect_filled(bar, 1.0, Color32::from_white_alpha(25));
-                        let tone = if health > 0.5 { crate::theme::GREEN } else if health > 0.25 { crate::theme::AMBER } else { crate::theme::RED };
+                        let tone = if health > 0.5 { pal().good } else if health > 0.25 { pal().accent } else { pal().bad };
                         ui.painter().rect_filled(egui::Rect::from_min_size(bar.min, EVec2::new(bar.width() * health, bar.height())), 1.0, tone);
                     }
                 });
@@ -2105,7 +2129,7 @@ impl Hud {
             // (In the classic interface, under TA's own PAUSED title.)
             let top = if self.classic { self.classic_hud.paused_title_bottom(ctx.content_rect()) + 6.0 } else { clear.top + 76.0 };
             ta_ui::panel::strip(ctx, "paused", egui::Align2::CENTER_TOP, EVec2::new(clear.center, top), |ui| {
-                ui.label(egui::RichText::new(tf("PAUSED · {key} TO RESUME", &[("key", &key.to_uppercase())])).font(crate::theme::strong(15.0)).color(ACCENT).extra_letter_spacing(ta_ui::i18n::tracking(1.4)));
+                ui.label(egui::RichText::new(tf("PAUSED · {key} TO RESUME", &[("key", &key.to_uppercase())])).font(crate::theme::strong(15.0)).color(pal().accent).extra_letter_spacing(ta_ui::i18n::tracking(1.4)));
             });
             return;
         }
@@ -2121,7 +2145,7 @@ impl Hud {
             let shown = ta_ui::panel::strip(ctx, "net_paused", egui::Align2::CENTER_TOP, EVec2::new(clear.center, top), |ui| {
                 ui.horizontal(|ui| {
                     let title = by.as_ref().map_or_else(|| t("PAUSED").to_string(), |name| tf("PAUSED BY {name}", &[("name", &name.to_uppercase())]));
-                    ui.label(egui::RichText::new(title).font(crate::theme::strong(15.0)).color(ACCENT).extra_letter_spacing(ta_ui::i18n::tracking(1.4)));
+                    ui.label(egui::RichText::new(title).font(crate::theme::strong(15.0)).color(pal().accent).extra_letter_spacing(ta_ui::i18n::tracking(1.4)));
                     if may_resume {
                         ui.add_space(8.0);
                         resume = ui.add(ta_ui::widgets::ActionButton::secondary("RESUME")).on_hover_text(t("Resume the game for everyone")).clicked();
@@ -2144,10 +2168,10 @@ impl Hud {
         ta_ui::panel::strip(ctx, "waiting_drop", egui::Align2::CENTER_TOP, EVec2::new(clear.center, top), |ui| {
             ui.horizontal(|ui| {
                 if host {
-                    ui.label(egui::RichText::new(tf("{players} still behind.", &[("players", &players)])).color(crate::theme::TEXT));
+                    ui.label(egui::RichText::new(tf("{players} still behind.", &[("players", &players)])).color(pal().text));
                     drop = ui.add(ta_ui::widgets::ActionButton::secondary("GO ON WITHOUT THEM")).on_hover_text(t("Close their connection; their units stay on the map, idle")).clicked();
                 } else {
-                    ui.label(egui::RichText::new(tf("{players} still behind: the host can go on without them.", &[("players", &players)])).color(crate::theme::TEXT));
+                    ui.label(egui::RichText::new(tf("{players} still behind: the host can go on without them.", &[("players", &players)])).color(pal().text));
                 }
             });
         });
@@ -2162,12 +2186,13 @@ impl Hud {
         if let Some(net) = &game.net {
             if let Some(tick) = net.desync {
                 let since = format!("{:02}:{:02}", tick / 30 / 60, tick / 30 % 60);
-                status.push((ta_ui::i18n::tf("OUT OF SYNC since {time}: the players' games no longer match", &[("time", &since)]), Color32::from_rgb(255, 90, 70)));
+                // (Red for what went wrong: TA Reborn's, or a theme's `bad` made as light.)
+                status.push((ta_ui::i18n::tf("OUT OF SYNC since {time}: the players' games no longer match", &[("time", &since)]), notice_ink(crate::theme::retinted(Color32::from_rgb(255, 90, 70), crate::theme::RED, pal().bad))));
             }
             if !net.waiting_for.is_empty() {
                 let secs = game.net_wait as u32;
                 let time = format!("{}:{:02}", secs / 60, secs % 60);
-                status.push((ta_ui::i18n::tf("Waiting for {players} · {time}", &[("players", &net.waiting_for.join(", ")), ("time", &time)]), ACCENT));
+                status.push((ta_ui::i18n::tf("Waiting for {players} · {time}", &[("players", &net.waiting_for.join(", ")), ("time", &time)]), notice_ink(pal().accent)));
                 ctx.request_repaint_after(std::time::Duration::from_millis(250));
             }
         }
@@ -2213,8 +2238,8 @@ impl Hud {
                 if let Some(o) = legend {
                     egui::Frame::new().fill(Color32::from_black_alpha(180)).stroke(Stroke::new(1.0, ta_ui::metal::STEEL_SHADE)).inner_margin(egui::Margin::symmetric(12, 5)).corner_radius(2).show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.add(egui::Label::new(ta_ui::widgets::caption(o.label()).color(ACCENT)).extend());
-                            ui.add(egui::Label::new(egui::RichText::new(ta_ui::i18n::t(o.legend())).font(crate::theme::body(12.5)).color(crate::theme::TEXT)).wrap());
+                            ui.add(egui::Label::new(ta_ui::widgets::caption(o.label()).color(notice_ink(pal().accent))).extend());
+                            ui.add(egui::Label::new(egui::RichText::new(ta_ui::i18n::t(o.legend())).font(crate::theme::body(12.5)).color(notice_ink(pal().text))).wrap());
                         });
                     });
                 }
@@ -2229,11 +2254,13 @@ impl Hud {
                 for (i, notice) in game.messages.iter().enumerate() {
                     use crate::game::Tone;
                     let fade = notice.secs.min(1.0);
+                    // (Red for what went wrong: TA Reborn's light red, or a theme's `bad` made as light.)
                     let (words, edge, rim) = match notice.tone {
-                        Tone::Note => (crate::theme::AMBER_BRIGHT, crate::theme::AMBER, ta_ui::metal::STEEL_SHADE),
-                        Tone::Done => (crate::theme::GREEN, crate::theme::GREEN, ta_ui::metal::STEEL_SHADE),
-                        Tone::Trouble => (Color32::from_rgb(255, 132, 112), crate::theme::RED, crate::theme::RED.gamma_multiply(0.55)),
+                        Tone::Note => (pal().accent_bright, pal().accent, ta_ui::metal::STEEL_SHADE),
+                        Tone::Done => (pal().good, pal().good, ta_ui::metal::STEEL_SHADE),
+                        Tone::Trouble => (crate::theme::retinted(Color32::from_rgb(255, 132, 112), crate::theme::RED, pal().bad), pal().bad, pal().bad.gamma_multiply(0.55)),
                     };
+                    let words = notice_ink(words);
                     let shown = egui::Frame::new()
                         .fill(Color32::from_black_alpha((170.0 * fade) as u8))
                         .stroke(Stroke::new(1.0, rim.gamma_multiply(fade)))
@@ -2259,7 +2286,7 @@ impl Hud {
             let button = egui::Area::new(egui::Id::new(("notice_link", i))).fixed_pos(r.min).order(egui::Order::Middle).show(ctx, |ui| {
                 let (rect, response) = ui.allocate_exact_size(r.size(), egui::Sense::click());
                 if response.hovered() {
-                    ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, crate::theme::AMBER.gamma_multiply(0.7 * fade)), egui::StrokeKind::Inside);
+                    ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, pal().accent.gamma_multiply(0.7 * fade)), egui::StrokeKind::Inside);
                     crate::hint::paint_chip(ui.painter(), Rect::from_center_size(Pos2::new(rect.right() - 8.0 - chip.x / 2.0, rect.center().y), chip), true, fade);
                 }
                 response
@@ -2269,6 +2296,16 @@ impl Hud {
             }
         }
     }
+}
+
+/// What the notices' frames (black, two thirds opaque) leave of a mid-grey battlefield behind them:
+/// the backdrop their words are made readable on.
+const NOTICE_BACKDROP: Color32 = Color32::from_rgb(43, 43, 43);
+
+/// A notice's words, readable on its frame's fixed dark backdrop whatever the theme (TA Reborn's
+/// own colours are, as they are; a light theme's dark text and accent are lit until they are).
+fn notice_ink(colour: Color32) -> Color32 {
+    crate::theme::legible(colour, NOTICE_BACKDROP, 3.0)
 }
 
 /// Multiplayer, in the top bar: the slowest connection's bars and milliseconds (the battle goes
@@ -2287,11 +2324,11 @@ fn net_signal(ui: &mut egui::Ui, game: &Game) {
     let worst = pings.iter().filter(|(p, _)| Some(*p) != host).map(|(_, ms)| *ms).max();
     // (Someone away says so in place of the milliseconds.)
     let (text, colour) = if !net.away.is_empty() {
-        (tf("{n} AWAY", &[("n", &net.away.len())]), crate::theme::AMBER)
+        (tf("{n} AWAY", &[("n", &net.away.len())]), pal().accent)
     } else {
         match worst {
-            Some(ms) => (ms.to_string(), if net.waiting_for.is_empty() { crate::theme::TEXT } else { crate::theme::AMBER }),
-            None => ("—".to_string(), crate::theme::STEEL_DIM),
+            Some(ms) => (ms.to_string(), if net.waiting_for.is_empty() { pal().text } else { pal().accent }),
+            None => ("—".to_string(), pal().steel_dim),
         }
     };
     let galley = ui.painter().layout_no_wrap(text, crate::theme::strong(11.5), colour);
@@ -2364,14 +2401,14 @@ pub(crate) fn players_panel(ctx: &egui::Context, game: &Game, offset: [f32; 2], 
                     let me = !game.spectator && i == game.local_player;
                     let name = if game.team_markers { format!("{} {}", crate::team_markers::player(game, i).label(), game.player_label(i)) } else { game.player_label(i) };
                     let name = egui::RichText::new(name);
-                    ui.label(if me { name.strong().color(ACCENT) } else { name.color(Color32::WHITE) });
+                    ui.label(if me { name.strong().color(pal().accent) } else { name.color(Color32::WHITE) });
                     ui.label(p.side.as_str());
                     ui.label(format!("{}", p.team + 1));
                     if game.may_inspect(i) {
                         let e = &p.economy;
                         ui.label(p.unit_count.to_string());
-                        ui.label(egui::RichText::new(format!("+{:.1}", e.metal_income.to_f32())).color(METAL));
-                        ui.label(egui::RichText::new(format!("+{:.0}", e.energy_income.to_f32())).color(ENERGY));
+                        ui.label(egui::RichText::new(format!("+{:.1}", e.metal_income.to_f32())).color(pal().metal_bar));
+                        ui.label(egui::RichText::new(format!("+{:.0}", e.energy_income.to_f32())).color(pal().energy_bar));
                         ui.label(p.stats.kills.to_string());
                     } else {
                         for _ in 0..4 {
@@ -2392,10 +2429,10 @@ pub(crate) fn players_panel(ctx: &egui::Context, game: &Game, offset: [f32; 2], 
                         };
                     }
                     match link {
-                        _ if p.defeated => ta_ui::widgets::tag(ui, "OUT", crate::theme::RED),
-                        Some((Some(secs), _)) => ta_ui::widgets::tag(ui, &ta_ui::i18n::tf("AWAY {time}", &[("time", &format!("{}:{:02}", secs / 60, secs % 60))]), crate::theme::AMBER),
-                        Some((None, true)) => ta_ui::widgets::tag(ui, "BEHIND", crate::theme::AMBER),
-                        _ => ta_ui::widgets::tag(ui, "IN", crate::theme::GREEN),
+                        _ if p.defeated => ta_ui::widgets::tag(ui, "OUT", pal().bad),
+                        Some((Some(secs), _)) => ta_ui::widgets::tag(ui, &ta_ui::i18n::tf("AWAY {time}", &[("time", &format!("{}:{:02}", secs / 60, secs % 60))]), pal().accent),
+                        Some((None, true)) => ta_ui::widgets::tag(ui, "BEHIND", pal().accent),
+                        _ => ta_ui::widgets::tag(ui, "IN", pal().good),
                     };
                     ui.end_row();
                 }
@@ -2450,7 +2487,7 @@ impl Hud {
                 // What goes to them on its own (TA's +sharemetal and +shareenergy).
                 let mut s = game.sim.players.get(game.local_player as usize).map(|p| p.sharing).unwrap_or_default();
                 let before = s;
-                ui.label(egui::RichText::new(ta_ui::i18n::t("SPARE RESOURCES GO TO YOUR ALLIES")).font(crate::theme::strong(11.0)).color(crate::theme::STEEL));
+                ui.label(egui::RichText::new(ta_ui::i18n::t("SPARE RESOURCES GO TO YOUR ALLIES")).font(crate::theme::strong(11.0)).color(pal().steel));
                 ui.horizontal(|ui| {
                     let keep = |k: Option<ta_sim::Fx>| k.map(|k| ta_ui::i18n::tf(" (above {n})", &[("n", &format!("{:.0}", k.to_f32()))])).unwrap_or_default();
                     ui.checkbox(&mut s.metal, format!("{}{}", ta_ui::i18n::t("Metal"), keep(s.keep_metal)))
@@ -2495,6 +2532,122 @@ pub(crate) fn stockpile(sim: &ta_sim::Sim, u: &ta_sim::Unit) -> Option<(String, 
         tf("Missiles {n}  ·  next {pct}%", &[("n", &u.stockpile), ("pct", &pct)])
     };
     Some((line, next))
+}
+
+/// How a building's footprint is laid on the ground (see [`footprint_on_ground`]): its colour,
+/// whether the cells it takes are drawn (a building being placed, TA's grid) or its outline
+/// alone (a plan, TA's square), and how strongly it is filled (0: not at all).
+#[derive(Clone, Copy)]
+struct FootprintLook {
+    colour: Color32,
+    cells: bool,
+    fill: f32,
+}
+
+impl FootprintLook {
+    /// A building being placed: its cells in the colour of whether it may go there, as its
+    /// ghost (green or red, or the colour-blind marks' blue or orange).
+    fn placing(ok: bool) -> FootprintLook {
+        let [r, g, b, _] = if ok { crate::palette::allowed_rgba() } else { crate::palette::blocked_rgba() };
+        // (A little brighter than the overlays' cells: a line, not a wash.)
+        let lift = |c: u8| c.saturating_add(25);
+        FootprintLook { colour: Color32::from_rgb(lift(r), lift(g), lift(b)), cells: true, fill: 0.16 }
+    }
+}
+
+/// Cells a footprint's grid is drawn for at most a side (a mod's huge building: its outline).
+const FOOTPRINT_CELLS_MOST: i32 = 32;
+/// Screen points a cell must be across for its lines to be drawn (further out, the outline).
+const FOOTPRINT_CELL_LEAST: f32 = 5.0;
+
+/// A building's footprint lying on the ground: the cells `(x0, z0)..(x1, z1)` (16 px each, the
+/// grid buildings snap to), its lines through every cell's corner so that they follow the ground
+/// (on the water's surface at sea), a dark edge under each to read on snow as on lava and the
+/// sea, at a few points' width whatever the zoom. Where a cell is only a few points across (far
+/// out), the outline alone.
+fn footprint_on_ground(painter: &egui::Painter, project: &impl Fn(Vec3) -> Option<Pos2>, ground_at: &impl Fn(f32, f32) -> f32, (x0, z0, x1, z1): (i32, i32, i32, i32), look: FootprintLook) {
+    let (nx, nz) = ((x1 - x0).clamp(1, FOOTPRINT_CELLS_MOST) as usize, (z1 - z0).clamp(1, FOOTPRINT_CELLS_MOST) as usize);
+    // The corners of the cells on the ground, projected, row by row.
+    let step = |n: usize, cells: i32, k: usize| (k as f32 * cells as f32 / n as f32) * 16.0;
+    let corners: Vec<Option<Pos2>> = (0..=nz)
+        .flat_map(|j| (0..=nx).map(move |i| (i, j)))
+        .map(|(i, j)| {
+            let (x, z) = (x0 as f32 * 16.0 + step(nx, x1 - x0, i), z0 as f32 * 16.0 + step(nz, z1 - z0, j));
+            project(Vec3::new(x, ground_at(x, z) + 1.5, z))
+        })
+        .collect();
+    let at = |i: usize, j: usize| corners[j * (nx + 1) + i];
+    // Lines through corners, broken where one is off the screen's side of the eye: each run of
+    // points with its width and colour, painted once all are found (the dark edges first, so
+    // that no line's edge notches another's colour where they cross).
+    let mut lines: Vec<(Vec<Pos2>, f32, Color32)> = Vec::new();
+    let mut line = |points: &mut dyn Iterator<Item = Option<Pos2>>, width: f32, colour: Color32| {
+        let mut run: Vec<Pos2> = Vec::new();
+        for p in points.chain(std::iter::once(None)) {
+            match p {
+                Some(p) => run.push(p),
+                None if run.len() >= 2 => lines.push((std::mem::take(&mut run), width, colour)),
+                None => run.clear(),
+            }
+        }
+    };
+    // How large a cell is on the screen: the mean of its sides along each way.
+    let across = {
+        let sides: Vec<f32> = (0..nz).flat_map(|j| (0..nx).map(move |i| (i, j))).filter_map(|(i, j)| Some(at(i, j)?.distance(at(i + 1, j)?).max(at(i, j)?.distance(at(i, j + 1)?)))).collect();
+        sides.iter().sum::<f32>() / sides.len().max(1) as f32
+    };
+    let whole = (x1 - x0) as usize == nx && (z1 - z0) as usize == nz;
+    let cells = look.cells && whole && across >= FOOTPRINT_CELL_LEAST;
+    if look.fill > 0.0 {
+        let mut mesh = egui::Mesh::default();
+        let fill = look.colour.gamma_multiply(look.fill);
+        for j in 0..nz {
+            for i in 0..nx {
+                let (Some(a), Some(b), Some(c), Some(d)) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)) else { continue };
+                let k = mesh.vertices.len() as u32;
+                for p in [a, b, c, d] {
+                    mesh.colored_vertex(p, fill);
+                }
+                mesh.add_triangle(k, k + 1, k + 2);
+                mesh.add_triangle(k, k + 2, k + 3);
+            }
+        }
+        painter.add(egui::Shape::mesh(mesh));
+    }
+    if cells {
+        // The cells' lines inside, fainter than the outline.
+        let inner = look.colour.gamma_multiply(0.7);
+        for i in 1..nx {
+            line(&mut (0..=nz).map(|j| at(i, j)), 1.1, inner);
+        }
+        for j in 1..nz {
+            line(&mut (0..=nx).map(|i| at(i, j)), 1.1, inner);
+        }
+    }
+    // The outline, all the way round.
+    let mut round = (0..nx).map(|i| at(i, 0)).chain((0..nz).map(|j| at(nx, j))).chain((1..=nx).rev().map(|i| at(i, nz))).chain((1..=nz).rev().map(|j| at(0, j))).chain(std::iter::once(at(0, 0)));
+    line(&mut round, 1.8, look.colour);
+    for (run, width, colour) in &lines {
+        painter.add(egui::Shape::line(run.clone(), Stroke::new(width + 2.2, Color32::from_black_alpha((colour.a() as f32 * 0.55) as u8))));
+    }
+    for (run, width, colour) in lines {
+        painter.add(egui::Shape::line(run, Stroke::new(width, colour)));
+    }
+}
+
+/// The ON/OFF button's word for what the selection's switches are set to, and what pressing it
+/// does (`key`: the key that does it too): a group some on and some off says both, as TA's does,
+/// and goes all one way (the opposite of its first switch).
+pub(crate) fn power_words(power: crate::game::Power, key: &str) -> (String, String) {
+    use crate::game::Power;
+    use ta_ui::i18n::{t, tf};
+    let args: [(&str, &dyn std::fmt::Display); 1] = [("key", &key)];
+    match power {
+        Power::On => (t("ON").to_string(), tf("On: click to turn off ({key})", &args)),
+        Power::Off => (t("OFF").to_string(), tf("Off: click to turn on ({key})", &args)),
+        Power::Mixed { first_on: true } => (t("ON/OFF").to_string(), tf("Some on, some off: click to turn them all off ({key})", &args)),
+        Power::Mixed { first_on: false } => (t("ON/OFF").to_string(), tf("Some on, some off: click to turn them all on ({key})", &args)),
+    }
 }
 
 /// "45 s", "2 min 5 s".
@@ -2603,7 +2756,10 @@ struct Store {
     amount: f32,
     capacity: f32,
     income: f32,
-    expense: f32,
+    /// What is asked for, paid or not ([`ta_sim::Economy::metal_wanted`]): the use shown, by
+    /// how much the asking outruns the income. (What the store does, its state, goes by what
+    /// is paid: a builder held up by metal asks for energy that is not spent.)
+    wanted: f32,
     state: StoreState,
 }
 
@@ -2621,8 +2777,8 @@ enum StoreState {
 }
 
 impl Store {
-    fn of(amount: Fx, capacity: Fx, income: Fx, expense: Fx, rationed: bool) -> Store {
-        let (amount, capacity, income, expense) = (amount.to_f32(), capacity.to_f32(), income.to_f32(), expense.to_f32());
+    fn of(amount: Fx, capacity: Fx, income: Fx, expense: Fx, wanted: Fx, rationed: bool) -> Store {
+        let (amount, capacity, income, expense, wanted) = (amount.to_f32(), capacity.to_f32(), income.to_f32(), expense.to_f32(), wanted.to_f32());
         let net = income - expense;
         let state = if amount <= (capacity * 0.02).max(1.0) && (rationed || net < -0.05) {
             StoreState::Stalling
@@ -2633,7 +2789,7 @@ impl Store {
         } else {
             StoreState::Steady
         };
-        Store { amount, capacity, income, expense, state }
+        Store { amount, capacity, income, wanted, state }
     }
 
     /// What its tip says: the figures, and what to do about a store in trouble.
@@ -2645,7 +2801,7 @@ impl Store {
                 ("amount", &format!("{:.0}", self.amount)),
                 ("capacity", &format!("{:.0}", self.capacity)),
                 ("income", &format!("{:.1}", self.income)),
-                ("spending", &format!("{:.1}", self.expense)),
+                ("spending", &format!("{:.1}", self.wanted)),
             ],
         );
         let advice = match self.state {
@@ -2676,29 +2832,29 @@ fn resource_bar(ui: &mut egui::Ui, name: &str, s: Store, color: Color32, bar_wid
             ui.painter().add(hud_skin::gauge(rect, frac, color, 4));
             if s.state == StoreState::Stalling {
                 let pulse = (0.55 + 0.45 * (time * 5.0).sin()) as f32;
-                ui.painter().rect_stroke(rect.expand(1.5), CornerRadius::same(2), Stroke::new(1.5, RED.gamma_multiply(pulse)), egui::StrokeKind::Outside);
+                ui.painter().rect_stroke(rect.expand(1.5), CornerRadius::same(2), Stroke::new(1.5, pal().bad.gamma_multiply(pulse)), egui::StrokeKind::Outside);
                 ui.ctx().request_repaint();
             }
-            ui.label(egui::RichText::new(format!("{:.0}", s.amount)).font(strong(13.0)).color(TEXT_BRIGHT));
-            let net = s.income - s.expense;
+            ui.label(egui::RichText::new(format!("{:.0}", s.amount)).font(strong(13.0)).color(pal().text_bright));
+            let net = s.income - s.wanted;
             let rate = if net >= 0.0 { format!("+{net:.1}") } else { format!("{net:.1}") };
             let rate_color = match s.state {
-                StoreState::Stalling => RED,
-                StoreState::Draining(secs) if secs < 20 => RED,
-                StoreState::Draining(_) => AMBER_BRIGHT,
-                _ if net > 0.05 => GREEN,
-                _ => STEEL,
+                StoreState::Stalling => pal().bad,
+                StoreState::Draining(secs) if secs < 20 => pal().bad,
+                StoreState::Draining(_) => pal().accent_bright,
+                _ if net > 0.05 => pal().good,
+                _ => pal().steel,
             };
             ui.label(egui::RichText::new(rate).font(strong(12.0)).color(rate_color));
             match s.state {
                 StoreState::Stalling => {
-                    ta_ui::widgets::tag(ui, n("STALLING"), RED);
+                    ta_ui::widgets::tag(ui, n("STALLING"), pal().bad);
                 }
                 StoreState::Full if !tight => {
-                    ta_ui::widgets::tag(ui, n("FULL"), STEEL);
+                    ta_ui::widgets::tag(ui, n("FULL"), pal().steel);
                 }
                 StoreState::Draining(secs) if secs < 20 => {
-                    ta_ui::widgets::tag(ui, &tf("EMPTY IN {secs} S", &[("secs", &secs)]), RED);
+                    ta_ui::widgets::tag(ui, &tf("EMPTY IN {secs} S", &[("secs", &secs)]), pal().bad);
                 }
                 _ => {}
             }
@@ -2793,7 +2949,7 @@ fn cast_switch(ui: &mut egui::Ui, game: &mut Game) {
     use ta_ui::i18n::t;
     let was = game.cast;
     ta_ui::widgets::check_box(ui, &mut game.cast);
-    ui.label(egui::RichText::new(t("Cast view")).font(crate::theme::body(13.0)).color(crate::theme::TEXT))
+    ui.label(egui::RichText::new(t("Cast view")).font(crate::theme::body(13.0)).color(pal().text))
         .on_hover_text(t("A broadcast's view: the players head to head, the notable kills, and a camera that directs itself"));
     if game.cast && !was {
         game.action_camera = true;
@@ -2804,7 +2960,7 @@ fn cast_switch(ui: &mut egui::Ui, game: &mut Game) {
 /// ahead (`scan`) marked over it, a click on one jumping to a few seconds before it, and while
 /// the scan runs, how far it has got along its foot.
 fn timeline(ui: &mut egui::Ui, tick: u64, end: u64, width: f32, scan: Option<&crate::replay_scan::ScanState>) -> Option<u64> {
-    use crate::theme::{AMBER, AMBER_BRIGHT, AMBER_DIM, INSET};
+    use crate::theme::{pal};
     let (rect, response) = ui.allocate_exact_size(EVec2::new(width, 22.0), egui::Sense::click_and_drag());
     let track = Rect::from_min_max(Pos2::new(rect.left() + 6.0, rect.center().y - 4.0), Pos2::new(rect.right() - 6.0, rect.center().y + 4.0));
     let at = |x: f32| ((x - track.left()) / track.width()).clamp(0.0, 1.0);
@@ -2815,9 +2971,9 @@ fn timeline(ui: &mut egui::Ui, tick: u64, end: u64, width: f32, scan: Option<&cr
     };
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        painter.add(ta_ui::metal::well(track.expand(2.0), INSET));
+        painter.add(ta_ui::metal::well(track.expand(2.0), pal().inset));
         let filled = Rect::from_min_max(track.min, Pos2::new(track.left() + track.width() * shown, track.bottom()));
-        painter.add(ta_ui::metal::vgrad(filled, AMBER_BRIGHT, AMBER_DIM));
+        painter.add(ta_ui::metal::vgrad(filled, pal().accent_bright, pal().accent_dim));
         let minutes = end / (30 * 60);
         let every = if minutes > 40 { 10 } else if minutes > 12 { 5 } else { 1 };
         for m in (every..=minutes).step_by(every as usize) {
@@ -2836,7 +2992,7 @@ fn timeline(ui: &mut egui::Ui, tick: u64, end: u64, width: f32, scan: Option<&cr
         let x = track.left() + track.width() * shown;
         let handle = Rect::from_center_size(Pos2::new(x, rect.center().y), EVec2::new(8.0, 18.0));
         painter.add(ta_ui::metal::slab(ui.ctx(), handle, ta_ui::metal::Slab::Steel, if response.hovered() || dragging { 1.0 } else { 0.0 }, dragging));
-        painter.hline(handle.x_range().shrink(2.0), handle.center().y, Stroke::new(1.0, AMBER));
+        painter.hline(handle.x_range().shrink(2.0), handle.center().y, Stroke::new(1.0, pal().accent));
     }
     // The big moments: a mark each over the track, its colour its kind, its size its worth;
     // the one under the pointer named.
@@ -2850,7 +3006,7 @@ fn timeline(ui: &mut egui::Ui, tick: u64, end: u64, width: f32, scan: Option<&cr
             let colour = match m.kind {
                 crate::highlights::MomentKind::Nuke => Color32::from_rgb(255, 96, 70),
                 crate::highlights::MomentKind::Commander => Color32::from_rgb(240, 236, 220),
-                crate::highlights::MomentKind::Battle => AMBER_BRIGHT,
+                crate::highlights::MomentKind::Battle => pal().accent_bright,
             };
             let size = (2.5 + (m.worth.max(1.0).log10() - 2.5).clamp(0.0, 2.5) * 1.2) * if hovered.is_some_and(|h| std::ptr::eq(h, m)) { 1.4 } else { 1.0 };
             painter.vline(x, track.y_range(), Stroke::new(1.0, colour.gamma_multiply(0.45)));
@@ -2885,7 +3041,7 @@ fn timeline(ui: &mut egui::Ui, tick: u64, end: u64, width: f32, scan: Option<&cr
 /// A counter of idle units on the top bar ("IDLE BUILDERS 2"): a gunmetal button with an
 /// amber lamp, as the deck marks idle units.
 fn idle_chip(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    use crate::theme::{AMBER, AMBER_BRIGHT, CREAM};
+    use crate::theme::{pal};
     let galley = ta_ui::widgets::galley(ui, egui::RichText::new(text).font(crate::theme::strong(11.0)).extra_letter_spacing(ta_ui::i18n::tracking(0.8)));
     let (rect, response) = ui.allocate_exact_size(EVec2::new(galley.size().x + 28.0, 22.0), egui::Sense::click());
     let hot = if response.hovered() { 1.0 } else { 0.0 };
@@ -2894,9 +3050,9 @@ fn idle_chip(ui: &mut egui::Ui, text: &str) -> egui::Response {
     painter.add(ta_ui::metal::slab(ui.ctx(), rect, ta_ui::metal::Slab::Steel, hot, down));
     // The lamp breathes, as an alert does, slowly.
     let pulse = 0.65 + 0.35 * (ui.input(|i| i.time) * 2.4).sin() as f32;
-    painter.add(ta_ui::metal::lamp(Pos2::new(rect.left() + 10.0, rect.center().y + if down { 1.0 } else { 0.0 }), 3.0, AMBER, pulse));
+    painter.add(ta_ui::metal::lamp(Pos2::new(rect.left() + 10.0, rect.center().y + if down { 1.0 } else { 0.0 }), 3.0, pal().accent, pulse));
     let text = Pos2::new(rect.center().x + 6.0, rect.center().y);
-    ta_ui::metal::slab_text(painter, text, galley, true, if hot > 0.0 { AMBER_BRIGHT } else { CREAM }, down);
+    ta_ui::metal::slab_text(painter, text, galley, true, if hot > 0.0 { pal().accent_bright } else { pal().button_text }, down);
     ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -2925,16 +3081,16 @@ fn pic_frame(rect: Rect, hot: bool) -> egui::Shape {
         egui::Shape::hline(rect.x_range(), rect.max.y + 0.5, Stroke::new(1.0, Color32::from_white_alpha(28))),
     ];
     if hot {
-        shapes.push(egui::Shape::rect_stroke(rect.shrink(1.0), CornerRadius::same(1), Stroke::new(1.5, crate::theme::AMBER_BRIGHT), egui::StrokeKind::Inside));
+        shapes.push(egui::Shape::rect_stroke(rect.shrink(1.0), CornerRadius::same(1), Stroke::new(1.5, pal().accent_bright), egui::StrokeKind::Inside));
     }
     egui::Shape::Vec(shapes)
 }
 
 /// A count over a picture (units queued), in brass lettering outlined in black.
 fn count(ui: &egui::Ui, at: Pos2, align: egui::Align2, n: usize, size: f32) {
-    let galley = ui.painter().layout_no_wrap(n.to_string(), crate::theme::display(size), crate::theme::AMBER_BRIGHT);
+    let galley = ui.painter().layout_no_wrap(n.to_string(), crate::theme::display(size), pal().accent_bright);
     let rect = align.anchor_size(at, galley.size());
-    ta_ui::metal::embossed(ui.painter(), rect.min, galley, crate::theme::AMBER_BRIGHT);
+    ta_ui::metal::embossed(ui.painter(), rect.min, galley, pal().accent_bright);
 }
 
 /// Focuses the camera on a unit (used at game start).
@@ -2970,7 +3126,7 @@ struct Figure {
 
 /// The card's rows for a unit's flows: metal, then energy, those it makes or uses.
 fn figure_rows(f: &ta_sim::flows::UnitFlows) -> Vec<Figure> {
-    [(n("METAL"), METAL, f.metal_make, f.metal_use), (n("ENERGY"), ENERGY, f.energy_make, f.energy_use)]
+    [(n("METAL"), pal().metal_bar, f.metal_make, f.metal_use), (n("ENERGY"), pal().energy_bar, f.energy_make, f.energy_use)]
         .into_iter()
         .map(|(label, colour, make, uses)| Figure { label, colour, make: make.to_f32(), uses: uses.to_f32() })
         .filter(|r| r.make >= 0.05 || r.uses >= 0.05)
@@ -3011,7 +3167,7 @@ fn figure_job(r: &Figure) -> egui::text::LayoutJob {
     add(&format!("{}   ", ta_ui::i18n::upper(ta_ui::i18n::t(r.label))), caption, r.colour);
     let (makes, uses) = (r.make >= 0.05, r.uses >= 0.05);
     if makes {
-        add(&format!("+{}", per_second(r.make)), figure.clone(), crate::theme::GREEN);
+        add(&format!("+{}", per_second(r.make)), figure.clone(), pal().good);
     }
     if uses {
         add(&format!("{}-{}", if makes { "   " } else { "" }, per_second(r.uses)), figure.clone(), Color32::from_rgb(240, 130, 105));
@@ -3020,7 +3176,7 @@ fn figure_job(r: &Figure) -> egui::text::LayoutJob {
         // (Many of TA's buildings make what they use: a radar tower's five energy cancel.)
         let net = r.make - r.uses;
         let words = if net.abs() < 0.05 { per_second(0.0) } else { format!("{}{}", if net > 0.0 { "+" } else { "-" }, per_second(net.abs())) };
-        add(&format!("   = {words}"), figure, crate::theme::TEXT);
+        add(&format!("   = {words}"), figure, pal().text);
     }
     job
 }
@@ -3032,7 +3188,7 @@ fn hover_card(bounds: Rect, painter: &egui::Painter, mouse: Pos2, lines: Vec<(St
     let figure_galleys: Vec<_> = figures.iter().map(|r| painter.layout_job(figure_job(r))).collect();
     // A health gauge under the name, its numbers on it.
     const GAUGE: f32 = 13.0;
-    let gauge_text = health.as_ref().map(|(_, s)| painter.layout_no_wrap(s.clone(), crate::theme::strong(10.5), crate::theme::TEXT_BRIGHT));
+    let gauge_text = health.as_ref().map(|(_, s)| painter.layout_no_wrap(s.clone(), crate::theme::strong(10.5), pal().text_bright));
     let w = galleys
         .iter()
         .chain(&figure_galleys)
@@ -3047,8 +3203,8 @@ fn hover_card(bounds: Rect, painter: &egui::Painter, mouse: Pos2, lines: Vec<(St
     let card = Rect::from_min_size(at, EVec2::new(w, h)).expand2(EVec2::new(9.0, 7.0));
     painter.add(egui::Shadow { offset: [0, 4], blur: 12, spread: 0, color: Color32::from_black_alpha(120) }.as_shape(card, 2.0));
     painter.rect_filled(card.expand(1.0), 3.0, ta_ui::metal::STEEL_EDGE);
-    painter.add(ta_ui::metal::plate(painter.ctx(), card, crate::theme::PANEL));
-    painter.hline(card.x_range().shrink(1.0), card.min.y + 1.0, Stroke::new(2.0, crate::theme::AMBER_DIM));
+    painter.add(ta_ui::metal::plate(painter.ctx(), card, pal().panel));
+    painter.hline(card.x_range().shrink(1.0), card.min.y + 1.0, Stroke::new(2.0, pal().accent_dim));
     let mut y = at.y;
     for (i, g) in galleys.into_iter().enumerate() {
         let gh = g.size().y;
@@ -3061,7 +3217,7 @@ fn hover_card(bounds: Rect, painter: &egui::Painter, mouse: Pos2, lines: Vec<(St
             let bar = Rect::from_min_size(Pos2::new(at.x, y), EVec2::new(w, GAUGE));
             painter.add(hud_skin::gauge(bar, *fraction, hud_skin::health_color(*fraction), 1));
             if let Some(text) = gauge_text.clone() {
-                ta_ui::metal::slab_text(painter, bar.center(), text, true, crate::theme::TEXT_BRIGHT, false);
+                ta_ui::metal::slab_text(painter, bar.center(), text, true, pal().text_bright, false);
             }
             y += GAUGE + 3.0;
         }
@@ -3218,10 +3374,61 @@ mod tests {
         assert_eq!(text(flows(0.0, 0.0, 5.0, 5.0)), ["ENERGY   +5.0/s   -5.0/s   = 0.0/s"]);
     }
 
+    /// A building being placed shows the cells it will take as a grid on the ground: lines
+    /// through every cell's corner (the cells' lines between, then the outline) over a faint
+    /// fill, each line edged dark first; far out, where a cell is a few points across, the
+    /// outline alone; a plan's square is its outline, unfilled.
+    #[test]
+    fn a_footprint_is_a_grid_of_its_cells_on_the_ground() {
+        let ctx = egui::Context::default();
+        let shapes = |scale: f32, look: FootprintLook| {
+            let project = move |p: Vec3| Some(Pos2::new(p.x * scale, p.z * scale));
+            let ground = |_: f32, _: f32| 10.0;
+            let out = ctx.run_ui(Default::default(), |ui| footprint_on_ground(ui.painter(), &project, &ground, (2, 3, 4, 6), look));
+            let shapes: Vec<egui::Shape> = out.shapes.iter().map(|c| c.shape.clone()).collect();
+            out.drop_without_applying_deltas();
+            shapes
+        };
+        let paths = |shapes: &[egui::Shape]| -> Vec<Vec<Pos2>> {
+            shapes.iter().filter_map(|s| if let egui::Shape::Path(p) = s { Some(p.points.clone()) } else { None }).collect()
+        };
+        // Two cells by three: a line between the columns, two between the rows and the outline,
+        // each twice (its dark edge, then its colour), over the fill of the six cells.
+        let near = shapes(1.0, FootprintLook::placing(true));
+        let lines = paths(&near);
+        assert_eq!(lines.len(), 8);
+        assert!(near.iter().any(|s| matches!(s, egui::Shape::Mesh(m) if m.indices.len() == 6 * 6)));
+        let outline = lines.last().unwrap();
+        assert_eq!(outline.first(), Some(&Pos2::new(32.0, 48.0)), "from the first cell's corner, 16 px a cell");
+        assert_eq!(outline.last(), outline.first(), "all the way round");
+        assert!(outline.contains(&Pos2::new(64.0, 96.0)), "to the last cell's far corner");
+        // Far out (a cell 1.6 points across): the outline alone.
+        assert_eq!(paths(&shapes(0.1, FootprintLook::placing(false))).len(), 2);
+        // A plan's square: its outline, unfilled.
+        let plan = shapes(1.0, FootprintLook { colour: Color32::WHITE, cells: false, fill: 0.0 });
+        assert_eq!(paths(&plan).len(), 2);
+        assert!(!plan.iter().any(|s| matches!(s, egui::Shape::Mesh(_))));
+    }
+
     #[test]
     fn a_ghost_says_what_the_building_would_make_and_use() {
         assert_eq!(ghost_figures(&flows(1.7, 0.0, 0.0, 3.0)), "+1.7 metal  ·  Uses 3.0 energy");
         assert_eq!(ghost_figures(&flows(0.0, 0.0, 20.0, 0.0)), "+20 energy");
         assert_eq!(ghost_figures(&flows(0.0, 0.0, 0.0, 0.0)), "");
+    }
+
+    #[test]
+    fn a_store_shows_what_is_asked_for_and_goes_by_what_is_paid() {
+        let f = |v: i64| Fx::from_int(v);
+        // A build held up by metal asks for 20 energy a second and is paid none: the store, 100 of
+        // 1,000 and 10 a second coming in, fills; it shows 20 used, but no running dry.
+        let store = Store::of(f(100), f(1000), f(10), f(0), f(20), false);
+        assert_eq!(store.state, StoreState::Steady);
+        assert_eq!(store.wanted, 20.0);
+        // Full the same way: what comes in is wasted.
+        assert_eq!(Store::of(f(1000), f(1000), f(10), f(0), f(20), false).state, StoreState::Full);
+        // Run dry with the asking paid down to the income: stalling, 20 shown.
+        let dry = Store::of(f(0), f(1000), f(10), f(10), f(20), true);
+        assert_eq!((dry.state, dry.wanted), (StoreState::Stalling, 20.0));
     }
 }

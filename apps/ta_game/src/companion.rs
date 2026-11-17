@@ -117,9 +117,10 @@ impl Companion {
         self.drawn.is_none_or(|t| t.elapsed() >= self.every)
     }
 
-    /// Draws a frame, its page laid out by `page` (its HUD and map handed to it); returns the
-    /// interface's sound for what was clicked, if any.
-    pub fn frame(&mut self, gpu: &ta_render::Gpu, mut page: impl FnMut(&mut egui::Ui, &mut Hud, &mut Minimap)) -> Option<ta_ui::sound::UiSound> {
+    /// Draws a frame, its page laid out by `page` (its HUD and map handed to it) as the battle's
+    /// HUD is (`battle`: the battle window's interface, whose theme's font it follows); returns
+    /// the interface's sound for what was clicked, if any.
+    pub fn frame(&mut self, gpu: &ta_render::Gpu, battle: &egui::Context, mut page: impl FnMut(&mut egui::Ui, &mut Hud, &mut Minimap)) -> Option<ta_ui::sound::UiSound> {
         self.drawn = Some(Instant::now());
         let size = self.window.inner_size();
         if size.width == 0 || size.height == 0 {
@@ -135,9 +136,12 @@ impl Companion {
         let native = (self.window.scale_factor() as f32).max(0.5);
         let zoom = (size.width as f32 / native / 1024.0).min(size.height as f32 / native / 600.0).clamp(0.6, 4.0);
         crate::theme::set_zoom(&self.ctx, zoom);
+        // (A HUD: in the battle's palette and font, a mod's theme's where it has one, as the
+        // battle window's HUD is.)
+        ta_ui::theme::follow_fonts(&self.ctx, battle);
         let raw = self.input.take_egui_input(&self.window);
         let (hud, minimap) = (&mut self.hud, &mut self.minimap);
-        let output = self.ctx.run_ui(raw, |ui| page(ui, hud, minimap));
+        let output = self.ctx.run_ui(raw, |ui| ta_ui::theme::hud(ui, |ui| page(ui, hud, minimap)));
         self.input.handle_platform_output(&self.window, output.platform_output);
         let ppp = output.pixels_per_point;
         let prims = self.ctx.tessellate(output.shapes, ppp);

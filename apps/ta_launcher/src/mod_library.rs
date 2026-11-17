@@ -79,7 +79,7 @@ pub fn items(mods: &ModList) -> Vec<Item> {
     }).collect();
     let after = items.len();
     items.extend(mods.mods.iter().filter(|entry| catalogue::get(entry.id()).is_none()).map(|entry| Item {
-        id: entry.id().to_string(), name: entry.info.manifest.name.clone(), catalogue: None, installed: true, order: after,
+        id: entry.id().to_string(), name: crate::supcom::mod_name(&entry.info.manifest).to_string(), catalogue: None, installed: true, order: after,
     }));
     items
 }
@@ -127,11 +127,11 @@ pub fn catalogue_matches(entry: &Entry, query: &str) -> bool {
         .into_iter().chain(entry.tags.iter().copied()).chain(entry.tags.iter().map(|tag| t(tag))))
 }
 
-/// Whether an installed mod matches a search: its name, id, words and authors.
+/// Whether an installed mod matches a search: its name, id, words, authors and tags.
 pub fn installed_matches(entry: &ModEntry, query: &str) -> bool {
     let manifest = &entry.info.manifest;
-    matches_words(query, [manifest.name.as_str(), manifest.id.as_str(), manifest.description.as_str(), t(&manifest.description)]
-        .into_iter().chain(manifest.authors.iter().map(String::as_str)))
+    matches_words(query, [manifest.name.as_str(), crate::supcom::mod_name(manifest), manifest.id.as_str(), manifest.description.as_str(), t(&manifest.description)]
+        .into_iter().chain(manifest.authors.iter().map(String::as_str)).chain(manifest.tags.iter().map(String::as_str)))
 }
 
 /// A catalogue play-test recommendation must not hide problems in this player's copy: an
@@ -176,7 +176,10 @@ pub fn accepts(item: &Item, query: &str, filter: Filter, hidden_view: bool, fact
         Filter::All => true,
         Filter::Installed => item.installed,
         Filter::Enabled => facts.enabled.contains(&item.id),
-        Filter::Updates => item.catalogue.is_some_and(|entry| waiting_update(entry, facts.updatable_version(&item.id)).is_some()),
+        // (The Supreme Commander imports' mods made by an older converter too: made again in
+        // their dialog.)
+        Filter::Updates => item.catalogue.is_some_and(|entry| waiting_update(entry, facts.updatable_version(&item.id)).is_some())
+            || crate::supcom::update_tab(facts.mods, &item.id).is_some(),
         Filter::PlaysWell => item.catalogue.is_some_and(|entry| plays_well(entry, item.installed, &(facts.status)(&item.id))),
     };
     shown && match (item.catalogue, facts.mods.get(&item.id)) {
@@ -267,8 +270,10 @@ pub fn changes(request: &ChangesRequest) -> Result<Changes, String> {
     let target = request.mods.iter().find(|info| info.manifest.id == request.target).ok_or_else(|| t("The mod is no longer installed.").to_string())?;
     let mut alone = Vfs::new();
     mount(&mut alone, target).map_err(|error| error.to_string())?;
-    // (The game reads what is in folders: a read-me beside them is no game data.)
-    let files: Vec<String> = alone.list("", None, true).into_iter().filter(|path| path.contains('/') && !path.starts_with("docs/")).collect();
+    // (The game reads what is in folders: a read-me beside them is no game data, nor are the
+    // launcher's pictures of it.)
+    let media = format!("{}/", ta_vfs::mods::MEDIA_FOLDER);
+    let files: Vec<String> = alone.list("", None, true).into_iter().filter(|path| path.contains('/') && !path.starts_with("docs/") && !path.starts_with(&media)).collect();
     // The sources before it (the game, Reborn's own, the mods loaded earlier) and those after
     // it, each stack mounted by itself: a file of its own may replace one before it and be
     // replaced by one after it.

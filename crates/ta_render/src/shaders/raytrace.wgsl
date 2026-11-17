@@ -384,7 +384,12 @@ fn reflected(origin: vec3<f32>, dir: vec3<f32>) -> vec4<f32> {
     if ((layer_word & (1u << 26u)) != 0u) {
         albedo *= reflected_team_colour(team, p.grid_dims.w);
     }
-    let layer = reflected_texture_layer(layer_word, team, p.grid_dims.w, p.eye.w, (instance.state & 1u) != 0u);
+    var layer = reflected_texture_layer(layer_word, team, p.grid_dims.w, p.eye.w, (instance.state & 1u) != 0u);
+    // (A model's own surface, its layer its material's slot, no frames: mirrored in its colour
+    // on average, the vertex's, model/surfaced.rs.)
+    if (((layer_word >> 16u) & 0xFFu) == 0u) {
+        layer = 0xFFFFu;
+    }
     if (layer != 0xFFFFu) {
         let uv0 = unpack2x16unorm(model_vertices[v0 + 4u]);
         let uv1 = unpack2x16unorm(model_vertices[v1 + 4u]);

@@ -416,8 +416,14 @@ pub struct Effects {
     death_weapons: Vec<bool>,
     /// The map's sea is lava (blasts in it throw up glowing rock, not spray).
     lava_world: bool,
-    /// What is left of the dead: falling, sinking, collapsing (`effects_remains.rs`).
+    /// What is left of the dead: falling, sinking, collapsing, dying as its model's clip has it
+    /// (`effects_remains.rs`).
     remains: Vec<remains::Remains>,
+    /// Wrecks left in the pose their unit's death ended in, by feature: their pieces' matrices
+    /// from where the wreck stands, facing its heading (see [`Effects::posed_wrecks`]).
+    posed: rustc_hash::FxHashMap<usize, Vec<glam::Mat4>>,
+    /// What posing the dying by their clips works in (`scene::clip_pose`).
+    clip_scratch: crate::scene::ClipScratch,
     /// Big units' later blasts, due.
     pops: Vec<remains::Pop>,
     /// Fireworks for the New Year (`effects_fireworks.rs`): the shells in flight, when each rack
@@ -473,6 +479,8 @@ impl Effects {
         self.wake_points.clear();
         self.wake_trails.clear();
         self.remains.clear();
+        // (The wrecks lying as their deaths left them: a battle sought back or on has others.)
+        self.posed.clear();
         self.pops.clear();
         self.due_blasts.clear();
     }
@@ -618,7 +626,7 @@ impl Effects {
                 let models = renderer.models.as_mut()?;
                 let name = w.def.model.to_ascii_lowercase();
                 let m = ta_formats::model3do::Model3do::parse(&vfs.read_opt(&format!("objects3d/{name}.3do"))?).ok()?;
-                let id = models.library.add(&name, &m, &models.textures, palette);
+                let id = crate::scene::add_model(models, &|p| vfs.read_opt(p), &name, &m, palette);
                 // (The root at the projectile's place; the rest where they sit on it. Then the
                 // body's middle on the flight's line, see `WeaponModel`.)
                 let info = models.library.info(id);
@@ -688,6 +696,8 @@ impl Effects {
             death_weapons,
             lava_world: false,
             remains: Vec::new(),
+            posed: Default::default(),
+            clip_scratch: Default::default(),
             pops: Vec::new(),
             sounds: Vec::new(),
             shells: Vec::new(),
@@ -1268,6 +1278,9 @@ impl Effects {
             self.due_blasts.push((now + when.to_f32() / 30.0, e.clone()));
             return;
         }
+        if let SimEvent::FeatureDestroyed { index, .. } = e {
+            self.forget_posed_wreck(*index);
+        }
         self.happened(e, sim, now);
     }
 
@@ -1727,8 +1740,8 @@ impl Effects {
         self.model_ids
             .iter()
             .zip(&self.model_matrices)
-            .map(|(&model, m)| DrawInstance { model, pieces: m, team: 0, flags: 0, build: 1.0, damage: 0.0, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL })
-            .chain(self.debris.iter().filter(|d| in_view(d.pos)).map(|d| DrawInstance { model: d.model, pieces: std::slice::from_ref(&d.matrix), team: d.team, flags: DEAD_LIGHTS, build: 1.0, damage: d.damage, travel: [0.0; 2], piece: Some(d.piece as u32), playing: 0 }))
+            .map(|(&model, m)| DrawInstance { model, pieces: m, team: 0, flags: 0, build: 1.0, damage: 0.0, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL, key: 0 })
+            .chain(self.debris.iter().filter(|d| in_view(d.pos)).map(|d| DrawInstance { model: d.model, pieces: std::slice::from_ref(&d.matrix), team: d.team, flags: DEAD_LIGHTS, build: 1.0, damage: d.damage, travel: [0.0; 2], piece: Some(d.piece as u32), playing: 0, key: 0 }))
             .chain(self.remains_instances())
             .collect()
     }

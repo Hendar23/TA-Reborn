@@ -91,7 +91,8 @@ fn billboard_vertex(in: VIn, standing: bool) -> VOut {
     let up = frame.billboard_up.xyz;
     let lift = clamp(to_cam.y / max(normalize(up).y, 0.25), 0.0, 4.0);
     let rise = max(-p.y, 0.0) * length(up) * lift;
-    let anchor = frame.view_proj * vec4<f32>(base + to_cam * (6.0 + rise), 1.0);
+    let order = select(0.0, standing_order(in.pos), standing);
+    let anchor = frame.view_proj * vec4<f32>(base + to_cam * (6.0 + rise + order), 1.0);
     out.clip.z = anchor.z / anchor.w * out.clip.w;
     out.uv = mix(f.uv.xy, f.uv.zw, c);
     out.world = world;
@@ -102,6 +103,20 @@ fn billboard_vertex(in: VIn, standing: bool) -> VOut {
     out.rect = f.uv;
     return out;
 }
+
+// How much nearer the eye than its place says (world units) the card of what stands at `pos`
+// (a tree, a rock) is taken. Trees side by side in a wood stand as far from the eye as each other,
+// and painted alike their cards are as deep at every height: which was drawn over the other came
+// down to the rounding of the two, and while the camera eased to rest after a move, it changed
+// from frame to frame (bunches of trees trading places for seconds). Each card is taken nearer by
+// its cell's place in a 4 x 4 pattern of the map's cells (no two neighbours alike), steps far
+// over that rounding (hundredths of a unit) and well under what lies between rows.
+fn standing_order(pos: vec3<f32>) -> f32 {
+    let cell = vec2<i32>(floor(pos.xz / 16.0));
+    return f32((cell.x & 3) + 4 * (cell.y & 3)) * STANDING_ORDER_STEP;
+}
+
+const STANDING_ORDER_STEP: f32 = 0.25;
 
 @vertex
 fn vs_decal(in: VIn) -> VOut {

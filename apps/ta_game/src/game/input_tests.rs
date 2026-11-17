@@ -341,7 +341,7 @@ fn native_queued_orders_keep_patrol_targets_and_finish_repeat_modes() {
     // metadata keeps the mode until the HUD has processed the last queued click.
     input.end_frame();
     game.set_command_mode(Some(CommandMode::Patrol));
-    game.order_selection_from_map(point, true, true);
+    game.order_selection_from_map(point, 0.0, true, true);
     patrol_command(&game, unit, point, true);
     assert_eq!(game.command_mode, Some(CommandMode::Patrol));
     modifiers(&mut input, ModifiersState::SHIFT);
@@ -351,7 +351,7 @@ fn native_queued_orders_keep_patrol_targets_and_finish_repeat_modes() {
     game.handle_input(&input, &camera, &renderer, true);
     assert_eq!(game.command_mode, Some(CommandMode::Patrol));
     let second = point + Vec3::new(80.0, 0.0, 0.0);
-    game.order_selection_from_map(second, true, false);
+    game.order_selection_from_map(second, 0.0, true, false);
     patrol_command(&game, unit, second, true);
     assert!(game.command_mode.is_none() && !game.repeat_order);
 
@@ -364,7 +364,7 @@ fn native_queued_orders_keep_patrol_targets_and_finish_repeat_modes() {
     // Unit-target commands cannot become accidental minimap move orders.
     let count = game.commands.len();
     game.set_command_mode(Some(CommandMode::Guard));
-    game.order_selection_from_map(point, false, false);
+    game.order_selection_from_map(point, 0.0, false, false);
     assert_eq!(game.commands.len(), count);
     assert_eq!(game.command_mode, Some(CommandMode::Guard));
     // Spectators may inspect a selected unit but armed commands must not take ownership
@@ -372,7 +372,7 @@ fn native_queued_orders_keep_patrol_targets_and_finish_repeat_modes() {
     game.spectator = true;
     game.set_command_mode(Some(CommandMode::Patrol));
     assert!(!game.can_order());
-    game.order_selection_from_map(point, false, false);
+    game.order_selection_from_map(point, 0.0, false, false);
     assert_eq!(game.commands.len(), count);
     println!("native queued input: delayed Shift release, Patrol drag, minimap waypoints, repeat completion and friendly-ground targeting passed");
 }
@@ -539,4 +539,369 @@ fn native_placing_again_undoes_a_plan_and_another_building_takes_its_place() {
     assert!(game.placement.is_none());
     assert_eq!(game.commands.len(), count, "no order");
     println!("native placing: undo, replace, and Shift with the right button passed");
+}
+
+#[test]
+#[ignore = "needs installed Total Annihilation data and a Windows graphics adapter"]
+#[allow(deprecated)]
+fn native_minimap_orders_aim_at_the_units_marked_there() {
+    let install = ta_vfs::install::discover(None).expect("Total Annihilation install");
+    let mut vfs = ta_vfs::Vfs::new();
+    vfs.mount_game_dir(&install.root, "base").unwrap();
+    let event_loop = winit::event_loop::EventLoop::builder().with_any_thread(true).build().unwrap();
+    let window = Arc::new(event_loop.create_window(winit::window::Window::default_attributes()
+        .with_visible(false).with_inner_size(winit::dpi::PhysicalSize::new(1024, 768))).unwrap());
+    let mut renderer = Renderer::new(window, 1024, 768).unwrap();
+    let assets = Assets::load(Arc::new(vfs), Default::default(), &mut renderer, None, None, &Default::default()).unwrap();
+    let mut game = Game::new(&assets, &mut renderer, &GameSetup::duel("Coast To Coast")).unwrap();
+    let (me, commander) = (game.local_player, game.local_commander().unwrap());
+    let foe = (0..game.sim.players.len() as u8).find(|&p| game.sim.is_enemy(me, p)).expect("an enemy");
+    let origin = game.sim.unit(commander).unwrap().pos;
+    let (raider, builder) = (game.sim.types.id("CORAK").expect("an A.K."), game.sim.types.id("ARMCK").expect("a construction kbot"));
+    let site = |game: &Game, kind, dx, dz| game.sim.find_build_site(kind, origin + FxVec3::from_ints(dx, 0, dz), 10).unwrap();
+    let enemy_at = site(&game, raider, 160, 0);
+    let enemy = game.sim.spawn_unit(raider, foe, enemy_at, 0, true).unwrap();
+    let friend_at = site(&game, builder, -120, 60);
+    let friend = game.sim.spawn_unit(builder, me, friend_at, 0, true).unwrap();
+    game.run_tick(Vec::new());
+    assert_eq!(game.seen(game.sim.unit(enemy).unwrap()), Seen::Visible, "the enemy in the Commander's sight");
+    game.selection = vec![commander];
+    let ground = |p: FxVec3| Vec3::from_array(p.to_f32());
+    let last = |game: &Game| game.commands.last().cloned();
+
+    // (What the pointer over the minimap says, from the same account as the click: the unit
+    // aimed at and the order's cursor.)
+    let aim = |game: &Game, p: Vec3| game.minimap_target(Vec2::new(p.x, p.z), 40.0);
+    use crate::cursor::CursorKind;
+
+    // A click on the enemy's mark: it is attacked. Beside it, on nothing: a move there.
+    assert_eq!(aim(&game, ground(enemy_at) + Vec3::new(8.0, 0.0, 0.0)), Some((enemy, CursorKind::Attack)), "the attack sight over the enemy's mark");
+    game.order_selection_from_map(ground(enemy_at) + Vec3::new(8.0, 0.0, 0.0), 40.0, false, false);
+    assert!(matches!(last(&game), Some(Command::Order { order: Order::Attack(ta_sim::Target::Unit(t)), .. }) if t == enemy), "{:?}", last(&game));
+    assert_eq!(aim(&game, ground(enemy_at) + Vec3::new(0.0, 0.0, 200.0)), None, "nothing aimed at beside it");
+    game.order_selection_from_map(ground(enemy_at) + Vec3::new(0.0, 0.0, 200.0), 40.0, false, false);
+    assert!(matches!(last(&game), Some(Command::Order { order: Order::Move(_), .. })), "{:?}", last(&game));
+    // Our own unit's mark: still a move, not a guard.
+    assert_eq!(aim(&game, ground(friend_at)), None);
+    game.order_selection_from_map(ground(friend_at), 40.0, false, false);
+    assert!(matches!(last(&game), Some(Command::Order { order: Order::Move(_), .. })), "{:?}", last(&game));
+    // Armed, a command takes its own kind of unit: Guard ours, Attack the enemy.
+    game.set_command_mode(Some(CommandMode::Guard));
+    assert_eq!(aim(&game, ground(friend_at)), Some((friend, CursorKind::Defend)));
+    assert_eq!(aim(&game, ground(enemy_at)), None, "guarding takes no enemy");
+    game.order_selection_from_map(ground(friend_at), 40.0, false, false);
+    assert!(matches!(last(&game), Some(Command::Order { order: Order::Guard(t), .. }) if t == friend), "{:?}", last(&game));
+    game.set_command_mode(Some(CommandMode::Attack));
+    assert_eq!(aim(&game, ground(enemy_at)), Some((enemy, CursorKind::Attack)));
+    game.order_selection_from_map(ground(enemy_at), 40.0, false, false);
+    assert!(matches!(last(&game), Some(Command::Order { order: Order::Attack(ta_sim::Target::Unit(t)), .. }) if t == enemy), "{:?}", last(&game));
+    // Nothing of ours selected: no order, nothing aimed at.
+    game.set_command_mode(None);
+    game.selection.clear();
+    assert_eq!(aim(&game, ground(enemy_at)), None);
+    println!("native minimap orders: attack, move, guard and armed attack passed, the pointer saying each");
+}
+
+#[test]
+#[ignore = "needs installed Total Annihilation data and a Windows graphics adapter"]
+#[allow(deprecated)]
+fn native_shift_giving_a_queued_reclaim_or_move_again_takes_it_back() {
+    let install = ta_vfs::install::discover(None).expect("Total Annihilation install");
+    let mut vfs = ta_vfs::Vfs::new();
+    vfs.mount_game_dir(&install.root, "base").unwrap();
+    let event_loop = winit::event_loop::EventLoop::builder().with_any_thread(true).build().unwrap();
+    let window = Arc::new(event_loop.create_window(winit::window::Window::default_attributes()
+        .with_visible(false).with_inner_size(winit::dpi::PhysicalSize::new(1024, 768))).unwrap());
+    let mut renderer = Renderer::new(window, 1024, 768).unwrap();
+    let assets = Assets::load(Arc::new(vfs), Default::default(), &mut renderer, None, None, &Default::default()).unwrap();
+    let mut game = Game::new(&assets, &mut renderer, &GameSetup::duel("Coast To Coast")).unwrap();
+    let commander = game.local_commander().unwrap();
+    let origin = Vec3::from_array(game.sim.unit(commander).unwrap().pos.to_f32());
+    game.selection = vec![commander];
+    let orders = |game: &Game| game.sim.unit(commander).unwrap().orders.iter().cloned().collect::<Vec<_>>();
+    // A Shift right-click there, and the orders on to the simulation.
+    let click = |game: &mut Game, at: Vec3| {
+        game.hovered = None;
+        game.cursor_ground = Some(at);
+        game.context_order(true);
+        let commands = std::mem::take(&mut game.commands);
+        game.run_tick(commands);
+    };
+
+    // A wreck to reclaim, given again with Shift: taken back.
+    let wreck = [(200.0, 0.0), (0.0, 200.0), (-200.0, 0.0), (0.0, -200.0)]
+        .into_iter()
+        .find_map(|(dx, dz)| game.sim.place_feature("ARMSOLAR_DEAD", fx_vec(origin + Vec3::new(dx, 0.0, dz)), 0))
+        .expect("a solar collector's wreck put down");
+    let at = Vec3::from_array(game.sim.features[wreck].pos.to_f32());
+    click(&mut game, at);
+    assert!(orders(&game).contains(&Order::Reclaim(wreck)), "{:?}", orders(&game));
+    click(&mut game, at);
+    assert!(!orders(&game).contains(&Order::Reclaim(wreck)), "taken back: {:?}", orders(&game));
+
+    // Two waypoints set with Shift, on open ground; a Shift-click beside the first takes it back.
+    let open = |game: &Game, p: Vec3| game.reclaimable_feature_at(p).is_none();
+    let spots: Vec<Vec3> = (3..20)
+        .flat_map(|r| [Vec3::new(r as f32 * 40.0, 0.0, 0.0), Vec3::new(-(r as f32) * 40.0, 0.0, 0.0), Vec3::new(0.0, 0.0, r as f32 * 40.0)])
+        .map(|d| origin + d)
+        .filter(|&p| open(&game, p) && open(&game, p + Vec3::new(20.0, 0.0, 10.0)))
+        .collect();
+    let (a, b) = (spots[0], *spots.iter().find(|p| p.distance(spots[0]) > 200.0).expect("a second waypoint"));
+    click(&mut game, a);
+    click(&mut game, b);
+    let moves = |game: &Game| orders(game).into_iter().filter(|o| matches!(o, Order::Move(_))).collect::<Vec<_>>();
+    assert_eq!(moves(&game).len(), 2, "{:?}", orders(&game));
+    click(&mut game, a + Vec3::new(20.0, 0.0, 10.0));
+    // (A move order keeps the point on the ground plane: x and z.)
+    assert!(matches!(moves(&game).as_slice(), [Order::Move(p)] if p.x == fx_vec(b).x && p.z == fx_vec(b).z), "the first taken back, the second kept: {:?}", orders(&game));
+
+    // Two units sent apart, each on its own: a Shift-click on one's waypoint takes back that one
+    // alone. Sent together: a Shift-click on one's place takes back the group's.
+    let kbot = game.sim.types.id("ARMCK").expect("a construction kbot");
+    let site = game.sim.find_build_site(kbot, fx_vec(origin + Vec3::new(-80.0, 0.0, 80.0)), 10).unwrap();
+    let builder = game.sim.spawn_unit(kbot, game.local_player, site, 0, true).unwrap();
+    let stop = |game: &mut Game| {
+        let units = vec![commander, builder];
+        game.issue(Command::Order { player: game.local_player, units, order: Order::Stop, queue: false });
+        let commands = std::mem::take(&mut game.commands);
+        game.run_tick(commands);
+    };
+    stop(&mut game);
+    let moves_of = |game: &Game, id: UnitId| -> Vec<Vec2> {
+        game.sim.unit(id).unwrap().orders.iter().filter_map(|o| if let Order::Move(p) = o { Some(Vec2::new(p.x.to_f32(), p.z.to_f32())) } else { None }).collect()
+    };
+    let near = |list: &[Vec2], p: Vec3, r: f32| list.iter().any(|q| q.distance(Vec2::new(p.x, p.z)) <= r);
+    let p1 = spots[0];
+    let p2 = *spots.iter().find(|q| (150.0..300.0).contains(&q.distance(p1))).expect("a place 150 to 300 px off");
+    game.selection = vec![commander];
+    click(&mut game, p1);
+    game.selection = vec![builder];
+    click(&mut game, p2);
+    game.selection = vec![commander, builder];
+    click(&mut game, p1 + Vec3::new(10.0, 0.0, 10.0));
+    assert!(!near(&moves_of(&game, commander), p1, 48.0), "the Commander's own waypoint taken back: {:?}", orders(&game));
+    assert!(near(&moves_of(&game, builder), p2, 2.0), "the other unit's, given apart, kept: {:?}", moves_of(&game, builder));
+    stop(&mut game);
+    let p3 = *spots.iter().find(|q| q.distance(origin) > 300.0).expect("a place for the group");
+    click(&mut game, p3);
+    let place = *moves_of(&game, commander).last().expect("the Commander sent with the group");
+    assert!(!moves_of(&game, builder).is_empty(), "the kbot sent with the group");
+    click(&mut game, Vec3::new(place.x + 5.0, 0.0, place.y));
+    assert!(moves_of(&game, commander).is_empty() && moves_of(&game, builder).is_empty(), "the group's move taken back together: {:?} {:?}", moves_of(&game, commander), moves_of(&game, builder));
+    println!("native take-back: reclaim and move passed");
+}
+
+#[test]
+#[ignore = "needs installed Total Annihilation data and a Windows graphics adapter"]
+#[allow(deprecated)]
+fn native_a_right_click_gives_its_order_and_only_a_drag_turns_the_view() {
+    let install = ta_vfs::install::discover(None).expect("Total Annihilation install");
+    let mut vfs = ta_vfs::Vfs::new();
+    vfs.mount_game_dir(&install.root, "base").unwrap();
+    let event_loop = winit::event_loop::EventLoop::builder().with_any_thread(true).build().unwrap();
+    let window = Arc::new(event_loop.create_window(winit::window::Window::default_attributes()
+        .with_visible(false).with_inner_size(winit::dpi::PhysicalSize::new(1024, 768))).unwrap());
+    let mut renderer = Renderer::new(window, 1024, 768).unwrap();
+    let assets = Assets::load(Arc::new(vfs), Default::default(), &mut renderer, None, None, &Default::default()).unwrap();
+    let mut game = Game::new(&assets, &mut renderer, &GameSetup::duel("Coast To Coast")).unwrap();
+    game.order_button = ta_config::OrderButton::Right;
+    let commander = game.local_commander().unwrap();
+    let origin = Vec3::from_array(game.sim.unit(commander).unwrap().pos.to_f32());
+    let mut camera = Camera::new(Vec2::new(1024.0, 768.0));
+    camera.focus = origin;
+    let mut input = Input::default();
+    input.mouse = Vec2::new(500.0, 400.0);
+    game.selection = vec![commander];
+    game.cursor_override = Some(origin + Vec3::new(-160.0, 0.0, 96.0));
+    let right = |input: &mut Input, state| input.on_event(&WindowEvent::MouseInput { device_id: DeviceId::dummy(), state, button: MouseButton::Right }, false, false);
+    let frame = |game: &mut Game, input: &mut Input| {
+        game.handle_input(input, &camera, &renderer, false);
+        input.end_frame();
+    };
+    // A click whose pointer shakes by 4 px: its order, the view never turning.
+    let count = game.commands.len();
+    right(&mut input, ElementState::Pressed);
+    frame(&mut game, &mut input);
+    input.mouse.x += 4.0;
+    assert!(!input.right_dragging(), "a click's few pixels do not turn the view");
+    frame(&mut game, &mut input);
+    right(&mut input, ElementState::Released);
+    frame(&mut game, &mut input);
+    assert!(game.commands.len() > count && matches!(game.commands.last(), Some(Command::Order { order: Order::Move(_), .. })), "the click's order: {:?}", game.commands.last());
+    // A drag of 40 px: the view turns, and even let go where it began, it gives no order.
+    let count = game.commands.len();
+    right(&mut input, ElementState::Pressed);
+    frame(&mut game, &mut input);
+    input.mouse.x += 40.0;
+    assert!(input.right_dragging(), "a drag turns the view");
+    frame(&mut game, &mut input);
+    input.mouse.x -= 40.0;
+    assert!(input.right_dragging(), "still a drag, back where it began");
+    frame(&mut game, &mut input);
+    right(&mut input, ElementState::Released);
+    assert!(!input.right_dragging());
+    frame(&mut game, &mut input);
+    assert_eq!(game.commands.len(), count, "a drag gives no order");
+    println!("native right button: a click orders, a drag turns the view");
+}
+
+/// Orders given while a single-player battle is paused show at once: the game shows a copy of
+/// itself with them given (the Commander's plan, its next move, its fire orders), while the game
+/// itself is untouched; it takes them at its next tick and plays on exactly as a game given them
+/// without the pause.
+#[test]
+#[ignore = "needs installed Total Annihilation data and a Windows graphics adapter"]
+#[allow(deprecated)]
+fn native_orders_given_while_paused_show_at_once_and_play_on_the_same() {
+    let install = ta_vfs::install::discover(None).expect("Total Annihilation install");
+    let mut vfs = ta_vfs::Vfs::new();
+    vfs.mount_game_dir(&install.root, "base").unwrap();
+    let event_loop = winit::event_loop::EventLoop::builder().with_any_thread(true).build().unwrap();
+    let window = Arc::new(event_loop.create_window(winit::window::Window::default_attributes()
+        .with_visible(false).with_inner_size(winit::dpi::PhysicalSize::new(1024, 768))).unwrap());
+    let mut renderer = Renderer::new(window, 1024, 768).unwrap();
+    let assets = Assets::load(Arc::new(vfs), Default::default(), &mut renderer, None, None, &Default::default()).unwrap();
+    let mut setup = GameSetup::duel("Coast To Coast");
+    for slot in &mut setup.players { slot.controller = Controller::Human; }
+    let mut paused = Game::new(&assets, &mut renderer, &setup).unwrap();
+    let mut straight = Game::new(&assets, &mut renderer, &setup).unwrap();
+    for _ in 0..10 {
+        paused.update(TICK_SECONDS);
+        straight.update(TICK_SECONDS);
+    }
+    assert_eq!(paused.sim.checksum(), straight.sim.checksum());
+    let (me, commander) = (paused.local_player, paused.local_commander().unwrap());
+    let origin = paused.sim.unit(commander).unwrap().pos;
+    let solar = paused.sim.types.id("ARMSOLAR").expect("a solar collector");
+    let site = paused.sim.find_build_site(solar, origin + FxVec3::from_ints(120, 0, 80), 20).unwrap();
+    let orders = [
+        Command::Order { player: me, units: vec![commander], order: Order::Build { type_id: solar, pos: site }, queue: false },
+        Command::Order { player: me, units: vec![commander], order: Order::Move(origin + FxVec3::from_ints(-200, 0, 150)), queue: true },
+        Command::SetStates { player: me, units: vec![commander], fire: Some(0), movement: None },
+    ];
+    paused.set_pace(Some(true), None);
+    paused.update(TICK_SECONDS);
+    let (tick, before) = (paused.sim.tick, paused.sim.checksum());
+    for c in &orders {
+        paused.issue(c.clone());
+    }
+    // Shown at once, and while the battle stays paused.
+    for _ in 0..30 {
+        paused.update(TICK_SECONDS);
+    }
+    assert_eq!(paused.sim.tick, tick, "paused");
+    assert!(paused.held.is_some());
+    let u = paused.sim.unit(commander).unwrap();
+    assert!(matches!(u.orders.front(), Some(Order::Build { .. })) && matches!(u.orders.back(), Some(Order::Move(_))), "the plan and the move after it: {:?}", u.orders);
+    assert_eq!(u.fire_state, 0, "hold fire at once");
+    assert!(paused.idle_builders().is_empty(), "the Commander is no longer idle");
+    assert_eq!(paused.held.as_ref().unwrap().checksum(), before, "the game itself is untouched");
+    // Going on: given at the next tick, as to the game given them without a pause.
+    paused.set_pace(Some(false), None);
+    for c in &orders {
+        straight.issue(c.clone());
+    }
+    for _ in 0..60 {
+        paused.update(TICK_SECONDS);
+    }
+    assert!(paused.held.is_none());
+    while straight.sim.tick < paused.sim.tick {
+        straight.update(TICK_SECONDS);
+    }
+    assert_eq!(straight.sim.tick, paused.sim.tick);
+    assert_eq!(paused.sim.checksum(), straight.sim.checksum(), "the paused battle plays on as the other");
+    assert_eq!(paused.record.snapshot(), straight.record.snapshot(), "and its record has the orders at the same tick");
+    println!("native paused orders: shown at once, the game untouched, played on the same");
+}
+
+/// Multiplayer: a player's orders given while the battle is paused show on their screen at once
+/// (they wait at the host for the next tick), the others' games untouched; once it goes on every
+/// machine has them at the same tick and stays identical.
+#[test]
+#[ignore = "needs installed Total Annihilation data and a Windows graphics adapter"]
+#[allow(deprecated)]
+fn native_multiplayer_orders_given_while_paused_show_at_once() {
+    use std::time::{Duration, Instant};
+    use ta_net::{Client, Host, Session};
+
+    let install = ta_vfs::install::discover(None).expect("Total Annihilation install");
+    let mut vfs = ta_vfs::Vfs::new();
+    vfs.mount_game_dir(&install.root, "base").unwrap();
+    let event_loop = winit::event_loop::EventLoop::builder().with_any_thread(true).build().unwrap();
+    let window = Arc::new(event_loop.create_window(winit::window::Window::default_attributes()
+        .with_visible(false).with_inner_size(winit::dpi::PhysicalSize::new(1024, 768))).unwrap());
+    let mut renderer = Renderer::new(window, 1024, 768).unwrap();
+    let assets = Assets::load(Arc::new(vfs), Default::default(), &mut renderer, None, None, &Default::default()).unwrap();
+    let mut host = Host::bind(0, assets.data_hash).unwrap();
+    let mut client = Client::connect(([127, 0, 0, 1], host.port).into(), "Guest", assets.data_hash).unwrap();
+    let wait = |done: &mut dyn FnMut() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done() {
+            assert!(Instant::now() < deadline, "network event did not arrive");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    wait(&mut || { host.poll(); client.poll(); client.peer.is_some() });
+    let slot = |peer, name: &str, color| ta_net::LobbySlot {
+        kind: ta_net::SlotKind::Human { peer, name: name.into() }, side: "ARM".into(), color, team: color, ready: true,
+    };
+    let info = ta_net::StartInfo { map: "Painted Desert".into(), seed: 7,
+        slots: vec![slot(0, "Host", 0), slot(client.peer.unwrap(), "Guest", 1)],
+        spectators: Vec::new(), rules: Default::default() };
+    let setup = |player| {
+        let mut setup = GameSetup::duel(&info.map);
+        setup.seed = info.seed;
+        setup.local_player = Some(player);
+        for slot in &mut setup.players { slot.side = "ARM".into(); slot.controller = Controller::Human; }
+        setup
+    };
+    let mut host_game = Game::new(&assets, &mut renderer, &setup(0)).unwrap();
+    let mut guest = Game::new(&assets, &mut renderer, &setup(1)).unwrap();
+    host_game.net = Some(Session::host(host, &info));
+    guest.net = Some(Session::client(client, 1).with_roster(&info));
+    // A few ticks in, then paused, every sealed tick through.
+    for _ in 0..15 {
+        host_game.update(TICK_SECONDS);
+    }
+    host_game.set_pace(Some(true), None);
+    wait(&mut || {
+        guest.update(TICK_SECONDS);
+        guest.paused && guest.sim.tick == host_game.sim.tick
+    });
+    let commander = guest.local_commander().unwrap();
+    let before = guest.sim.checksum();
+    let there = guest.sim.unit(commander).unwrap().pos + FxVec3::from_ints(160, 0, 96);
+    guest.issue(Command::Order { player: 1, units: vec![commander], order: Order::Move(there), queue: false });
+    guest.issue(Command::SetStates { player: 1, units: vec![commander], fire: Some(0), movement: None });
+    // Shown on the guest's screen at once, and as long as the pause lasts; nobody's game touched.
+    for _ in 0..20 {
+        guest.update(TICK_SECONDS);
+        host_game.update(TICK_SECONDS);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(guest.paused && guest.held.is_some());
+    let u = guest.sim.unit(commander).unwrap();
+    assert!(matches!(u.orders.front(), Some(Order::Move(p)) if *p == there) && u.fire_state == 0, "{:?}", u.orders);
+    assert_eq!(guest.held.as_ref().unwrap().checksum(), before, "the guest's game itself is untouched");
+    assert_eq!(host_game.sim.checksum(), before, "the host's has not had them");
+    assert!(host_game.sim.unit(commander).unwrap().orders.is_empty());
+    // Going on: the orders come back in the next tick's bundle, and every machine has them.
+    host_game.set_pace(Some(false), None);
+    let resumed = host_game.sim.tick;
+    wait(&mut || {
+        host_game.update(TICK_SECONDS);
+        guest.update(TICK_SECONDS);
+        guest.sim.tick >= resumed + 30 && host_game.sim.tick >= resumed + 30
+    });
+    assert!(guest.held.is_none() && guest.in_flight.is_empty(), "back from the host");
+    while guest.sim.tick < host_game.sim.tick {
+        guest.update(TICK_SECONDS);
+    }
+    while host_game.sim.tick < guest.sim.tick {
+        host_game.update(TICK_SECONDS);
+    }
+    assert_eq!(guest.sim.tick, host_game.sim.tick);
+    assert_eq!(guest.sim.checksum(), host_game.sim.checksum(), "identical machines");
+    assert_eq!(host_game.sim.unit(commander).unwrap().fire_state, 0, "the host has the guest's orders");
+    println!("native multiplayer paused orders: shown at once, the same on every machine");
 }

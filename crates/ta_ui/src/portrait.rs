@@ -19,7 +19,8 @@ pub fn read_from(file: &Path) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     std::fs::File::open(file).map_err(|e| e.to_string())?
         .take(16 * 1024 * 1024 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-    ta_config::profiles::normalize_avatar(&bytes).map_err(|e| e.to_string())
+    // (What a picture is refused for, in the player's language.)
+    ta_config::profiles::normalize_avatar(&bytes).map_err(|e| crate::profiles::error_text(&e))
 }
 
 /// Takes `file` (PNG or JPEG) as the current player's picture.
@@ -27,7 +28,7 @@ pub fn set_from(file: &Path) -> Result<(), String> {
     let bytes = read_from(file)?;
     if let Some(id) = ta_config::profiles::current_profile_id() {
         ta_config::profiles::ProfileStore::open(ta_config::config_dir())
-            .and_then(|store| store.set_avatar(&id, &bytes)).map_err(|e| e.to_string())?;
+            .and_then(|store| store.set_avatar(&id, &bytes)).map_err(|e| crate::profiles::error_text(&e))?;
     } else {
         let target = path();
         if let Some(dir) = target.parent() { std::fs::create_dir_all(dir).map_err(|e| e.to_string())?; }

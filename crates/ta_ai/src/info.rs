@@ -14,9 +14,11 @@ pub(crate) enum Role {
     Defense,
     /// Static weapon that can only engage aircraft.
     AntiAir,
-    /// Strategic missile launcher (stockpiled, command-fired, interceptable).
+    /// Missile launcher (stockpiled, command-fired, interceptable): TA's strategic silos, a mod's
+    /// tactical launchers too (`TypeInfo::silo_classes`).
     Silo,
-    /// Anti-missile defence.
+    /// Anti-missile defence against what strategic silos fire (an interceptor of the strategic
+    /// class: `ta_sim::STRATEGIC_CLASS`).
     AntiNuke,
     Storage,
     Builder,
@@ -72,8 +74,14 @@ pub(crate) struct TypeInfo {
     /// Metal per second made from energy, and the energy per second that costs.
     pub makes_metal: Fx,
     pub maker_upkeep: Fx,
-    /// Anti-missile coverage radius.
+    /// Anti-missile coverage radius, the classes of missiles it takes there
+    /// (`WeaponDef::interceptor_classes`), and whether it takes them from a stock (else at its
+    /// reload, as many as come: a tactical defence).
     pub coverage: Option<Fx>,
+    pub cover_classes: u32,
+    pub cover_unstocked: bool,
+    /// A silo's missiles' classes (`WeaponDef::targetable_classes`; 0 for any other unit).
+    pub silo_classes: u32,
     pub worker: Fx,
     pub speed: Fx,
     /// Transports: how many units fit aboard (0: not a transport).
@@ -153,7 +161,7 @@ fn basic_role(sim: &Sim, t: &UnitType) -> Role {
             if sim.types.makes_units(t) { Role::Factory } else { Role::Other }
         } else if weapons.iter().any(|w| w.def.stockpile && w.def.command_fire && w.def.targetable) {
             Role::Silo
-        } else if weapons.iter().any(|w| w.def.interceptor) {
+        } else if weapons.iter().any(|w| w.def.interceptor_classes() & ta_sim::STRATEGIC_CLASS != 0) {
             Role::AntiNuke
         } else if weapons.iter().any(|w| hits_air(w)) && (prefers_air(sim, t) || !weapons.iter().any(|w| hits_ground(w))) {
             Role::AntiAir
@@ -205,6 +213,13 @@ pub(crate) fn classify(sim: &Sim) -> Vec<TypeInfo> {
             let kind = if role == Role::Factory { factory_kind(sim, t) } else { t.locomotion };
             let spec = matches!(t.locomotion, Locomotion::Ground | Locomotion::Hover | Locomotion::Naval).then(|| MoveSpec::for_type(t, &sim.data.move_classes));
             let coverage = weapons.iter().map(|w| w.interceptor_coverage()).max().filter(|&r| r > Fx::ZERO);
+            let cover_classes = weapons.iter().fold(0, |c, w| c | w.def.interceptor_classes());
+            let cover_unstocked = weapons.iter().any(|w| w.def.interceptor && !w.def.stockpile);
+            let silo_classes = if role == Role::Silo {
+                weapons.iter().filter(|w| w.def.stockpile && w.def.command_fire).fold(0, |c, w| c | w.def.targetable_classes())
+            } else {
+                0
+            };
             let worth = if t.def.is_commander && ground_dps > 0 {
                 // (Ordinary units are worth about 3,000 of `value` per point of cost.)
                 (ground_dps as i128 * hp as i128 * (300 + range.min(1200)) as i128 / 300 / 3000).max(100).min(cost as i128) as i64
@@ -236,6 +251,9 @@ pub(crate) fn classify(sim: &Sim) -> Vec<TypeInfo> {
                 makes_metal: if role == Role::MetalMaker { t.makes_metal * 30 } else { Fx::ZERO },
                 maker_upkeep: if role == Role::MetalMaker { t.energy_use * 30 } else { Fx::ZERO },
                 coverage,
+                cover_classes,
+                cover_unstocked,
+                silo_classes,
                 worker: t.worker_rate * 30,
                 speed: t.max_speed,
                 transport: if t.locomotion != Locomotion::Static && !t.is_builder { t.transport_capacity } else { 0 },

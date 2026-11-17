@@ -9,6 +9,7 @@ use egui::{Color32, Rect, RichText, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use ta_config::achievements::{self, Achievement, Category, Tier};
 use ta_config::profiles::{Career, MatchMode};
 
+use super::pictures::Picture;
 use crate::badges::{self, Look};
 use crate::i18n::{grouped, n, t, tf};
 use crate::theme::*;
@@ -28,6 +29,9 @@ pub struct AchievementsView {
     pub sort: Sort,
     pub query: String,
     pub selected: Option<&'static str>,
+    /// Laid out at its own height, in a page that scrolls whole (a short window, a large
+    /// interface): the list and a page have no scroll of their own then.
+    pub(super) natural: bool,
 }
 
 /// What the list is drawn from: a career, and where its pictures are.
@@ -52,8 +56,9 @@ impl AchievementsView {
         }
         let career = record.career;
         // On a short page the choices take one row of drop-down lists, and the list keeps the
-        // rest; otherwise they stay in sight above it, and the summary scrolls with it.
-        let compact = ui.available_height() < 320.0;
+        // rest; otherwise they stay in sight above it, and the summary scrolls with it. (A page
+        // that scrolls whole has room for them all.)
+        let compact = !self.natural && ui.available_height() < 320.0;
         let categories = [(None, n("ALL")), (Some(Category::Campaign), badges::category_label(Category::Campaign)),
             (Some(Category::Skirmish), badges::category_label(Category::Skirmish)), (Some(Category::Multiplayer), badges::category_label(Category::Multiplayer)),
             (Some(Category::Battle), badges::category_label(Category::Battle)), (Some(Category::Industry), badges::category_label(Category::Industry)),
@@ -82,32 +87,39 @@ impl AchievementsView {
             }
         }
         let list = self.list(career);
-        let area = egui::ScrollArea::vertical().id_salt("achievement_results").max_height(ui.available_height().max(96.0))
-            .min_scrolled_height(96.0).auto_shrink([false, false]);
-        crate::scroll::show(ui, area, crate::scroll::Behind::Plate, |ui| {
-            if !compact {
-                summary(ui, career);
-                self.recent(ui, career);
-            }
-            if list.is_empty() {
-                widgets::card(ui, |ui| {
-                    ui.add(egui::Label::new(RichText::new(t("No achievements match your filters.")).font(strong(17.0)).color(TEXT_BRIGHT)).wrap());
-                    ui.add(egui::Label::new(RichText::new(t("Try another search or show locked achievements too.")).color(STEEL)).wrap());
-                });
-            }
-            let columns = if ui.available_width() >= 600.0 { 2 } else { 1 };
-            let gap = 8.0;
-            let width = (ui.available_width() - gap * (columns - 1) as f32) / columns as f32;
-            for row in list.chunks(columns) {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = gap;
-                    for a in row {
-                        if card(ui, a, career, width).clicked() { self.selected = Some(a.id); }
-                    }
-                });
-            }
-        });
+        if self.natural {
+            self.results(ui, career, &list, compact);
+        } else {
+            let area = egui::ScrollArea::vertical().id_salt("achievement_results").max_height(ui.available_height().max(96.0))
+                .min_scrolled_height(96.0).auto_shrink([false, false]);
+            crate::scroll::show(ui, area, crate::scroll::Behind::Plate, |ui| self.results(ui, career, &list, compact));
+        }
         None
+    }
+
+    /// The summary and the latest earned (unless `compact`), and the cards of `list`.
+    fn results(&mut self, ui: &mut Ui, career: &Career, list: &[&'static Achievement], compact: bool) {
+        if !compact {
+            summary(ui, career);
+            self.recent(ui, career);
+        }
+        if list.is_empty() {
+            widgets::card(ui, |ui| {
+                ui.add(egui::Label::new(RichText::new(t("No achievements match your filters.")).font(strong(17.0)).color(TEXT_BRIGHT)).wrap());
+                ui.add(egui::Label::new(RichText::new(t("Try another search or show locked achievements too.")).color(STEEL)).wrap());
+            });
+        }
+        let columns = if ui.available_width() >= 600.0 { 2 } else { 1 };
+        let gap = 8.0;
+        let width = (ui.available_width() - gap * (columns - 1) as f32) / columns as f32;
+        for row in list.chunks(columns) {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                for a in row {
+                    if card(ui, a, career, width).clicked() { self.selected = Some(a.id); }
+                }
+            });
+        }
     }
 
     /// The achievements shown: filtered, searched and sorted.
@@ -204,9 +216,7 @@ impl AchievementsView {
             }
         });
         if self.selected.is_none() { return action; }
-        let area = egui::ScrollArea::vertical().id_salt(("achievement_page", a.id)).max_height(ui.available_height().max(96.0))
-            .auto_shrink([false, false]);
-        crate::scroll::show(ui, area, crate::scroll::Behind::Plate, |ui| {
+        let body = |ui: &mut Ui| {
             let wide = ui.available_width() >= 420.0;
             let size = if wide { 128.0 } else { 96.0 };
             let (name, description) = shown_text(a, earned);
@@ -236,7 +246,14 @@ impl AchievementsView {
             } else if secret {
                 quiet(ui, t("This achievement is a secret until you earn it."));
             }
-        });
+        };
+        if self.natural {
+            body(ui);
+        } else {
+            let area = egui::ScrollArea::vertical().id_salt(("achievement_page", a.id)).max_height(ui.available_height().max(96.0))
+                .auto_shrink([false, false]);
+            crate::scroll::show(ui, area, crate::scroll::Behind::Plate, body);
+        }
         action
     }
 }
@@ -400,7 +417,7 @@ fn moment(ui: &mut Ui, a: &Achievement, record: &Record) {
     }
     let picture = record.folder.filter(|_| record.pictures.contains(a.id)).map(|dir| dir.join(format!("{}.jpg", a.id)));
     match picture.as_deref().map(|path| super::pictures::texture(ui.ctx(), path)) {
-        Some(Some(texture)) => {
+        Some(Picture::Ready(texture)) => {
             let [w, h] = texture.size();
             let width = ui.available_width();
             let height = width * h as f32 / w.max(1) as f32;
@@ -409,12 +426,14 @@ fn moment(ui: &mut Ui, a: &Achievement, record: &Record) {
             ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, LINE_HI), StrokeKind::Inside);
             response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, t("The battle the moment it was earned")));
         }
-        Some(None) => {
+        Some(Picture::Reading) => {
             let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ui.available_width() * 9.0 / 16.0), Sense::hover());
             ui.painter().rect_filled(rect, 2.0, BG_DEEP);
             let bar = Rect::from_center_size(rect.center(), vec2(rect.width() * 0.4, 10.0));
             crate::progress::paint(ui, bar, None, true);
         }
+        // (Damaged, or not a picture: said, rather than left loading.)
+        Some(Picture::Failed) => quiet(ui, t("The picture of this moment could not be read: it may be damaged.")),
         None if unlock.is_some_and(|u| u.earlier) => quiet(ui, t("Earned from your service record: no picture of this moment.")),
         None => quiet(ui, t("No picture of this moment.")),
     }
@@ -427,6 +446,46 @@ fn quiet(ui: &mut Ui, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A moment's picture that cannot be read (damaged, not a picture) is said to be so, and
+    /// nothing is left loading (nor drawing a frame after frame for it).
+    #[test]
+    fn a_picture_that_cannot_be_read_is_said_not_left_loading() {
+        let dir = std::env::temp_dir().join(format!("ta_ui_broken_picture_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("career_kills_1.jpg"), b"\xff\xd8 not a picture").unwrap();
+        let mut career = Career { kills: 1, ..Default::default() };
+        career.achievements.insert("career_kills_1".into(), 10);
+        let pictures: BTreeSet<String> = ["career_kills_1".to_string()].into();
+        let record = Record { career: &career, showcase: &[], pictures: &pictures, folder: Some(&dir) };
+        let mut view = AchievementsView { selected: Some("career_kills_1"), ..Default::default() };
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        crate::motion::set_reduced(&ctx, true);
+        fn has_text(shape: &egui::Shape, wanted: &str) -> bool {
+            match shape {
+                egui::Shape::Text(text) => text.galley.text() == wanted,
+                egui::Shape::Vec(shapes) => shapes.iter().any(|s| has_text(s, wanted)),
+                _ => false,
+            }
+        }
+        let start = std::time::Instant::now();
+        let (mut said, mut frames_said, mut delay) = (false, 0, std::time::Duration::ZERO);
+        for frame in 0.. {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 600.0))), time: Some(frame as f64 * 0.1), ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| { view.show(ui, &record); });
+            output.textures_delta.clear();
+            said = output.shapes.iter().any(|s| has_text(&s.shape, "The picture of this moment could not be read: it may be damaged."));
+            delay = output.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+            frames_said = if said { frames_said + 1 } else { 0 };
+            // (A few frames more, for what eases in as any page opens.)
+            if frames_said >= 20 || start.elapsed().as_secs() > 20 { break; }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(said, "the failed picture is said");
+        assert!(delay > std::time::Duration::from_secs(1), "nothing is left loading: {delay:?}");
+    }
 
     #[test]
     fn numbers_are_grouped_and_hours_shown_as_hours() {

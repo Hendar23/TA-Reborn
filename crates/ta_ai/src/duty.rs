@@ -893,9 +893,11 @@ impl SkirmishAi {
             if !d.reclaimable || d.is_metal_deposit() || d.geothermal || plan.claimed(b.id, Claim::Reclaim(i)) || self.enemy_ground(f.pos) {
                 continue;
             }
-            let left = Fx::ONE - f.reclaimed;
-            let metal = if metal_full { 0 } else { (Fx::from_f64(d.metal) * left).to_int() };
-            let energy = if energy_full { 0 } else { (Fx::from_f64(d.energy) * left).to_int() };
+            // (All of its metal and energy come when it is reclaimed whole, however far along
+            // it is; a wreck's metal alone: `Sim::reclaim_value`.)
+            let (metal, energy) = sim.reclaim_value(f.def);
+            let metal = if metal_full { 0 } else { metal.to_int() };
+            let energy = if energy_full { 0 } else { energy.to_int() };
             let worth = metal * 4 + energy;
             if worth < 8 || !plan.free(f.pos, fx(8)) || self.unreachable_feature(i) || self.threat.at(f.pos) > 0 || !sim.explored(me, f.pos) {
                 continue;

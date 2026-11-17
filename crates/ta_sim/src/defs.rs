@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
+use ta_data::unit::{MAX_WEAPONS, WeaponFunction};
 use ta_data::{GameData, UnitDef};
 use ta_formats::cob::CobScript;
 use ta_formats::model3do::Model3do;
@@ -97,12 +98,20 @@ pub struct Callins {
     pub target_cleared: bool,
     /// Builders: the piece the nano spray leaves from (factories alternate between two).
     pub query_nano_piece: bool,
+    /// The names its script gives its weapons' functions, by slot and [`WeaponFunction`]: TA's
+    /// (`AimPrimary`) or Spring's (`AimWeapon1`), whichever it defines (TA's where neither).
+    pub weapon_functions: [[&'static str; 4]; MAX_WEAPONS],
 }
 
 impl Callins {
     fn of(script: Option<&CobProgram>) -> Callins {
         let has = |name: &str| script.is_some_and(|s| s.function(name).is_some());
+        let weapon = |f: WeaponFunction, slot: usize| {
+            let [ta, numbered] = f.names(slot);
+            if !has(ta) && has(numbered) { numbered } else { ta }
+        };
         Callins {
+            weapon_functions: std::array::from_fn(|slot| WeaponFunction::ALL.map(|f| weapon(f, slot))),
             set_speed: has("SetSpeed"),
             set_direction: has("SetDirection"),
             set_max_reload_time: has("SetMaxReloadTime"),
@@ -187,6 +196,9 @@ pub struct UnitType {
     pub cruise_alt: Fx,
     /// Naval model depth below its surface movement anchor (WaterLine).
     pub waterline: Fx,
+    /// One of TA's underwater buildings, standing on the sea bed (`UnitDef::stands_on_sea_bed`):
+    /// wholly under the water wherever the water covers its base (`Sim::submerged_at`).
+    pub on_sea_bed: bool,
     pub build_time: Fx,
     /// The work it takes to build one: its build time in worker-time ticks (`BuildTime` × 30,
     /// raw 16.16), which builders do [`UnitType::work_rate`] of a tick. Whole numbers, so
@@ -202,7 +214,8 @@ pub struct UnitType {
     pub build_distance: Fx,
     pub sight: Fx,
     pub radar: Fx,
-    pub weapons: [Option<usize>; 3],
+    /// Its weapons by slot (TA's units fill the first three at most).
+    pub weapons: [Option<usize>; MAX_WEAPONS],
     /// It builds missiles to launch (a `stockpile` weapon: nuclear silos, anti-missile
     /// defences).
     pub stockpile: bool,
@@ -240,7 +253,14 @@ pub struct UnitType {
     /// never shoot tanks), its other armed units VTOL, the cruisers' depth charges NOTSUB. (Empty
     /// for a weapon whose bad targets are every unit a player can field that it could hit:
     /// `lift_bad_targets_of_everything`.)
-    pub weapon_bad_masks: [CategorySet; 3],
+    pub weapon_bad_masks: [CategorySet; MAX_WEAPONS],
+    /// Whether each weapon's bad targets are its own (`wpri_`, `wsec_`, `wspe_badTargetCategory`,
+    /// or a mod's `BadTargetCategory<n>`), not the unit's `BadTargetCategory`: TA's files give a
+    /// weapon its own where its role is not the unit's (a laser boat's, a tank's, a missile
+    /// ship's or a bomber's anti-air missiles or laser, `NOTAIR`; a destroyer's or cruiser's depth
+    /// charges, `NOTSUB`). Such a weapon past the first keeps to its own targets on an attack
+    /// order naming one of them (`Sim::keeps_to_own_targets`).
+    pub own_bad_targets: [bool; MAX_WEAPONS],
     /// What it never goes after (`NoChaseCategory`: TA's ground units list VTOL).
     pub no_chase_mask: CategorySet,
     /// Gunships: aircraft that hover at range while attacking.
@@ -252,7 +272,14 @@ pub struct UnitType {
     /// A big walker (see [`big_walker`]): it stands level whatever the ground under it, as
     /// TA's `Upright=1` units do ([`UnitType::level`]).
     pub big_walker: bool,
+    /// It mends itself (TA's `HealTime`, its Commanders' 27): the ticks it takes to regain
+    /// [`HEAL_POINTS`] hit points, `HealTime` seconds; 0, it doesn't (`Sim::heal_units`).
+    pub heal_ticks: u64,
 }
+
+/// What a unit that mends itself regains every `HealTime` seconds (its [`UnitType::heal_ticks`]):
+/// TA's Commander, with `HealTime=27`, was measured mending 100 hit points in 27 seconds.
+pub const HEAL_POINTS: Fx = Fx::from_int(100);
 
 /// Walkers at least this tall (px: the highest point of their model at rest) are big walkers.
 /// TA's own walkers that the ground tilts (those without `Upright=1`) are 32 px tall at most
@@ -334,6 +361,8 @@ pub struct UnitTypes {
     pub(crate) airbase_reach: Fx,
     pub(crate) collision_reach: Fx,
     pub(crate) target_reach: Fx,
+    /// Whether any type mends itself ([`UnitType::heal_ticks`]).
+    pub(crate) heals: bool,
     by_name: FxHashMap<String, usize>,
     /// Upper-case `Category` token → its number in a [`CategorySet`].
     categories: FxHashMap<String, usize>,
@@ -404,7 +433,7 @@ impl UnitTypes {
                 (yard_blocking(&u.yard_map, fp, false), yard_blocking(&u.yard_map, fp, true))
             };
             let build_time = Fx::from_f64(u.build_time);
-            let weapons: [Option<usize>; 3] = std::array::from_fn(|i| u.weapons[i].as_deref().and_then(|w| data.weapon_id(w)));
+            let weapons: [Option<usize>; MAX_WEAPONS] = std::array::from_fn(|i| u.weapons[i].as_deref().and_then(|w| data.weapon_id(w)));
             let move_class = data.move_classes.iter().position(|m| m.name == u.movement_class);
             let big_walker = big_walker(u, &model, move_class.map(|c| &data.move_classes[c]), locomotion);
             // A unit builds with build power (`WorkerTime`): what its menu offers, whatever its
@@ -437,6 +466,7 @@ impl UnitTypes {
                 turn_rate: (u.turn_rate.max(1.0) as i32).min(32768),
                 cruise_alt: Fx::from_f64(u.cruise_alt),
                 waterline: if locomotion == Locomotion::Naval { Fx::from_f64(u.water_line.max(0.0)) } else { Fx::ZERO },
+                on_sea_bed: locomotion == Locomotion::Static && u.stands_on_sea_bed(),
                 build_time,
                 build_work: (build_time.0.max(1) as u64).saturating_mul(TICKS_PER_SECOND as u64),
                 cost_metal: Fx::from_f64(u.build_cost_metal),
@@ -472,11 +502,14 @@ impl UnitTypes {
                     "" => token_set(&categories, target_tags(u, &u.bad_target_category)),
                     list => token_set(&categories, target_tags(u, list)),
                 }),
+                own_bad_targets: std::array::from_fn(|k| !u.weapon_bad_target_category[k].trim().is_empty()),
                 no_chase_mask: token_set(&categories, target_tags(u, &u.no_chase_category)),
                 hover_attack: u.hover_attack,
                 transport_capacity: if u.transport_capacity == 0 { 0 } else if locomotion == Locomotion::Air { 1 } else { u.transport_capacity },
                 transport_size: u.transport_size,
                 big_walker,
+                // (`HealTime` seconds, in ticks: at least one; none, or none given, no mending.)
+                heal_ticks: if u.heal_time > 0.0 { ((u.heal_time * TICKS_PER_SECOND as f64).round() as u64).max(1) } else { 0 },
                 def: u.clone(),
             });
         }
@@ -485,7 +518,8 @@ impl UnitTypes {
         let airbase_reach = types.iter().filter(|t| t.def.is_airbase).map(|t| t.radius + Fx::from_int(24)).max().unwrap_or(Fx::ZERO);
         let collision_reach = types.iter().map(UnitType::collision_radius).max().unwrap_or(Fx::ZERO);
         let target_reach = types.iter().map(|t| t.radius).max().unwrap_or(Fx::ZERO);
-        UnitTypes { types, by_name, categories, airbase_reach, collision_reach, target_reach }
+        let heals = types.iter().any(|t| t.heal_ticks > 0);
+        UnitTypes { types, by_name, categories, airbase_reach, collision_reach, target_reach, heals }
     }
 
     pub fn get(&self, id: usize) -> &UnitType {
@@ -699,7 +733,7 @@ fn lift_bad_targets_of_everything(types: &mut [UnitType], data: &GameData) {
     let lifted: Vec<(usize, usize)> = types
         .iter()
         .enumerate()
-        .flat_map(|(i, t)| (0..3).map(move |k| (i, k, t)))
+        .flat_map(|(i, t)| (0..MAX_WEAPONS).map(move |k| (i, k, t)))
         .filter(|&(_, k, t)| !t.weapon_bad_masks[k].is_empty())
         .filter_map(|(i, k, t)| {
             let (air, ground) = reach(&data.weapons[t.weapons[k]?]);
@@ -738,12 +772,18 @@ impl WeaponTypes {
                 // Missiles self-destruct after `flighttime`; on vertically launched missiles
                 // `weapontimer` is the climb before guidance starts (gathering speed from their
                 // start speed), elsewhere it doubles as the lifetime. Other projectiles fly until they have covered their range.
+                // A torpedo runs at least that far too: TA's say a `weapontimer` of 3 s at 85 to
+                // 110 px a second, against ranges of 375 to 650 (the submarines' 400, the advanced
+                // torpedo launchers' 600 and 650), and died two fifths to three quarters of the way
+                // to the end of their range.
+                let covers_range = (((w.range / (w.velocity / tps).max(0.5)) * 1.6) as u32).saturating_add(10);
                 let flight_ticks = if w.flight_time > 0.0 {
                     (w.flight_time * tps) as u32
                 } else if w.weapon_timer > 0.0 && !w.vlaunch {
-                    (w.weapon_timer * tps) as u32
+                    let timer = (w.weapon_timer * tps) as u32;
+                    if torpedo { timer.max(covers_range) } else { timer }
                 } else {
-                    (((w.range / (w.velocity / tps).max(0.5)) * 1.6) as u32).saturating_add(10)
+                    covers_range
                 };
                 let launch_ticks = if w.vlaunch { (w.weapon_timer.max(0.4) * tps) as u32 } else { 0 };
                 WeaponType {

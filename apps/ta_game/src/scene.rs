@@ -687,6 +687,8 @@ pub struct Remnant {
     pub model: ModelId,
     /// World matrices of its pieces as last drawn (hidden pieces zero).
     pub pieces: Vec<Mat4>,
+    /// Where it stood, faced and leant at the last tick (its pieces' root).
+    pub root: Mat4,
     /// Its velocity at the end (world units a second).
     pub velocity: Vec3,
     pub team: u32,
@@ -722,6 +724,9 @@ pub struct Scene {
     pub hide_near: Option<(UnitId, Vec3, f32)>,
     /// Walkers' gaits, read from their scripts (see [`walk`]).
     walk: walk::Gaits,
+    /// Unit type id → its model's deaths (`objects3d/<name>.anims`' `death` clips: ta_formats'
+    /// `anims`), played where one dies (`effects_remains.rs`).
+    deaths: HashMap<usize, std::sync::Arc<Vec<ta_formats::anims::Clip>>>,
     /// Unit type id → its guns that recoil, and its pieces' faces (see [`recoil`]).
     guns: HashMap<usize, std::sync::Arc<recoil::Guns>>,
     /// The camera of the frame being drawn: walkers too small on it keep their scripts' walk.
@@ -802,9 +807,24 @@ impl Scene {
             {
                 ta_render::model::lift_ground_pads(m);
             }
+            // (A model with a surface of its own: ta_formats::surface.)
+            let surface = parsed.as_ref().map_or(ModelSurface::None, |m| surface_for(load, &object, m));
             if let Some(m) = &parsed {
                 self.bounds.insert(t.id, std::sync::Arc::new(PieceBounds::of(m)));
                 self.walk.add_model(t, m);
+                // Its clips (a mod's model's own movements: ta_formats::anims): a walk, played in
+                // place of its script's, and deaths.
+                if let Some(anims) = model_anims(load, &object, m) {
+                    if t.locomotion == Locomotion::Ground
+                        && let Some(walk) = anims.clip("walk")
+                    {
+                        self.walk.add_walk_clip(t, walk.clone());
+                    }
+                    let deaths: Vec<_> = anims.deaths().filter(|c| !c.times.is_empty()).cloned().collect();
+                    if !deaths.is_empty() {
+                        self.deaths.insert(t.id, std::sync::Arc::new(deaths));
+                    }
+                }
                 if t.locomotion == Locomotion::Ground {
                     // (The walkers' feet, for their prints: what their scripts hide once they
                     // are built, a second body for an upgrade, a gun until it fires, is none.)
@@ -827,8 +847,22 @@ impl Scene {
                 }
             }
             let ids = parsed.map(|m| {
-                let own = models.library.add_unit(&t.def.name, &object, &m, &models.textures, palette);
-                let enemy = models.library.add_unit_for_side(&t.def.name, &object, &m, &models.textures, palette, true);
+                let (own, enemy) = match &surface {
+                    // (Its own paint, for every player: no skins, no kit.)
+                    ModelSurface::Own(surface) => {
+                        let id = add_surfaced(models, load, &object, &m, surface, palette);
+                        (id, id)
+                    }
+                    // (A surface that is no use: its faces as TA draws them, for every player.)
+                    ModelSurface::Unfit => {
+                        let id = models.library.add_plain(&object, &m, &models.textures, palette);
+                        (id, id)
+                    }
+                    ModelSurface::None => (
+                        models.library.add_unit(&t.def.name, &object, &m, &models.textures, palette),
+                        models.library.add_unit_for_side(&t.def.name, &object, &m, &models.textures, palette, true),
+                    ),
+                };
                 // Cosmetic variants share the repaired source geometry used for ground contact.
                 self.surfaces.insert(t.id, PieceSurface::of_render(&models.library, own));
                 // (And for the room its guns have to recoil in: the faces as drawn.)
@@ -840,6 +874,14 @@ impl Scene {
             });
             self.models.insert(t.id, ids.map(|ids| ids.0));
             self.enemy_models.insert(t.id, ids.map(|ids| ids.1));
+        }
+    }
+
+    /// The game's files for the paint of the models with surfaces of their own, read as their
+    /// models are first drawn (ta_render's `surfaced.rs`).
+    pub fn read_surfaces_from(renderer: &mut Renderer, vfs: std::sync::Arc<ta_vfs::Vfs>) {
+        if let Some(models) = renderer.models.as_mut() {
+            models.surfaces.set_loader(std::sync::Arc::new(move |path: &str| vfs.read_opt(path)));
         }
     }
 
@@ -914,7 +956,7 @@ impl Scene {
                 && !v.matrices.is_empty()
             {
                 let velocity = if v.motion.body == Body::Still { Vec3::ZERO } else { v.motion.vel / TICK };
-                self.departed.insert(v.id, Remnant { model, pieces: v.matrices, velocity, team: v.team, flying: v.motion.flying });
+                self.departed.insert(v.id, Remnant { model, pieces: v.matrices, root: v.cur.matrix(), velocity, team: v.team, flying: v.motion.flying });
             }
         }
         // Every unit's pose, motion and hits, each its own (on all cores for a big battle); the
@@ -1059,6 +1101,11 @@ impl Scene {
         self.departed.remove(&id)
     }
 
+    /// A unit type's model's deaths (its `death` clips), if it has any.
+    pub fn death_clips(&self, type_id: usize) -> Option<std::sync::Arc<Vec<ta_formats::anims::Clip>>> {
+        self.deaths.get(&type_id).cloned()
+    }
+
     /// Interpolated world position of a unit (for selection, UI anchors).
     pub fn unit_position(&self, id: UnitId, alpha: f32) -> Option<Vec3> {
         self.visual(id).map(|v| Pose::lerp(v.prev, v.cur, alpha).pos)
@@ -1196,7 +1243,7 @@ impl Scene {
             let build = self.build_shown.get(&u.id).map_or(u.build_progress.to_f32(), |&(before, now)| before + (now - before) * alpha);
             // Its animated textures play where its script lets them (TA's `dont-cache`).
             let playing = u.textures_playing(t);
-            out.push(DrawInstance { model, pieces: &v.matrices, team: color, flags, build, damage, piece: None, travel, playing });
+            out.push(DrawInstance { model, pieces: &v.matrices, team: color, flags, build, damage, piece: None, travel, playing, key: DrawInstance::unit_key(u.id.slot, u.id.generation) });
         }
         out
     }
@@ -1262,6 +1309,30 @@ fn local_rotation(turns: [f32; 3]) -> Quat {
     Quat::from_rotation_y(turns[1] * ANGLE_TO_RAD) * Quat::from_rotation_x(turns[0] * ANGLE_TO_RAD) * Quat::from_rotation_z(-turns[2] * ANGLE_TO_RAD)
 }
 
+/// What [`clip_pose`] works in, kept from call to call (a dying unit is posed every frame).
+#[derive(Default)]
+pub(crate) struct ClipScratch {
+    keys: Vec<[f32; 6]>,
+    states: Vec<PieceState>,
+}
+
+/// World matrices for every model piece of a unit of type `t` standing at `root`, posed by `clip`
+/// `at` seconds in (held at its ends): the pieces it moves as it moves them, the rest as they stand
+/// in the model.
+pub(crate) fn clip_pose(t: &UnitType, clip: &ta_formats::anims::Clip, at: f32, root: Mat4, out: &mut Vec<Mat4>, scratch: &mut ClipScratch) {
+    let ClipScratch { keys, states } = scratch;
+    clip.sample(at, false, keys);
+    states.clear();
+    states.resize(t.model.pieces.len(), ([0; 3], [0; 3], true));
+    for (k, v) in keys.iter().enumerate() {
+        if let Some(s) = states.get_mut(clip.pieces[k] as usize) {
+            s.0 = [0, 1, 2].map(|c| v[c].round() as i32);
+            s.1 = [3, 4, 5].map(|c| (v[c].round() as i32) as i16 as i32);
+        }
+    }
+    piece_matrices_between(t, states, states, 1.0, root, out);
+}
+
 /// World matrices for every model piece, `alpha` of the way from the script's states `before`
 /// to `now` (turns the short way round): T(offset + move) · Ry · Rx · Rz per piece, the same
 /// composition the deterministic simulation uses for piece positions. (Script x-axis moves
@@ -1302,6 +1373,96 @@ fn piece_matrices_between(t: &UnitType, before: &[PieceState], now: &[PieceState
     }
     for i in hidden_more {
         out[i] = Mat4::ZERO;
+    }
+}
+
+/// A model (`objects3d/<object>.3do`) added to the renderer's library: with its surface where it
+/// has one (see [`add_surfaced`]), as TA's are drawn otherwise (without Reborn's kit where its
+/// surface is no use: [`ModelSurface::Unfit`]).
+pub fn add_model(models: &mut ta_render::model::ModelRenderer, load: &dyn Fn(&str) -> Option<Vec<u8>>, object: &str, model: &ta_formats::model3do::Model3do, palette: &ta_formats::image::Palette) -> ModelId {
+    // (Registered already, by a unit of its: its surface is not read again.)
+    if let Some(id) = models.library.id(object) {
+        return id;
+    }
+    match surface_for(load, object, model) {
+        ModelSurface::Own(surface) => add_surfaced(models, load, object, model, &surface, palette),
+        ModelSurface::Unfit => models.library.add_plain(object, model, &models.textures, palette),
+        ModelSurface::None => models.library.add(object, model, &models.textures, palette),
+    }
+}
+
+/// A model with a surface of its own added to the renderer's library, its materials registered
+/// (their paint read as it is first drawn), and the lighter model its surface names (`far`)
+/// drawn in its place far off.
+pub fn add_surfaced(models: &mut ta_render::model::ModelRenderer, load: &dyn Fn(&str) -> Option<Vec<u8>>, object: &str, model: &ta_formats::model3do::Model3do, surface: &ta_formats::surface::Surface, palette: &ta_formats::image::Palette) -> ModelId {
+    let slots: Vec<u32> = surface.materials.iter().map(|material| models.surfaces.register(material)).collect();
+    let textures = &models.textures;
+    let id = models.library.add_surfaced(object, model, surface, &slots, |name| textures.get(name), palette);
+    let far_name = surface.far.trim().to_ascii_lowercase();
+    if !far_name.is_empty()
+        && let Some(far_model) = load(&format!("objects3d/{far_name}.3do")).and_then(|b| ta_formats::model3do::Model3do::parse(&b).ok())
+        && let ModelSurface::Own(far_surface) = surface_for(load, &far_name, &far_model)
+    {
+        let slots: Vec<u32> = far_surface.materials.iter().map(|material| models.surfaces.register(material)).collect();
+        let textures = &models.textures;
+        let far = models.library.add_surfaced(&far_name, &far_model, &far_surface, &slots, |name| textures.get(name), palette);
+        if !models.library.set_far(id, far) {
+            log::warn!("objects3d/{far_name}.3do: not of {object}'s pieces, not drawn far off in its place");
+        }
+    }
+    id
+}
+
+/// The animations beside a model (`objects3d/<object>.anims`, ta_formats::anims), if it has
+/// any: the clips that fit it (the log names a file that does not read, and each clip left out
+/// for moving pieces the model has not, or for its keys out of order).
+fn model_anims(load: &dyn Fn(&str) -> Option<Vec<u8>>, object: &str, model: &ta_formats::model3do::Model3do) -> Option<ta_formats::anims::Anims> {
+    let path = format!("objects3d/{object}.anims");
+    let bytes = load(&path)?;
+    let mut anims = match ta_formats::anims::Anims::parse(&bytes) {
+        Ok(anims) => anims,
+        Err(e) => {
+            log::warn!("{path}: {e}");
+            return None;
+        }
+    };
+    anims.clips.retain(|clip| {
+        let fits = clip.fits(model.pieces.len());
+        if !fits {
+            log::warn!("{path}: its clip {:?} does not fit its model (it moves pieces the model has not, or its keys are out of order): not played", clip.name);
+        }
+        fits
+    });
+    (!anims.clips.is_empty()).then_some(anims)
+}
+
+/// What a model has beside it to be painted with ([`surface_for`]).
+pub enum ModelSurface {
+    /// Nothing: drawn as TA's models are.
+    None,
+    /// A surface of its own that fits it.
+    Own(ta_formats::surface::Surface),
+    /// A surface that does not read, or does not fit it (the log says which): its faces drawn as
+    /// TA draws them, without Reborn's kit, which would cut a mesh made for its own paint into
+    /// plates along every triangle.
+    Unfit,
+}
+
+/// The surface beside a model (`objects3d/<object>.surface`, ta_formats::surface), if it has one:
+/// texture coordinates and normals for its vertices, its materials' paint.
+pub fn surface_for(load: &dyn Fn(&str) -> Option<Vec<u8>>, object: &str, model: &ta_formats::model3do::Model3do) -> ModelSurface {
+    let path = format!("objects3d/{object}.surface");
+    let Some(bytes) = load(&path) else { return ModelSurface::None };
+    match ta_formats::surface::Surface::parse(&bytes) {
+        Ok(surface) if surface.fits(model) => ModelSurface::Own(surface),
+        Ok(_) => {
+            log::warn!("{path}: not the surface of its model (its pieces or their vertices differ)");
+            ModelSurface::Unfit
+        }
+        Err(e) => {
+            log::warn!("{path}: {e}");
+            ModelSurface::Unfit
+        }
     }
 }
 

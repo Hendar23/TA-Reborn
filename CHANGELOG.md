@@ -1,5 +1,381 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Models can be painted beyond TA's palette and textures: a 3DO with a surface beside it
+  (`objects3d/<name>.surface`) takes texture coordinates and smooth normals for its vertices and
+  materials for its polygons, each a colour map, a specular map (gloss, mirroring, lights and where
+  the player's colour shows) and a normal map, DDS textures drawn at 512 × 512. A material's paint
+  is read the first time a model of it is drawn, and a surface can name a lighter model to draw far
+  off. The mod check reads surfaces and DDS textures. See
+  [docs/MODDING.md](docs/MODDING.md#models-with-surfaces-of-their-own).
+- Groundwork for playing Supreme Commander: Forged Alliance's four factions: their units' meshes are
+  made into TA models with surfaces, painted with the game's own textures in each player's colour,
+  their build icons into TA's build pictures, and their blueprints into TA units with Forged
+  Alliance's own numbers, scripts that aim their turrets and build, and the four factions'
+  sides, build menus and wrecks; the computer players build and fight with them
+  (docs/SUPCOM_UNITS.md).
+- Supreme Commander: Forged Alliance's four factions in TA Reborn. With the game installed (GOG's or
+  Steam's, or in a folder you choose), the Mods page's SUPREME COMMANDER… (or the FACTIONS tab of
+  the Maps page's) counts the UEF's, the Cybran's, the Aeon's and the Seraphim's units and makes
+  those of the factions you choose into the mod Supreme Commander factions, turned on: a side each
+  to play in skirmish, against each other, the Arm and the Core. Their own sounds come later.
+- A mod adds a side without replacing the game's side data: `gamedata/sidedata_<name>.tdf` adds
+  its sides and computer players' build lists to the game's. See
+  [docs/MODDING.md](docs/MODDING.md#sides-of-a-mods-own).
+- Models can move by animations of their own (`objects3d/<name>.anims`): a walk played in step
+  with the ground the unit covers, and deaths played where it falls, its wreck lying as the death
+  ends. The Supreme Commander factions' Commanders, support Commanders, bots and walking
+  experimentals now walk as in their game, and 93 of their units die as they do there (make the
+  factions again in the launcher: it offers UPDATE). See
+  [docs/MODDING.md](docs/MODDING.md#models-that-move-by-clips-of-their-own).
+- The Supreme Commander factions' nukes fly at TA's nukes' speed at least: they left their silo
+  at a crawl and took a minute to cross a big map. Their wrecks, their units' own models, are
+  drawn burnt out, sooted and without their player's colour, as TA's wrecks are painted.
+- A mod's units carry up to eight weapons, `Weapon1` to `Weapon8`: the fourth to the eighth aim
+  and fire through the numbered script functions (`AimWeapon4`, `QueryWeapon4`, `FireWeapon4`...),
+  each with its own bad targets (`BadTargetCategory4`...). The Supreme Commander factions' 23 units
+  with more than three weapons now fire them all: the Fatboy, the CZAR, the Monkeylord and the
+  battleships among them (make the factions again in the launcher: it offers UPDATE). See
+  [docs/MODDING.md](docs/MODDING.md#units-weapons-and-features).
+
+### Changed
+- The modern interface's DETAILS tell what the selection makes and uses of metal and energy a
+  second, as the classic interface's unit bar does: a metal extractor the metal it mines, a power
+  plant its energy, the Commander both, a factory at work what it spends; several selected, all of
+  them together. A factory with a queue or a constructor with plans shows them under its queue.
+- While a building is being placed, the ground it will take shows as TA's grid of the cells it
+  snaps to, under its ghost and under each site of a row or block being dragged out: green where it
+  can go and red where it cannot (blue and orange with the colour-blind marks), in both interfaces
+  and both cameras, laid over the ground and the sea, and gone once the building is put down. The
+  squares round the plans that Shift shows follow the ground the same way.
+- Over the minimap the cursor says what an order given there would do: over an enemy's mark that
+  the selection would attack with a right-click, or that the order waiting for its click would aim
+  at, it turns into the attack sight (the air-strike sight for bombers), as over the battlefield,
+  and the mark is lit and ringed in red round the sight; the same for a unit of ours to guard,
+  repair or load.
+
+### Fixed
+- The Supreme Commander factions play as Forged Alliance's (make the factions again in the
+  launcher: it offers UPDATE). Their tech 2 and 3 factories, which the game makes only by
+  upgrading the one below, are on their engineers' menus, so every unit can now be built, and the
+  computer players climb the tiers to tech 3 (TA's own sides, whose factories stop at tech 2,
+  play as before). Nukes, anti-nukes and tactical missiles are built one at a time at their price
+  (a nuke 12,000 metal and 1,350,000 energy over five minutes); a nuke flies high and comes down
+  on its target, a tactical missile at TA's tactical missiles' height. Missile defences take what
+  they do in the game: an anti-nuke the nukes, a tactical missile defence or a ship's point
+  defence the tactical missiles, and their tactical missiles no longer set off the nuclear
+  launch warnings. Anti-air homes on its aircraft, flak bursts over its area, and aircraft gather
+  speed, turn and attack as theirs do (only gunships hover to attack). Every weapon deals the
+  game's own damage a second, its racks, muzzles, beams, damage over time and splitting shells
+  counted. Upkeep is paid only for what TA Reborn plays (no shields yet: the Fatboy's costs
+  nothing), weapons and stealth a unit gets only from an enhancement or a toggle are left out,
+  hydrocarbon plants stand on the maps' vents, amphibians reach the deepest sea bed, ships
+  stand on footprints of their size and leave wrecks that block nothing, the Fire Beetle blows
+  itself up among its enemies, engineering stations help build and air staging repairs
+  aircraft. Ground weapons take on aircraft last, Commanders keep their guns still while they
+  build, walks loop without a jump and the units mend themselves at the game's rate. For mods:
+  TA's `interceptor` and `targetable` are now read as classes, as the Spring engine reads them,
+  so a mod's missile defences can take different missiles, and a missile defence fires once a
+  missile is within its range (TA's own all say 1 and reach across its maps: its nukes and
+  anti-nukes play as before; see [docs/MODDING.md](docs/MODDING.md#units-weapons-and-features)).
+- The Targeting Facility (Arm and Core, "Automatic Radar Targeting") did nothing. While one of
+  yours is finished and switched on, your units set to fire at will now shoot at what your radar
+  shows of the enemy as well as at what they see: a Big Bertha shells a radar contact across the
+  map. It works as a radar does: short of the energy it uses (1,250 a second), it stops. Units set
+  to hold fire (a Big Bertha as it is built) still hold it, and an ally's facility directs its own
+  units only.
+- Submarines fired at the floating missile towers, the Defender - NS and the Stinger, without ever
+  hitting them: their torpedoes ran under the towers. Torpedoes now hit whatever reaches into the
+  water where it meets the water (ships, towers and other buildings on the water, units wading or
+  standing on the sea bed), climb to their target's depth as they leave the tube instead of
+  running into the sea bed rising to the shallows, and run as far as their weapon's range (most
+  gave out after 300 px, the advanced torpedo launchers' long before their 600 and 650).
+- Skeeters, Searchers and every other unit whose weapons cannot go under the water shot at
+  underwater metal extractors (and other underwater buildings) whose tops stood out of shallow
+  water, and an order to attack something wholly under the water had them follow it for nothing.
+  What is wholly under the water, underwater buildings wherever they stand, is now left to
+  torpedoes and depth charges: other weapons never fire at it, and an attack order on it ends at
+  once. Like submarines, an enemy's underwater buildings are seen only where sonar reaches them. A
+  destroyer sent at a submarine closes to its depth charges' reach instead of stopping at
+  its guns'. Units partly out of the water, such as an amphibious K-bot in the shallows, are shot
+  where they stand out of it and hit, where the shot used to go off on the water in front of them.
+- On an attack order, the Skeeter's and the Searcher's missiles followed the order on to boats
+  they are meant to leave for last. A second or third weapon whose own target list puts the
+  ordered target last (these missiles, the Panther's and the missile ships' anti-air missiles, the
+  Phoenix's and the Hurricane's anti-air lasers, the Doomsday Machine's light laser, the
+  destroyers' and cruisers' depth charges and others) now keeps choosing its own targets, aircraft
+  first (submarines for depth charges), else the nearest enemy, while the main weapon fires as
+  ordered; a Skeeter sent at a boat closes to its laser's reach to do so.
+- Orders given while the battle was paused did not show until it went on. Routes, waypoints and
+  targets, a constructor's plans, a factory's queue and the route its units take, standing orders
+  and switches now show the moment they are given, in multiplayer too, and the interface goes by
+  them (a second building queued after the first, Shift taking one back). The battle still takes
+  them at its next tick, so replays, saved games and every player's game play them as before.
+- The modern interface's ON/OFF button said ON for a selection of metal makers (or radar towers,
+  or solar collectors) some on and some off. It now says ON/OFF, its lamp half lit, as the classic
+  interface shows both, and a press turns them all off when the first is on and all on otherwise,
+  as the classic button and the X key do.
+- A unit being built in a factory stood still while the factory's pad turned under it. As in TA,
+  it now turns with the pad (the plants, labs and aircraft plants spin it while they build) and
+  is finished facing the way the pad left it.
+- The Commander now heals itself over time as in TA: 100 hit points every 27 seconds (its
+  `HealTime`), up to full health, at no cost.
+- Wrecks all lay lined up north to south, whichever way their units had faced. A wreck now lies
+  as its unit faced when it died, in every view.
+- Reclaiming a wreck gives metal only, as in TA, even where a mod's wreck says it holds energy;
+  rocks and trees give what their files say.
+- The Supreme Commander factions, and any mod's models with paint or animations of their own: the
+  classic interface showed their sides no metal or energy bars, figures or logo (a side that lays
+  out nothing takes the boxes of a side in the same panels, else the first side's); a wreck left
+  in its death's last pose dropped into the ground as it appeared, and the dying unit turned into
+  its dark wreck in one frame (it now fades into it); a texture claiming endless mip levels froze
+  the game for seconds, and paint that is not 512 × 512 block-compressed was decoded on the frame,
+  stalling it (it is now made on workers, the model in its colours on average meanwhile); the
+  paint grows in steps of 32 materials, is let go when the next battle starts, and where the
+  graphics card has no room left the rest is drawn in its colours on average; a surface that does
+  not fit its model leaves it drawn as TA draws it, without seams along every triangle; a broken
+  animation file is told in the log and a clip that does not fit is left out alone; a far model
+  no longer swaps back and forth at the edge of its distance; the cockpit shows every weapon, those
+  alike as one ("Gauss Cannon x4"); the map editor draws their wrecks in their paint. The mod check
+  now reads DDS textures' mip levels and texels, notes paint that is made again as it is read, and
+  checks far models' pieces, that surfaces name DDS textures, and each clip.
+- Supreme Commander maps look and play more as in their game (make them again: the launcher
+  offers to update maps made before). The ground is lit as the game's own terrain shader lights
+  it: slopes facing away from the sun were painted black, and maps under a coloured sun took its
+  tint (Seraphim Glaciers came out cream, not lavender); the colours of maps twice as wide as
+  they are deep are matched to the game's picture of them. The cities' fences and street lights
+  no longer stand as palm trees across Flooded Strip Mine and Haven Reef, nor their buses, cars
+  and docks as rocks worth 150 metal, and the Cybran's wall segments are walls. A destroyed rock
+  no longer cracks into a larger, richer one. Every mass point now takes an extractor, a script's
+  call commented out no longer cuts a map down, and a map with a single start is refused. Shared
+  tiles meet more smoothly, and the largest maps are made in about a minute with under 1 GB of
+  memory (Crossfire Canal took 4 minutes and 4.4 GB). A game whose folders are reached through a
+  junction or a link is found.
+- The launcher's Supreme Commander dialog, opened again from the Mods page, showed its MAPS tab's
+  maps as dark squares, still marked as they were (IMPORTED after REMOVE MAP PACK). Each tab now
+  looks for the game again whenever it is shown after the dialog was closed, the factions' too
+  while they are being made; and once the map pack is removed, the game's maps are chosen again
+  rather than IMPORT 0 MAPS.
+- A Supreme Commander import was out of sight once its dialog was closed or showed the other tab.
+  It now has its place in the launcher's footer, how far it has got, a click opening the dialog
+  at its tab; the dialog opens at the tab whose import is under way; its CLOSE says the import goes
+  on; and the other tab says when it has ended.
+- UPDATE NOW and INSTALL NOW did not wait for a Supreme Commander import: Setup closed the launcher
+  in the middle of one, losing its work. The update now waits for it, as for a mod being installed.
+- The Supreme Commander maps and factions made by an older TA Reborn were marked UPDATE only in
+  their dialog. The Mods page marks them too (their card, the UPDATES filter and the count on the
+  rail), with UPDATE… to make them again.
+- A factions import cut short (the launcher killed, the power gone) left about 400 MB behind for
+  good; it is now cleared at the next start, as a maps import's is.
+- A maps import that could not write a map (the disk full) threw away every map it had made. It
+  now checks there is room on the disk before it starts, says what went wrong against that map,
+  and installs the maps made so far; and it keeps the maps already in the pack without copying
+  them (up to 1.2 GB), so it needs little more room than the maps it makes. The factions' import
+  checks the room first too.
+- Importing replaced another mod of the same id as the map pack or the factions' mod, its files
+  deleted, without a word: it now asks first, as installing a package over a mod does. The
+  imports find the pack and the factions' mod wherever the launcher finds mods (one kept in the
+  extra mods folder is made again there, and none is made behind a copy in TA Reborn's program
+  folder), and the factions' mod can no longer be removed or replaced while it is being made, nor
+  checked while an import replaces it.
+- CHANGE FOLDER… with a folder that does not hold Forged Alliance said so in a notice hidden under
+  the dialog. The folder is now looked through without holding the window up and what it holds is
+  said in the dialog; the original Supreme Commander is told apart from Forged Alliance (taken
+  first where a folder holds both); and the folder chosen, or the copy switched to (GOG's or
+  Steam's), is kept for the next start.
+- In the Supreme Commander dialog: STOP AFTER THIS MAP shows it was pressed, the maps' import says
+  what it is doing (reading the games' files, making a map, installing them) and STOP is greyed
+  while it installs, as the factions' is, with why; why IMPORT cannot be pressed is written beside
+  it; the dialog is as tall on either tab, its tabs stay in place, and the maps' list ends between
+  two rows instead of leaving an empty band; Shift+Tab and a gamepad go back up the list; one map
+  or one faction is told as one, and none chosen as none; the units that could not be made are
+  named; the "Still to come" line is up to date; and an error from the system is said once.
+
+## 1.0.7 — 2026-11-16
+
+Mods can present themselves in the launcher with a banner, an animated preview, an icon and
+screenshots, theme the battle's interface in colours and pictures of their own, and name the mods
+they cannot be played with and the oldest TA Reborn they need. Trees and shores no longer flicker
+for a few seconds after the camera moves, and in TA's own view metal extractors stand whole on the
+Supreme Commander maps' deposits. A turret turns to an enemy in reach rather than holding fire on
+one just out of it, and every page of the launcher had a QA pass.
+
+### Added
+- Mods present themselves in the launcher's library with pictures of their own, named in their
+  `mod.toml`'s new `[media]`: a banner (their card, and the top of their page), an animated GIF of
+  the mod in play (played in the banner on their page, and on their card while the pointer rests
+  on it), an icon beside their name, and screenshots on their page that open on the whole window.
+  A mod installed from a file or a folder now looks as one from the catalogue does. `tags` find a
+  mod in the library and show on its page, and `[links]` (and `source`) are links there. The
+  installer keeps a mod's `media` folder and the pictures its manifest names; the mod check tells
+  under PRESENTATION what would not show as meant (notes: a mod's badge is how it plays). See
+  [docs/MODDING.md](docs/MODDING.md#presenting-a-mod-in-the-launcher) and the
+  [example mod](docs/examples/example-mod).
+- Mods can theme the battle's interface: a `[theme]` in their `mod.toml` draws the HUD, modern
+  and classic, in colours of their own (an accent, text, panels, the metal and energy bars, health
+  and warnings, a side's own over the rest), with pictures of their own behind the modern HUD's
+  plates and top bar and a font for its titles (fitted to the HUD's lines); the classic HUD keeps
+  TA's art (a mod's interface files change it) and takes the theme's lettering. The battle's menus,
+  dialogs and result pages, the loading screens and the cockpit keep TA Reborn's own look. The
+  last mod in the load order with a theme gives it; MODS' INTERFACE THEMES in the Interface options
+  turns them off. The launcher shows a
+  mod's theme on its page, and the mod check tells what would not draw as meant. Without a theme
+  the HUD is drawn as before, to the pixel. See
+  [docs/MODDING.md](docs/MODDING.md#theming-the-interface).
+- A mod's `mod.toml` can name the mods it must not be on with (`conflicts`) and the oldest TA
+  Reborn it plays in (`requires_reborn`): with a conflicting mod on, or in an older TA Reborn, the
+  load order does not resolve, and the launcher and the game say why and what to do (its card
+  shows a red lamp when it needs a newer TA Reborn).
+- `ta-tools mod-new <folder>` makes a new mod's folder: a `mod.toml` naming it, every other key
+  written out and commented, a `media` folder and a read-me of what goes where.
+- The mod check reads a mod's `mod.toml` as TA Reborn reads it and tells what is read otherwise
+  than written: a key it does not know (with the key likely meant, `depends` for `depend`), a key
+  written below a `[table]` line, which TOML takes for that table's (a `requires_reborn` after
+  `[media]` is never read), a value of the wrong kind, one text where a list is wanted. A key that
+  decides what the game mounts, misplaced or mistyped, is a warning: the mod is mounted as if it
+  were not given.
+- When the load order does not resolve, LOAD ORDER offers to turn off what stops it: a mod that
+  needs one not installed or a newer TA Reborn, or either of two that cannot be on together.
+
+### Changed
+- A `mod.toml` is read more forgivingly: a value of the wrong kind in what only presents the mod
+  (its version, description, authors, tags, pictures, links or theme) is left out and the rest
+  read, where the whole mod was left out; one text where a list is wanted is a list of that one
+  (`tags = "units"`, `depends = "ship-hulls"`). What decides whether it is mounted is read as
+  strictly as before.
+- Installing a mod, the launcher and `ta-tools mod-install` keep its `mod.toml` as written,
+  comments and keys this TA Reborn does not know too, changing only what the install sets; the map
+  editor, saving a map as a mod again, does the same and keeps the map's other authors.
+
+### Fixed
+- Trees standing side by side in a wood traded places for a second or two after every pan or zoom
+  (the perspective camera): drawn as far from the eye as each other, which was in front came down to
+  rounding while the camera came to rest. Each tree's painting now keeps its place in front of or
+  behind its neighbours, and the camera comes to rest a moment after a move instead of creeping on
+  for seconds.
+- A battle started from the menu (a new skirmish, a saved game or replay opened there, a lesson,
+  a multiplayer game) and the map editor kept the lens of the menu's film: its field of view,
+  its roll and a near plane a few units in front of the camera. Zoomed out over the battlefield
+  that left the depth too coarse to tell things apart, and for a few seconds after every pan or
+  zoom the trees in a wood traded places and the water along the shores streaked white (a battle
+  started straight away, or a saved game resumed from the launcher, never had it). Every battle now
+  starts with the game's own camera.
+- In the classic camera, what lies on the ground (metal deposits laid as features, scorch marks,
+  painted shadows) was drawn over the lower part of what stood on it: a metal extractor or moho
+  mine built on one of the Supreme Commander maps' deposits showed only its arms, and a tank on a
+  scorch mark sank under it. There, as in TA, the ground and what lies on it are drawn first.
+- Installing a mod failed when its manifest named a file in one of TA's folders in other capitals
+  than the disk's (`Fonts/hud.ttf` for `fonts/hud.ttf`), when its content folder was called `Base`
+  or `Reborn`, when the package's file name made an id the launcher refuses (longer than 64
+  letters, `base.zip`) though the package names its own, and when it held only a `mod.toml` that
+  blanks archives of the original game. A manifest that does not read is named by its place in the
+  package, with what TOML found.
+- The map editor saving a map as a mod: a save cut off between its two steps (by an antivirus, a
+  crash) could leave the map in a hidden backup folder; the launcher puts it back at its start,
+  and the editor at its next save. A `mod.toml` edited by hand that did not read made the editor
+  say the folder was not its own: it now says what does not read.
+- The launcher checked a mod again at every start when the check stopped at its own limits (a very
+  large mod) or found nothing of it to read: such a report is now kept for the same content, as a
+  complete one is (a cancelled check never is). The check of the original game without the mod is
+  no longer redone when a mod it depends on changes only its name, description, pictures or
+  theme.
+- A mod's check that could not mount the mod with what it needs said so in English only, with
+  advice that did not fit: mods needing each other in a circle, a mod that cannot be on with
+  another it is mounted with, and one that needs a newer TA Reborn each have words of their own,
+  in the player's language, and what to do, in the launcher and in `ta-tools validate-mod` alike.
+- `ta-tools validate-mod` lists its findings in the launcher's order.
+- Names listed together on the Mods page ("by …", "requires …") are joined as the player's
+  language joins them.
+- A turret whose target had moved just out of its reach kept it, held fire and passed over
+  another enemy it could hit; it now turns to one in reach, and fires on the first again the moment
+  it comes back. Units on attack-move or patrol kept stopping short of a target their weapons could
+  not reach yet: they now close until they can fire. An attack order keeps its target as before.
+- The launcher, after a QA pass over every page:
+  - RESTORE DEFAULTS under Graphics, and RESET ALL SETTINGS, wiped the unit skins chosen on the
+    Skins page and said the graphics card had no ray tracing: they keep them now.
+  - A damaged profile of another commander stopped every profile from being edited, created or
+    renamed, with no way to remove it: it is listed apart, with OPEN FOLDER and MOVE TO RECYCLE
+    BIN, and holds nothing else up. A damaged service record (the career file) kept PLAY from
+    starting while the Play page said all was well: the Play page and the profile now say so, and
+    START A FRESH CAREER sets the damaged file aside (it is kept) and begins anew.
+  - Saving an edited skin could fail every time ("destination already exists"); every visit to
+    the Skins page read the whole game again; the pattern tiles were redrawn while a slider was
+    dragged, holding up the window; the colour picker's hex field could not be typed into.
+    Importing a skin you already have offers REPLACE or KEEP BOTH.
+  - A game that restarted itself with a saved battle's mods and then crashed was never
+    reported; a game that could not start showed a developer's instruction and was not logged;
+    the launcher's music kept it redrawing four times a second; "UPDATED TO" showed on a first
+    install when the game had been started first.
+  - At large interface scales the page list hid SETTINGS, BENCHMARK and ABOUT, and at window
+    heights of 640 to 680 points (a 1080p laptop at 150%) PLAY covered ABOUT: every page is in
+    reach now. Turning SEASONAL EFFECTS off in the game's Options was undone when the game closed.
+    Saving the settings no longer holds up the window, and a rare crash of the footer's "saved"
+    timer is gone.
+  - The Supreme Commander import's dialog copied every map picture twice a frame (40 ms a frame
+    with 450 maps), chose every map not imported after an import, and its failures went unsaid
+    once it was closed; closing the launcher while maps were being looked through was refused. A
+    map whose terrain cannot be read is no longer offered to play.
+  - Screen readers hear the notices, the Play page's state and headings, and the editors' and
+    pickers' controls; the gamepad's first press on the Play page reaches PLAY, not the website;
+    shortcuts name the keys as the platform and the language do (Ctrl, Strg, ⌘).
+  - Messages that were in English only, or raw technical errors, are in the player's language.
+
+## 1.0.6 — 2026-11-15
+
+NVIDIA's graphics driver has more room on the game's main thread, after crashes on some cards, and
+with orders on the right button a click no longer turns the 3D view. Orders on the minimap aim at
+the units marked there, Shift and a click on a queued reclaim or move takes it back, and the economy
+shows by how much you outspend your income. Reclaiming, the D-gun, fire at will and capturing work
+more as they do in TA, and edge scrolling keeps working once a battle has loaded.
+
+### Added
+- Shift and a click on an order already queued takes it back, as a building put down again on
+  its own plan does: a reclaim of a wreck, rock, tree or unit already queued for reclaiming, or a
+  move to within a waypoint's mark of one already set (a group's moves there go together).
+- A contributing guide, [CONTRIBUTING.md](CONTRIBUTING.md): the project's ground rules, which
+  version to bump for which change, tests, the changelog, and how a pull request is written and
+  reviewed. The pull request template follows it.
+- Orders on the minimap aim at the units marked on it. A right-click on an enemy's mark, in sight
+  or on radar, attacks it, and an armed command takes its own kind of unit there: Attack and
+  Capture an enemy, Guard, Repair, Load and Reclaim one of yours. A right-click among your own
+  units' marks still moves there.
+
+### Fixed
+- With a store run dry, the metal or energy used showed only what came in (+8.4 / -8.4), however
+  much more was being asked for. The use shown is now what builders, upkeep, cloaks and weapons
+  ask for (+8.4 / -20), so you see by how much you outspend your income.
+- Edge scrolling stopped working once a battle had loaded, or the profile or career window had
+  been open, until the cursor left the window and came back, which in full screen on a single
+  display it never could. Any move of the cursor now brings it back. It no longer scrolls while a
+  drag is carried out of the window, or while a slider or a scroll bar is dragged to the edge of
+  the screen.
+- Units and defences on fire at will fired at enemies in the fog of war that radar or sonar
+  alone showed, which made long-range guns stronger than their cost. Fire at will, and return
+  fire, now takes on only what your side sees; radar and sonar contacts are fired on when you
+  order it. (Iron Rain's guns, which a radar post spots for, still shell what it shows.)
+- The Commanders' D-gun passed through almost everything: it harmed only what its shot went
+  right through, and a shot aimed down at a unit or at the ground went on under the ground
+  beyond it. It now runs on along the ground or the water to the end of its flight, destroying
+  every unit within its area of effect of its way (sparing those beside the Commander as it
+  fires) and the trees, rocks and wrecks in its path; trees catch fire as often as TA's weapon
+  file says.
+- With orders on the right button, a right-click in the 3D view gave its order and turned the
+  view a little as well, whenever the pointer shook. The view now turns only once a right-drag
+  has gone further than a click's few pixels, and such a drag never gives an order.
+- Reclaiming paid its metal a little at a time as the work went, so its income came at once and
+  reclaiming was worth more than in TA. Now, as in TA, a wreck, rock or tree gives all of its
+  metal and energy when it is reclaimed whole, and one of your own units its metal when it is
+  gone.
+- Capturing the most costly units took far longer than meant: a Commander needed 51 minutes to
+  capture the Core's Galactic Gate. Capturing a unit still takes four times its cost in work,
+  but never more than two minutes of a Commander's.
+- The game could crash in the graphics driver on some NVIDIA cards ("the graphics driver
+  (nvoglv64.dll) failed", the main thread out of stack): the driver does its work on the
+  game's own threads, and Windows gives a program's main thread little room. The game's main
+  thread and the one that loads a battle now have 16 MiB.
+
 ## 1.0.5 — 2026-11-14
 
 Supreme Commander: Forged Alliance's maps can now be played in skirmish: the launcher makes them

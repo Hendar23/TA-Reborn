@@ -114,11 +114,13 @@ impl SkirmishAi {
                     plan.reserved.push((*pos, fx(sim.types.get(*type_id).radius.to_int() + 16)));
                     plan.pending[self.info[*type_id].role as usize] += 1;
                     plan.tech |= self.advanced_factory(sim, *type_id);
+                    plan.tier = plan.tier.max(self.factory_tier(sim, *type_id));
                 }
             }
         }
         for n in &s.nanoframes {
             plan.tech |= self.advanced_factory(sim, n.type_id);
+            plan.tier = plan.tier.max(self.factory_tier(sim, n.type_id));
         }
         self.stuck.retain(|e| sim.unit(e.0).is_some());
         self.note_refused_builds(sim, s);
@@ -539,8 +541,17 @@ impl SkirmishAi {
             }
         }
         // Tech up.
-        if !t2 && !s.adv_factory && !plan.tech && s.minutes >= self.p.tech_minute && (s.m_inc >= fx(self.p.tech_income) || s.metal >= fx(1200)) && let Some(t) = self.adv_factory_task(sim, s, b, &opts, plan) {
+        let tech_economy = s.minutes >= self.p.tech_minute && (s.m_inc >= fx(self.p.tech_income) || s.metal >= fx(1200));
+        if !t2 && !s.adv_factory && !plan.tech && tech_economy && let Some(t) = self.adv_factory_task(sim, s, b, &opts, plan) {
             plan.tech = true;
+            return Some(t);
+        }
+        // And on up the tiers, one factory at a time: a constructor of our factories' top tier
+        // puts up one of the next tier its options hold, on the same economy (the Supreme
+        // Commander factions' tech 3 plants; TA's factories make no constructor past tech 2, so
+        // its games go as before).
+        if t2 && s.factory_tier == bi.tech && plan.tier <= bi.tech && tech_economy && let Some(t) = self.next_tier_task(sim, s, b, &opts, bi.tech, plan) {
+            plan.tier = bi.tech + 1;
             return Some(t);
         }
         // Geothermal vents are the best power there is (when power is what we need).
@@ -763,7 +774,8 @@ impl SkirmishAi {
             .filter(|&(i, f)| !self.helper || sim.explored(self.player, f.pos) && !self.enemy_ground(f.pos) && !plan.claimed(b.id, Claim::Reclaim(i)))
             .filter_map(|(i, f)| {
                 let d = &sim.data.features[f.def];
-                let metal = (Fx::from_f64(d.metal) * (Fx::ONE - f.reclaimed)).to_int();
+                // (All of its metal comes when it is reclaimed whole, however far along it is.)
+                let metal = Fx::from_f64(d.metal).to_int();
                 (d.reclaimable && metal >= 40 && self.threat.at(f.pos) == 0).then(|| (metal * 8 - dist(b.pos, f.pos), i, f.pos))
             })
             .max_by_key(|&(score, i, _)| (score, Reverse(i)))?;
@@ -1125,8 +1137,21 @@ impl SkirmishAi {
     }
 
     pub(crate) fn adv_factory_task(&mut self, sim: &Sim, s: &Survey, b: &Unit, opts: &[usize], plan: &Plan) -> Option<Task> {
-        let mut keyed = Vec::new();
         let cands: Vec<usize> = opts.iter().copied().filter(|&o| self.advanced_factory(sim, o)).collect();
+        self.tech_factory_task(sim, s, b, cands, plan)
+    }
+
+    /// A factory of the next tier past `tier` the builder's options hold (`factory_tier`: the
+    /// lowest above it), chosen and sited as the first advanced factory is.
+    pub(crate) fn next_tier_task(&mut self, sim: &Sim, s: &Survey, b: &Unit, opts: &[usize], tier: u8, plan: &Plan) -> Option<Task> {
+        let next = opts.iter().map(|&o| self.factory_tier(sim, o)).filter(|&t| t > tier).min()?;
+        let cands: Vec<usize> = opts.iter().copied().filter(|&o| self.factory_tier(sim, o) == next).collect();
+        self.tech_factory_task(sim, s, b, cands, plan)
+    }
+
+    /// Which of `cands` to put up as a step up in tech, and where.
+    fn tech_factory_task(&mut self, sim: &Sim, s: &Survey, b: &Unit, cands: Vec<usize>, plan: &Plan) -> Option<Task> {
+        let mut keyed = Vec::new();
         // Across water: a plant for units that get over by themselves (amphibians) first.
         let types = s.factory_types.clone();
         let stranded = !types.iter().any(|&f| matches!(self.info[f].kind, Locomotion::Ground | Locomotion::Hover) && self.factory_reaches(sim, f));
@@ -1465,9 +1490,11 @@ impl SkirmishAi {
         if s.count[Role::AntiNuke as usize] + pending(Role::AntiNuke) < anti_wanted && let Some(a) = self.pick_cheapest(opts, Role::AntiNuke) && let Some(site) = self.place(sim, b, a, Zone::Ring, 60, plan) {
             return Some(Task::Build(a, site));
         }
-        // A second silo only deep into the game.
+        // A second silo only deep into the game. A strategic one where it can (a mod's tactical
+        // launcher, cheaper, where it has none: its tech 2 builders').
         let silos = if s.minutes >= self.p.nuke_minute.saturating_add(16) { self.p.silos } else { self.p.silos.min(1) };
-        if s.minutes >= self.p.nuke_minute && s.e_inc >= fx(1500) && s.m_inc >= fx(20) && s.count[Role::Silo as usize] + pending(Role::Silo) < silos && let Some(n) = self.pick_cheapest(opts, Role::Silo) && let Some(site) = self.place(sim, b, n, Zone::Back, 300, plan) {
+        let silo = opts.iter().copied().filter(|&o| self.info[o].role == Role::Silo && self.info[o].silo_classes & ta_sim::STRATEGIC_CLASS != 0).min_by_key(|&o| (self.info[o].cost, o)).or_else(|| self.pick_cheapest(opts, Role::Silo));
+        if s.minutes >= self.p.nuke_minute && s.e_inc >= fx(1500) && s.m_inc >= fx(20) && s.count[Role::Silo as usize] + pending(Role::Silo) < silos && let Some(n) = silo && let Some(site) = self.place(sim, b, n, Zone::Back, 300, plan) {
             return Some(Task::Build(n, site));
         }
         None

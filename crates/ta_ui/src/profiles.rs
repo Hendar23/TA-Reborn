@@ -1,7 +1,7 @@
 //! Local commander identity editor, shared by first-launch setup and the launcher.
 use crate::tooltip::TooltipExt as _;
 use egui::{Color32, Rect, Response, RichText, Sense, TextureHandle, Ui, pos2, vec2};
-use ta_config::profiles::{Allegiance, Career, Profile, Rank};
+use ta_config::profiles::{Allegiance, Career, Problem, Profile, Rank};
 use crate::i18n::{grouped, n, t, tf};
 use crate::theme::*;
 use crate::widgets::{self, ActionButton};
@@ -35,6 +35,9 @@ pub struct ProfileEditor {
     pub motto: String,
     pub allegiance: Option<Allegiance>,
     pub error: Option<String>,
+    /// The names of the device's other commanders: the name cannot be one of them (said under
+    /// the button, before saving).
+    pub taken: Vec<String>,
     editing: bool,
     avatar_png: Option<Vec<u8>>,
     avatar: Option<TextureHandle>,
@@ -50,7 +53,7 @@ impl ProfileEditor {
         let allegiance = existing.map(|p| p.allegiance);
         Self {
             initial: (name.clone(), motto.clone(), allegiance), name, motto, allegiance,
-            error: None, editing: existing.is_some(), avatar_png: None, avatar: None,
+            error: None, taken: Vec::new(), editing: existing.is_some(), avatar_png: None, avatar: None,
             clear_avatar: false, focus_name: true,
         }
     }
@@ -66,9 +69,13 @@ impl ProfileEditor {
         if let Some(error) = &self.error {
             ui.add(egui::Label::new(RichText::new(error).color(RED)).wrap());
         }
-        // Panel supplies a bounded body. Only the form scrolls on short windows;
-        // the primary action keeps its own space below it and remains reachable.
-        let form_height = (ui.available_height() - 60.0).max(64.0);
+        // Panel supplies a bounded body. Only the form scrolls on short windows; the primary
+        // action keeps its own space below it, with what is still needed said under it (wrapped
+        // as it will be), and remains reachable: the separator and its gaps, the button, the line.
+        let spacing = ui.spacing().item_spacing.y;
+        let hint = self.missing().map_or(0.0, |text| spacing + widgets::wrapped_galley(ui, hint_text(&text), ui.available_width()).size().y);
+        let below = 2.0 * spacing + 1.0 + 40.0 + hint + 2.0;
+        let form_height = (ui.available_height() - below).max(64.0);
         let area = egui::ScrollArea::vertical().id_salt("profile_identity_form")
             .max_height(form_height).min_scrolled_height(64.0).auto_shrink([false, true]);
         crate::scroll::show(ui, area, crate::scroll::Behind::Plate, |ui| {
@@ -124,26 +131,34 @@ impl ProfileEditor {
         });
         ui.add(egui::Separator::default().spacing(1.0));
         // What is still needed, said under the button rather than left to a grey button.
-        let missing = if ta_config::profiles::clean_name(&self.name).is_err() {
-            Some(t("Type your commander's name (1 to 24 characters)"))
-        } else if ta_config::profiles::clean_motto(&self.motto).is_err() {
-            Some(t("Shorten the motto"))
-        } else if self.allegiance.is_none() {
-            Some(t("Choose Arm or Core"))
-        } else {
-            None
-        };
+        let missing = self.missing();
         let valid = missing.is_none();
         let label = if self.editing { n("SAVE PROFILE") } else { n("CREATE PROFILE") };
         let button = ui.add_enabled(valid, ActionButton::primary(label).size(ui.available_width(), 40.0));
         if let Some(missing) = missing {
-            ui.label(RichText::new(missing).color(AMBER).size(13.0));
+            ui.add(egui::Label::new(hint_text(&missing)).wrap());
         }
         if button.clicked() {
             return Some(ProfileDraft { name: self.name.trim().to_owned(), motto: self.motto.trim().to_owned(), allegiance: self.allegiance.unwrap(),
                 avatar_png: self.avatar_png.clone(), clear_avatar: self.clear_avatar });
         }
         None
+    }
+
+    /// What is still needed before the profile can be saved, if anything: a name (not another
+    /// commander's), a motto short enough, a side.
+    fn missing(&self) -> Option<String> {
+        if ta_config::profiles::clean_name(&self.name).is_err() {
+            Some(t("Type your commander's name (1 to 24 characters)").to_string())
+        } else if let Some(other) = self.taken.iter().find(|other| ta_config::profiles::same_name(other, self.name.trim())) {
+            Some(tf("Another commander on this device is called {name}: choose another name.", &[("name", other)]))
+        } else if ta_config::profiles::clean_motto(&self.motto).is_err() {
+            Some(t("Shorten the motto").to_string())
+        } else if self.allegiance.is_none() {
+            Some(t("Choose Arm or Core").to_string())
+        } else {
+            None
+        }
     }
 
     fn name_field(&mut self, ui: &mut Ui) -> Response {
@@ -165,7 +180,7 @@ impl ProfileEditor {
         ui.horizontal_wrapped(|ui| {
             // Wrap translations as a pair of complete controls; never squeeze their labels.
             if ui.add(ActionButton::secondary("CHOOSE PICTURE…").height(30.0)).clicked()
-                && let Some(file) = rfd::FileDialog::new().set_title(t("Your picture"))
+                && let Some(file) = crate::settings::file_dialog(ui.ctx()).set_title(t("Your picture"))
                     .add_filter(t("Pictures"), &["png", "jpg", "jpeg"]).pick_file()
             {
                 match crate::portrait::read_from(&file) {
@@ -192,6 +207,40 @@ impl ProfileEditor {
         });
     }
 
+}
+
+/// What the editor still needs, as it is said under its button.
+fn hint_text(text: &str) -> RichText {
+    RichText::new(text).color(AMBER).size(13.0)
+}
+
+/// What a profile change was refused for ([`Problem`]), in the player's language.
+pub fn problem_text(problem: Problem) -> &'static str {
+    match problem {
+        Problem::NameTaken => t("Another commander on this device already has this name."),
+        Problem::BadName => t("Type your commander's name (1 to 24 characters)"),
+        Problem::BadMotto => t("A motto has at most 60 characters, all of them visible."),
+        Problem::TooManyProfiles => t("This device keeps as many profiles as it can: delete one first."),
+        Problem::BadShowcase => t("Your profile shows up to five achievements: remove one first."),
+        Problem::PictureFormat => t("The picture must be a PNG or a JPEG."),
+        Problem::PictureSize => t("The picture's file is empty, or larger than 16 MB."),
+        Problem::PictureDamaged => t("The picture could not be read: it may be damaged."),
+    }
+}
+
+/// A profile store's error as the player reads it: what it was refused for, in their language;
+/// anything else (a file damaged or out of reach) in the file's or the system's own words, their
+/// first line (the whole report is the log's).
+pub fn error_text(error: &std::io::Error) -> String {
+    match Problem::of(error) {
+        Some(problem) => problem_text(problem).to_string(),
+        None => first_line(&error.to_string()),
+    }
+}
+
+/// The first line of an error's report (a damaged TOML file's runs on over several, quoting it).
+pub fn first_line(text: &str) -> String {
+    text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default().to_string()
 }
 
 /// A whole-card radio target: the insignia, label, outline and radio dot all agree.
@@ -439,6 +488,44 @@ mod tests {
             assert!(rect.height() >= 36.0);
             assert!((text.center().y - rect.center().y).abs() <= 1.0, "{name:?}: text {text:?} is not centered in {rect:?}");
             output.drop_without_applying_deltas();
+        }
+    }
+
+    /// What is still needed is said under the greyed button, in sight, in the smallest window the
+    /// launcher has and in a narrow one where it wraps (the first start's dialog).
+    #[test]
+    fn whats_still_needed_stays_in_sight_under_the_button() {
+        fn shown(shape: &egui::Shape, clip: Rect, wanted: &str) -> Option<bool> {
+            match shape {
+                egui::Shape::Text(text) if text.galley.text() == wanted => Some(clip.contains_rect(shape.visual_bounding_rect())),
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(|s| shown(s, clip, wanted)),
+                _ => None,
+            }
+        }
+        let hint = "Type your commander's name (1 to 24 characters)";
+        for (viewport, taken) in [(vec2(940.0, 600.0), false), (vec2(330.0, 600.0), false), (vec2(1120.0, 700.0), false), (vec2(940.0, 600.0), true)] {
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx);
+            crate::motion::set_reduced(&ctx, true);
+            let mut editor = ProfileEditor::new(None);
+            editor.focus_name = false;
+            let wanted = if taken {
+                editor.name = "second".into();
+                editor.taken = vec!["Second".into()];
+                "Another commander on this device is called Second: choose another name."
+            } else { hint };
+            let mut visible = None;
+            for frame in 0..5 {
+                let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, viewport)), time: Some(frame as f64), ..Default::default() };
+                let output = ctx.run_ui(input, |_| {
+                    let panel = crate::panel::Panel::new("CREATE PROFILE").width((viewport.x - 76.0).clamp(180.0, 460.0))
+                        .max_height((viewport.y - 24.0).max(120.0)).exit(crate::panel::Exit::None);
+                    crate::panel::modal(&ctx, "commander_setup_test", panel, false, |ui| editor.show(ui));
+                });
+                visible = output.shapes.iter().find_map(|s| shown(&s.shape, s.clip_rect, wanted));
+                output.drop_without_applying_deltas();
+            }
+            assert_eq!(visible, Some(true), "{wanted:?} at {viewport:?}");
         }
     }
 

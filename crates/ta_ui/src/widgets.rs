@@ -177,14 +177,17 @@ pub fn fitted_title(ui: &mut Ui, text: &str, size: f32, color: Color32) -> Respo
         }
     }
     let (rect, response) = ui.allocate_exact_size(vec2((heading.size().x + 3.0).min(available), heading.size().y + 2.0), Sense::hover());
+    // (A screen reader reads it whole, however it was cut short to fit.)
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), text));
     let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(Rect::from_x_y_ranges(rect.x_range(), ui.clip_rect().y_range())));
     metal::embossed(&painter, rect.min + vec2(1.0, 0.0), heading, color);
     if truncated { response.hover_tip(text) } else { response }
 }
 
-/// Small letter-spaced caption, used for field names ("LOCATION", "SOURCE").
+/// Small letter-spaced caption, used for field names ("LOCATION", "SOURCE"): in the labels'
+/// colour ([`STEEL`]; a theme's in the HUD, [`crate::theme::hud`]).
 pub fn caption(text: &str) -> RichText {
-    RichText::new(t(text)).font(strong(11.5)).color(STEEL).extra_letter_spacing(crate::i18n::tracking(1.2))
+    RichText::new(t(text)).font(strong(11.5)).color(pal().steel).extra_letter_spacing(crate::i18n::tracking(1.2))
 }
 
 /// Fills `rect` with a horizontal gradient.
@@ -783,7 +786,7 @@ pub fn play_button_width(ui: &mut Ui, state: PlayState, width: f32) -> Response 
                 crate::motion::next_frame(ui.ctx(), std::time::Duration::from_secs_f64((period - time).max(0.0)));
             }
             bolted(painter, rect);
-            play_label(painter, action_rect, "PLAY", size, Slab::Brass, ON_AMBER, down);
+            play_label(painter, action_rect, n("PLAY"), size, Slab::Brass, ON_AMBER, down);
         }
         PlayState::Running => {
             painter.add(metal::slab(ui.ctx(), rect, Slab::Slot, 0.0, false));
@@ -792,13 +795,13 @@ pub fn play_button_width(ui: &mut Ui, state: PlayState, width: f32) -> Response 
             let pulse = if crate::motion::still(ui.ctx()) { 1.0 } else { (ui.input(|i| i.time) * 3.0).sin() as f32 * 0.3 + 0.7 };
             crate::motion::next_frame(ui.ctx(), std::time::Duration::from_millis(33));
             painter.add(metal::lamp(pos2(rect.min.x + 22.0, rect.center().y), 5.0, GREEN, pulse));
-            play_label(painter, action_rect, "RUNNING", size * 0.8, Slab::Slot, AMBER, false);
+            play_label(painter, action_rect, n("RUNNING"), size * 0.8, Slab::Slot, AMBER, false);
         }
         PlayState::Unavailable => {
             painter.add(metal::slab(ui.ctx(), rect, Slab::Steel, 0.0, false));
             painter.rect_filled(rect, CornerRadius::same(2), Color32::from_black_alpha(110));
             bolted(painter, rect);
-            play_label(painter, action_rect, "PLAY", size, Slab::Steel, STEEL_DIM, false);
+            play_label(painter, action_rect, n("PLAY"), size, Slab::Steel, STEEL_DIM, false);
         }
     }
     let status_rect = Rect::from_min_max(pos2(rect.min.x + 3.0, action_rect.max.y), rect.max - vec2(3.0, 3.0));
@@ -821,7 +824,8 @@ fn bolted(painter: &Painter, rect: Rect) {
     }
 }
 
-/// A triangle and a word, centred on a big slab, lettered as the slab's are.
+/// A triangle and a word (translated: `n(..)` it where it is given), centred on a big slab,
+/// lettered as the slab's are.
 fn play_label(painter: &Painter, rect: Rect, text: &str, size: f32, kind: Slab, color: Color32, down: bool) {
     let natural = painter.layout_no_wrap(t(text).to_owned(), display(size), color);
     let size = size * ((rect.width() - 24.0).max(1.0) / (natural.size().x + size * 0.83)).min(1.0);
@@ -839,7 +843,7 @@ fn play_label(painter: &Painter, rect: Rect, text: &str, size: f32, kind: Slab, 
 
 // ---- Inputs --------------------------------------------------------------------------------
 
-/// A square recessed checkbox with a brass check mark.
+/// A square recessed checkbox with a brass check mark (the accent's, a theme's in the HUD).
 pub fn check_box(ui: &mut Ui, checked: &mut bool) -> Response {
     check_box_named(ui, checked, "")
 }
@@ -860,7 +864,7 @@ pub fn check_box_named(ui: &mut Ui, checked: &mut bool, label: &str) -> Response
         painter.add(metal::well(r, if response.hovered() { PANEL_HI } else { INSET }));
         if *checked {
             paint_check(painter, r.translate(vec2(0.5, 1.0)), Stroke::new(2.4, Color32::from_black_alpha(200)));
-            paint_check(painter, r, Stroke::new(2.2, AMBER_BRIGHT));
+            paint_check(painter, r, Stroke::new(2.2, pal().accent_bright));
         }
         focus_ring(ui, &response, rect);
     }
@@ -1193,7 +1197,8 @@ fn segments<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, &str
     if let Some(chip) = chip {
         painter.add(metal::slab(ui.ctx(), chip, Slab::Steel, 0.0, true));
         let bar = Rect::from_min_max(pos2(chip.min.x + 6.0, chip.max.y - 4.0), pos2(chip.max.x - 6.0, chip.max.y - 2.0));
-        painter.add(metal::vgrad(bar, AMBER_BRIGHT, AMBER_DIM));
+        // (The accent marks what is chosen: TA Reborn's brass, a theme's in the HUD.)
+        painter.add(metal::vgrad(bar, pal().accent_bright, pal().accent_dim));
     }
     for (i, ((segment, seg), text)) in segments.iter().zip(&hits).zip(galleys).enumerate() {
         let inner = segment.shrink(2.5);
@@ -1243,6 +1248,10 @@ fn segmented_list<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T
             }
         })
         .response;
+    // (Named by the choices it holds, as the row of them is read: a list with no name said
+    // nothing of what it chose. A caller with a caption of its own names it after this.)
+    let name = options.iter().map(|(_, label)| shown_label(label)).collect::<Vec<_>>().join(", ");
+    ui.ctx().accesskit_node_builder(response.id, |node| node.set_label(name));
     if changed {
         response.mark_changed();
         crate::sound::play(ui.ctx(), crate::sound::UiSound::Toggle);
@@ -1263,9 +1272,29 @@ pub enum Mark {
     Error,
 }
 
-/// A small square status indicator.
+impl Mark {
+    /// What the mark says, for a screen reader (translated where it is said).
+    pub fn name(self) -> &'static str {
+        match self {
+            Mark::Ok => n("OK"),
+            Mark::Absent => n("Not present"),
+            Mark::Error => n("Error"),
+        }
+    }
+}
+
+/// A small square status indicator, its state named for a screen reader ([`Mark::name`]).
 pub fn status_mark(ui: &mut Ui, mark: Mark) -> Response {
+    status_mark_named(ui, mark, Some(t(mark.name())))
+}
+
+/// [`status_mark`] named `name` for a screen reader, or not at all (`None`) where the words
+/// beside it say everything (a row that reads "Battle Tactics: not found").
+pub fn status_mark_named(ui: &mut Ui, mark: Mark, name: Option<&str>) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+    if let Some(name) = name {
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), name));
+    }
     let r = rect.shrink(1.5);
     let painter = ui.painter();
     match mark {
@@ -1294,6 +1323,7 @@ pub fn pill(ui: &mut Ui, text: &str, color: Color32) -> Response {
     let text = galley(ui, RichText::new(t(text)).font(strong(11.5)).color(color).extra_letter_spacing(crate::i18n::tracking(1.3)));
     let size = vec2(text.size().x + 36.0, 26.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), text.text()));
     let painter = ui.painter();
     painter.add(metal::slab(ui.ctx(), rect, Slab::Slot, 0.0, false));
     painter.add(metal::lamp(pos2(rect.min.x + 13.0, rect.center().y), 3.5, color, 1.0));
@@ -1327,10 +1357,16 @@ pub fn chip(ui: &mut Ui, text: &str, on: bool) -> Response {
     response
 }
 
-/// A tiny tag such as "FOLDER" or "v1.2": a small dark slot with coloured lettering.
+/// A tiny tag such as "FOLDER" or "v1.2": a small dark slot with coloured lettering. In a row that
+/// wraps (`horizontal_wrapped`), one wider than the whole row wraps its words within it, taller,
+/// rather than running out of it.
 pub fn tag(ui: &mut Ui, text: &str, color: Color32) -> Response {
-    let text = galley(ui, RichText::new(t(text)).font(strong(10.5)).color(color).extra_letter_spacing(crate::i18n::tracking(0.8)));
-    let (rect, response) = ui.allocate_exact_size(vec2(text.size().x + 12.0, 18.0), Sense::hover());
+    let words = RichText::new(t(text)).font(strong(10.5)).color(color).extra_letter_spacing(crate::i18n::tracking(0.8));
+    let row = ui.max_rect().width();
+    let text = galley(ui, words.clone());
+    let text = if ui.layout().main_wrap() && text.size().x + 12.0 > row && row > 24.0 { wrapped_galley(ui, words, row - 12.0) } else { text };
+    let (rect, response) = ui.allocate_exact_size(vec2(text.size().x + 12.0, (text.size().y + 4.0).max(18.0)), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, ui.is_enabled(), text.text()));
     ui.painter().rect(rect, CornerRadius::same(2), Color32::from_black_alpha(90), Stroke::new(1.0, color.gamma_multiply(0.4)), StrokeKind::Inside);
     ui.painter().galley(rect.center() - text.size() / 2.0, text, color);
     response
@@ -1937,6 +1973,53 @@ mod tests {
         assert_eq!(ctx.memory(|m| m.focused()), Some(ids[12]));
         assert!(offset > 300.0, "focused button was revealed: {offset}");
         assert!(clip.contains_rect(focused_rect), "focused control must be fully visible: {focused_rect:?} in {clip:?}");
+    }
+
+    /// A tag wider than the row that wraps it wraps its words within the row, taller; a short
+    /// one, or one in a row that does not wrap, keeps to a line.
+    #[test]
+    fn a_tag_wider_than_its_wrapping_row_wraps_within_it() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let long = "VERSION: 1.0.0-RELEASE-CANDIDATE.12+BUILD.20261115.WINDOWS-X86_64-NIGHTLY";
+        let mut rects = Vec::new();
+        ctx.run_ui(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(240.0, 400.0))), ..Default::default() }, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                rects.push(tag(ui, "FOLDER", Color32::WHITE).rect);
+                rects.push(tag(ui, long, Color32::WHITE).rect);
+            });
+            ui.horizontal(|ui| rects.push(tag(ui, long, Color32::WHITE).rect));
+        }).drop_without_applying_deltas();
+        let (short, wrapped, unwrapped) = (rects[0], rects[1], rects[2]);
+        assert_eq!(short.height(), 18.0, "a short tag keeps to a line");
+        assert!(wrapped.width() <= 240.0 + 0.5 && wrapped.height() > 30.0, "wrapped within the row: {wrapped:?}");
+        assert!(unwrapped.width() > 240.0 && unwrapped.height() == 18.0, "a row that does not wrap is left as it was: {unwrapped:?}");
+    }
+
+    /// What a screen reader is told of the painted words: a pill's, a tag's, a fitted title's
+    /// (whole, though cut short on the screen), a card's title and a status mark's state; a mark
+    /// whose row says it all (`status_mark_named` without a name) says nothing of its own.
+    #[test]
+    fn painted_words_are_read_by_screen_readers() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        ctx.enable_accesskit();
+        let mut output = ctx.run_ui(input(None), |ui| {
+            ui.set_max_width(160.0);
+            pill(ui, "ORIGINAL GAME NOT FOUND", RED);
+            tag(ui, "EARLIER VERSION", AMBER);
+            fitted_title(ui, "TOTAL ANNIHILATION REQUIRED", 38.0, TEXT_BRIGHT);
+            card_title(ui, "DETECTED CONTENT");
+            status_mark(ui, Mark::Error);
+            status_mark_named(ui, Mark::Ok, None);
+        });
+        output.textures_delta.clear();
+        let nodes = output.platform_output.accesskit_update.expect("an accessibility tree").nodes;
+        let labels: Vec<&str> = nodes.iter().filter(|(_, node)| node.role() == egui::accesskit::Role::Label).filter_map(|(_, node)| node.value()).collect();
+        for words in ["ORIGINAL GAME NOT FOUND", "EARLIER VERSION", "TOTAL ANNIHILATION REQUIRED", "DETECTED CONTENT", "Error"] {
+            assert!(labels.contains(&words), "{words:?} in {labels:?}");
+        }
+        assert!(!labels.contains(&"OK"), "the unnamed mark: {labels:?}");
     }
 
     #[test]

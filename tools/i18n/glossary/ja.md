@@ -108,6 +108,7 @@ Unit, map and planet names stay in English (they appear in English in game).
 | reserve / transport berth (Conquest) | 予備 / 輸送枠（出撃枠） |
 | compatibility playback | 互換再生 |
 | livery / pattern / texture slot / trim (skin editor) | 塗装 / 模様（パターン） / テクスチャスロット / 縁取り |
+| Supreme Commander, Forged Alliance (a space either side in Japanese text) / the original Supreme Commander / import it again (label: 再インポート) / the launcher's footer | Supreme Commander の陣営 / 初代 Supreme Commander / もう一度インポート / ランチャーのステータスバー |
 
 ## Achievements
 
@@ -481,3 +482,91 @@ Years have no thousands separator (3977年, 212–3977年). Headings keep proper
 | stamps RECOVERED, BY ORDER OF THE COUNCIL, TRANSMITTED ON ALL BANDS, RESTRICTED, FOR TRAINING USE | 回収済、評議会命令、全周波数で送信、部外秘、訓練用 |
 | stamps UNDELIVERED, INTERCEPTED, FLAGGED FOR CORRECTION, SEALED UNTIL NEEDED, CLASSIFIED | 未配達、傍受、修正対象、有事まで封印、機密 |
 | FIGHT IT (caption before the campaigns that fight a chapter) | 参戦 |
+
+## A mod's presentation in the launcher (`pages/mods.rs`, `ta_data/src/presentation.rs`)
+
+The check's notes are polite sentences, the English colon split into two sentences (。); what to do
+ends in 〜してください. `mod.toml`, `media/banner.png`, PNG, JPEG, GIF, http:// and https:// stay as
+they are, the `media` folder keeps its name (MODのmediaフォルダー); parentheses full width
+（media/banner.png）.
+
+| English | 日本語 |
+|---|---|
+| banner (a mod's: its card and the top of its page) / icon | バナー / アイコン |
+| gameplay preview (an animated GIF) / PLAY PREVIEW | ゲームプレイのプレビュー / プレビューを再生 |
+| screenshot(s) / SCREENSHOTS / Screenshot {n} of {count}, {n} of {count} | スクリーンショット（{count}枚） / スクリーンショット / スクリーンショット {n}/{count}、{n}/{count} |
+| MOD PAGE (a link to the mod's web page) / link / web address | MODページ / リンク / ウェブアドレス |
+| PRESENTATION (the report's group: how a mod shows in the library) | ライブラリでの表示 |
+| mod.toml's {key} names {path} / a path read from the mod's folder | mod.tomlの{key}が指定している{path} / MODのフォルダーを基準にしたパス |
+| animated GIF / still picture / picture editor | アニメーションGIF / 静止画 / 画像編集ソフト |
+| blurred / sharp / cut off (a picture) | ぼやけて表示 / くっきり表示 / 切り取られる |
+| Give it more pixels: 1280 × 640 at best | 解像度を上げてください。1280 × 640が最適です。 |
+
+## A mod's interface theme (`pages/mods.rs`, `settings.rs`, `ta_data/src/presentation.rs`)
+
+The interface is UI here, as in クラシックUI and UIの拡大率 (the Options category itself stays
+「インターフェース」). HUD stays HUD. {extras} (its own font, pictures behind its panels) is joined
+by the code with an ASCII ", " and takes も: 「HUDがこの配色で表示され、{extras}も使われます」.
+The check's notes follow the presentation notes above (two sentences, 〜してください).
+
+| English | 日本語 |
+|---|---|
+| interface theme / INTERFACE THEME (the mod page's caption) | UIテーマ |
+| MODS' INTERFACE THEMES (the switch, in 「オプション」→「インターフェース」) | MODのUIテーマ |
+| these colours (the theme's) / the mod's colours | この配色 / そのMODの色 |
+| accent (colour) / text | アクセントカラー / テキスト |
+| font / its own font / pictures behind its panels | フォント / 独自のフォント / パネルの背景画像 |
+| the HUD draws its own metal there (the side's panel tiles in place of a picture) | HUDはその部分に本来の金属の質感を描きます |
+| the HUD keeps TA Reborn's own | HUDのその部分にはTA Reborn本来の色が使われます / HUDはTA Reborn本来のフォントのままです |
+| the HUD does without it | HUDはこのファイルなしで表示されます |
+| a contrast of {ratio}:1 / {least}:1 reads well | コントラスト比が{ratio}:1 / {least}:1以上なら読みやすくなります |
+| # and six hexadecimal digits | #に続けて16進数6桁 |
+| side (a theme's, named as sidedata.tdf names it) | 陣営（陣営{side}、ゲームの陣営：{sides}） |
+| Off: TA Reborn's own always | オフにすると、常にTA Reborn本来の表示になります |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | 日本語 |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name}は{other}と同時に有効にできません。どちらかを無効にしてください / 併用不可：{mods}（前提MOD：{mods}と並ぶ） |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version}以降 / 必要なTA Reborn：{version}以降（現在は{current}） |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | より新しいTA Rebornが必要 |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / MODが動作する最も古いTA Rebornのバージョン |
+
+## A mod's mod.toml as read, its load order (`presentation.rs`, `validation.rs`, `modlist.rs`)
+
+The notes follow the presentation notes above (two sentences, 〜してください). `[table]`, `[{table}]`,
+`depends`, `load_after`, `conflicts`, `panel_texture` and `docs/MODDING.md` stay as they are.
+{found} and {expected} sit in 「mod.tomlの{key}の値が{found}になっていますが、このキーに指定するのは{expected}です」.
+
+| English | 日本語 |
+|---|---|
+| key (mod.toml's) / a [table] line / table | キー / [table]の行 / テーブル |
+| reads past it (a key it does not know) / leaves it out (a value of another kind) | 読み飛ばされます / この値を除外します |
+| text in quotes / a whole number / a number / true or false / a date / a list in square brackets / a table | 引用符で囲んだテキスト / 整数 / 数値 / trueまたはfalse / 日付 / 角かっこで囲んだリスト / テーブル |
+| a later TA Reborn / older TA Reborns / a slip of the pen | より新しいTA Reborn / 古いバージョンのTA Reborn / 書き間違い |
+| need each other in a circle / nest more than 64 deep | 循環して互いを必要としている / 64段を超える深さ |
+| plates (the HUD's, panel_texture tiled on them; beside パネル, the panels' colour) / the side's own metal plates | プレート（プレートの画像） / 陣営本来の金属プレート |
+| TURN OFF {name} / STOP PREVIEW (beside ENABLE {name}, PLAY PREVIEW) | {name}を無効化 / プレビューを停止 |
+
+## The launcher's QA fixes: a damaged service record, unreadable profiles, skins, errors (`profile_page.rs`, `profiles.rs`, `play.rs`, `skins.rs`, `http.rs`, `widgets.rs`)
+
+Reasons inserted after 「…：{error}」 or {why} are polite clauses without 。 (サーバーに接続できませんでした);
+the network's question stays one (サーバーが見つかりませんでした。インターネットに接続されていますか？).
+Shortcut key names stay as keyboards print them (Alt, Ctrl, Shift, Cmd, Option, Enter, Esc, Tab, Home,
+End). Words only a screen reader says are natural spoken phrases ({content}を検出しました).
+
+| English | 日本語 |
+|---|---|
+| START A FRESH CAREER (the damaged service record set aside) / PUT IT RIGHT | 新しい戦績を始める / 修復する |
+| set aside (the damaged record kept in the profile folder) / career file (career.toml) | 別に保管 / 戦績ファイル |
+| unreadable profile, PROFILES THAT CANNOT BE READ / MOVE TO RECYCLE BIN | 読み込めないプロフィール / ごみ箱に移動 |
+| SERVICE RECORD UNREADABLE / CAREER NEEDS ATTENTION (the Play page's title) | 戦歴を読み込めません / 戦績に問題があります |
+| the Play / Profile / Maps page (in sentences) | 「プレイ」ページ / 「プロフィール」ページ / 「マップ」ページ |
+| YOURS AND ALLIES / ENEMY UNITS / YOUR SKINS (filter) / KEEP BOTH (an id already installed) | 自軍と味方 / 敵ユニット / 自分のスキン / 両方残す |
+| Hue / Saturation and brightness (the skin editor's colour picker) | 色相 / 彩度と明度 |
+| screen-reader marks OK / Not present / Error | 正常 / なし / エラー |
+| RUNNING (the PLAY button while the game runs) | 実行中 |
+| {seconds} s / SHOW {count} MORE / SHOW THE LATEST TEN | {seconds}秒 / 残り{count}件を表示 / 最新10件のみ表示 |
+| LEGAL / THE PROJECT (About page headings) / MUSIC OPTIONS | 法的情報 / プロジェクト / 音楽のオプション |
+| the launcher crashed / exception {code} | ランチャーがクラッシュしました / 例外{code} |

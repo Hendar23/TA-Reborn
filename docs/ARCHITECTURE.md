@@ -294,7 +294,13 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   and the explosion event says how far through the tick, for the client to draw the last
   stretch and set the blast off as the drawn shot arrives); TA/Spring edge falloff; deaths run
   `Killed`, spawn wrecks, and trigger `ExplodeAs` blasts (which can chain; a blast no archive
-  has is none, as in TA: see FORMATS.md).
+  has is none, as in TA: see FORMATS.md). A piercing shot (`noexplode=1`: the Commanders'
+  D-gun) goes off at nothing: it harms each unit it passes through, and each within its area of
+  effect of its flight (half its `areaofeffect`, 24 px for the D-gun) once it is that far from
+  the gun (never back over the Commander's side, where its builders stand), and hits the
+  features in its way as its blast would (trees catch fire by its `firestarter`, 70 for the
+  D-gun, the rest are destroyed, a wreck heap and all); meeting the ground or the water it runs
+  on along it, to the end of its flight (its `weapontimer`, 4 s for the D-gun).
   Aiming never kills a script's aim: the script's own `signal` ends the last one when a new
   one starts, and some guard a step from it (see FORMATS.md). A new aim is asked for only
   once the last has answered (else after three seconds): after every shot, when the target
@@ -305,8 +311,22 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   when they are the first weapon (bombers; the Phoenix and Hurricane carry an anti-air
   laser beside their bombs, and used to fire only that) or nothing else the unit carries
   can hit the target; the Commanders' D-gun is their third weapon and waits for manual
-  fire. A plane's bombs also find their own targets on patrol and attack-move with fire at will
-  (TA's bombers stand on hold fire, `StandingFireOrder=0`): what its side sees or has on radar
+  fire. A second or third weapon whose own bad targets (`wsec_`/`wspe_badTargetCategory`, not the
+  unit's `BadTargetCategory`: `UnitType::own_bad_targets`) name an attack order's target leaves it
+  to the others and keeps choosing its own targets as with no order (`Sim::takes_order`,
+  `Sim::keeps_to_own_targets`; not a command-fire weapon, nor with `+shootall`): the Skeeter
+  lasers the boat it is sent at, its anti-air missiles go for the aircraft about, else the nearest
+  enemy, and it closes to its laser's reach. Fire at will (and return fire) takes on only what its
+  side sees: a radar or sonar contact in the fog of war is fired on by an order alone (players:
+  long-range guns firing at will on radar alone, never spotted, outdid their cost), but for guns
+  directed by radar (`Sim::fires_on_radar`): those a scenario sets to be directed by a spotter
+  (`Unit::radar_guided`, a placement's `radar_guided = true`), and all of a player with a targeting
+  facility at work (`IsTargetingUpgrade`: Core Contingency's Targeting Facility,
+  `Player::radar_targeting`, set at the economy's end from the facilities finished, switched on,
+  their upkeep paid and not paralysed, as radars count: `Sim::working`; its owner's units only,
+  not its allies', though they fire on what the team's radar shows). A plane's
+  bombs also find their own targets on patrol and attack-move with fire at will
+  (TA's bombers stand on hold fire, `StandingFireOrder=0`): what its side sees
   within its bombs' lead plus 160 px (`Sim::bomber_lookout`; the lead is 460 to 565 px for
   TA's bombers, beyond their 350 px sight), the nearest first. It keeps the target for its runs
   (not cleared after a drop; a building through the turn out of its sight as well,
@@ -319,8 +339,18 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   aircraft hit them in flight: bombs fall past the other bombers of a strike (ten Thunders
   over one target used to shoot each other down) and shells pass under planes overhead; no
   shot strikes a friendly plane in flight, and a plane shot down in the air blows up without
-  touching the aircraft flying round it. Only `waterweapon`s reach what is under the water
-  (`Sim::submerged`: submarines, units on the sea bed covered by it), by shot or blast.
+  touching the aircraft flying round it. Only `waterweapon`s reach what is wholly under the water
+  (`Sim::submerged`, `Sim::submerged_at`: submarines, TA's underwater buildings standing on the sea
+  bed whatever their height, other units on the sea bed covered by it), by shot or blast, of their
+  own accord or by an order (an attack order none of a unit's weapons can reach ends at once; a
+  destroyer sent at a submarine closes to its depth charges' reach, not its guns'). Torpedoes reach
+  only what reaches into the water (`Sim::in_water`). A unit partly in the water is met where it
+  meets the water (`reach_sphere`): by torpedoes at its collision sphere with the middle no higher
+  than the surface, by other weapons no lower, which aim at its part out of the water (aimed at its
+  middle under the surface, a laser went off on the water in front of an amphibious K-bot). A
+  torpedo fired under its target's depth rises to it over its first 48 px and runs level at it
+  (`projectiles::torpedo_aim`), as one sent along the straight line up from a submarine ran into
+  the sea bed rising to the shallows, and runs at least as far as its range.
   `toairweapon` weapons engage only aircraft, other direct-fire and guided weapons both,
   shells and bombs only the ground. A weapon takes its bad targets on last, only when no other
   enemy is in reach, and turns to a better one coming into reach (`Sim::bad_target`,
@@ -399,7 +429,9 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
 * **Vision** (`vision.rs`): per-player line of sight, radar, sonar and jamming on 32 px
   cells, rebuilt from precomputed disc spans every 6 ticks, plus sticky "explored" bits.
   `Sim::seen_by` gives Visible / Radar / Hidden; automatic targeting ignores hidden units
-  (radar contacts can be engaged). Radar doesn't see what is under the water; sonar does.
+  (radar contacts are engaged by an order, or at will by guns directed by radar). Radar doesn't
+  see what is wholly under the water (`Sim::submerged`: submarines, underwater buildings); sonar
+  does.
   Deterministic, so the AI and targeting may use it.
   TA's "true" line of sight (`GameRules::true_sight`, `Sim::set_true_sight`): hills hide
   what is behind them. The ground's height at each cell's centre (the sea's surface over
@@ -413,6 +445,9 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   the water (ships, and anything on the bottom; hovercraft and aircraft spared) loses the
   map's `waterdamage` in health, without scripts, alerts or a killer's credit. A second
   being the unit, as Spring's TA engine read it.
+* **Self-repair** (TA's `HealTime`, its Commanders' 27; `Sim::heal_units`, after the acid seas):
+  a finished unit of a type that gives one regains 100 hit points every `HealTime` seconds, a share
+  each tick, up to its full health, at no cost (docs/FORMATS.md).
 * **Orders**: move, attack, fight (attack-move), patrol (reached points cycle to the back of
   the queue; builders assist, repair and reclaim beside the route), guard (follow; builders
   assist the guarded unit's construction), build, repair, reclaim, capture, load, unload,
@@ -434,7 +469,9 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   modules with no spray), and a unit that cannot move is not sent out and holds nothing up
   (ESC's `ALL_L2` stays on its lab's pad). Taking the unit in
   production off the queue takes its frame apart, its metal back. The unit in production rides
-  the factory's pad (`QueryBuildInfo`'s piece, `Sim::follow_build_pad`), but a ship is built at
+  the factory's pad (`QueryBuildInfo`'s piece, `Sim::follow_build_pad`), turned as the pad is
+  turned (TA's plants spin it while they build: docs/FORMATS.md; `unit::piece_world_heading`) and
+  keeping the heading it was left with when done, but a ship is built at
   the surface, where it floats once done (a shipyard's pad is under the water, the Core's yard
   22 px deep), and a hovercraft on a pad under the water on it too. Construction aircraft at work
   face what they build and sway round it, as TA's do (`Sim::drift_round`, `Unit::drift`): once
@@ -450,7 +487,9 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   what the work done so far is worth less what it was worth before, so a build costs
   exactly its price. Repair, reclaiming (features and own units), resurrection, capture and
   stockpiled missiles count their work the same way; `build_progress` and the other 0..1
-  progresses are derived from it.
+  progresses are derived from it. Capturing a unit is four times its cost in work (its metal, a
+  sixtieth of its energy and 20), never more than two minutes of a Commander's (300 worker
+  time; TA's Galactic Gate, a campaign building costing 197,485 metal, took 51 minutes).
 * **Construction under a stall**: each tick a builder's work is scaled by the stall factor
   (what the stores can pay of the demand); the last sliver of a build always gets at least
   one unit of work, so a starved economy still finishes what it builds instead of leaving it
@@ -488,10 +527,14 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   are hidden from enemies unless one is within `MinCloakDistance`; firing reveals them.
 * **Veterancy**: kills earn experience (victim value / killer value); veterans reload up to
   30% faster, scatter up to 60% less and take up to 30% less damage.
-* **Reclaim and resurrection**: features give their metal and energy; own units are taken
+* **Reclaim and resurrection**: features give their metal and energy, wreckage (a unit's corpse
+  and its heap) its metal alone whatever its file says (`Sim::reclaim_value`, `Sim::is_wreckage`:
+  docs/FORMATS.md); own units are taken
   apart like construction in reverse, refunding metal, and vanish without a wreck, in time by
   their metal as a feature is (twenty times it in worker time: a metal maker, which costs none,
-  at once). A unit is
+  at once). Either pays when it is done, as TA's reclaiming does: a feature's metal and energy
+  when it is reclaimed whole (the work stays on it if left), a unit's metal when it is gone
+  (`Unit::reclaim_owed`, kept across goes, lost with it if it dies first). A unit is
   finished once (`Unit::finished`: its `UnitCompleted`, its count in the stats, switched on and
   set to hold fire as it is finished): while its side takes it apart (`Sim::being_taken_apart`,
   a builder took work off it in the last second), other builders' work on it only mends what is
@@ -1144,6 +1187,31 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
     (`TextureLibrary::set_liveries`); `new_for_liveries` gives every unit the livery bits so
     an editor's preview can change it without new models, and without a livery draws
     Reborn's own to the pixel (a GPU test holds it so).
+* **Models with surfaces of their own** (`model/surfaced.rs`; `objects3d/<name>.surface`, the
+    models made of Supreme Commander's units): `ModelLibrary::add_surfaced` lays a model's
+    vertices out with the surface's texture coordinates and normals, shared by the polygons
+    round them (a vertex of the library's for each of the 3DO's and its material), none of
+    Reborn's kit, caps or rounding. A face's `layer` is its material's slot with no frames (bits
+    16-23 zero): bit 9 of the shader's flags. The paint is one array of BC3 layers of 512² with
+    every mip (`SurfaceTextures`; decoded to RGBA8 where the card has no block compression),
+    three a material (colour; specular and team colour; normals), asked for the first time a
+    model of the material is drawn (`prepare`), read and made BC3 levels on workers of their own
+    (`make_paint`; a texture of another size, or uncompressed, decoded and encoded again), and put
+    in the array by the frames, `FRAME_SHARE` (2 ms) of a frame at most (a film on a fixed clock,
+    `set_paint_waits`, waits for all it asks); kept for the battle and let go as the next starts
+    (`Renderer::release_surface_paint`). The array grows `GROWTH` (32) materials at a time, what
+    it held copied over, in an error scope: refused, it stays as it was and the rest are drawn in
+    their colours on average. A storage buffer tells the shader each slot's layers (`u32::MAX`
+    until read: the face in its colour on average, the vertex's).
+    The shader takes the colour (in sRGB), the player's colour where the specular map's alpha
+    says, gloss and mirroring from its green and red (strong mirroring brightens the paint to
+    polished metal: Forged Alliance added the mirrored sky over dark paint), lights from its
+    blue (out when the unit's lights are), and the normal map's relief through the screen-space
+    tangent frame (`mapped_normal`). Ray-traced reflections take the vertex's colour. A model
+    whose surface names a `far` one is drawn as that one under `FAR_PIXELS` across, a unit or a
+    wreck drawn as itself the frame before (`DrawInstance::key`) down to `FAR_PIXELS_BACK`
+    (`detail_for`, in either art style; same pieces). A surface that does not read or fit leaves
+    its model drawn as TA draws its faces (`add_plain`: no kit, caps or halves).
 * **Sprites**: shelf-packed atlas, 4096² to begin with, growing 4096 texels at a time (taller,
   then wider: each widening a new column of shelves; a big mod's a little over 8192 × 16384 is
   12288 × 16384, not twice that) up to the largest texture the device takes, a big mod's
@@ -1592,7 +1660,10 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   rally point and a builder off factory duty repairs them (free in TA; hurt warships go
   back off the shipyard, where a naval constructor kept for it mends them), and fire is
   concentrated on the enemy in reach whose loss costs the most firepower per point of
-  damage, just enough guns on each for a quick kill.
+  damage, just enough guns on each for a quick kill. In reach by the weapons that would take
+  the order (`SkirmishAi::ground_target_range`): those that reach the target where it stands, as
+  the simulation has it (`Sim::submerged_at`, `Sim::in_water_at`), and not a second weapon
+  keeping to its own targets (`Sim::keeps_to_own_targets`: a Skeeter's missiles on a boat).
 * `navy.rs`: when the sea reaches within gun range of an enemy base, a shipyard (early if
   the land army is stranded, first of all when there is no room on land), and a second and
   a third where the war is at sea (the ground army can't get across) once the economy
@@ -1739,7 +1810,16 @@ with reduced flashes); the painted art has the season's calendar (December, Janu
 `game.rs` owns the sim, local input → commands, the fixed-step loop, AI players and
 events → `effects.rs` and `audio.rs` (for films, `TA_SOUND_LOG` mixes the audio offline on the
 frames' clock and writes down what plays as the camera hears it, from the engine's record of
-what it tells the mixer: `sound_log.rs`, `ta_audio::playlog`). The viewer's fog of war hides enemy units, effects
+what it tells the mixer: `sound_log.rs`, `ta_audio::playlog`). Orders the player gives wait for
+their tick (single player the next one, multiplayer the host's bundle), and while the battle is
+paused that is a while: so meanwhile `Game::sim` shows them given (`Game::show_orders_ahead`: the
+game itself held aside, and a copy of it in its place with them applied by `Sim::preview`, every
+order given afterwards given to the copy too; what tells units only, `shown_ahead`). Everything the
+interface draws and goes by reads the copy (routes, plans, queues, switches; a second building
+queued after the first), and the game is put back before anything goes on (`Game::settle`: a tick,
+a copy of it taken, another put in its place), so replays, saves and every machine have the orders
+at their tick as before; in multiplayer those on their way (`Game::in_flight`, dropped as they come
+back in a bundle) are shown until they do. The viewer's fog of war hides enemy units, effects
 and projectiles outside sight; radar contacts show as blips, and the enemy structures seen
 before stand where they were as ghosts (`fog.rs`). `scene.rs` interpolates poses
 and the scripts' piece states between ticks and poses only units inside the view (its
@@ -2264,7 +2344,11 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   F4 (metal) and Alt+L (sight). N looks at the next of our units off the screen, in turn (of
   the selection, if any); Delete clears the messages and the chat (TA's F12, which here takes
   a screenshot). Dragging while placing a building lays
-  out a row of them. T follows a unit, Alt+click pings.
+  out a row of them. While a building is placed, the ground it will take shows as TA's grid of the
+  16 px cells it snaps to, under the ghost and each site of a row (`hud::footprint_on_ground`: lines
+  through every cell's corner over the ground or the sea, edged dark, in the ghost's colour from
+  `palette::allowed_rgba`/`blocked_rgba`; far out, the outline alone); Shift's squares round the
+  plans are its outline. T follows a unit, Alt+click pings.
 * **Models** are drawn with back faces culled, as TA did (its 3DO models are consistently
   wound; drawn double-sided, the undersides of ground plates and the insides of shells
   showed as black or wrongly textured faces). Shadows and ambient occlusion still use both
@@ -2324,10 +2408,14 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
     job and first order; its health beside its picture; its rank), beside the kinds of a mixed
     selection and the switches that narrow it, its queue, or for one kind with nothing queued
     its figures at a glance (`info::summary_figures`, in the information page's table, F1 a
-    click away); at the right, for a selection of ours, the command plate: ORDERS in rows by
+    click away), under DETAILS first what the selection makes and uses of metal and energy a second
+    now, all of it together (`Sim::unit_flows` summed, as TA's unit bar gives the first unit's; with
+    a queue shown, DETAILS has these alone); at the right, for a selection of ours, the command plate: ORDERS in rows by
     kind (`orders::available`: moving and fighting, work, the special ones, each with its key),
     beside them the STANCE (the standing orders as labelled buttons showing what each is set to,
-    self-destruct last and apart; a column of glyphs where the room is short), and the build menu
+    switches some on and some off ON/OFF with a half-lit lamp, as the classic's mixed art, a press
+    all one way: `Game::selection_power`; self-destruct last and apart; a column of glyphs where
+    the room is short), and the build menu
     grouped by `Purpose` on tabs with the costs on the pictures, as many across as two rows
     need (three to nine; `BuildGrid::fit` sizes the pictures to the room, on pages when they do
     not all fit). Where the room is short the plates give up their words in turn until the
@@ -2412,7 +2500,11 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   `game/clicks.rs`: the wrench over what the selected constructors would repair, help build
   or assist, a factory's production included; the shield for standing guard; TA's air-strike
   sight in place of the attack sight when the units that would attack are all bombers,
-  `clicks::bombers_only`); the system cursor is hidden in battle.
+  `clicks::bombers_only`); the system cursor is hidden in battle. Over the interface the pointer's
+  own, but over a unit's mark on the minimap that an order given there would aim at
+  (`Game::minimap_target`, from the same account as the minimap's click: the armed command's unit,
+  or the enemy a right-click attacks), that order's, the mark ringed in its colour
+  (`Game::minimap_aim`, set as the minimap is drawn).
 * **Classic interface** (`hud_classic.rs`, its data in `hud_classic_art.rs`; setting
   `gameplay.classic_interface`, hidden `--classic-ui` for captures): TA's own panels in
   place of ours, built from its interface data and scaled from its 640×480 layout to the
@@ -2711,8 +2803,12 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   plans never stand in the way of one building put down (`Game::own_plans_under`): put down
   again on one of them (the same building, the same footprint) it undoes it, with
   `Command::EditQueue`; another over them takes their place (with Shift they are taken out of
-  the queue, the rest kept; without, the new order replaces the queue anyway). A row dragged out
-  with Shift keeps clear of them. A right-click ends the placing; with Shift it also gives the
+  the queue, the rest kept; without, the new order replaces the queue anyway). Other orders are
+  taken back as plans are, with Shift: a reclaim of what the selection already has queued for
+  reclaim (`Game::take_back_queued`), and a move clicked within 48 px of a waypoint it already
+  has (`Game::take_back_move`: each unit drops its own move nearest that waypoint, so a group's
+  moves to their places round it go together), with `Command::DropOrder`, matched as the queue
+  stands when it runs. A row dragged out with Shift keeps clear of them. A right-click ends the placing; with Shift it also gives the
   right-click's order, queued (a Commander told to build a plant, then sent on). While placing,
   every constructor's queued buildings show as faint ghosts; the ghosts, and the one being
   placed, are drawn where the building will stand (`Sim::resting_pos`, as `Sim::spawn_unit`
@@ -2757,7 +2853,7 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   battle; the duties themselves are client state, kept beside the commands in a saved game
   (`Record::duties`, from `RECORD_VERSION` 44, `Record::with_duties` at the three places that
   save: autosave, quick save, Save game) and put back by `Game::restore_duties` when the save has
-  caught up (`Playback::duties`); replays have none. Any `Command::Order`, `Formation` or `EditQueue` that comes through `Game::issue`
+  caught up (`Playback::duties`); replays have none. Any `Command::Order`, `Formation`, `EditQueue` or `DropOrder` that comes through `Game::issue`
   takes the units it names off duty (`Game::release_from_duty`: clicks, keys, buttons, the build
   menu, Stop); a Commander on duty that an enemy hits, or that has armed enemies in sight close by
   (`DutyEvent::Danger`, told by `DutyOfficer::take_events`), leaves it at once. Units on duty are left
@@ -2803,8 +2899,9 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   anything afloat sink, buildings blown to nothing collapse; big units set off later blasts
   (`Pop`). It is shown once: the simulation names the unit a wreck is of
   (`SimEvent::FeatureCreated`'s `wreck_of`), so a building's wreck stands in its place at once
-  and the building does not come down beside it, and a wreck under a sinking hull (which settles
-  on the bottom) or a falling aircraft is not drawn until they come to rest
+  (lying as its unit faced: a feature's model is turned by its heading, `features.rs`'s
+  `model_root`) and the building does not come down beside it, and a wreck under a sinking
+  hull (which settles on the bottom) or a falling aircraft is not drawn until they come to rest
   (`Effects::unsettled_wrecks`); a frame killed unfinished leaves no charred model
   (`UnitDestroyed`'s `complete`), and a unit taken off the map (`removed`: reclaimed, given up)
   neither that nor a fire. Every wreck left on land burns, then smoulders, the longer the bigger
@@ -3039,8 +3136,13 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   other keys). A library lock covers destination checks and publication. Existing targets
   must be ordinary editor-owned folders; a disabled unrelated mod cannot be overwritten.
   The complete replacement, including retained extra assets/documents, is prepared in a
-  private `.installing` folder before the old directory is moved aside. A failed publish
-  restores the old directory, or reports the retained backup if restoration also fails.
+  private `.installing` folder before the old directory is moved aside (to
+  `.editor-<pid>-<n>-<folder>.old`; each rename retried a few seconds where Windows refuses it
+  for a file held open). A failed publish restores the old directory, or reports the retained
+  backup if restoration also fails; a save stopped between the two renames is put right by the
+  next save and by the launcher's start (`ta_vfs::package::restore_editor_backups`). The
+  `mod.toml` is written over the earlier one (`ta_vfs::mods::write_manifest`): what was added by
+  hand (co-authors, keys TA Reborn does not know, comments) is kept.
   Copying rejects links and bounds depth, entry count and total bytes. The save then enables
   the mod in settings and mounts it over the running game's data (a new VFS with the same
   layers), so the skirmish page lists the map at once. Settings failure remains a save error;
@@ -3056,7 +3158,9 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
 * **Lockstep, host as pacemaker**: every tick the host seals a bundle of the commands it
   received since the last one (its own included) and broadcasts it; every peer, host
   included, steps its own simulation with exactly those bundles, in order. Local orders
-  are sent to the host and run when they come back in a bundle (one round trip). A client
+  are sent to the host and run when they come back in a bundle (one round trip; while the battle
+  is paused, and after it until they are back, the player's own screen shows them given:
+  `Game::show_orders_ahead`, see the client's notes). A client
   sends what it ordered since it last read the network together (`Session::flush`, on
   every poll and after the frame's interface), in messages of at most `BATCH_BYTES` (1 MiB):
   a formation move of thousands of units is one message. AI players run on every machine
@@ -3583,9 +3687,9 @@ menu's briefing replays the narration through `MusicRequest::Narration`.
   ground units (the Commander's laser, the towers) never at aircraft, and `NoAutoFire` guns
   start on hold fire, which a computer player sets going, or a placement's `hold = true`
   (Iron Rain's Intimidators are their battery's, a second Core force nobody plays: set going
-  with `hold`, on stores of their own, they fire at what a radar post in the canyon sees of
-  the Arm base, every eight seconds each, as its briefing says; the post falls and they see
-  only what the Core's own units see). A wave's gunships go for whatever of the player's they
+  with `hold`, on stores of their own, and `radar_guided`, they fire at what a radar post in the
+  canyon sees of the Arm base, every eight seconds each, as its briefing says; the post falls
+  and they see only what the Core's own units see). A wave's gunships go for whatever of the player's they
   meet first, the Commander too; a wave's bombers go for the nearest of the player's units
   their side sees (above). Bombers that bomb left the autopilot's win rates as they were (21
   seeds a scenario and difficulty, Last Stand 42): the Defenders and the player's other

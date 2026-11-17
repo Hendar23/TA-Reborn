@@ -18,7 +18,17 @@ use thiserror::Error;
 
 use crate::ARCHIVE_EXTENSIONS;
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+mod manifest;
+pub use manifest::{MOUNTING_KEYS, ManifestNote, ManifestNoteKind, ValueKind, closest_key, manifest_notes, write_manifest};
+
+/// A mod's `mod.toml`. What only presents the mod (`version`, `description`, `authors`, `source`,
+/// `tags`, `media`, `links`, `theme`) reads leniently: a value of another kind than its key takes
+/// is left out, the rest read ([`manifest_notes`] tells it). What decides whether the mod is
+/// mounted (`id`, `name`, `depends`, `load_after`, `conflicts`, `requires_reborn`, `rename`,
+/// `replaces`) does not read with a wrong kind, as a manifest that is no TOML. One string where a
+/// list is wanted is a list of one, in either. (Keys it does not know are read past; written back
+/// with [`write_manifest`], they are kept.)
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ModManifest {
     /// The folder it is installed in, on disks that do not tell case apart: kept in lower
     /// case, whatever case its `mod.toml` wrote it in, as its name makes it without one (one
@@ -27,20 +37,28 @@ pub struct ModManifest {
     #[serde(deserialize_with = "lower_case")]
     pub id: String,
     pub name: String,
-    #[serde(default = "default_version")]
+    #[serde(default, deserialize_with = "manifest::loose_text")]
     pub version: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "manifest::loose_text")]
     pub description: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "manifest::loose_texts")]
     pub authors: Vec<String>,
     /// Mods that must be present and are loaded before this one.
-    #[serde(default, deserialize_with = "lower_case_list")]
+    #[serde(default, deserialize_with = "manifest::lower_case_list")]
     pub depends: Vec<String>,
     /// Mods that, if enabled, are loaded before this one.
-    #[serde(default, deserialize_with = "lower_case_list")]
+    #[serde(default, deserialize_with = "manifest::lower_case_list")]
     pub load_after: Vec<String>,
-    /// Where the mod came from (its page, e.g. on ModDB), when it was installed from there.
+    /// Mods that must not be on with this one (they change the same things in ways that break each
+    /// other): with one of them on too, neither is mounted, as with a mod it needs missing.
+    #[serde(default, deserialize_with = "manifest::lower_case_list", skip_serializing_if = "Vec::is_empty")]
+    pub conflicts: Vec<String>,
+    /// The oldest TA Reborn the mod plays in (`"1.0.7"`): in an older one it is not mounted, as
+    /// with a mod it needs missing ([`version_older`]).
     #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub requires_reborn: String,
+    /// Where the mod came from (its page, e.g. on ModDB), when it was installed from there.
+    #[serde(default, deserialize_with = "manifest::loose_text", skip_serializing_if = "String::is_empty")]
     pub source: String,
     /// Folders of the mod's own seen as TA's (`guim = "guis"`: see [`crate::Renames`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -51,8 +69,260 @@ pub struct ModManifest {
     /// placeholders a package ships here (`replaces = ["btdata.ccx"]`) instead of copying them;
     /// an author may name archives a player was told to remove. Its own archives, named like the
     /// install's, replace those without being named here ([`replaced_archives`]).
-    #[serde(default, deserialize_with = "lower_case_list", skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "manifest::lower_case_list", skip_serializing_if = "Vec::is_empty")]
     pub replaces: Vec<String>,
+    /// Words the launcher's library finds the mod by and shows on its page ("units", "total
+    /// conversion").
+    #[serde(default, deserialize_with = "manifest::loose_texts", skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// The pictures the launcher presents the mod with ([`Media`]).
+    #[serde(default, skip_serializing_if = "Media::is_empty")]
+    pub media: Media,
+    /// Web pages of the mod's beyond [`ModManifest::source`], by the words of their buttons
+    /// (`Discord = "https://…"`): http and https addresses only are opened.
+    #[serde(default, deserialize_with = "manifest::loose_links", skip_serializing_if = "BTreeMap::is_empty")]
+    pub links: BTreeMap<String, String>,
+    /// The colours (and pictures and font) its battles' interface is drawn in ([`Theme`]).
+    #[serde(default, skip_serializing_if = "Theme::is_empty")]
+    pub theme: Theme,
+}
+
+/// A mod's interface theme: the colours the game's HUD is drawn in, in battles played with the
+/// mod (the last mod in the load order with one gives them; a player may turn them off). Colours
+/// are written `#rrggbb` (or `#rgb`, `#rrggbbaa`); the pictures and the font are named from the
+/// mod's folder, as its [`Media`] are. Anything left out keeps TA Reborn's own; the shades of a
+/// colour given (its brighter and darker kinds) are made from it. (Read leniently: its
+/// `Deserialize` is `manifest`'s.)
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Theme {
+    /// The colours and pictures of every side's interface.
+    #[serde(flatten)]
+    pub look: Look,
+    /// A font (TTF or OTF) for the HUD's titles, numbers and buttons; TA Reborn's own fills in
+    /// the letters it lacks.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub font: String,
+    /// The classic HUD's own lettering (its art is TA's or the mod's own interface files).
+    #[serde(skip_serializing_if = "ClassicLook::is_empty")]
+    pub classic: ClassicLook,
+    /// A side's own colours and pictures over the rest, by the side's name (`[theme.sides.core]`,
+    /// any case).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub sides: BTreeMap<String, Look>,
+}
+
+/// The colours and pictures of a theme's interface (or of one side's).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Look {
+    /// Titles, the chosen and the main action, focus (TA Reborn's brass), and its brighter kind.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub accent: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub accent_bright: String,
+    /// Text, and its brighter kind (headings, values).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub text: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub text_bright: String,
+    /// Labels and secondary text.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub dim: String,
+    /// The panels' metal (with its lighter and darker kinds), the wells sunk in them, and lines.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub panel: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub inset: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub line: String,
+    /// Health and lamps lit; damage and warnings; radar and allies.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub good: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub bad: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub info: String,
+    /// The lettering on the HUD's buttons.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub button_text: String,
+    /// The resource bar's metal and energy.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub metal: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub energy: String,
+    /// Pictures (PNG or JPEG), tiled behind the modern HUD's plates (the command deck, the
+    /// minimap's) and its top bar, in place of the side's own metal.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub panel_texture: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub bar_texture: String,
+}
+
+/// The keys of a [`Look`]'s colours, as `mod.toml` writes them.
+pub const LOOK_COLOURS: &[&str] = &["accent", "accent_bright", "text", "text_bright", "dim", "panel", "inset", "line", "good", "bad", "info", "button_text", "metal", "energy"];
+
+impl Look {
+    pub fn is_empty(&self) -> bool { *self == Look::default() }
+
+    /// Its colour of `key` (one of [`LOOK_COLOURS`]), as written; None where it gives none.
+    pub fn colour(&self, key: &str) -> Option<&str> {
+        let value = match key {
+            "accent" => &self.accent,
+            "accent_bright" => &self.accent_bright,
+            "text" => &self.text,
+            "text_bright" => &self.text_bright,
+            "dim" => &self.dim,
+            "panel" => &self.panel,
+            "inset" => &self.inset,
+            "line" => &self.line,
+            "good" => &self.good,
+            "bad" => &self.bad,
+            "info" => &self.info,
+            "button_text" => &self.button_text,
+            "metal" => &self.metal,
+            "energy" => &self.energy,
+            _ => return None,
+        };
+        Some(value.trim()).filter(|value| !value.is_empty())
+    }
+}
+
+/// The classic HUD's own lettering in a theme.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ClassicLook {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub text: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub button_text: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub dim: String,
+    /// A button's lettering while it is held down.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub pressed: String,
+}
+
+impl ClassicLook {
+    pub fn is_empty(&self) -> bool { *self == ClassicLook::default() }
+}
+
+impl Theme {
+    pub fn is_empty(&self) -> bool { *self == Theme::default() }
+
+    /// The look of the side `side` (any case): its own, where it gives one, over the theme's.
+    pub fn side(&self, side: &str) -> Option<&Look> {
+        self.sides.iter().find(|(name, _)| name.eq_ignore_ascii_case(side.trim())).map(|(_, look)| look)
+    }
+
+    /// The colour of `key` for `side` (as written): the side's own, else the theme's. Also the
+    /// classic HUD's, `classic.text`, `classic.button_text`, `classic.dim`, `classic.pressed`.
+    pub fn colour(&self, side: &str, key: &str) -> Option<&str> {
+        if let Some(key) = key.strip_prefix("classic.") {
+            let value = match key { "text" => &self.classic.text, "button_text" => &self.classic.button_text, "dim" => &self.classic.dim, "pressed" => &self.classic.pressed, _ => return None };
+            return Some(value.trim()).filter(|value| !value.is_empty());
+        }
+        self.side(side).and_then(|look| look.colour(key)).or_else(|| self.look.colour(key))
+    }
+
+    /// The picture behind the plates (`panel`) or the top bar (`bar`) for `side`: the side's own,
+    /// else the theme's, as written.
+    pub fn texture(&self, side: &str, which: &str) -> Option<&str> {
+        fn of<'a>(look: &'a Look, which: &str) -> Option<&'a str> {
+            let value = if which == "bar" { &look.bar_texture } else { &look.panel_texture };
+            Some(value.trim()).filter(|value| !value.is_empty())
+        }
+        self.side(side).and_then(|look| of(look, which)).or_else(|| of(&self.look, which))
+    }
+
+    /// Every file it names (its pictures and its font), as written.
+    pub fn files(&self) -> impl Iterator<Item = &str> {
+        let looks = std::iter::once(&self.look).chain(self.sides.values());
+        looks.flat_map(|look| [look.panel_texture.as_str(), look.bar_texture.as_str()]).chain(std::iter::once(self.font.as_str()))
+            .map(str::trim).filter(|file| !file.is_empty())
+    }
+}
+
+/// The folder of a mod's own that holds its pictures (and, for its interface theme, its pictures
+/// and fonts): kept by the installer whole (of [`MEDIA_EXTENSIONS`]), never read by the game as
+/// TA's data.
+pub const MEDIA_FOLDER: &str = "media";
+
+/// The kinds of file (extensions, lower case) a mod's [`MEDIA_FOLDER`] keeps: pictures and fonts.
+pub const MEDIA_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "ttf", "otf"];
+
+/// How the launcher presents a mod: pictures in its folder, each named by its path from the
+/// folder (`media/banner.png`; best in its [`MEDIA_FOLDER`]). Any of them may be left out: a mod
+/// without a banner gets a plate of its own with its name. (Read leniently: its `Deserialize` is
+/// `manifest`'s.)
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Media {
+    /// A wide picture, the mod's card in the library and the top of its page (PNG or JPEG; 2:1,
+    /// 1280 × 640 at best: the card shows it whole, the page its middle).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub banner: String,
+    /// An animated GIF of the mod in play, shown in its banner: on its page, and on its card while
+    /// the pointer rests on it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub preview: String,
+    /// A square picture (256 × 256 at best), beside the mod's name.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub icon: String,
+    /// Pictures of the mod in play, on its page (the first [`MAX_SCREENSHOTS`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub screenshots: Vec<String>,
+}
+
+/// How many of a mod's screenshots its page shows.
+pub const MAX_SCREENSHOTS: usize = 12;
+
+impl Media {
+    pub fn is_empty(&self) -> bool {
+        self.banner.is_empty() && self.preview.is_empty() && self.icon.is_empty() && self.screenshots.is_empty()
+    }
+
+    /// Its screenshots that name a file, the first [`MAX_SCREENSHOTS`] of them: those shown, in
+    /// the order shown (as written).
+    pub fn shots(&self) -> impl Iterator<Item = &str> {
+        self.screenshots.iter().map(String::as_str).filter(|file| !file.trim().is_empty()).take(MAX_SCREENSHOTS)
+    }
+
+    /// Every file it names, banner first (as written: see [`media_path`]).
+    pub fn files(&self) -> impl Iterator<Item = &str> {
+        [&self.banner, &self.preview, &self.icon].into_iter().map(String::as_str).filter(|file| !file.trim().is_empty()).chain(self.shots())
+    }
+}
+
+/// The file a mod's manifest names (`media/banner.png`, from its folder `dir`), as the disk has it:
+/// each part of the path found in any case of its letters (a file system that tells cases apart,
+/// Linux's, finds what the others find). None when it names nothing there: a path that leaves the
+/// folder (`..`, a drive, a root), a part that is not there, a link, or anything but a file.
+pub fn media_path(dir: &Path, named: &str) -> Option<PathBuf> {
+    let named = named.trim().replace('\\', "/");
+    if named.is_empty() || named.starts_with('/') || named.contains(':') { return None; }
+    let mut at = dir.to_path_buf();
+    let parts: Vec<&str> = named.split('/').filter(|part| !part.is_empty() && *part != ".").collect();
+    if parts.is_empty() { return None; }
+    for (index, part) in parts.iter().enumerate() {
+        if *part == ".." || !crate::package::safe_component(part) { return None; }
+        let exact = at.join(part);
+        let next = if std::fs::symlink_metadata(&exact).is_ok() { exact } else {
+            std::fs::read_dir(&at).ok()?.flatten()
+                .find(|entry| entry.file_name().to_str().is_some_and(|name| name.eq_ignore_ascii_case(part)))?
+                .path()
+        };
+        let meta = std::fs::symlink_metadata(&next).ok()?;
+        if crate::is_link(&meta) { return None; }
+        let last = index + 1 == parts.len();
+        if last && !meta.is_file() || !last && !meta.is_dir() { return None; }
+        at = next;
+    }
+    Some(at)
+}
+
+/// Whether `url` is one the launcher opens: an http or https address.
+pub fn web_address(url: &str) -> bool {
+    let url = url.trim();
+    let lower = url.to_ascii_lowercase();
+    (lower.starts_with("https://") || lower.starts_with("http://")) && url.len() > lower.find("://").map_or(0, |at| at + 3)
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 /// A mod that does not say its version has none: "" (shown as unknown), never a made-up one.
@@ -63,11 +333,6 @@ fn default_version() -> String {
 /// A mod id as read, in lower case (see [`ModManifest::id`]).
 fn lower_case<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     <String as serde::Deserialize>::deserialize(d).map(|id| id.to_lowercase())
-}
-
-/// Mod ids as read, in lower case.
-fn lower_case_list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
-    <Vec<String> as serde::Deserialize>::deserialize(d).map(|ids| ids.into_iter().map(|id| id.to_lowercase()).collect())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,6 +356,8 @@ pub enum ModError {
     Missing(String),
     #[error("mod '{module}' depends on '{dependency}', which is not enabled")]
     MissingDependency { module: String, dependency: String },
+    /// Mods that need each other in a circle: the circle, each id followed by one it needs loaded
+    /// before it, back to the first (`a → b → a`).
     #[error("mod dependency cycle involving: {0}")]
     Cycle(String),
     #[error("mod dependency nesting exceeds 64 levels at: {0}")]
@@ -104,6 +371,36 @@ pub enum ModError {
     /// A second mod of an id an earlier folder has (the earlier one is used).
     #[error("duplicate mod id '{id}' in {}: ignored", path.display())]
     Duplicate { id: String, path: PathBuf },
+    /// Two mods on that one of them says must not be on together ([`ModManifest::conflicts`]).
+    #[error("mod '{module}' cannot be on with '{other}'")]
+    Conflict { module: String, other: String },
+    /// A mod on that needs a newer TA Reborn than this ([`ModManifest::requires_reborn`]).
+    #[error("mod '{module}' needs TA Reborn {version} or later")]
+    NeedsNewer { module: String, version: String },
+}
+
+/// This TA Reborn's version, as [`ModManifest::requires_reborn`] is compared with.
+pub const REBORN_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Whether the version `have` is older than `need` (`"1.0.6"` against `"1.0.7"`): their numbers
+/// compared in turn, a missing one 0 (`"1.1"` is `"1.1.0"`), a pre-release's or a build's suffix
+/// left out from its `-` or `+` (`"1.0.7-beta.2"` is `"1.0.7"`), as anything after a number's
+/// digits. None when `need` is no version: then nothing is held back.
+pub fn version_older(have: &str, need: &str) -> Option<bool> {
+    let parts = |v: &str| -> Option<Vec<u64>> {
+        let v = v.trim().trim_start_matches(['v', 'V']);
+        // (Its numbers alone: a suffix's dotted parts, `beta.2`, are none of them.)
+        let v = v.split(['-', '+']).next().unwrap_or_default();
+        if v.is_empty() { return None; }
+        v.split('.').map(|part| {
+            let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse::<u64>().ok()
+        }).collect()
+    };
+    let (have, need) = (parts(have)?, parts(need)?);
+    let at = |v: &[u64], i: usize| v.get(i).copied().unwrap_or(0);
+    let length = have.len().max(need.len());
+    Some((0..length).map(|i| at(&have, i).cmp(&at(&need, i))).find(|o| o.is_ne()) == Some(std::cmp::Ordering::Less))
 }
 
 /// A manifest's place as a player is shown it: its mod's folder and its name (`mymod\mod.toml`).
@@ -172,10 +469,7 @@ pub fn read_mod(path: &Path) -> Result<Option<ModInfo>, ModError> {
             }
             manifest
         } else {
-            // (A folder's whole name: "TA.Escalation" is not "TA", nor "Mod v1.2" "Mod v1".)
-            let mut manifest = implicit_manifest(&path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
-            manifest.rename = kept_renames(path, &ModKind::Directory);
-            manifest
+            implicit_folder_manifest(path)
         };
         if reserved_id(&manifest.id) {
             return Err(reserved(path, &manifest.id));
@@ -228,7 +522,7 @@ pub(crate) fn install_work_directory(path: &Path) -> bool {
         .is_some_and(crate::package::safe_component)
 }
 
-fn read_manifest(path: &Path) -> std::io::Result<String> {
+pub(crate) fn read_manifest(path: &Path) -> std::io::Result<String> {
     use std::io::Read;
     let file = std::fs::File::open(path)?;
     let mut text = String::new();
@@ -332,6 +626,16 @@ fn kept_renames(path: &Path, kind: &ModKind) -> BTreeMap<String, String> {
     renames
 }
 
+/// The manifest a folder without one is given ([`read_mod`]): named by the folder's whole name
+/// ("TA.Escalation" is not "TA", nor "Mod v1.2" "Mod v1"), with the renamed folders it uses
+/// ([`implicit_renames`]). Its id is not checked here: the installer names what it installs
+/// itself, whatever the folder of its content is called (`Base/`).
+pub(crate) fn implicit_folder_manifest(path: &Path) -> ModManifest {
+    let mut manifest = implicit_manifest(&path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default());
+    manifest.rename = kept_renames(path, &ModKind::Directory);
+    manifest
+}
+
 fn implicit_manifest(stem: &str) -> ModManifest {
     ModManifest {
         // (In lower case as a manifest's id and the settings' are: "Übermacht" is
@@ -345,7 +649,7 @@ fn implicit_manifest(stem: &str) -> ModManifest {
         load_after: Vec::new(),
         source: String::new(),
         rename: BTreeMap::new(),
-        replaces: Vec::new(),
+        replaces: Vec::new(), ..Default::default()
     }
 }
 
@@ -444,6 +748,20 @@ pub fn reserved_id(id: &str) -> bool {
 /// `ta-tools mod-install` hold to it.)
 pub fn valid_id(id: &str) -> bool {
     crate::package::safe_component(id) && (1..=MOST_ID_LETTERS).contains(&id.chars().count()) && !reserved_id(id)
+}
+
+/// The id a package (a file of a mod, or a folder) named `name` (its file's stem, or the folder's
+/// name) is installed as when it names none itself in a `mod.toml` of its own: the name's letters
+/// and digits in lower case, any script (`TA_Frenzy_1.41` gives `tafrenzy141`), the first
+/// [`MOST_ID_LETTERS`] of them, and `-mod` after them where they make an id no mod may take
+/// ([`valid_id`]: `base` gives `base-mod`, as `con` gives `con-mod`). Always a [`valid_id`]; None
+/// when the name has no letter or digit. (The launcher and `ta-tools mod-install` make it alike.)
+pub fn package_id(name: &str) -> Option<String> {
+    let id: String = name.to_lowercase().chars().filter(|c| c.is_alphanumeric()).take(MOST_ID_LETTERS).collect();
+    if id.is_empty() { return None; }
+    if valid_id(&id) { return Some(id); }
+    let id = format!("{}-mod", id.chars().take(MOST_ID_LETTERS - 4).collect::<String>());
+    valid_id(&id).then_some(id)
 }
 
 /// Whether a manifest's `[rename]` entry is one the game can follow: a folder of the mod's own
@@ -722,6 +1040,14 @@ pub fn resolve_load_order<'a>(enabled: &[String], available: &'a [ModInfo]) -> R
                 return Err(ModError::MissingDependency { module: id.clone(), dependency: dep.clone() });
             }
         }
+        // (A mod that says another must not be on with it, the other on; one that needs a newer
+        // TA Reborn than this: neither is mounted, as with a mod it needs missing.)
+        if let Some(other) = m.manifest.conflicts.iter().find(|other| *other != id && enabled_set.contains(other.as_str())) {
+            return Err(ModError::Conflict { module: id.clone(), other: other.clone() });
+        }
+        if version_older(REBORN_VERSION, &m.manifest.requires_reborn) == Some(true) {
+            return Err(ModError::NeedsNewer { module: id.clone(), version: m.manifest.requires_reborn.trim().to_string() });
+        }
     }
 
     // What loads before each mod: its dependencies, then the mods it wishes to follow.
@@ -743,31 +1069,39 @@ pub fn resolve_load_order<'a>(enabled: &[String], available: &'a [ModInfo]) -> R
     // Depth-first topological sort that visits mods in user order.
     let mut order = Vec::new();
     let mut state: BTreeMap<&str, u8> = BTreeMap::new(); // 1 = visiting, 2 = done
+    // (`path`: the mods being visited, each needing the next before it: a mod met again on it
+    // closes a circle, told whole.)
     fn visit<'a>(
         id: &'a str,
         by_id: &BTreeMap<&str, &'a ModInfo>,
         before: &BTreeMap<&str, Vec<&'a str>>,
         state: &mut BTreeMap<&'a str, u8>,
         order: &mut Vec<&'a ModInfo>,
-        depth: usize,
+        path: &mut Vec<&'a str>,
     ) -> Result<(), ModError> {
         match state.get(id) {
             Some(2) => return Ok(()),
-            Some(1) => return Err(ModError::Cycle(id.to_string())),
+            Some(1) => {
+                let from = path.iter().position(|on| *on == id).unwrap_or(0);
+                let circle: Vec<&str> = path[from..].iter().copied().chain([id]).collect();
+                return Err(ModError::Cycle(circle.join(" → ")));
+            }
             _ => {}
         }
-        if depth > 64 { return Err(ModError::Depth(id.to_string())); }
+        if path.len() > 64 { return Err(ModError::Depth(id.to_string())); }
         let m = by_id[id];
         state.insert(m.manifest.id.as_str(), 1);
+        path.push(m.manifest.id.as_str());
         for &dep in before.get(id).into_iter().flatten() {
-            visit(by_id[dep].manifest.id.as_str(), by_id, before, state, order, depth + 1)?;
+            visit(by_id[dep].manifest.id.as_str(), by_id, before, state, order, path)?;
         }
+        path.pop();
         state.insert(m.manifest.id.as_str(), 2);
         order.push(m);
         Ok(())
     }
     for id in enabled {
-        visit(by_id[id.as_str()].manifest.id.as_str(), &by_id, &before, &mut state, &mut order, 0)?;
+        visit(by_id[id.as_str()].manifest.id.as_str(), &by_id, &before, &mut state, &mut order, &mut Vec::new())?;
     }
     Ok(order)
 }
@@ -909,6 +1243,159 @@ fn comes_after(before: &BTreeMap<&str, Vec<&str>>, from: &str, to: &str) -> bool
 mod tests {
     use super::*;
 
+    /// A manifest's presentation (its tags, pictures and links) reads, and is written back as it
+    /// read (the installer writes every installed mod's manifest), the rest of it as before.
+    #[test]
+    fn a_manifests_presentation_reads_and_is_written_back() {
+        let text = "id = \"MyMod\"\nname = \"My Mod\"\nversion = \"1.2\"\ntags = [\"Units\", \"total conversion\"]\nsource = \"https://www.moddb.com/mods/mymod\"\nreplaces = [\"btdata.ccx\"]\n\n[rename]\nguim = \"guis\"\n\n[media]\nbanner = \"media/banner.png\"\npreview = \"media/gameplay.gif\"\nicon = \"media/icon.png\"\nscreenshots = [\"media/1.jpg\", \"media/2.jpg\"]\n\n[links]\n\"Home page\" = \"https://example.com\"\nDiscord = \"https://discord.gg/x\"\n";
+        let manifest: ModManifest = toml::from_str(text).unwrap();
+        assert_eq!(manifest.id, "mymod");
+        assert_eq!(manifest.tags, ["Units", "total conversion"], "tags as written");
+        assert_eq!(manifest.media.preview, "media/gameplay.gif");
+        assert_eq!(manifest.media.files().collect::<Vec<_>>(), ["media/banner.png", "media/gameplay.gif", "media/icon.png", "media/1.jpg", "media/2.jpg"]);
+        assert_eq!(manifest.links.len(), 2);
+        let written = toml::to_string_pretty(&manifest).unwrap();
+        assert_eq!(toml::from_str::<ModManifest>(&written).unwrap(), manifest, "{written}");
+        // A manifest without them writes none of them.
+        let plain: ModManifest = toml::from_str("id = \"plain\"\nname = \"Plain\"\n").unwrap();
+        let written = toml::to_string_pretty(&plain).unwrap();
+        assert!(!written.contains("media") && !written.contains("links") && !written.contains("tags"), "{written}");
+    }
+
+    /// A manifest's interface theme reads (its colours, pictures and font, the classic HUD's
+    /// lettering, a side's own) and is written back as it read; a side's colour wins over the
+    /// theme's, any case of the side's name.
+    #[test]
+    fn a_manifests_theme_reads_and_is_written_back() {
+        let text = "id = \"t\"\nname = \"T\"\n\n[theme]\naccent = \"#5ab4ff\"\ntext = \"#d6e2ee\"\npanel = \"#1a2230\"\npanel_texture = \"media/hud/panel.png\"\nfont = \"media/hud/Font.ttf\"\n\n[theme.classic]\ntext = \"#e8e8e8\"\n\n[theme.sides.CORE]\naccent = \"#ce4834\"\nbar_texture = \"media/hud/core_bar.png\"\n";
+        let manifest: ModManifest = toml::from_str(text).unwrap();
+        let theme = &manifest.theme;
+        assert_eq!(theme.colour("arm", "accent"), Some("#5ab4ff"));
+        assert_eq!(theme.colour("Core", "accent"), Some("#ce4834"), "the side's own");
+        assert_eq!(theme.colour("core", "text"), Some("#d6e2ee"), "the theme's, where the side gives none");
+        assert_eq!(theme.colour("arm", "classic.text"), Some("#e8e8e8"));
+        assert_eq!(theme.colour("arm", "metal"), None);
+        assert_eq!(theme.texture("core", "bar"), Some("media/hud/core_bar.png"));
+        assert_eq!(theme.texture("core", "panel"), Some("media/hud/panel.png"));
+        assert_eq!(theme.files().collect::<Vec<_>>(), ["media/hud/panel.png", "media/hud/core_bar.png", "media/hud/Font.ttf"]);
+        let written = toml::to_string_pretty(&manifest).unwrap();
+        assert_eq!(toml::from_str::<ModManifest>(&written).unwrap(), manifest, "{written}");
+        let plain: ModManifest = toml::from_str("id = \"plain\"\nname = \"Plain\"\n").unwrap();
+        assert!(plain.theme.is_empty() && !toml::to_string_pretty(&plain).unwrap().contains("theme"));
+    }
+
+    /// A picture a manifest names is found in the mod's folder in any case of its letters, and
+    /// never outside it: not by `..`, a root or a drive, nor a folder where a file is meant.
+    #[test]
+    fn a_named_picture_is_found_in_the_mods_folder_and_never_outside_it() {
+        let root = std::env::temp_dir().join(format!("ta-mod-media-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("mod/Media/HUD")).unwrap();
+        std::fs::write(root.join("mod/Media/HUD/Panel.png"), b"png").unwrap();
+        std::fs::write(root.join("outside.png"), b"png").unwrap();
+        let dir = root.join("mod");
+        for named in ["Media/HUD/Panel.png", "media/hud/panel.png", "media\\hud\\PANEL.PNG", "./media/hud/panel.png"] {
+            assert!(media_path(&dir, named).is_some_and(|path| path.is_file()), "{named}");
+        }
+        for named in ["../outside.png", "media/../../outside.png", "/outside.png", "C:/outside.png", "media/hud", "media/hud/none.png", "", "   "] {
+            assert_eq!(media_path(&dir, named), None, "{named}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The screenshots shown are those that name a file, the first 12, in order: an empty entry
+    /// takes no place (the page's row and the whole window count and step through the same).
+    #[test]
+    fn the_screenshots_shown_are_those_that_name_a_file() {
+        let mut media = Media { screenshots: vec!["".into(), "media/a.png".into(), "  ".into(), "media/b.png".into()], ..Default::default() };
+        assert_eq!(media.shots().collect::<Vec<_>>(), ["media/a.png", "media/b.png"]);
+        media.screenshots = (0..20).map(|n| format!("media/{n}.png")).collect();
+        assert_eq!(media.shots().count(), MAX_SCREENSHOTS);
+        assert_eq!(media.files().count(), MAX_SCREENSHOTS, "no banner, preview or icon");
+    }
+
+    /// Versions are compared number by number, a missing one 0, a suffix left out; a version
+    /// that is none holds nothing back.
+    #[test]
+    fn versions_are_compared_number_by_number() {
+        assert_eq!(version_older("1.0.6", "1.0.7"), Some(true));
+        assert_eq!(version_older("1.0.10", "1.0.9"), Some(false), "10 is after 9");
+        assert_eq!(version_older("1.1", "1.1.0"), Some(false));
+        assert_eq!(version_older("1.0.6", "1.0.6"), Some(false));
+        assert_eq!(version_older("1.0.6", "v1.0.7-beta"), Some(true));
+        assert_eq!(version_older("1.0.6", "1.0.7-beta.preview"), Some(true), "a dotted suffix is no number");
+        assert_eq!(version_older("1.0.6", "1.0.6-beta.1"), Some(false), "the same release, a suffix left out");
+        assert_eq!(version_older("1.0.6", "1.0.7+build.5"), Some(true));
+        assert_eq!(version_older("2.0", "1.9.9"), Some(false));
+        assert_eq!(version_older("1.0.6", ""), None);
+        assert_eq!(version_older("1.0.6", "latest"), None);
+    }
+
+    /// A mod that says another must not be on with it, the other on: neither is mounted; one that
+    /// needs a newer TA Reborn: not mounted either; each told by name.
+    #[test]
+    fn conflicting_mods_and_mods_for_a_newer_reborn_are_not_mounted() {
+        let module = |text: &str| { let manifest: ModManifest = toml::from_str(text).unwrap(); ModInfo { path: PathBuf::from(&manifest.id), manifest, kind: ModKind::Directory } };
+        let mods = [module("id = \"a\"\nname = \"A\"\nconflicts = [\"B\"]"), module("id = \"b\"\nname = \"B\""), module("id = \"c\"\nname = \"C\"")];
+        assert!(matches!(resolve_load_order(&["b".into(), "a".into()], &mods), Err(ModError::Conflict { module, other }) if module == "a" && other == "b"));
+        assert!(resolve_load_order(&["a".into(), "c".into()], &mods).is_ok(), "the other off: fine");
+        let newer = [module("id = \"n\"\nname = \"N\"\nrequires_reborn = \"99.0\"")];
+        assert!(matches!(resolve_load_order(&["n".into()], &newer), Err(ModError::NeedsNewer { module, version }) if module == "n" && version == "99.0"));
+        let older = [module(&format!("id = \"o\"\nname = \"O\"\nrequires_reborn = \"{REBORN_VERSION}\""))];
+        assert!(resolve_load_order(&["o".into()], &older).is_ok(), "this version itself: fine");
+    }
+
+    /// A mod whose manifest gives one of its presentation's keys a wrong kind (one screenshot for
+    /// a list, a colour as a number) is found all the same, the rest of it read: it was left out
+    /// of the game for it. One whose dependency is written under `[media]` mounts without it, and
+    /// the notes name the key (where TOML put it), for the check to tell its author.
+    #[test]
+    fn a_wrong_kind_in_a_mods_presentation_never_leaves_it_out() {
+        let root = std::env::temp_dir().join(format!("ta_mod_lenient_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let text = "id = \"lenient\"\nname = \"Lenient\"\ndepends = \"Hulls\"\ntags = \"units\"\n\n[media]\nscreenshots = \"media/a.png\"\nrequires_reborn = \"99.0\"\n\n[theme]\naccent = 0x5ab4ff\ntext = \"#dfe7ef\"\n";
+        std::fs::create_dir_all(root.join("lenient")).unwrap();
+        std::fs::write(root.join("lenient/mod.toml"), text).unwrap();
+        let (found, problems) = scan(&root);
+        assert!(problems.is_empty(), "{problems:?}");
+        let manifest = &found[0].manifest;
+        assert_eq!((manifest.depends.as_slice(), manifest.tags.as_slice(), manifest.media.screenshots.as_slice()), (["hulls".to_string()].as_slice(), ["units".to_string()].as_slice(), ["media/a.png".to_string()].as_slice()));
+        assert_eq!((manifest.theme.colour("arm", "accent"), manifest.theme.colour("arm", "text")), (None, Some("#dfe7ef")));
+        assert_eq!(manifest.requires_reborn, "", "written under [media]: the media's, not the mod's");
+        let notes: Vec<(String, ManifestNoteKind)> = manifest_notes(text).into_iter().map(|note| (note.key, note.kind)).collect();
+        assert!(notes.contains(&("media.requires_reborn".to_string(), ManifestNoteKind::Misplaced { belongs: String::new() })), "{notes:?}");
+        assert!(notes.contains(&("theme.accent".to_string(), ManifestNoteKind::WrongKind { expected: ValueKind::String, found: ValueKind::Integer })), "{notes:?}");
+        // What decides mounting, of a wrong kind: the manifest does not read, as before.
+        std::fs::write(root.join("lenient/mod.toml"), "id = \"lenient\"\nname = \"Lenient\"\ndepends = 5\n").unwrap();
+        assert!(matches!(read_mod(&root.join("lenient")), Err(ModError::Manifest { .. })));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A package without a manifest of its own is installed under an id made of its name: always
+    /// one a mod may take, whatever the name.
+    #[test]
+    fn a_packages_id_is_made_from_its_name() {
+        assert_eq!(package_id("TA_Frenzy_1.41").as_deref(), Some("tafrenzy141"));
+        assert_eq!(package_id("Моды 2").as_deref(), Some("моды2"));
+        assert_eq!(package_id("Base").as_deref(), Some("base-mod"));
+        assert_eq!(package_id("REBORN").as_deref(), Some("reborn-mod"));
+        assert_eq!(package_id("com1").as_deref(), Some("com1-mod"));
+        assert_eq!(package_id(&"Ab1 ".repeat(30)).map(|id| id.chars().count()), Some(MOST_ID_LETTERS));
+        assert_eq!(package_id("___ ..."), None);
+        for name in ["Base", "con", &"x".repeat(200), "Übermacht Karten"] {
+            assert!(package_id(name).is_some_and(|id| valid_id(&id)), "{name}");
+        }
+    }
+
+    /// Only http and https addresses are opened.
+    #[test]
+    fn only_web_addresses_are_links() {
+        assert!(web_address("https://www.moddb.com/mods/x") && web_address("http://example.com") && web_address(" HTTPS://EXAMPLE.COM "));
+        for not in ["", "www.example.com", "ftp://example.com", "file:///C:/x", "javascript:alert(1)", "https://", "https://exa mple.com"] {
+            assert!(!web_address(not), "{not}");
+        }
+    }
+
     #[test]
     fn a_manifest_path_that_is_a_directory_cannot_become_an_implicit_mod() {
         let root = std::env::temp_dir().join(format!("ta-mod-qa-manifest-dir-{}", std::process::id()));
@@ -956,6 +1443,13 @@ mod tests {
             resolve_load_order(&["a".to_string(), "b".to_string()], &cyclic),
             Err(ModError::Cycle(_))
         ));
+        // (The whole circle is told, not the mod it was found at alone.)
+        let three = vec![m("a", &["b"], &[]), m("b", &["c"], &[]), m("c", &["a"], &[]), m("d", &["a"], &[])];
+        let enabled: Vec<String> = ["d", "a", "b", "c"].map(String::from).to_vec();
+        match resolve_load_order(&enabled, &three) {
+            Err(ModError::Cycle(circle)) => assert_eq!(circle, "a → b → c → a"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
@@ -1209,7 +1703,7 @@ mod discovery_tests {
     #[test]
     fn a_manifest_that_does_not_read_is_named_for_its_mod() {
         let root = temp("broken_manifest");
-        for (folder, text) in [("mymod", "id = \"mymod\"\nversion = 1.0\n"), ("fine", "id = \"fine\"\nname = \"Fine\"\n")] {
+        for (folder, text) in [("mymod", "id = \"mymod\"\nname = \"Mine\"\ndepends = 1.0\n"), ("fine", "id = \"fine\"\nname = \"Fine\"\n")] {
             std::fs::create_dir_all(root.join(folder)).unwrap();
             std::fs::write(root.join(folder).join("mod.toml"), text).unwrap();
         }

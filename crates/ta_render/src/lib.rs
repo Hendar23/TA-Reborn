@@ -1510,6 +1510,15 @@ impl Renderer {
         building.done("the units' pipelines");
     }
 
+    /// Lets go of the paint of the models with surfaces of their own (`model::surfaced`): a
+    /// battle's units' paint is held for that battle, and read again for the next one's as its
+    /// models are first drawn.
+    pub fn release_surface_paint(&mut self) {
+        if let Some(m) = &mut self.models {
+            m.surfaces.release(&self.gpu.device, &self.gpu.queue);
+        }
+    }
+
     /// Submits this frame's model instances. Their contact occlusion (perspective camera) is
     /// derived from them: every whole model that is not cloaked occludes the ground around its
     /// footprint, units under construction in proportion to their progress (placement ghosts,
@@ -2658,13 +2667,15 @@ impl Renderer {
             // frame's time saved over Mossvale's woods). Nothing that stands is blended, so the
             // picture is the same: what lies on the ground (the names, the scorch marks, the
             // lying paintings) is still drawn after it, kept off what stands in front by the depth.
-            if let Some(m) = &self.models {
-                m.draw(&mut pass);
+            // Not in the classic camera: there a decal's depth is taken well nearer the eye than
+            // the ground it lies on (see `vs_decal`), so drawn after what stands on it, it was
+            // painted over everything standing within that of the ground (a metal extractor on its
+            // deposit down to its arms, a tank on a scorch mark); there, as in TA, the ground and
+            // what lies on it come first.
+            let ground_first = camera.mode == CameraMode::Classic;
+            if !ground_first {
+                self.draw_standing(&mut pass);
             }
-            if let Some(f) = &self.foliage {
-                f.draw(&mut pass);
-            }
-            self.sprites.draw(&mut pass, SpriteLayer::Billboard);
             if let Some(t) = &self.terrain {
                 t.draw(&mut pass, &self.terrain_pipeline);
                 // The ground beyond the map, after the terrain so it is mostly depth-rejected.
@@ -2680,6 +2691,9 @@ impl Renderer {
             self.sprites.draw(&mut pass, SpriteLayer::Lying);
             // Selected units' rings on the ground (and on the water), under what stands on them.
             self.rings.draw(&mut pass);
+            if ground_first {
+                self.draw_standing(&mut pass);
+            }
             // The sky fills whatever background is left after the opaque scene.
             if sky_on {
                 self.sky_pipeline.draw(&mut pass);
@@ -2762,6 +2776,18 @@ impl Renderer {
     /// What is drawn over the opaque scene: the water (given `water_scene`, the group it reads
     /// the opaque scene through, see [`WaterScene`]), then smoke, particles, effects, beams and
     /// hot air.
+    /// What stands on the ground, in the scene pass: the units' models, the 3D trees and rocks,
+    /// and the standing paintings (TA's trees).
+    fn draw_standing<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        if let Some(m) = &self.models {
+            m.draw(pass);
+        }
+        if let Some(f) = &self.foliage {
+            f.draw(pass);
+        }
+        self.sprites.draw(pass, SpriteLayer::Billboard);
+    }
+
     fn draw_translucent<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, fx: &FrameEffects, sky_on: bool, water_scene: Option<&'a wgpu::BindGroup>) {
         // Translucent water over the finished opaque scene, below smoke and effects. Its
         // pipelines read the reflection as group 2 (stand-ins when none was drawn) and the scene

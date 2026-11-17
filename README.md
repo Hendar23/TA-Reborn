@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Jared-woodruff/TA-Reborn/releases/latest"><img src="https://img.shields.io/badge/release-1.0.5-d8b456?style=flat-square&labelColor=1f1e1a" alt="Release 1.0.5"></a>
+  <a href="https://github.com/Jared-woodruff/TA-Reborn/releases/latest"><img src="https://img.shields.io/badge/release-1.0.7-d8b456?style=flat-square&labelColor=1f1e1a" alt="Release 1.0.7"></a>
   <img src="https://img.shields.io/badge/windows%20%C2%B7%20macOS%20%C2%B7%20linux-x64%20%C2%B7%20ARM64-9e998a?style=flat-square&labelColor=1f1e1a" alt="Windows, macOS and Linux, x64 and ARM64">
   <img src="https://img.shields.io/badge/built%20in-rust-9e998a?style=flat-square&labelColor=1f1e1a&logo=rust&logoColor=e2deb6" alt="Built in Rust">
   <a href="#credits"><img src="https://img.shields.io/badge/licence-GPL%20v3-e2deb6?style=flat-square&labelColor=1f1e1a" alt="GNU GPL v3 licence"></a>
@@ -527,10 +527,13 @@ https://github.com/user-attachments/assets/0c29747c-1139-4f19-877a-3661836a55c5
   Steam's), the Maps page's SUPREME COMMANDER… makes its skirmish maps (and your own downloaded and
   Forged Alliance Forever ones) into TA Reborn maps from your copy: their land and painted ground,
   cliffs that still stop tanks, forests, rocks, mass points as metal, hydrocarbons as vents, and
-  starts, for skirmish ([SUPCOM_MAPS.md](docs/SUPCOM_MAPS.md)).
+  starts, for skirmish ([SUPCOM_MAPS.md](docs/SUPCOM_MAPS.md)). The Mods page's SUPREME COMMANDER…
+  makes its four factions into a mod: the UEF, the Cybran, the Aeon and the Seraphim, every unit
+  and building with the game's own model, paint and numbers, a side each in skirmish
+  ([SUPCOM_UNITS.md](docs/SUPCOM_UNITS.md)).
 - **`ta-tools`** inspects, converts and validates TA's data files (`validate`, `map`, `gaf`, `model`,
   `cob`, `cat`, `find`…), grows TA Reborn's maps (`mapgen`; [MAPS.md](docs/MAPS.md)), and makes
-  Supreme Commander's into TA's (`supcom`).
+  Supreme Commander's maps and units into TA's (`supcom`, `supcom-units`).
 
 </details>
 
@@ -625,7 +628,7 @@ credits name everyone who made the game, read from your install.
 
 > [!NOTE]
 > This page shows the current development build. The latest release is
-> [1.0.5](https://github.com/Jared-woodruff/TA-Reborn/releases/latest); [CHANGELOG.md](CHANGELOG.md)
+> [1.0.7](https://github.com/Jared-woodruff/TA-Reborn/releases/latest); [CHANGELOG.md](CHANGELOG.md)
 > says what each release brought.
 
 Settings, mods, skins and downloads live in `%APPDATA%\TA Reborn` (each commander's own below
@@ -758,7 +761,8 @@ Play it and [report what breaks](https://github.com/Jared-woodruff/TA-Reborn/iss
 translation: the fourteen languages are plain TOML files in `lang/`
 ([guide](tools/i18n/README.md)). Try your favourite mod and send its report. Or read
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md) and open a
-pull request; contributions are accepted under the project's licence.
+pull request as [CONTRIBUTING.md](CONTRIBUTING.md) describes; contributions are accepted under
+the project's licence.
 
 </details>
 

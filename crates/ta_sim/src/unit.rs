@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 
 use crate::cob::CobInstance;
 use crate::defs::UnitType;
-use crate::fixed::{Fx, FxVec3, rotate_x, rotate_y, rotate_z};
+use crate::fixed::{Fx, FxVec3, rotate_x, rotate_y, rotate_z, wrap_angle};
 use crate::rng::Rng;
 
 /// Most players a game can have: per-player sets (who sees through a cloak, which players
@@ -162,6 +162,9 @@ pub struct Unit {
     /// The last tick one of its own side's builders took work off it, reclaiming it: for a
     /// second after that it is being taken apart (`Sim::being_taken_apart`).
     pub taken_apart_at: Option<u64>,
+    /// The metal its side's reclaiming has taken off it so far, paid when it is gone: TA pays
+    /// reclaiming at the end, not as the work goes. Lost with it if it dies first.
+    pub reclaim_owed: Fx,
     /// The last tick a builder worked on it unfinished (or set it down to build): construction
     /// left with nobody at it un-builds after a while, its metal coming back
     /// (`Sim::decay_abandoned_frames`). None for one nobody has worked on (a scene's or a
@@ -179,6 +182,11 @@ pub struct Unit {
     pub armored: bool,
     pub busy: bool,
     pub fire_state: u8,
+    /// Fires at will on what its side has on radar or sonar as well as on what it sees: guns a
+    /// spotter directs, a scenario's (`radar_guided`: Iron Rain's battery, which a radar post
+    /// spots for). Every other unit's fire at will takes on only what its side sees, but where
+    /// its player has a targeting facility at work ([`Player::radar_targeting`]).
+    pub radar_guided: bool,
     pub move_state: u8,
     pub orders: VecDeque<Order>,
     /// Remaining waypoints (anchor cells) of the current path.
@@ -278,7 +286,8 @@ pub struct Unit {
     /// Footprint origin cell for buildings that occupy the grid.
     pub occupied_origin: Option<(i32, i32)>,
     pub cob: Option<CobInstance>,
-    pub weapons: [WeaponState; 3],
+    /// Its weapons' states by slot ([`ta_data::unit::MAX_WEAPONS`]).
+    pub weapons: [WeaponState; ta_data::unit::MAX_WEAPONS],
     pub last_attacker: Option<UnitId>,
     /// Size of the most recent hit (determines death severity).
     pub last_damage: Fx,
@@ -363,6 +372,7 @@ impl Unit {
             repair_work: 0,
             finished: false,
             taken_apart_at: None,
+            reclaim_owed: Fx::ZERO,
             worked_at: None,
             activated: false,
             upkeep_paid: true,
@@ -371,6 +381,7 @@ impl Unit {
             armored: false,
             busy: false,
             fire_state: 2,
+            radar_guided: false,
             move_state: 1,
             orders: VecDeque::new(),
             path: Vec::new(),
@@ -418,7 +429,7 @@ impl Unit {
             yard: Vec::new(),
             occupied_origin: None,
             cob: None,
-            weapons: [WeaponState::default(); 3],
+            weapons: [WeaponState::default(); ta_data::unit::MAX_WEAPONS],
             last_attacker: None,
             last_damage: Fx::ZERO,
             killer: None,
@@ -563,6 +574,29 @@ pub fn piece_world_position(unit: &Unit, t: &UnitType, cob: Option<&CobInstance>
     unit.model_pos(t) + v
 }
 
+/// The heading of what stands on a model piece: the unit's own, turned as the piece and every
+/// piece it hangs from are turned about y by the unit's script (a factory's build pad spinning as
+/// it builds: TA's plants `spin pad around y-axis` from `StartBuilding` to `StopBuilding`). Turns
+/// about x and z, which would tilt it, are left out: no factory of TA's tilts its pad.
+pub fn piece_world_heading(unit: &Unit, t: &UnitType, cob: Option<&CobInstance>, model_piece: usize) -> i32 {
+    let mut heading = unit.heading;
+    let mut cur = Some(model_piece);
+    let mut guard = 0;
+    while let Some(i) = cur {
+        let Some(piece) = t.model.pieces.get(i) else { break };
+        if let (Some(c), Some(ci)) = (cob, t.model_to_cob.get(i).copied().flatten()) {
+            // (Turns about y apply as they are, as `piece_world_position` turns them.)
+            heading = wrap_angle(heading.wrapping_add(c.pieces[ci].rotation[1]));
+        }
+        cur = piece.parent;
+        guard += 1;
+        if guard > 256 {
+            break;
+        }
+    }
+    heading
+}
+
 /// Starting conditions for a player.
 #[derive(Clone, Debug)]
 pub struct PlayerSetup {
@@ -593,10 +627,18 @@ pub struct Economy {
     pub(crate) energy_demand_next: Fx,
     /// Fraction (0..=1) of requested build resources granted this tick.
     pub build_factor: Fx,
+    /// What was asked for over the last tick, per second, paid or not: builders and stockpiles
+    /// at their full pace, upkeep, cloaking and shots. With a store empty only what comes in is
+    /// paid, so the expense equals the income; the interface shows this as the use instead, by
+    /// how much the asking outruns the income. Nothing in the battle reads it.
+    pub metal_wanted: Fx,
+    pub energy_wanted: Fx,
     pub(crate) tick_metal_in: Fx,
     pub(crate) tick_energy_in: Fx,
     pub(crate) tick_metal_out: Fx,
     pub(crate) tick_energy_out: Fx,
+    pub(crate) tick_metal_wanted: Fx,
+    pub(crate) tick_energy_wanted: Fx,
 }
 
 impl Economy {
@@ -607,6 +649,8 @@ impl Economy {
         let worth = |amount: Fx, work: u64| amount.share(before + work, total) - amount.share(before, total);
         self.metal_demand_next += worth(metal, full);
         self.energy_demand_next += worth(energy, full);
+        self.tick_metal_wanted += worth(metal, full);
+        self.tick_energy_wanted += worth(energy, full);
         let factor = factor.clamp(Fx::ZERO, Fx::ONE);
         let mut work = if factor > Fx::ZERO && full > 0 {
             ((full as u128 * factor.0 as u128) >> crate::fixed::FRAC_BITS).max(1) as u64
@@ -665,6 +709,13 @@ pub struct Player {
     /// TA's `+shootall`: its units' weapons take on every enemy in reach alike, their bad targets
     /// included (see `Sim::find_target`), nearest first.
     pub shoot_all: bool,
+    /// A targeting facility of its own at work (TA's `IsTargetingUpgrade`: Core Contingency's
+    /// Targeting Facilities, "Automatic Radar Targeting"): its units fire at will on what its side
+    /// has on radar as on what it sees, as a spotter's guns do ([`Unit::radar_guided`]). Its own
+    /// units, not its allies'. Set at each tick's economy end for the next: a facility finished,
+    /// switched on, its upkeep paid (1,250 energy a second for the Arm's) and not paralysed, as a
+    /// radar's coverage counts (`Sim::working`).
+    pub radar_targeting: bool,
 }
 
 /// What a player passes to its allies on its own, each tick (TA's `+sharemetal`,

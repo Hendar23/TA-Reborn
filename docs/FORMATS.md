@@ -436,6 +436,75 @@ the rest a fireball's canvas; its 86 animations named by weapons come to 1.33 bi
 Escalation also replaces `fx.gaf`'s Explode2-Explode4 and Nuke1 with shield bubbles 760 to
 1140 px across, which no weapon of its names.
 
+## Model surfaces (`objects3d/<name>.surface`, TA Reborn's own)
+
+What TA Reborn paints a 3DO with beyond TA's palette colours and GAF textures (`ta_formats::surface`;
+the models it makes of Supreme Commander's units have them, docs/SUPCOM_UNITS.md). Beside its
+model, of the same name. Little-endian:
+
+| Bytes | What |
+| --- | --- |
+| 0 | `TASURF`, two zero bytes; the version (1); the number of materials; of pieces (u32 each) |
+| 20 | the far model's name: a u16 length and that many bytes of UTF-8 (none: 0) |
+| materials | each: its name, its colour map's path, its specular map's, its normal map's (each a u16 length and UTF-8), its colour on average (sRGB, 3 bytes) and a byte unused |
+| pieces | in the 3DO's order (depth first, as `Model3do::parse` lists them): the piece's number of vertices (u32, its own), then for each vertex its texture coordinates (two f32: u from the picture's left, v from its top) and normal (three i16 of 32,767ths, in the 3DO's axes as its vertices are, and one unused): 16 bytes |
+
+* A primitive whose texture name is one of the surface's materials (any case) is painted with it;
+  any other is drawn as TA draws it. A surface whose pieces or vertices do not match its model's is
+  not used (the log and the mod check say so).
+* The textures' channels: the colour map's RGB (sRGB; alpha unused); the specular map's red (how
+  much it mirrors its surroundings), green (how glossy), blue (where it glows by itself) and alpha
+  (where it takes the player's colour); the normal map's tangent-space normal, x in alpha and y in
+  green (z made up), x along u and y along v down the picture, as Direct3D's are.
+* `far`: a lighter model (a 3DO with its own surface, of the same pieces in the same order) drawn
+  in this one's place when it is under 48 pixels across on screen; a model drawn as itself the
+  frame before stays so down to 42 (no swapping back and forth as the camera shakes).
+* A surface that does not read, or does not fit its model, leaves the model drawn as TA draws its
+  faces, without Reborn's kit.
+
+## Model animations (`objects3d/<name>.anims`, TA Reborn's own)
+
+Keyframed movements of a 3DO's pieces that TA Reborn plays on the screen alone (`ta_formats::anims`;
+the models it makes of Supreme Commander's units have them, docs/SUPCOM_UNITS.md). Beside its
+model, of the same name. The simulation never sees them, as it never sees how its walkers' legs are
+posed by the ground they cover. Little-endian:
+
+| Bytes | What |
+| --- | --- |
+| 0 | `TAANIMS`, a zero byte; the version (1); the number of clips (u32 each) |
+| clips | each: its name (a u16 length and UTF-8), its length in seconds (f32), the number of pieces it moves and of its frames (u32 each); the pieces, by their index in the 3DO's order (u32 each); its frames' times, seconds from its start, rising (f32 each); then each frame's keys, piece by piece in that order, each a move and a turn (six i32: 24 bytes) |
+
+* A key holds its piece as a TA script holds one: moved from where it stands in the model along x, y
+  and z in 65,536ths of a pixel (x negated as scripts give it), and turned about x, y and z in TA's
+  angle units (65,536 a turn; z negated), applied about y, then x, then z, as the engine composes a
+  script's (see "Turrets aim with the same sense" above). Between keys a piece moves in a straight
+  line and turns the short way round.
+* `walk`: a cycle, its last frame leading back into its first over the time left to its length.
+  A ground unit whose model has one walks by it, in step with the ground it covers, instead of by its
+  script (apps/ta_game's `scene/walk.rs`): its stride is measured from its planted feet as a
+  script's is, and the channels its script aims with (a turret, a torso) stay the script's.
+* `death`, `death2`...: one of them, at random, plays where a unit of the model dies on the ground
+  (an aircraft out of the sky and a ship going under go as TA Reborn's other units do); its wreck
+  shows once the clip is over, lying in the pose it ends in.
+* A clip that moves a piece the model has not, more than once, or with its times out of order or
+  past its length, is not played (the log and the mod check say so); the file's other clips are.
+  A file that does not read is told in the log.
+
+## DDS textures
+
+`ta_formats::dds` reads DirectDraw Surfaces: DXT1, DXT3 and DXT5 (BC1, BC2, BC3) and uncompressed
+colour of 8 to 32 bits described by masks, a mip level at a time, or its blocks as stored. The paint
+of models with surfaces is drawn from arrays of BC3 layers of 512 × 512 texels with every mip level
+(`to_bc3_levels`): a DXT5 of that size with its levels is taken as it is; DXT1's and DXT3's are made
+BC3 block by block (DXT1's four-colour blocks keep their colours under an opaque alpha, its
+three-colour ones are encoded again, since BC3 always reads four; DXT3's colours stay, its alpha is
+encoded); anything else is decoded, halved or grown to 512 and encoded level by level. The encoders
+(an alpha block's ends its least and greatest, a colour block's ends along the colours' main axis,
+refined once by least squares) use plain arithmetic in a fixed order: the same bytes everywhere.
+A file claiming more mip levels than its size halves into is read with those its size has (a
+300 × 300 claiming four billion has nine), and only those its file holds; uncompressed channels
+take up to all 32 bits of a texel.
+
 ## COB bytecode (verified against shipped scripts)
 
 * `turn`/`move`: pop **target** (top) then speed; `spin`: pop **speed** (top) then
@@ -485,7 +554,7 @@ Escalation also replaces `fx.gaf`'s Explode2-Explode4 and Nuke1 with shield bubb
     45°, hits tipped tanks and radar vehicles half over and up to 17 px into the ground.
   * `SetSFXoccupy(state)`: what the unit moves over, when it changes: 4 land, 1 shallow
     water (up to 8 px deep), 2 deep water, 0 carried. Amphibians change to swim at 2.
-  * `TargetCleared(weapon)`: a weapon (1 to 3) lost its target.
+  * `TargetCleared(weapon)`: a weapon (1 to 8) lost its target.
   * `QueryNanoPiece(piece)`: while building, the piece the spray leaves from (factories
     alternate between two nozzles on each call).
   * `TargetHeading` (constructors) is only stored for a later `StartBuilding`, and
@@ -605,6 +674,13 @@ Escalation also replaces `fx.gaf`'s Explode2-Explode4 and Nuke1 with shield bubb
   reads the numbers as f64 and whole numbers as i64 (up to 1.12, f32 and i32), so a mod's
   values past 16,777,216 keep their precision. The units name 54 distinct `Category`
   tokens.
+* **Weapons: three a unit in TA** (`Weapon1` to `Weapon3`, the engine calling `AimPrimary`,
+  `AimSecondary` and `AimTertiary`, and their `AimFrom`, `Query` and `Fire` functions). TA Reborn
+  reads five more for mods (`Weapon4` to `Weapon8`, `ta_data::unit::MAX_WEAPONS`), calling the
+  numbered functions Spring calls for any slot (`AimWeapon4`... `FireWeapon8`; for the first
+  three, TA's names where a script defines them, else `AimWeapon1`...:
+  `ta_data::unit::WEAPON_FUNCTIONS`), each with its own bad targets (`BadTargetCategory<n>`, after
+  TA's `wpri_`, `wsec_` and `wspe_` keys). None of TA's own units has a fourth.
 * **A unit's script goes by its `UnitName`**: `scripts/<UnitName>.cob`, whatever model
   (`Objectname`) it borrows. TA's own 278 units go by one name for both, but the mods show
   it: TA: Enhanced gives 62 units another unit's model, and 35 of them (the Enforcer, the
@@ -662,6 +738,20 @@ Escalation also replaces `fx.gaf`'s Explode2-Explode4 and Nuke1 with shield bubb
   so a building clears its footprint as it takes the ground (as its construction starts, or as a
   mission places it) of those that hold no metal and can be destroyed, deposits and vents
   aside; they leave nothing. Heaps keep their metal under it; anemones and corals stay.
+* **Wrecks give metal only.** A unit's corpse (its `Corpse`, `features/corpses/`, with the
+  `featuredead` it leaves when destroyed: its heap, `category=heaps`) gives metal and no energy: no
+  corpse or heap of a unit that costs metal names any. The four corpse files that give energy are
+  the remains of TA's indigenous lifeforms, the Scorpions (`ARMSCORP`, `CORSCORP`) and Sea Serpents
+  (`ARMSS`, `CORSS`), units that cost energy alone (15,660 and 4,385): `metal=0`, `energy=4698` and
+  `1316`, given back as a tree's energy is. TA Reborn holds to it whatever a file says: wreckage,
+  the corpse of every unit type that costs metal and what it leaves when destroyed, and so on, pays
+  its metal alone when reclaimed (`Sim::reclaim_value`, the set made once with the simulation,
+  `sim::wreckage`), so a mod's wreck that gives energy gives none; the remains of a unit that costs
+  no metal, rocks and trees pay as their files say. The reclaiming, the time it takes, builders on
+  patrol, the computer players and the interface all go by it.
+* **A wreck lies as its unit faced when it died**: the feature keeps the dying unit's heading (a
+  heap the wreck's), and is drawn turned so; its footprint is the corpse file's, square to the map,
+  whichever way it lies. The map's own features have none (TNT files give no heading).
 * A feature's `world` (or its folder under `features/`) against the OTA `planet` of the
   maps that use it: Green Planet → `greenworld`, Red Planet → `mars`, Lunar → `moon`, Water
   World → `water`, Wet Desert → `wetdesert`, the others by name (Acid, Archipelago, Crystal,
@@ -673,6 +763,19 @@ Escalation also replaces `fx.gaf`'s Explode2-Explode4 and Nuke1 with shield bubb
   and anti-nukes `LEVEL3`). Nukes: `stockpile=1 commandfire=1 targetable=1`, 180,000 E +
   2,000 M per missile over `reloadtime` 180 s, `areaofeffect=512`; anti-nukes
   `interceptor=1 coverage=2000`, 10,000 E + 200 M per interceptor.
+* **`interceptor` and `targetable` are classes**, as the Spring engine reads them: bits of the
+  number written (0 when not given; a negative number every bit). An interceptor takes a missile
+  when its `interceptor` and the missile's `targetable` share a bit (`WeaponDef::intercepts`);
+  any number but 0 makes a weapon an interceptor (or targetable). TA's own all say 1
+  (`ta_data::STRATEGIC_CLASS`), so every anti-nuke of TA's takes every one of its strategic
+  missiles, nukes, EMP and tactical missiles alike. The Supreme Commander factions' strategic
+  missiles say 1 and their anti-nukes take them; their tactical missiles say 2 and their tactical
+  missile defences and ships' point defences (`interceptor=2`) take those alone.
+* An interceptor fires at a missile headed into its `coverage` (or crossing it) once the missile
+  is within its `range` (its coverage, where that is larger; with no range written, wherever it
+  is), as the Spring engine's do: TA's anti-nukes (`range` 22,000 to 32,000) take a nuke as it
+  leaves its silo on TA's maps, a tactical defence a few hundred px across as the missile comes
+  down on what it covers (`Sim::update_interceptors`).
 * `tracks=1` (a guided weapon homes on the unit it is sent at): every guided weapon of TA's
   launched other than upright says it, and of the vertical launchers the anti-nukes
   (`AMD_ROCKET`, `FMD_ROCKET`, `ARMSCAB_WEAPON`, `CORMABM_WEAPON`) and the Krogoth's
@@ -714,6 +817,18 @@ Escalation also replaces `fx.gaf`'s Explode2-Explode4 and Nuke1 with shield bubb
   Sniper.
 * Weapon `rendertype`: 0 laser, 1 model (missile), 2 point, 3 D-gun, 4 shell, 5 flame,
   6 bomb, 7 lightning.
+* **`HealTime`**: only the Commanders (`ARMCOM`, `CORCOM`) give one, 27. Modding guides call it
+  the time in seconds it takes the unit to heal itself; players timing TA's Commander found it
+  mending about 100 hit points every 27 seconds (some 3.7 a second; one test found the same rate
+  whatever `HealTime` said). Nothing known gives it an energy cost or a pause after damage. TA
+  Reborn: a finished, living unit whose type gives a `HealTime` over 0 regains 100 hit points every
+  `HealTime` seconds (`defs::HEAL_POINTS`, `UnitType::heal_ticks`), a share each tick, the shares of
+  every `HealTime` of ticks adding up to exactly 100, up to its `MaxDamage` and no further, at no
+  cost, under fire, paralysed or carried too (`Sim::heal_units`); a frame does not, nor a unit being
+  taken apart. A Commander worn down to 1,000 of its 3,000 is whole again in nine minutes. The mods
+  give it widely, lower for what should heal faster: Total Mayhem 118 units (3 to 255, every value
+  one less than a power of two), TA: The Final Frontier 55 (1 to 55: its orbital defences 1), TA:
+  Escalation 5 (its Commanders 7, its Krogoth, "Self-Heal", 3).
 * The Commander's laser (`ARMCOMLASER`, the J7): range 200, reload 0.85 s, 60 damage (about
   70 a second). The Pyro's `FLAMETHROWER`: range 160, reload 1.2 s, a burst of 17 × 10
   (about 140 a second). Two Pyros burn through a Commander's 3,000 in about 11 s, while its
@@ -733,6 +848,49 @@ Escalation also replaces `fx.gaf`'s Explode2-Explode4 and Nuke1 with shield bubb
   20; category `UNDERWATER`); surface ships have none. Only `waterweapon=1` weapons
   (torpedoes, depth charges) reach a submarine, or a unit on the sea bed with the water over
   its top; no stock weapon sets `firesubmersed`.
+* TA's buildings in the water come in two kinds. Those on the water give a `WaterLine`, how deep
+  the model's base sits (the floating towers ARMFRT 0.3 and CORFRT 4, the floating heavy lasers 3,
+  metal makers 4 and 22 and dragon's teeth 6 and 1, the torpedo launchers 10, the advanced ones 30
+  and 10, tidal generators 8 and 10, sonar stations, shipyards). Its underwater buildings give
+  `MinWaterDepth` with no `WaterLine` and no `Floater` and stand on the sea bed: the underwater
+  metal extractors (ARMUWMEX, CORUWMEX), storages (ARMUWES, ARMUWMS, CORUWES, CORUWMS) and
+  fusion plants (ARMUWFUS, CORUWFUS). Their models are
+  taller than the shallowest water they may stand in (ARMUWMEX 42 px in `MinWaterDepth=19`,
+  CORUWMEX 19 in 10, CORUWFUS 30 in 15, CORUWMS 57 in 40), yet TA's surface weapons never fire on
+  them (players: a Skeeter never shoots an underwater metal extractor; only torpedoes and depth
+  charges take them on). TA Reborn holds them wholly under the water wherever the water covers
+  their base (`UnitDef::stands_on_sea_bed`, `Sim::submerged_at`), and sonar, not radar, shows
+  them. The advanced torpedo launchers' tops come within a fraction of a pixel of the surface
+  (ARMATL 30.3 px tall at `WaterLine=30`, CORATL 10.04 at 10) and count as out of it.
+* Torpedoes and depth charges say `weapontimer=3` (5 for the seaplanes' and torpedo bombers') at
+  85 to 110 px a second, against ranges of 375 to 650: ARM_TORPEDO and CORE_TORPEDO 300 px in
+  3 s against a range of 400, the depth charges 300 and 330 against 400 and 410, CORSSUB_WEAPON 300
+  against 500, the advanced torpedo launchers' ARMATL_TORPEDO 270 against 650 and CORATL_TORPEDO
+  255 against 600. So `weapontimer` cannot have been their lifetime in TA; TA Reborn runs a
+  torpedo at least as far as its range (as far as a projectile without a timer flies). (Two weapons
+  besides fly shorter than their range by their `weapontimer`, neither self-propelled: `MINDGUN`
+  and `VTOL_EMG2`.)
+* Targeting facilities: Core Contingency's ARMTARG and CORTARG ("Targeting Facility", described
+  "Automatic Radar Targeting") say `istargetingupgrade=1`, `onoffable=1`, `ActivateWhenBuilt=1`
+  and `EnergyUse` 1,250 and 1,300 a second; no other unit says it. As their description says,
+  with one at work a player's units firing at will take on what radar shows as well as what is
+  seen, which they otherwise leave to orders. TA Reborn counts one at work as it counts a radar:
+  finished, switched on, its upkeep paid (short of the energy, it stops) and not paralysed; it
+  directs its owner's units only (allies share radar, so they fire on contacts any ally's radar
+  shows). TA Reborn has no radar error (contacts are where the units are), so a facility has none
+  to take away.
+* A second or third weapon's own bad targets (`wsec_`, `wspe_badTargetCategory`) set its role
+  apart from its unit's: TA gives them to the Skeeter's and the Searcher's anti-air missiles
+  (`NOTAIR`, ARMPT and CORPT, which players know to pick their own targets, the nearest enemy,
+  whatever the boat is sent at), the Panther's (ARMLATNK) and the missile ships' (ARMMSHIP, CORMSHIP),
+  the Phoenix's and the Hurricane's anti-air lasers (ARMPNIX, CORHURC), the Doomsday Machine's
+  light laser (CORDOOM), the stealth fighters' second missiles (ARMHAWK, CORVAMP), the anti-air
+  ships' second weapons (ARMAAS, CORARCH), the destroyers' and cruisers' depth charges (`NOTSUB`:
+  ARMROY, CORROY, ARMCRUS, CORCRUS), and `VTOL` to the Arm battleship's second gun (ARMBATS) and the
+  seaplanes' second torpedoes (ARMSEAP, CORSEAP). Such a weapon leaves an attack order on one of
+  them to its unit's other weapons and keeps choosing its own targets (`Sim::keeps_to_own_targets`);
+  a weapon whose bad targets come from its unit's `BadTargetCategory` (most units' `VTOL`) takes
+  the order as the first does. No third weapon of TA's has one of its own.
 * Aircraft have no `Corpse`, their `Killed` scripts only burst their pieces, and their
   `ExplodeAs` is a ground unit's (`SMALL_UNITEX`, `BIG_UNITEX`: shells, AOE 30 and 110,
   damage 30 and 50; the Thunder's `LIGHTNING`): nothing in the data makes a plane crash. TA
@@ -751,6 +909,16 @@ Escalation also replaces `fx.gaf`'s Explode2-Explode4 and Nuke1 with shield bubb
   the walls' and dragon's teeth's empty names do (the executable is not looked into): no
   blast either way. So these units die without a blast: their `Killed` scripts burst them
   into pieces, as every unit's do (TA Reborn's client draws a burst too).
+* **Build pads turn**: 15 of TA's 21 plants spin their build pad (the piece `QueryBuildInfo` names)
+  about y while they build: `StartBuilding` does `spin pad around y-axis speed <30>` (5461 a
+  second, no acceleration) and `StopBuilding` `stop-spin pad around y-axis` (at once), so the pad
+  stops where it is and the next unit starts from there. The Arm and Core vehicle plants, kbot labs,
+  aircraft plants and seaplane platforms, their advanced ones and the Core Hovercraft Platform do;
+  the shipyards (their pad `slip`, or `base`), the Arm Hovercraft Platform and the Core Gantry (its
+  gangplank only slides) don't. What a plant builds stands on the pad and turns with it, from the
+  plant's own heading on, as TA's players saw it: the plant's heading and the turns about y of the
+  pad and the pieces it hangs from (`unit::piece_world_heading`, `Sim::follow_build_pad`). Done, it
+  keeps the heading the pad left it with, and turns to its way out as it leaves.
 * Factory yard maps: the cells marked `o` (and `w`, `f`, `s`) block, the others are the yard,
   open to walk on. The Arm lab's `yoccoy ooccoo ooccoo ooccoo ooccoo yoccoy` is a corridor
   two cells wide through its middle, north to south, with walls either side: a unit built on

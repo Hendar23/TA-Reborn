@@ -605,3 +605,122 @@ fn units_slip_past_their_side_gathered_in_a_pass() {
     println!("a Flash through the gathering in {took:?} s");
     assert!(took.is_some_and(|s| s <= 30), "through in {took:?} s");
 }
+
+/// TA's plants spin their build pad while they build (`spin pad around y-axis speed <30>` from
+/// `StartBuilding` to `StopBuilding`), and what they build turns with it, from the plant's own
+/// heading on; a shipyard's slip stays put, and its ship faces as the yard does.
+#[test]
+fn what_tas_plants_build_turns_with_their_pads() {
+    let Some(Fixture { mut sim, commander }) = setup("Coast To Coast") else {
+        eprintln!("TA install not found; skipping");
+        return;
+    };
+    sim.set_starting_resources(0, Fx::from_int(100_000), Fx::from_int(100_000));
+    let start = sim.unit(commander).unwrap().pos;
+    // Of the shipyards' sites at sea, the first found.
+    let yard = sim.types.id("ARMSY").unwrap();
+    let (w, h) = sim.world.size_px();
+    let sea = (8..h.to_int() / 64).flat_map(|z| (8..w.to_int() / 64).map(move |x| FxVec3::from_ints(x * 64, 0, z * 64))).find(|&p| sim.can_place(yard, p)).expect("a shipyard fits at sea");
+    let plants = [("ARMVP", "ARMFLASH", start + FxVec3::from_ints(-260, 0, 260), true), ("ARMLAB", "ARMPW", start + FxVec3::from_ints(0, 0, 260), true), ("ARMAP", "ARMPEEP", start + FxVec3::from_ints(260, 0, 260), true), ("ARMSY", "ARMPT", sea, false)];
+    for (k, (plant, product, near, spins)) in plants.into_iter().enumerate() {
+        let plant_type = sim.types.id(plant).unwrap();
+        let site = sim.find_build_site(plant_type, near, 30).expect("a site");
+        // (Facing every way: north, east, south, west.)
+        let facing = [-32768, 16384, 0, -16384][k];
+        let f = sim.spawn_unit(plant_type, 0, site, facing, true).unwrap();
+        let t = sim.types.get(plant_type).clone();
+        // (The piece `QueryBuildInfo` names: TA's plants' `pad`, the shipyard's `slip`.)
+        let pad_piece = t.model.piece_index(if spins { "pad" } else { "slip" }).expect("its pad");
+        let pad = |sim: &Sim| {
+            let u = sim.unit(f).unwrap();
+            ta_sim::piece_world_heading(u, &t, u.cob.as_ref(), pad_piece)
+        };
+        sim.step(&[Command::Produce { player: 0, factory: f, type_id: sim.types.id(product).unwrap(), count: 1 }]);
+        let (mut frame, mut ticks, mut turned, mut last) = (None, 0i64, 0i64, None);
+        for _ in 0..30 * 60 {
+            let before = pad(&sim);
+            sim.step(&[]);
+            let Some(id) = frame.or_else(|| sim.unit(f).unwrap().build.map(|b| b.target)) else { continue };
+            frame = Some(id);
+            let u = sim.unit(id).unwrap();
+            if u.is_complete() {
+                break;
+            }
+            assert_eq!(u.heading, before, "{product} turned as {plant}'s pad is turned");
+            if let Some(l) = last {
+                turned += ta_sim::fixed::wrap_angle(u.heading - l) as i64;
+                ticks += 1;
+            } else {
+                assert_eq!(u.heading, facing, "{product} begun facing as {plant} faces");
+            }
+            last = Some(u.heading);
+        }
+        let u = sim.unit(frame.expect("it builds")).unwrap();
+        assert!(u.is_complete(), "{plant} finished its {product}");
+        println!("{plant}: {product} turned {turned} in {ticks} ticks");
+        if spins {
+            // 30 degrees a second: 182 a tick (5461 a second, in whole ticks), from the tick after
+            // the plant's `StartBuilding` set it spinning.
+            assert!((turned - 182 * ticks).abs() <= 182, "{product} goes round with the pad: {turned} in {ticks} ticks");
+        } else {
+            assert_eq!((turned, u.heading), (0, facing), "the slip stays put");
+        }
+    }
+}
+
+/// TA's Commanders mend themselves (`HealTime=27`; no other unit of TA's says it): 100 hit points
+/// in 27 seconds, as players measured it.
+#[test]
+fn tas_commanders_mend_themselves() {
+    let Some(Fixture { mut sim, commander }) = setup("Coast To Coast") else {
+        eprintln!("TA install not found; skipping");
+        return;
+    };
+    let healers: Vec<&str> = sim.types.types.iter().filter(|t| t.heal_ticks > 0).map(|t| t.name.as_str()).collect();
+    assert_eq!(healers, ["ARMCOM", "CORCOM"]);
+    assert!(sim.types.types.iter().filter(|t| t.heal_ticks > 0).all(|t| t.heal_ticks == 27 * 30));
+    sim.set_health(commander, Fx::from_int(1500));
+    for _ in 0..27 * 30 {
+        sim.step(&[]);
+    }
+    assert_eq!(sim.unit(commander).unwrap().health, Fx::from_int(1600));
+    sim.set_health(commander, Fx::from_int(2950));
+    for _ in 0..27 * 30 {
+        sim.step(&[]);
+    }
+    assert_eq!(sim.unit(commander).unwrap().health, Fx::from_int(3000), "up to its 3,000 and no further");
+}
+
+/// TA's wrecks and heaps give metal and nothing else: no wreck's or heap's file of a unit made of
+/// metal gives energy, and TA Reborn pays a wreck's metal alone whatever a file gives
+/// (`Sim::reclaim_value`). The remains of the indigenous lifeforms, which cost energy alone (the
+/// Scorpions and Sea Serpents), give energy as their files say, as a tree's do.
+#[test]
+fn tas_wrecks_give_metal_only() {
+    let Some(Fixture { sim, .. }) = setup("Coast To Coast") else {
+        eprintln!("TA install not found; skipping");
+        return;
+    };
+    let (mut wrecks, mut remains) = (0, Vec::new());
+    for t in &sim.types.types {
+        let Some(corpse) = sim.data.feature_id(&t.def.corpse) else { continue };
+        let heap = sim.data.feature_id(&sim.data.features[corpse].feature_dead);
+        for f in [Some(corpse), heap].into_iter().flatten() {
+            let d = &sim.data.features[f];
+            if t.cost_metal > Fx::ZERO {
+                assert!(sim.is_wreckage(f), "{} of {} is wreckage", d.name, t.name);
+                assert_eq!(d.energy, 0.0, "{} of {} gives energy", d.name, t.name);
+                assert_eq!(sim.reclaim_value(f), (Fx::from_f64(d.metal.max(0.0)), Fx::ZERO), "{} pays its metal alone", d.name);
+                wrecks += 1;
+            } else if d.energy > 0.0 {
+                assert!(!sim.is_wreckage(f));
+                assert_eq!(sim.reclaim_value(f).1, Fx::from_f64(d.energy), "{} pays its energy", d.name);
+                remains.push((t.name.clone(), d.energy as i64));
+            }
+        }
+    }
+    remains.sort();
+    println!("{wrecks} wrecks and heaps; remains giving energy: {remains:?}");
+    assert!(wrecks > 300, "{wrecks}");
+    assert_eq!(remains, [("ARMSCORP".to_string(), 4698), ("ARMSS".into(), 1316), ("CORSCORP".into(), 4698), ("CORSS".into(), 1316)]);
+}

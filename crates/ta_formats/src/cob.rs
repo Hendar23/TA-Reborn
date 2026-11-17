@@ -1,4 +1,5 @@
-//! COB (compiled BOS unit script) reader and disassembler.
+//! COB (compiled BOS unit script) reader, disassembler, writer ([`CobScript::to_bytes`]) and a
+//! small assembler ([`Assembler`]: the scripts TA Reborn makes for other games' units).
 //!
 //! Each unit has a script that animates pieces and answers engine queries (aiming, build
 //! positions, ...). Header (TA = version 4, 11 × i32): version, script count, piece count,
@@ -74,6 +75,259 @@ impl CobScript {
     /// Case-insensitive function lookup.
     pub fn function(&self, name: &str) -> Option<usize> {
         self.functions.iter().position(|f| f.name.eq_ignore_ascii_case(name))
+    }
+
+    /// The script as a COB file of version 4, as [`CobScript::parse`] reads one: the header,
+    /// the code, the functions' entry points, the pointers to their names and to the pieces',
+    /// then the names.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let header = 44usize;
+        let code_at = header;
+        let offsets_at = code_at + self.code.len() * 4;
+        let names_at = offsets_at + self.functions.len() * 4;
+        let pieces_at = names_at + self.functions.len() * 4;
+        let strings_at = pieces_at + self.pieces.len() * 4;
+        let mut strings: Vec<u8> = Vec::new();
+        let mut string = |s: &str| -> u32 {
+            let at = (strings_at + strings.len()) as u32;
+            strings.extend(s.bytes().map(|b| if b == 0 { b'?' } else { b }));
+            strings.push(0);
+            at
+        };
+        let names: Vec<u32> = self.functions.iter().map(|f| string(&f.name)).collect();
+        let pieces: Vec<u32> = self.pieces.iter().map(|p| string(p)).collect();
+        let mut out = Vec::with_capacity(strings_at + strings.len());
+        for v in [4, self.functions.len(), self.pieces.len(), self.code.len(), self.static_var_count as usize, 0, offsets_at, names_at, pieces_at, code_at, 0] {
+            out.extend_from_slice(&(v as u32).to_le_bytes());
+        }
+        for w in &self.code {
+            out.extend_from_slice(&w.to_le_bytes());
+        }
+        for f in &self.functions {
+            out.extend_from_slice(&f.offset.to_le_bytes());
+        }
+        for at in names.iter().chain(&pieces) {
+            out.extend_from_slice(&at.to_le_bytes());
+        }
+        out.extend_from_slice(&strings);
+        out
+    }
+}
+
+/// The axes, as scripts name them.
+pub const X_AXIS: u32 = 0;
+pub const Y_AXIS: u32 = 1;
+pub const Z_AXIS: u32 = 2;
+
+/// A place in a function's code a jump goes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Label(usize);
+
+/// A function's code as it is written, a word at a time: its parameters claimed first (the
+/// callee's leading `create-local`s), then what the methods add. Jumps go to [`Label`]s, made
+/// absolute when the function takes its place in the script ([`Assembler::define`]).
+#[derive(Clone, Debug, Default)]
+pub struct Function {
+    code: Vec<u32>,
+    labels: Vec<Option<u32>>,
+    /// (Where a jump's operand is, the label it names.)
+    jumps: Vec<(usize, usize)>,
+    locals: u32,
+    /// Where the last instruction starts (its opcode).
+    last: Option<usize>,
+}
+
+impl Function {
+    /// A function taking `params` arguments: locals 0 to `params` - 1.
+    pub fn new(params: u32) -> Function {
+        let mut f = Function::default();
+        for _ in 0..params {
+            f.local();
+        }
+        f
+    }
+
+    /// A new local (its index).
+    pub fn local(&mut self) -> u32 {
+        self.emit(&[op::CREATE_LOCAL]);
+        self.locals += 1;
+        self.locals - 1
+    }
+
+    fn emit(&mut self, words: &[u32]) -> &mut Self {
+        self.last = Some(self.code.len());
+        self.code.extend_from_slice(words);
+        self
+    }
+
+    /// Whether running off its end can happen: its last instruction is no `return`, or a jump
+    /// can land past it (a label marked at its very end). An operand of the value of `return`'s
+    /// opcode is no return: the last instruction is told by where it starts.
+    fn runs_off_its_end(&self) -> bool {
+        let end = self.code.len() as u32;
+        self.last.is_none_or(|at| self.code[at] != op::RETURN) || self.labels.iter().any(|&l| l == Some(end))
+    }
+
+    /// An opcode of no operands (arithmetic, comparisons, `return`, `signal`...: on the stack).
+    pub fn op(&mut self, opcode: u32) -> &mut Self {
+        self.emit(&[opcode])
+    }
+    pub fn push(&mut self, value: i32) -> &mut Self {
+        self.emit(&[op::PUSH_CONSTANT, value as u32])
+    }
+    pub fn push_local(&mut self, local: u32) -> &mut Self {
+        self.emit(&[op::PUSH_LOCAL, local])
+    }
+    pub fn pop_local(&mut self, local: u32) -> &mut Self {
+        self.emit(&[op::POP_LOCAL, local])
+    }
+    pub fn push_static(&mut self, var: u32) -> &mut Self {
+        self.emit(&[op::PUSH_STATIC, var])
+    }
+    pub fn pop_static(&mut self, var: u32) -> &mut Self {
+        self.emit(&[op::POP_STATIC, var])
+    }
+    /// `turn <piece> to <axis> <target> speed <speed>`: the speed, then the target, on the stack.
+    pub fn turn(&mut self, piece: u32, axis: u32) -> &mut Self {
+        self.emit(&[op::TURN, piece, axis])
+    }
+    /// `turn <piece> to <axis> <target> now`: the target on the stack.
+    pub fn turn_now(&mut self, piece: u32, axis: u32) -> &mut Self {
+        self.emit(&[op::TURN_NOW, piece, axis])
+    }
+    /// `move <piece> to <axis> <target> speed <speed>` (16.16 pixels): as [`Function::turn`].
+    pub fn move_to(&mut self, piece: u32, axis: u32) -> &mut Self {
+        self.emit(&[op::MOVE, piece, axis])
+    }
+    pub fn move_now(&mut self, piece: u32, axis: u32) -> &mut Self {
+        self.emit(&[op::MOVE_NOW, piece, axis])
+    }
+    pub fn wait_turn(&mut self, piece: u32, axis: u32) -> &mut Self {
+        self.emit(&[op::WAIT_TURN, piece, axis])
+    }
+    pub fn wait_move(&mut self, piece: u32, axis: u32) -> &mut Self {
+        self.emit(&[op::WAIT_MOVE, piece, axis])
+    }
+    /// `spin <piece> around <axis> speed <s> accelerate <a>`: the acceleration, then the speed.
+    pub fn spin(&mut self, piece: u32, axis: u32) -> &mut Self {
+        self.emit(&[op::SPIN, piece, axis])
+    }
+    pub fn show(&mut self, piece: u32) -> &mut Self {
+        self.emit(&[op::SHOW, piece])
+    }
+    pub fn hide(&mut self, piece: u32) -> &mut Self {
+        self.emit(&[op::HIDE, piece])
+    }
+    /// `emit-sfx <kind> from <piece>`: the kind on the stack.
+    pub fn emit_sfx(&mut self, piece: u32) -> &mut Self {
+        self.emit(&[op::EMIT_SFX, piece])
+    }
+    /// `explode <piece> type <flags>`: the flags on the stack.
+    pub fn explode(&mut self, piece: u32) -> &mut Self {
+        self.emit(&[op::EXPLODE, piece])
+    }
+    /// `start-script <function>(<argc> arguments on the stack)`.
+    pub fn start_script(&mut self, function: u32, argc: u32) -> &mut Self {
+        self.emit(&[op::START_SCRIPT, function, argc])
+    }
+    /// `call-script <function>(<argc> arguments on the stack)`.
+    pub fn call_script(&mut self, function: u32, argc: u32) -> &mut Self {
+        self.emit(&[op::CALL_SCRIPT, function, argc])
+    }
+    /// `return <value>`.
+    pub fn ret(&mut self, value: i32) -> &mut Self {
+        self.push(value).op(op::RETURN)
+    }
+    /// A label, to [`Function::mark`] somewhere and jump to.
+    pub fn label(&mut self) -> Label {
+        self.labels.push(None);
+        Label(self.labels.len() - 1)
+    }
+    /// The label is here.
+    pub fn mark(&mut self, label: Label) -> &mut Self {
+        self.labels[label.0] = Some(self.code.len() as u32);
+        self
+    }
+    pub fn jump(&mut self, label: Label) -> &mut Self {
+        self.jumps.push((self.code.len() + 1, label.0));
+        self.emit(&[op::JUMP, 0])
+    }
+    /// Jumps when the value on the stack is 0 (popping it).
+    pub fn jump_if_false(&mut self, label: Label) -> &mut Self {
+        self.jumps.push((self.code.len() + 1, label.0));
+        self.emit(&[op::JUMP_IF_FALSE, 0])
+    }
+}
+
+/// A script made a function at a time: its pieces named up front, functions declared (so any
+/// may start or call any) and defined, static variables taken as needed.
+#[derive(Clone, Debug, Default)]
+pub struct Assembler {
+    pieces: Vec<String>,
+    names: Vec<String>,
+    bodies: Vec<Option<Function>>,
+    statics: u32,
+}
+
+impl Assembler {
+    pub fn new(pieces: Vec<String>) -> Assembler {
+        Assembler { pieces, ..Default::default() }
+    }
+
+    /// A piece's number (any case).
+    pub fn piece(&self, name: &str) -> Option<u32> {
+        self.pieces.iter().position(|p| p.eq_ignore_ascii_case(name)).map(|i| i as u32)
+    }
+
+    /// A new static variable (its number).
+    pub fn static_var(&mut self) -> u32 {
+        self.statics += 1;
+        self.statics - 1
+    }
+
+    /// A function's number, declared if it is not yet.
+    pub fn declare(&mut self, name: &str) -> u32 {
+        match self.names.iter().position(|n| n.eq_ignore_ascii_case(name)) {
+            Some(i) => i as u32,
+            None => {
+                self.names.push(name.to_string());
+                self.bodies.push(None);
+                (self.names.len() - 1) as u32
+            }
+        }
+    }
+
+    /// Gives the function named `name` its code (declaring it if need be).
+    pub fn define(&mut self, name: &str, body: Function) -> u32 {
+        let i = self.declare(name);
+        self.bodies[i as usize] = Some(body);
+        i
+    }
+
+    /// The script: the functions' code one after another, each's jumps made absolute. A function
+    /// declared and never defined returns 0. Panics on a jump to a label never marked.
+    pub fn finish(self) -> CobScript {
+        let mut code: Vec<u32> = Vec::new();
+        let mut functions = Vec::with_capacity(self.names.len());
+        for (name, body) in self.names.into_iter().zip(self.bodies) {
+            let base = code.len() as u32;
+            let mut body = body.unwrap_or_else(|| {
+                let mut f = Function::new(0);
+                f.ret(0);
+                f
+            });
+            for &(at, label) in &body.jumps {
+                body.code[at] = base + body.labels[label].unwrap_or_else(|| panic!("{name}: a jump to a label never marked"));
+            }
+            // (A function that runs off its end returns 0: past its last instruction, or from a
+            // jump to its very end, it would run on into the next function's code.)
+            if body.runs_off_its_end() {
+                body.ret(0);
+            }
+            code.extend_from_slice(&body.code);
+            functions.push(CobFunction { name, offset: base });
+        }
+        CobScript { functions, pieces: self.pieces, code, static_var_count: self.statics }
     }
 }
 
@@ -243,4 +497,74 @@ pub fn disassemble(script: &CobScript) -> String {
         pc += 1 + n;
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An assembled script written as a COB file reads back the same: its functions where they
+    /// start, its pieces, its statics, its jumps made absolute.
+    #[test]
+    fn an_assembled_script_writes_and_reads_back() {
+        let mut asm = Assembler::new(vec!["base".into(), "turret".into()]);
+        let restore = asm.declare("Restore");
+        let flag = asm.static_var();
+        let mut create = Function::new(0);
+        create.push(1).pop_static(flag).ret(0);
+        asm.define("Create", create);
+        let mut aim = Function::new(2);
+        let skip = aim.label();
+        aim.push_static(flag).jump_if_false(skip);
+        aim.push(1000).push_local(0).turn(1, Y_AXIS).wait_turn(1, Y_AXIS);
+        aim.start_script(restore, 0).mark(skip).ret(1);
+        asm.define("AimPrimary", aim);
+        let script = asm.finish();
+        let back = CobScript::parse(&script.to_bytes()).unwrap();
+        assert_eq!(back.pieces, ["base", "turret"]);
+        assert_eq!(back.static_var_count, 1);
+        assert_eq!(back.functions.iter().map(|f| (f.name.as_str(), f.offset)).collect::<Vec<_>>(), script.functions.iter().map(|f| (f.name.as_str(), f.offset)).collect::<Vec<_>>());
+        assert_eq!(back.code, script.code);
+        // Restore, declared first and never defined, returns 0; Create starts after it.
+        assert_eq!(back.function("restore"), Some(0));
+        assert_eq!(&back.code[..3], &[op::PUSH_CONSTANT, 0, op::RETURN]);
+        // The aim's jump lands on its last push: the function's start plus its place in it.
+        let aim = back.functions[back.function("AimPrimary").unwrap()].offset as usize;
+        let jump = (aim..back.code.len()).find(|&i| back.code[i] == op::JUMP_IF_FALSE).unwrap();
+        let target = back.code[jump + 1] as usize;
+        assert_eq!(&back.code[target..target + 3], &[op::PUSH_CONSTANT, 1, op::RETURN]);
+        assert!(disassemble(&back).contains("AimPrimary:"));
+    }
+
+    /// A function never runs on into the next one's code: one whose last word only looks like a
+    /// `return` (an operand of its value) returns 0 after it, and so does one with a label marked
+    /// at its very end, after a `return`, which a jump would otherwise carry into the next
+    /// function. One that ends in a `return` no jump goes past is left as it is.
+    #[test]
+    fn a_function_never_runs_on_into_the_next() {
+        let mut asm = Assembler::new(vec![]);
+        // Its last instruction pushes the value of `return`'s opcode: no return.
+        let mut looks = Function::new(0);
+        looks.push(op::RETURN as i32);
+        asm.define("Looks", looks);
+        // `if (x) { return 1; }` with the label after the return, at the very end.
+        let mut ends = Function::new(1);
+        let after = ends.label();
+        ends.push_local(0).jump_if_false(after).ret(1).mark(after);
+        asm.define("Ends", ends);
+        // Ends in a return, as most do.
+        let mut whole = Function::new(0);
+        whole.ret(2);
+        asm.define("Whole", whole);
+        let script = asm.finish();
+        let start = |name: &str| script.functions[script.function(name).unwrap()].offset as usize;
+        let (looks, ends, whole) = (start("Looks"), start("Ends"), start("Whole"));
+        assert_eq!(&script.code[looks..ends], &[op::PUSH_CONSTANT, op::RETURN, op::PUSH_CONSTANT, 0, op::RETURN], "a return after the push");
+        // The jump lands on the return of 0 added at the end, not on the next function's code.
+        let jump = (ends..whole).find(|&i| script.code[i] == op::JUMP_IF_FALSE).unwrap();
+        let target = script.code[jump + 1] as usize;
+        assert!(target < whole, "within its own function: {target} (the next starts at {whole})");
+        assert_eq!(&script.code[target..target + 3], &[op::PUSH_CONSTANT, 0, op::RETURN]);
+        assert_eq!(&script.code[whole..], &[op::PUSH_CONSTANT, 2, op::RETURN], "nothing added");
+    }
 }

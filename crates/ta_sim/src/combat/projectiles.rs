@@ -27,6 +27,21 @@ fn cruise_aim(world: &World, pos: FxVec3, to: FxVec3) -> FxVec3 {
     FxVec3::new(to.x, flat * short / clearance, to.z)
 }
 
+/// How far on (px) a torpedo comes to its target's depth.
+const TORPEDO_RUN_UP: i64 = 48;
+
+/// Where a torpedo, its target `to` away, steers: at the target, but one under its target's depth
+/// rises to it over the next [`TORPEDO_RUN_UP`] px (all the way, nearer than that) and runs on
+/// level at it, as torpedoes run at a depth (the surface keeps it from rising past a ship's or a
+/// tower's waterline): one sent along the straight line from a submarine down in the deep to a
+/// floating tower's waterline ran into the sea bed rising to the shallows the tower stood in. One
+/// over its target goes straight for it (a torpedo turning slowly, sent down steeply, could not
+/// level off before the sea bed).
+pub(super) fn torpedo_aim(to: FxVec3) -> FxVec3 {
+    let (flat, run_up) = (to.length_xz(), Fx::from_int(TORPEDO_RUN_UP));
+    if to.y <= Fx::ZERO || flat <= run_up { to } else { FxVec3::new(to.x, to.y * flat / run_up, to.z) }
+}
+
 #[derive(Clone, Copy)]
 struct Impact {
     when: Fx,
@@ -46,7 +61,8 @@ impl Sim {
             return false;
         }
         let flying = !u.landed && self.types.get(u.type_id).locomotion == Locomotion::Air;
-        !(flying && (!w.hits_air || friendly) || !w.water && self.submerged(u))
+        // (A torpedo meets only what reaches into the water, where it does: `reach_sphere`.)
+        !(flying && (!w.hits_air || friendly) || !self.reaches(w, u))
     }
 
     /// First solid contact on the planned flight. Interception may only precede this:
@@ -58,7 +74,7 @@ impl Sim {
             for &slot in near.iter() {
                 let Some(u) = self.units.get(slot as usize).and_then(|u| u.as_ref()) else { continue };
                 if !self.projectile_hits_unit(p, w, u) { continue; }
-                let (centre, radius) = hit_sphere(u, self);
+                let (centre, radius) = reach_sphere(u, w, self);
                 if let Some(when) = segment_entry(p.prev_pos, p.pos, centre, radius)
                     && first.is_none_or(|(before, _)| when < before)
                 {
@@ -111,9 +127,11 @@ impl Sim {
         let mut projectiles = std::mem::take(&mut self.projectiles);
         let mut near = std::mem::take(&mut self.scratch);
         self.spent.clear();
-        let live: rustc_hash::FxHashMap<u32, (usize, FxVec3, u8, bool)> = if projectiles.iter().any(|p| matches!(p.target, Some(Target::Projectile(_)))) {
+        // (Each live projectile by its id: where it is, whose it is, and its weapon, for what may
+        // intercept it: `WeaponDef::intercepts`.)
+        let live: rustc_hash::FxHashMap<u32, (usize, FxVec3, u8, usize)> = if projectiles.iter().any(|p| matches!(p.target, Some(Target::Projectile(_)))) {
             projectiles.iter().enumerate().filter(|(_, p)| !p.dead)
-                .map(|(i, p)| (p.id, (i, p.pos, p.owner_player, weapons.get(p.weapon).def.targetable))).collect()
+                .map(|(i, p)| (p.id, (i, p.pos, p.owner_player, p.weapon))).collect()
         } else { Default::default() };
 
         for p in &mut projectiles {
@@ -123,7 +141,7 @@ impl Sim {
             p.age += 1;
             match p.target {
                 Some(Target::Projectile(target)) => match live.get(&target) {
-                    Some(&(_, pos, owner, targetable)) if !w.def.interceptor || targetable && self.is_enemy(p.owner_player, owner) => p.target_pos = pos,
+                    Some(&(_, pos, owner, quarry)) if !w.def.interceptor || w.def.intercepts(&weapons.get(quarry).def) && self.is_enemy(p.owner_player, owner) => p.target_pos = pos,
                     // An interceptor without a live quarry has no ground target. Retire
                     // it without a blast rather than harming units at the old intercept point.
                     _ if w.def.interceptor => {
@@ -153,7 +171,7 @@ impl Sim {
                     // TA's `cruise` missiles launched upright (its strategic ones: the nukes, the
                     // EMP and tactical missiles) cross the map level, high over everything, and
                     // dive onto their target from above (see `cruise_aim`).
-                    let aim = if w.vlaunch && w.def.cruise { cruise_aim(&self.world, p.pos, to) } else { to };
+                    let aim = if w.vlaunch && w.def.cruise { cruise_aim(&self.world, p.pos, to) } else if w.torpedo { torpedo_aim(to) } else { to };
                     let speed = (p.vel.length() + w.acceleration).min(w.velocity);
                     let turn = w.turn_rate.max(if w.torpedo { 1 } else { 200 });
                     // (Straight up, at the top of its climb, a missile has no heading: it takes
@@ -174,6 +192,13 @@ impl Sim {
                 p.pos.y = self.world.sea_level - Fx::ONE;
                 p.vel.y = p.vel.y.min(Fx::ZERO);
             }
+            // A piercing shot (TA's `noexplode`: the D-gun) meeting the ground or the water runs on
+            // along it, through what stands there: aimed down at a unit or at the ground, it went
+            // on under them.
+            if w.no_explode && !w.def.interceptor && w.trajectory == Trajectory::Straight {
+                let surface = self.world.height_at(p.pos.x, p.pos.z).max(self.world.sea_level);
+                p.pos.y = p.pos.y.max(surface);
+            }
         }
 
         let intercepting = projectiles.iter().any(|p| !p.dead && weapons.get(p.weapon).def.interceptor);
@@ -189,7 +214,7 @@ impl Sim {
             let Some(Target::Projectile(target)) = p.target else { return None };
             let &(j, ..) = live.get(&target)?;
             let q = &projectiles[j];
-            if q.dead || !weapons.get(q.weapon).def.targetable || !self.is_enemy(p.owner_player, q.owner_player) { return None; }
+            if q.dead || !weapons.get(p.weapon).def.intercepts(&weapons.get(q.weapon).def) || !self.is_enemy(p.owner_player, q.owner_player) { return None; }
             // Relative motion catches crossing missiles, and rejects missiles flying apart.
             let when = segment_entry(p.prev_pos - q.prev_pos, p.pos - q.pos, FxVec3::ZERO, Fx::from_int(40))?;
             if [impacts[i], impacts[j]].iter().flatten().any(|impact| impact.when < when) { return None; }
@@ -211,18 +236,24 @@ impl Sim {
             if p.dead { continue; }
             let w = weapons.get(p.weapon);
             if w.no_explode && !w.def.interceptor {
-                self.grid.query(p.pos, p.vel.length() + self.types.collision_reach, &mut near);
+                // It harms what it passes through, and what stands within its area of effect of
+                // its flight, each once; that area only once the shot is as far from the gun, so
+                // it never reaches back over the unit that fired it and those beside it.
+                let flown = p.vel.length() * i64::from(p.age.saturating_sub(1));
+                let area = if flown >= w.aoe_radius { w.aoe_radius } else { Fx::ZERO };
+                self.grid.query(p.pos, p.vel.length() + self.types.collision_reach + area, &mut near);
                 for &slot in &near {
                     let Some(u) = self.units.get(slot as usize).and_then(|u| u.as_ref()) else { continue };
                     if !self.projectile_hits_unit(p, w, u) { continue; }
                     let (centre, radius) = hit_sphere(u, self);
-                    if segment_distance(p.prev_pos, p.pos, centre) <= radius {
+                    if segment_distance(p.prev_pos, p.pos, centre) <= radius + area {
                         p.hits.push(u.id);
                         if !self.ceasefire_spares_side(p.owner_player, u.owner) {
                             self.damage_unit(u.id, w.damage_to(u.type_id), p.owner, p.vel);
                         }
                     }
                 }
+                self.sweep_features(p.prev_pos, p.pos, w);
             }
             let impact = if intercepting && (w.def.interceptor || w.def.targetable) { impacts[index] }
                 else { self.projectile_impact(p, w, &mut near) };

@@ -25,8 +25,9 @@ pub struct Mutators {
     pub no_rush_minutes: u8,
     /// Kinds of unit left out of the build menus, with the factories that would make only them:
     /// aircraft; ships and submarines; missile silos, nuclear and EMP (and the defences against
-    /// them); long-range plasma cannons; and the experimentals (mobile units of 10,000 metal or
-    /// more but the Commanders: the Krogoth).
+    /// them: the strategic class of `interceptor` and `targetable`, all of TA's own); long-range
+    /// plasma cannons; and the experimentals (mobile units of 10,000 metal or more but the
+    /// Commanders: the Krogoth).
     pub no_air: bool,
     pub no_naval: bool,
     pub no_nukes: bool,
@@ -112,7 +113,9 @@ impl Sim {
             let weapons = || t.weapons.iter().flatten().map(|&w| self.weapon_types.get(w));
             (mutators.no_air && t.locomotion == Locomotion::Air)
                 || (mutators.no_naval && t.locomotion == Locomotion::Naval)
-                || (mutators.no_nukes && weapons().any(|w| w.def.targetable || w.def.interceptor))
+                // (The strategic missiles and what shoots them down: TA's own all are; a mod's
+                // tactical missiles and their defences, of another class, stay.)
+                || (mutators.no_nukes && weapons().any(|w| (w.def.targetable_classes() | w.def.interceptor_classes()) & ta_data::STRATEGIC_CLASS != 0))
                 || (mutators.no_artillery && t.locomotion == Locomotion::Static && weapons().any(|w| !w.def.targetable && !w.def.interceptor && w.range >= Fx::from_int(ARTILLERY_RANGE)))
                 || (mutators.no_experimentals && t.locomotion != Locomotion::Static && !t.def.is_commander && t.cost_metal >= Fx::from_int(EXPERIMENTAL_METAL))
         };

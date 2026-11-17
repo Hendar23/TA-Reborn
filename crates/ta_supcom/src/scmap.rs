@@ -119,10 +119,13 @@ impl ScMap {
         self.raw(x, z) as f32 * self.height_scale
     }
 
-    /// Whether the map uses the original game's terrain shader, which reads only the first
-    /// mask (its second is a copy) and four strata.
+    /// Whether the map uses the original game's terrain shaders (`TTerrain`, and `TTerrainGlow`
+    /// with its glowing stratum), which read only the first mask (its second is a copy) and four
+    /// strata. Forged Alliance's (`TTerrainXP`) and those Forged Alliance Forever has added since
+    /// (`Terrain250`, `Terrain301`...) read eight.
     pub fn four_strata(&self) -> bool {
-        !self.shader.to_ascii_lowercase().contains("xp")
+        let shader = self.shader.trim();
+        shader.eq_ignore_ascii_case("TTerrain") || shader.eq_ignore_ascii_case("TTerrainGlow")
     }
 
     /// The first part of a map file only: its size and preview picture, for a list of maps.
@@ -493,7 +496,7 @@ pub(crate) mod tests {
             version,
             width: w,
             height: h,
-            preview: crate::dds::tests::header(4, 4, 1, None).into_iter().chain([7u8; 64]).collect(),
+            preview: crate::dds::header(4, 4, 1, None).into_iter().chain([7u8; 64]).collect(),
             height_scale: 1.0 / 128.0,
             heights: (0..(w + 1) * (h + 1)).map(|i| (i * 37 % 5000) as u16).collect(),
             shader: "TTerrainXP".into(),
@@ -542,6 +545,15 @@ pub(crate) mod tests {
         let at = 34 + sample(60).preview.len();
         old[at..at + 4].copy_from_slice(&53i32.to_le_bytes());
         assert!(ScMap::parse(&old).is_err(), "version 53 is not read");
+    }
+
+    /// The original game's shaders paint four strata; Forged Alliance's and Forged Alliance
+    /// Forever's later ones eight.
+    #[test]
+    fn which_shaders_paint_four_strata() {
+        let of = |shader: &str| ScMap { shader: shader.into(), ..Default::default() }.four_strata();
+        assert!(of("TTerrain") && of("TTerrainGlow") && of("tterrain"));
+        assert!(!of("TTerrainXP") && !of("TTerrainXPExt") && !of("Terrain250") && !of("Terrain301") && !of("Terrain250B"));
     }
 
     #[test]

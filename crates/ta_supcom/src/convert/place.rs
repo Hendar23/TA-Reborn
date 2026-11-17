@@ -4,7 +4,7 @@
 //! and the starts kept clear. Then the ways: where the game's land units could drive from one
 //! start to another, a TA tank can too ([`connect`]).
 
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use ta_formats::tnt::FEATURE_NONE;
 
@@ -20,6 +20,14 @@ use crate::Result;
 const TANK: (i32, u8, i32) = (3, 15, 12);
 /// How far from a start no rock or tree stands (cells).
 const START_CLEAR: i32 = 6;
+/// What TA's metal extractors stand on: on land the steepest slope (`MaxSlope`, ARMMEX's and
+/// CORMEX's) and dry ground; under water the shallowest depth (`MinWaterDepth`, ARMUWMEX's; the
+/// Core's needs 10).
+const EXTRACTOR_SLOPE: i32 = 10;
+const EXTRACTOR_DEPTH: i32 = 19;
+/// A mass point in water shallower than this (at its middle) is made a deposit on land, its
+/// ground raised out of the water: deeper, one under water.
+const SHALLOW: i32 = 9;
 
 /// What stands on the map.
 pub struct Placed {
@@ -33,6 +41,8 @@ pub struct Placed {
     pub counts: Counts,
     /// Start pairs the game's land units could drive between that a tank still cannot.
     pub cut_off: Vec<(usize, usize)>,
+    /// The cells of cliff a way for tanks was opened through (their cliff marks taken away).
+    pub ways: Vec<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -44,10 +54,13 @@ pub struct Counts {
     pub walls: usize,
     /// Cells changed to give tanks a way (cliffs unmarked, ground laid, blocking features gone).
     pub opened: usize,
+    /// Deposits whose ground was levelled (or raised out of the water, or deepened) for TA's
+    /// extractors to stand on.
+    pub levelled: usize,
 }
 
 struct Grid<'a> {
-    land: &'a Land,
+    land: &'a mut Land,
     w: usize,
     h: usize,
     cells: Vec<u16>,
@@ -114,7 +127,101 @@ impl Grid<'_> {
     }
 
     fn wet(&self, x: i32, z: i32) -> bool {
-        self.land.depth(x.clamp(0, self.w as i32 - 1) as usize, z.clamp(0, self.h as i32 - 1) as usize) > 0
+        self.depth(x, z) > 0
+    }
+
+    fn depth(&self, x: i32, z: i32) -> i32 {
+        self.land.depth(x.clamp(0, self.w as i32 - 1) as usize, z.clamp(0, self.h as i32 - 1) as usize)
+    }
+
+    /// Whether TA's metal extractors stand on the cells `fp` square at (x, z) as they are: on
+    /// land (`wet` false) dry, no steeper than they stand, no cliff; under water deep enough.
+    fn buildable(&self, x: i32, z: i32, fp: i32, wet: bool) -> bool {
+        (z..z + fp).all(|cz| (x..x + fp).all(|cx| {
+            let (ux, uz) = (cx as usize, cz as usize);
+            if wet {
+                self.land.depth(ux, uz) >= EXTRACTOR_DEPTH
+            } else {
+                self.land.depth(ux, uz) <= 0 && !self.land.cliff[uz * self.w + ux] && self.land.slope(ux, uz) as i32 <= EXTRACTOR_SLOPE
+            }
+        }))
+    }
+
+    /// Makes the deposit's cells ([`Pad`]) buildable ([`Grid::buildable`]), moving their corners'
+    /// heights as little as that takes, the deposits placed before it (`placed`) left buildable:
+    /// - On land, each corner is kept within 5 of their mean (a slope of 10 at most) and out of the
+    ///   water, and the cells' cliff marks are taken away. The deposits on land that share corners
+    ///   with it, and those that share corners with them, are levelled with it as one: levelled
+    ///   alone, it would tilt their cells along the corners they share.
+    /// - Under water, each corner is made deep enough.
+    /// - Either way, the corners a deposit of the other kind stands on are left as they are: one
+    ///   under water is never raised, and one on land never sunk, by levelling its neighbour.
+    fn make_buildable(&mut self, pad: Pad, placed: &[Pad]) {
+        let (w, h) = (self.w as i32, self.h as i32);
+        let index = |(cx, cz): (i32, i32)| cz as usize * self.w + cx as usize;
+        let sea = self.land.sea;
+        // The deposits levelled together: under water this one alone (sinking a corner leaves the
+        // deposits under water around it buildable); on land, it and the others it touches.
+        let mut group = vec![pad];
+        if !pad.wet {
+            let mut next = 0;
+            while next < group.len() {
+                let reached = group[next];
+                for p in placed {
+                    if !p.wet && p.touches(&reached) && !group.contains(p) {
+                        group.push(*p);
+                    }
+                }
+                next += 1;
+            }
+        }
+        let corners: BTreeSet<usize> = group.iter().flat_map(|p| p.corners(w, h)).map(index).collect();
+        let kept: BTreeSet<usize> = placed.iter().filter(|p| p.wet != pad.wet && group.iter().any(|g| p.touches(g))).flat_map(|p| p.corners(w, h)).map(index).collect();
+        if pad.wet {
+            let floor = (sea - EXTRACTOR_DEPTH).max(0);
+            for &i in corners.difference(&kept) {
+                self.land.heights[i] = (self.land.heights[i] as i32).min(floor) as u8;
+            }
+            return;
+        }
+        let sum: i64 = corners.iter().map(|&i| self.land.heights[i] as i64).sum();
+        // (The mean, rounded half up: whole numbers alone.)
+        let n = corners.len().max(1) as i64;
+        let mean = ((2 * sum + n) / (2 * n)) as i32;
+        for &i in corners.difference(&kept) {
+            let v = (self.land.heights[i] as i32).clamp(mean - EXTRACTOR_SLOPE / 2, mean + EXTRACTOR_SLOPE / 2).max(sea);
+            self.land.heights[i] = v.clamp(0, 255) as u8;
+        }
+        for p in &group {
+            for cz in p.z..p.z + p.fp {
+                for cx in p.x..p.x + p.fp {
+                    self.land.cliff[cz as usize * self.w + cx as usize] = false;
+                }
+            }
+        }
+    }
+}
+
+/// A deposit's square as placed: its first cell, its side (cells), and whether it is under water.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Pad {
+    x: i32,
+    z: i32,
+    fp: i32,
+    wet: bool,
+}
+
+impl Pad {
+    /// Whether the two squares share a corner, a height both stand on: side by side, or corner to
+    /// corner.
+    fn touches(&self, other: &Pad) -> bool {
+        self.x <= other.x + other.fp && other.x <= self.x + self.fp && self.z <= other.z + other.fp && other.z <= self.z + self.fp
+    }
+
+    /// The corners of its cells (the heights they stand on) within a map `w` x `h`.
+    fn corners(&self, w: i32, h: i32) -> impl Iterator<Item = (i32, i32)> {
+        let Pad { x, z, fp, .. } = *self;
+        (z..=z + fp).flat_map(move |cz| (x..=x + fp).map(move |cx| (cx, cz))).filter(move |&(cx, cz)| cx < w && cz < h)
     }
 }
 
@@ -127,9 +234,20 @@ fn variant(x: i32, z: i32, i: usize) -> usize {
     v as usize
 }
 
-/// Whether a civilian unit of the game (its blueprint id) is a wall's section.
-fn wall(unit: &str) -> bool {
-    unit.ends_with("5101") || unit.starts_with("xec80")
+/// How wide a civilian unit of the game (its blueprint id, in lower case) is if it is a wall's
+/// section (world units, its footprint's side): the factions' wall sections (`ueb5101`,
+/// `uab5101`, `urb5101`, `xsb5101`: one), and Forged Alliance's civilian wall segments (UEF's
+/// `xec80xx`, the Aeon's `xac80xx` and `xac81xx`, the Cybran's `xrc80xx` and `xrc81xx`, the
+/// Seraphim's `xsc80xx`: three).
+fn wall(unit: &str) -> Option<f64> {
+    let u = unit.as_bytes();
+    if unit.ends_with("5101") {
+        Some(1.0)
+    } else if u.len() == 7 && u[0] == b'x' && matches!(u[1], b'a' | b'e' | b'r' | b's') && u[2] == b'c' && u[3] == b'8' && u[4..].iter().all(u8::is_ascii_digit) {
+        Some(3.0)
+    } else {
+        None
+    }
 }
 
 /// Places everything on `land` (whose cliffs a way for tanks may open up).
@@ -145,25 +263,35 @@ pub fn place(map: &Map, land: &mut Land, kit: Kit, templates: &Templates, files:
         (x.clamp(48.0, w as f64 * 16.0 - 48.0), z.clamp(48.0, h as f64 * 16.0 - 48.0))
     }).collect();
     let mut counts = Counts::default();
-    let mut g = Grid { land, w, h, cells: vec![FEATURE_NONE; w * h], taken: vec![false; w * h], blocked: vec![false; w * h], owner: vec![u32::MAX; w * h], footprints: BTreeMap::new(), reserved: vec![false; w * h], names: Vec::new(), slots: BTreeMap::new() };
+    let mut g = Grid { land: &mut *land, w, h, cells: vec![FEATURE_NONE; w * h], taken: vec![false; w * h], blocked: vec![false; w * h], owner: vec![u32::MAX; w * h], footprints: BTreeMap::new(), reserved: vec![false; w * h], names: Vec::new(), slots: BTreeMap::new() };
     for &(x, z) in &starts {
         g.reserve((x / 16.0) as i32, (z / 16.0) as i32, START_CLEAR);
     }
-    // Deposits: a 3 x 3 one centred on each mass point, moved a little where two would overlap.
+    // Deposits: a 3 x 3 one centred on each mass point, moved a little where two would overlap,
+    // its ground made one TA's extractors stand on where it is not (levelled, its cliff marks
+    // gone, out of the water; or under water, deep enough).
     let spiral: Vec<(i32, i32)> = {
         let mut s: Vec<(i32, i32)> = (-3..=3).flat_map(|z| (-3..=3).map(move |x| (x, z))).collect();
         s.sort_by_key(|&(x, z)| (x * x + z * z, z, x));
         s
     };
+    let mut pads: Vec<Pad> = Vec::new();
     for p in &map.mass {
         let (cx, cz) = cell_of(*p);
-        let name = if g.wet(cx, cz) && templates.has(kit.water_metal) { kit.water_metal } else { kit.metal };
+        let wet = g.depth(cx, cz) > SHALLOW;
+        let name = if wet && templates.has(kit.water_metal) { kit.water_metal } else { kit.metal };
         if !templates.has(name) {
             continue;
         }
         let fp = templates.footprint(name) as i32;
         if let Some(&(dx, dz)) = spiral.iter().find(|&&(dx, dz)| g.fits(cx - fp / 2 + dx, cz - fp / 2 + dz, fp, true)) {
-            g.put(name, cx - fp / 2 + dx, cz - fp / 2 + dz, fp, false);
+            let pad = Pad { x: cx - fp / 2 + dx, z: cz - fp / 2 + dz, fp, wet };
+            if !g.buildable(pad.x, pad.z, fp, wet) {
+                g.make_buildable(pad, &pads);
+                counts.levelled += 1;
+            }
+            g.put(name, pad.x, pad.z, fp, false);
+            pads.push(pad);
             counts.deposits += 1;
         }
     }
@@ -179,14 +307,23 @@ pub fn place(map: &Map, land: &mut Land, kit: Kit, templates: &Templates, files:
             counts.vents += 1;
         }
     }
-    // The civilians' walls: dragon's teeth, every other cell (each is 2 x 2).
+    // The civilians' walls: dragon's teeth (each 2 x 2, on even cells) over the cells each section
+    // covers.
     if templates.has("DragonsTeeth") {
-        for c in map.civilians.iter().filter(|c| !c.wreck && wall(&c.unit)) {
-            let (cx, cz) = cell_of(c.position);
-            let (x, z) = (cx & !1, cz & !1);
-            if g.fits(x, z, 2, false) && !g.wet(x, z) {
-                g.put("DragonsTeeth", x, z, 2, true);
-                counts.walls += 1;
+        for c in map.civilians.iter().filter(|c| !c.wreck) {
+            let Some(size) = wall(&c.unit) else { continue };
+            let half = size / 2.0;
+            let (x0, z0) = frame.pixels(c.position[0] as f64 - half, c.position[1] as f64 - half);
+            let (x1, z1) = frame.pixels(c.position[0] as f64 + half, c.position[1] as f64 + half);
+            let (cx0, cz0) = ((x0 / 16.0).floor() as i32, (z0 / 16.0).floor() as i32);
+            let (cx1, cz1) = (((x1 / 16.0).ceil() as i32 - 1).max(cx0), ((z1 / 16.0).ceil() as i32 - 1).max(cz0));
+            for z in (cz0 & !1..=cz1).step_by(2) {
+                for x in (cx0 & !1..=cx1).step_by(2) {
+                    if g.fits(x, z, 2, false) && !g.wet(x, z) {
+                        g.put("DragonsTeeth", x, z, 2, true);
+                        counts.walls += 1;
+                    }
+                }
             }
         }
     }
@@ -210,7 +347,7 @@ pub fn place(map: &Map, land: &mut Land, kit: Kit, templates: &Templates, files:
             Class::Rock { size, blocks, .. } => {
                 let fp_wanted = ((size as f64 * frame.s / 16.0).round() as u32).clamp(1, 4);
                 let Some(name) = own.name(&kit, templates, class, variant(cx, cz, i), fp_wanted) else { continue };
-                let fp = own_footprint(&own, &name);
+                let fp = own.footprint(&name);
                 let (x, z) = (cx - fp / 2, cz - fp / 2);
                 if g.fits(x, z, fp, false) && !g.wet(cx, cz) {
                     g.put(&name, x, z, fp, blocks);
@@ -235,16 +372,17 @@ pub fn place(map: &Map, land: &mut Land, kit: Kit, templates: &Templates, files:
     let Grid { cells, blocked, owner, footprints, names, .. } = g;
     let joined = connect(map, land, Blocking { cells, blocked, owner, footprints }, names, &starts);
     counts.opened = joined.changed;
-    Ok(Placed { cells: joined.cells, names: joined.names, own, starts, counts, cut_off: joined.cut_off })
+    Ok(Placed { cells: joined.cells, names: joined.names, own, starts, counts, cut_off: joined.cut_off, ways: joined.ways })
 }
 
 /// What [`connect`] leaves: the features and their names (unused names dropped), the start pairs
-/// still cut off, and how many cells were changed.
+/// still cut off, how many cells were changed, and the cells of cliff a way was opened through.
 struct Joined {
     cells: Vec<u16>,
     names: Vec<String>,
     cut_off: Vec<(usize, usize)>,
     changed: usize,
+    ways: Vec<bool>,
 }
 
 /// The blocking features: the feature slots, the cells they block, which feature blocks each
@@ -254,10 +392,6 @@ struct Blocking {
     blocked: Vec<bool>,
     owner: Vec<u32>,
     footprints: BTreeMap<u32, i32>,
-}
-
-fn own_footprint(own: &Own, name: &str) -> i32 {
-    own.document().section(name).map_or(1, |s| s.get_i64_or("footprintx", 1).max(s.get_i64_or("footprintz", 1)).clamp(1, 16) as i32)
 }
 
 /// Whether a cell lets a tank through ([`TANK`]).
@@ -365,6 +499,7 @@ fn connect(map: &Map, land: &mut Land, b: Blocking, names: Vec<String>, starts: 
     let game = game_regions(map);
     let anchor = |s: (f64, f64)| -> usize { ((s.1 / 16.0) as usize).clamp(1, h - 2) * w + ((s.0 / 16.0) as usize).clamp(1, w - 2) };
     let mut changed = vec![false; w * h];
+    let mut ways = vec![false; w * h];
     let mut tried: Vec<(usize, usize)> = Vec::new();
     let pairs: Vec<(usize, usize)> = (0..starts.len()).flat_map(|a| (a + 1..starts.len()).map(move |b| (a, b))).filter(|&(a, b)| game[a] != 0 && game[a] == game[b]).collect();
     let cut = |regions: &[u32], tried: &[(usize, usize)]| -> Option<(usize, usize)> {
@@ -417,6 +552,7 @@ fn connect(map: &Map, land: &mut Land, b: Blocking, names: Vec<String>, starts: 
                         if land.cliff[n] {
                             land.cliff[n] = false;
                             changed[n] = true;
+                            ways[n] = true;
                         }
                         // A blocking feature in the way goes, all of it.
                         let o = owner[n];
@@ -462,7 +598,7 @@ fn connect(map: &Map, land: &mut Land, b: Blocking, names: Vec<String>, starts: 
             *c = new[*c as usize];
         }
     }
-    Joined { cells, names: kept, cut_off, changed: changed.iter().filter(|&&c| c).count() }
+    Joined { cells, names: kept, cut_off, changed: changed.iter().filter(|&&c| c).count(), ways }
 }
 
 /// The cheapest way for a tank's middle from anchor `from` to `to`: each step costs a cell, and
@@ -593,5 +729,129 @@ mod tests {
         assert_eq!(regions[30 * 64 + 10], regions[30 * 64 + 54]);
         // The starts in TA's pixels.
         assert_eq!(placed.starts, [(160.0, 480.0), (864.0, 480.0)]);
+    }
+
+    /// Wall sections of every kind become dragon's teeth over all the cells they cover: a UEF
+    /// section (one unit) one tooth, a Cybran segment (three) teeth over its 3 x 3; the cities'
+    /// other buildings nothing.
+    #[test]
+    fn every_kind_of_wall_becomes_teeth_over_its_footprint() {
+        assert_eq!(wall("ueb5101"), Some(1.0));
+        assert_eq!(wall("xsb5101"), Some(1.0));
+        assert_eq!(wall("xrc8001"), Some(3.0));
+        assert_eq!(wall("xec8020"), Some(3.0));
+        assert_eq!(wall("xac8103"), Some(3.0));
+        assert_eq!(wall("uec1101"), None);
+        assert_eq!(wall("xsc1301"), None);
+        let mut m = map();
+        m.civilians = vec![
+            Civilian { unit: "xrc8001".into(), position: [50.5, 12.5], wreck: false },
+            Civilian { unit: "xrc8002".into(), position: [53.5, 12.5], wreck: false },
+            Civilian { unit: "uec1101".into(), position: [50.5, 20.5], wreck: false },
+        ];
+        let files = Files::of(Vec::new(), Vec::new());
+        let mut land = land::build(&m.scmap, Frame::of([0.0, 0.0, 64.0, 64.0]));
+        let placed = place(&m, &mut land, GREEN, &templates(), &files).unwrap();
+        let teeth: Vec<(usize, usize)> = (0..64 * 64).filter(|&i| placed.names.get(placed.cells[i] as usize).is_some_and(|n| n == "DragonsTeeth")).map(|i| (i % 64, i / 64)).collect();
+        let covered = |x: usize, z: usize| teeth.iter().any(|&(tx, tz)| (tx..tx + 2).contains(&x) && (tz..tz + 2).contains(&z));
+        // The two segments, side by side: cells 49 to 54 across, 11 to 13 down, all covered.
+        for z in 11..=13 {
+            for x in 49..=54 {
+                assert!(covered(x, z), "({x}, {z}) open: {teeth:?}");
+            }
+        }
+        assert!(!covered(50, 20), "a civilian building is no wall");
+    }
+
+    /// A mass point where TA's extractors could not stand (a slope steeper than they stand on, a
+    /// cliff the game's units could not climb, a shore half in the water) has its deposit's
+    /// ground made one they stand on; one where they can is left as it is.
+    #[test]
+    fn every_deposit_takes_an_extractor() {
+        let (w, h) = (64u32, 64u32);
+        let raw = |x: u32, z: u32| -> u16 {
+            let x = x as f32;
+            let z = z as f32;
+            let height = if z >= 44.0 {
+                // A shore: down half a unit a cell, into the water at 9.5.
+                (10.0 - (z - 44.0) * 0.5).max(5.0)
+            } else if (8.0..=24.0).contains(&x) && z < 30.0 {
+                // A ramp of 0.7 a cell: no cliff to the game, but steeper than an extractor's 10.
+                10.0 + (x - 8.0) * 0.7
+            } else if x > 24.0 && x < 40.0 {
+                21.2
+            } else if (40.0..=41.0).contains(&x) && z < 30.0 {
+                // A cliff: 3 units in a cell.
+                21.2 - (x - 40.0) * 3.0
+            } else if x > 41.0 {
+                18.2
+            } else {
+                10.0
+            };
+            (height * 128.0) as u16
+        };
+        let scmap = crate::convert::land::tests::map(w, h, raw, Some(9.5));
+        let m = Map { scmap, starts: vec![[4.0, 4.0], [60.0, 4.0]], mass: vec![[16.5, 16.5], [40.5, 15.5], [30.5, 45.0], [56.5, 20.5]], ..Default::default() };
+        let files = Files::of(Vec::new(), Vec::new());
+        let mut land = land::build(&m.scmap, Frame::of([0.0, 0.0, 64.0, 64.0]));
+        let before = land.heights.clone();
+        let placed = place(&m, &mut land, GREEN, &templates(), &files).unwrap();
+        assert_eq!(placed.counts.deposits, 4);
+        assert_eq!(placed.counts.levelled, 3, "the slope, the cliff and the shore; not the flat");
+        for z in 0..64 {
+            for x in 0..64 {
+                if placed.names.get(placed.cells[z * 64 + x] as usize).is_some_and(|n| n == "RockMetal3") {
+                    for (cx, cz) in (z..z + 3).flat_map(|cz| (x..x + 3).map(move |cx| (cx, cz))) {
+                        assert!(land.depth(cx, cz) <= 0 && !land.cliff[cz * 64 + cx] && land.slope(cx, cz) <= 10, "deposit at ({x}, {z}): ({cx}, {cz}) depth {} cliff {} slope {}", land.depth(cx, cz), land.cliff[cz * 64 + cx], land.slope(cx, cz));
+                    }
+                }
+            }
+        }
+        // The flat one's ground as it was.
+        assert!((19..22).all(|z| (55..58).all(|x| land.heights[z * 64 + x] == before[z * 64 + x])));
+    }
+
+    /// Two deposits side by side share the corners along their common side: levelling the second
+    /// (its ground stepping up 60 past that side) levels the first with it, so both still take an
+    /// extractor; levelled alone, it raised their common corners to 140 and tilted the first's
+    /// cells by 40.
+    #[test]
+    fn levelling_a_deposit_leaves_its_neighbours_buildable() {
+        let scmap = crate::convert::land::tests::map(64, 64, |_, _| 10 * 128, None);
+        let m = Map { scmap, starts: vec![[4.0, 4.0], [60.0, 60.0]], mass: vec![[16.5, 16.5], [19.5, 16.5]], ..Default::default() };
+        let files = Files::of(Vec::new(), Vec::new());
+        let mut land = land::build(&m.scmap, Frame::of([0.0, 0.0, 64.0, 64.0]));
+        // The first deposit's ground flat at 100, the second's corners past their common side at 160.
+        for z in 0..64 {
+            for x in 0..64 {
+                land.heights[z * 64 + x] = if x >= 19 { 160 } else { 100 };
+            }
+        }
+        let placed = place(&m, &mut land, GREEN, &templates(), &files).unwrap();
+        assert_eq!(placed.counts.deposits, 2);
+        assert_eq!(placed.counts.levelled, 1, "the second alone needed it");
+        let mut found = Vec::new();
+        for z in 0..64 {
+            for x in 0..64 {
+                if placed.names.get(placed.cells[z * 64 + x] as usize).is_some_and(|n| n == "RockMetal3") {
+                    found.push((x, z));
+                    for (cx, cz) in (z..z + 3).flat_map(|cz| (x..x + 3).map(move |cx| (cx, cz))) {
+                        assert!(land.depth(cx, cz) <= 0 && !land.cliff[cz * 64 + cx] && land.slope(cx, cz) <= 10, "deposit at ({x}, {z}): ({cx}, {cz}) slope {}", land.slope(cx, cz));
+                    }
+                }
+            }
+        }
+        assert_eq!(found, [(15, 15), (18, 15)], "side by side, sharing a side");
+    }
+
+    /// What a deposit's square shares: a side or a corner with its neighbours, nothing with one a
+    /// cell apart.
+    #[test]
+    fn deposits_touch_along_a_side_or_at_a_corner() {
+        let pad = |x, z| Pad { x, z, fp: 3, wet: false };
+        assert!(pad(15, 15).touches(&pad(18, 15)) && pad(18, 15).touches(&pad(15, 15)));
+        assert!(pad(15, 15).touches(&pad(18, 18)), "corner to corner");
+        assert!(!pad(15, 15).touches(&pad(19, 15)) && !pad(15, 15).touches(&pad(15, 19)));
+        assert_eq!(pad(62, 62).corners(64, 64).count(), 4, "cut at the map's edge");
     }
 }

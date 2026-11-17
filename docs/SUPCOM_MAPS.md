@@ -5,21 +5,36 @@ skirmish. The maps are made on the player's computer from their own copy of the 
 Steam's), into a map pack in their mods folder; nothing of Supreme Commander's is shipped with
 TA Reborn or kept in this repository.
 
-- **Players:** the launcher's Maps page, **SUPREME COMMANDER…**. The dialog finds the game,
-  lists its skirmish maps and the player's own (downloaded maps and Forged Alliance Forever's
-  vault) with the game's own pictures of them, and makes the chosen ones, one after another:
-  most in seconds, the largest in up to about three minutes; all 54 of the game's take about 20
-  minutes and 1.2 GB. STOP AFTER THIS MAP ends it once the map in hand is made; closing the
-  launcher asks first, then ends it at once, the map in hand left out. Either way the maps made
-  become the map pack **Supreme Commander maps** (`map-pack-supreme-commander`), turned on, in
-  the map library and in skirmish. Importing again makes the maps chosen again and keeps the
-  others; REMOVE MAP PACK removes them all.
+- **Players:** the launcher's Maps page, **SUPREME COMMANDER…** (its MAPS tab; the Mods page's
+  opens the same dialog at its FACTIONS). The dialog finds the game (a folder chosen with CHANGE
+  FOLDER…, or the copy switched to, is kept for the next start in the launcher's settings folder,
+  `supcom.toml`), lists its skirmish maps and the player's own (downloaded maps and Forged
+  Alliance Forever's vault) with the game's own pictures of them, and makes the chosen ones, one
+  after another (at first the game's own maps not imported yet, or changed since, are chosen; the
+  player's own never are; after an import, only those not made stay chosen, to try again; once
+  the pack is removed, they are chosen afresh): most in seconds, the largest in about a
+  minute; all 54 of the game's take about 20 minutes and 1.2 GB on disk, and the converter needs
+  under 1 GB of memory at most. The import checks first that
+  the disk has room for them (the maps the pack holds are kept by linking their files, not
+  copying them), and goes on with the dialog closed: the launcher's footer shows how far it has
+  got, and a click there opens the dialog again. STOP AFTER THIS MAP ends it once the map in hand
+  is made; a map that cannot be written (the disk full) ends it there, said against that map;
+  closing the launcher asks first, then ends it at once, the map in hand left out; an update of
+  the launcher waits for it. Each way the maps made become the map pack **Supreme Commander maps**
+  (`map-pack-supreme-commander`), turned on, in the map library and in skirmish: made again where
+  the launcher finds it (a copy kept in the extra mods folder there; none behind a copy in TA
+  Reborn's program folder), and in place of another mod of that id only once the player agrees.
+  Importing again makes the maps chosen again and keeps the others; REMOVE MAP PACK removes them
+  all. The pack's `version` is that of the converter that made its oldest map: older than this TA
+  Reborn's (`convert::VERSION`), the Mods page marks it UPDATE, as the dialog marks each map.
 - **Developers:** `cargo build --release -p ta_tools`, then `target/release/ta-tools supcom
   <out> [--only scmp_009,x1mp_001] [--preview <dir>] [--game <folder>] [--budget n]
   [--max-cells n]` makes the maps into `<out>/maps` (mount it as a mod to play them), with
   pictures of each beside the game's own preview, and prints for each its size, world, tiles, how
   much its tiles step at their edges (TA Reborn's own maps are held to 1.33), what stands on it,
-  and the cells changed to give tanks a way (`TA_SUPCOM_TIMES=1`: how long each step took).
+  the cells changed to give tanks a way and the deposits whose ground was made one extractors
+  stand on (`TA_SUPCOM_TIMES=1`: how long each step took; `--budget`, 28,000 tiles by default,
+  1 to 65,536: a place names its tile in 16 bits).
   The launcher's dialog for captures: `--page maps --show supcom` (`supcom:SCMP_012,SCMP_013`
   imports those once the game is found; `TA_SUPCOM_SHOT_IMPORTING=1` takes the picture while they
   are made).
@@ -43,12 +58,19 @@ case). Looked for, in order:
   Forged Alliance`.
 - The usual folders on C: to F:, and off Windows the same in Wine's, Lutris', Bottles', Heroic's,
   CrossOver's and Proton's prefixes.
-- A folder the player picks (or one level down in it).
+- A folder the player picks (or one level down in it), looked through on a worker and kept in
+  the launcher's settings. The original Supreme Commander is laid out as Forged Alliance is:
+  Forged Alliance is told from it by its own maps in its maps folder (`X1MP_…`, `X1CA_…`) or by its
+  data path naming it (`bin/SupComDataPath.lua`), and is taken first where a folder holds both;
+  the dialog says when the folder chosen holds the original. A folder chosen before that no longer
+  holds the game is said so, the copy found used meanwhile.
 
 The players' own maps: `<Documents>/My Games/Gas Powered Games/Supreme Commander Forged
-Alliance/maps` (Documents where Windows keeps it: often a OneDrive folder), FAF's copy of it
-under `ProgramData\FAForever\user`, and on Linux the same in the game's Proton prefix and in the
-home folder.
+Alliance/maps` (Documents where Windows keeps it: often a OneDrive folder; Forged Alliance
+Forever's client keeps its vault there too unless moved, as its `client.prefs` records:
+`vaultBaseDirectory`, `mapsDirectory`), the older FAF client's copy of it under
+`ProgramData\FAForever\user`, and on Linux the same in the game's Proton prefix and in the home
+folder. With none found, the dialog names the folder it looks in first.
 
 Steam's and GOG's copies are laid out alike (`bin/SupremeCommander.exe`, `gamedata/*.scd`,
 `maps/`); FAF's client runs the same files. Both read whole, and make the same maps byte for
@@ -73,12 +95,19 @@ copy).
   case and either slash, CRC checked.
 - **Files a map names** (`ta_supcom::files`), found whatever their case (91% of the paths in the
   game's maps only match ignoring case): a map's own files in the folders of maps (the player's
-  first, then the game's `maps/`), the rest in FAF's `.nx2` archives where FAF is installed, then
-  the game's `gamedata/*.scd`, then loose in the game's folder.
+  first, then the game's `maps/`), the rest in the game's `gamedata/*.scd` and FAF's `.nx2`
+  archives where FAF is installed, then loose in the game's folder. The game's own maps read the
+  game's archives first, so that they come out the same on every computer, FAF or not (FAF
+  changes some of the game's files); a player's own maps read FAF's first (a map of its vault may
+  use its newer textures). A folder behind a junction or a symbolic link (a game moved to another
+  drive) is followed.
 - **Lua data** (`ta_supcom::lua`): the scenario (`ScenarioInfo = {...}`), save (`Scenario = {...}`)
   and blueprint (`PropBlueprint {...}`) files, read as data: tables, numbers (`6.75917e-005`),
-  strings, booleans, and calls (`STRING()`, `FLOAT()`, `BOOLEAN()`, `VECTOR3()`, `RECTANGLE()`,
-  `GROUP {}`, `Sound {}`); comments `--`, `--[[ ]]` and `#`; a blueprint's `''` for a missing number.
+  strings (long ones too, `[[ ]]`, `[==[ ]==]`), booleans, and calls (`STRING()`, `FLOAT()`,
+  `BOOLEAN()`, `VECTOR3()`, `RECTANGLE()`, `GROUP {}`, `Sound {}`); comments `--`, `--[[ ]]`,
+  `--[==[ ]==]` and `#`; a blueprint's `''` for a missing number. Tables and calls nested more
+  than 64 deep are refused (a player's map from the vault is anybody's file). Of a map's script,
+  only the calls it makes are looked for, what is commented out left out.
 - **The scenario**: the name (plain), the description (its `<LOC key>` dropped), `type`
   (`skirmish`, `campaign`), `size` in world units ("ogrids": 256 is "5 km"), the files, and the
   armies (`Configurations.standard.teams`). The game's `X1CA_TUT` names another map's `.scmap`.
@@ -86,7 +115,8 @@ copy).
   `Hydrocarbon` (resources), `Blank Marker`s named for the armies (the starts); the armies'
   units (the civilians' walls, buildings and wrecks, `GROUP`s nested); the areas. Winter Duel and
   Fields of Isis limit the battle to an area in their scripts (`SetPlayableArea('AREA_1')`):
-  only that area is made.
+  only that area is made. 25 of the game's scripts carry the call commented out
+  (`--ScenarioFramework.SetPlayableArea(...)`): those maps are made whole.
 - **The `.scmap`** (`ta_supcom::scmap`), versions 60 (Forged Alliance, and the original game's
   maps re-saved) and 56 (the original game's editor, many of FAF's maps; 60 less the unknown
   float after the minimap's colours and the sky):
@@ -112,13 +142,18 @@ copy).
   | sky | (60) its block, to step over |
   | props | count × (blueprint, position, x, y, z axes, scale) to the file's end |
 
-- **Painting** as the game's terrain shader does (`convert::paint`): the lower stratum; over it,
-  in order, each of the eight strata by its mask (mask 0's R, G, B, A: strata 1-4; mask 1's:
-  5-8; the original game's 4-stratum shader reads mask 0 alone) at `clamp(2m − 1, 0, 1)`; the
-  upper stratum by its own alpha. A stratum repeats once every `scale` world units; mask texel
-  i covers world units 2i to 2i + 2. Albedo decals (type 1) lie with their corner at `position`,
-  `scale.x` along their own x and `scale.z` along z, turned `rotation.y` radians, blended by their
-  alpha. Under the water (the surface at its elevation in world units, heights raw × 1/128) the
+- **Painting** as the game's terrain shader does (`convert::paint`, after the game's
+  `effects/terrain.fx`): the lower stratum; over it, in order, each of the eight strata by its
+  mask (mask 0's R, G, B, A: strata 1-4; mask 1's: 5-8; the original game's shaders, `TTerrain`
+  and `TTerrainGlow`, read mask 0 alone and four strata; Forged Alliance's `TTerrainXP` and FAF's
+  later ones, `Terrain250`, `Terrain301`..., eight) at `clamp(2m − 1, 0, 1)`; the upper stratum
+  by its own alpha. A stratum repeats once every `scale` world units; mask texel i covers world
+  units 2i to 2i + 2. Albedo decals (type 1) lie with their corner at `position`, `scale.x` along
+  their own x and `scale.z` along z, turned `rotation.y` radians, blended by their alpha. Lit as
+  the shader lights it: `l = sun colour × max(0, N·sun) + ambience`, then `multiplier × l +
+  shadow fill × (1 − l)`, times the colour (the normal from the heightmap's slopes; most of the
+  game's maps have no ambience, their slopes facing away from the sun lit by the fill alone).
+  Under the water (the surface at its elevation in world units, heights raw × 1/128) the
   ground takes the water ramp's colour at `(surface − h)/(surface − abyss)` by the ramp's alpha.
 - **Textures** (`ta_supcom::dds`): DXT1, DXT3, DXT5, and uncompressed 8 to 32-bit by masks; one
   mip level decoded, the one that suits the map's scale.
@@ -142,7 +177,12 @@ Portable`, `convert::trig`), and nothing depends on thread order.
   units is too steep for its land units (its own rule). Pressing the heights into 0-255 makes
   every slope gentle, so the cells the game's units could not cross are marked as cliffs in the
   TNT (`CELL_CLIFF`, docs/FORMATS.md): too steep for anything of TA's that minds slopes, and for
-  building. Passable slopes stay within what TA's tanks climb (at most 12 of their 15).
+  building. At full scale a TA cell is the game's cell, and the slopes the game's units climbed
+  stay within what TA's tanks climb (at most 12 of their 15). The 40 and 81 km maps, made
+  smaller, put 2 × 2 and 4 × 4 of the game's cells in one of TA's: a cell is a cliff where most
+  of them are; one where half or fewer are, across a cliff's edge, is not marked but keeps the
+  slope its averaged heights give (up to some hundreds of cells a map steeper than 15, the
+  steepest about 45), which TA's own rules of slope then judge: no tank climbs it, a kbot may.
 - **World** (`kit::choose`): the environment the map's strata and props come from most (a
   stratum counting as much as a hundred props), as a world of TA's: evergreen is green,
   tropical archipelago, swamp lush, desert desert, tundra ice, lava lava, red rocks the red planet,
@@ -151,34 +191,60 @@ Portable`, `convert::trig`), and nothing depends on thread order.
   features, green.
 - **What stands on it** (`place::place`):
   - each mass point is a 3 × 3 metal deposit of the world's richest (about 2 metal a second to an
-    extractor, as a mass point gives in the game; under water its sea floor's), moved a little
-    where two would overlap;
+    extractor, as a mass point gives in the game; where the water is deeper than 9 at its middle,
+    its sea floor's), moved a little where two would overlap. Its ground is made one TA's
+    extractors stand on where it is not (they want dry ground no steeper than 10 and no cliff,
+    or water at least 19 deep): its corners' heights moved as little as that takes, each within
+    5 of their mean and out of the water, its cliff marks taken away; under water, deepened;
   - each hydrocarbon point a geothermal vent, its plant's site kept clear;
-  - the civilians' walls are dragon's teeth (their buildings and wrecks are left out);
+  - the civilians' walls are dragon's teeth over all the cells each section covers: the
+    factions' sections (`ueb5101`, `uab5101`, `urb5101`, `xsb5101`, one unit across) and Forged
+    Alliance's civilian wall segments (UEF's `xec80xx`, the Aeon's `xac80xx` and `xac81xx`, the
+    Cybran's `xrc80xx` and `xrc81xx`, the Seraphim's `xsc80xx`, three across). Their buildings
+    and wrecks are left out;
   - the props: each blueprint read for what it is (its script class, whether it blocks the way,
-    its reclaim, its size, its name). Trees (and groups of them, as several trees), bushes and
-    rocks become the map's own features (`maps/<stem>.features`, docs/FORMATS.md): TA's art of
-    the world under names of their own (`SC1_<World>_T1`, `_B1`, `_R3M`), passable where the
-    game's forests were (TA's trees block), worth what the game's props were (a tree 10 energy,
-    a rock 5 to 150 metal by its worth), rocks blocking where the game's did; markers, emitters,
-    geysers and the cities' clutter are left out;
+    its reclaim, its size, its name, what it is drawn with). Trees (and groups of them, as
+    several trees), bushes and rocks become the map's own features (`maps/<stem>.features`,
+    docs/FORMATS.md): TA's art of the world under names of their own (`SC1_<World>_T1`, `_B1`,
+    `_R3M`), passable where the game's forests were (TA's trees block), a tree worth 10 energy and
+    a rock metal by the game's reclaim in tiers, about half (up to 10 mass: 5 metal; to 40: 20; to
+    120: 60; more: 150), rocks blocking where the game's did. What one leaves when destroyed is
+    TA's remains of its template, never worth more than it nor blocking more (TA's rocks crack
+    into rocks as big and as rich, its Martian ones into larger: those steps taken over under the
+    map's own names, `_D1`, `_D2`, held to it), then TA's rubble or scar; trees do not burn.
+    Markers, emitters and geysers are left out, and so are the cities' props: the factions'
+    (`/env/uef/`, `/env/aeon/`, `/env/cybran/`, `/env/seraphim/`: buses, cars, docks, fences,
+    street lights, adjacency nodes) and anything drawn as the factions' units are (the `Unit`,
+    `Aeon`, `Insect`, `Seraphim` shaders), whatever their script class (the fences and street
+    lights are `Tree`s to the game) or reclaim (300 mass a bus);
   - nothing within six cells of a start.
 - **Ways for tanks** (`place::connect`): where the game's land units could drive from one start to
   another and a 3 × 3 TA tank cannot (the game's units are smaller, so some of its passes are too
   narrow, and its rocks stand closer), the cheapest way between them is opened where a tank could
   not pass, three cells wide and a few cells either side: its cliffs unmarked, its ground laid no
-  steeper than a tank climbs, the blocking features in it taken away.
+  steeper than a tank climbs, the blocking features in it taken away. The cliff's cells a way
+  crosses are painted as the ground nearest each, level (`Painter::open_ways`).
 - **The art** (`art`): the ground painted in TA's view (`ta_mapart::slant`: TA's camera saw a place
   `h / 2` pixels up the picture), the strata decoded a level finer than a texel a pixel (the grain
-  survives at TA's scale), lit by the map's sun over the heightmap's slopes, and matched in
-  colour on land to the game's own preview of the map (within limits); then cut into 32-pixel
+  survives at TA's scale), lit as the game's shader lights it (above), and matched in colour on
+  land to the game's own preview of the map: the mean of each channel over the land, on a grid of
+  48 × 48 places (192 × 192 where that finds too little land: maps mostly sea), scaled to the
+  picture's, by 0.75 to 2 and one channel against the others by 12% at most (the game's pictures
+  are brighter than its shader lights its maps, most by a quarter to two fifths:
+  `how_each_map_matches_its_preview`). A map that is not square fills the middle of its square
+  picture, black above and below or either side: it is matched there. Then cut into 32-pixel
   tiles. A map with room for every place's own tile keeps them all; a larger one has the alike
   shared within a budget (28,000 tiles: TA Reborn's own largest maps have about 24,000), the cliffs'
-  kept whole, their seams settled (`ta_mapart::tiles`, as TA Reborn's own maps are made). Each
-  tile is dithered into TA's palette.
-- **The OTA**: the map's name and description, its world's planet, the starts (at most TA's ten),
-  tidal 20 where there is water, wind 500 to 2500, surface metal 3, and `rebornart=1`,
-  `supcommap`, `supcomversion` (docs/FORMATS.md).
+  kept whole, their seams settled over twelve rounds (`ta_mapart::tiles`, as TA Reborn's own maps
+  are made; each place's candidates kept to the 64 most alike as they are found). Each tile is
+  dithered into TA's palette.
+- **The OTA**: the map's name and description (its size first, as TA's maps' open: `32 X 32  `,
+  the menus showing the map's own in its place), its world's planet, its size in 512-pixel
+  squares, rounded (`8 x 5`), the starts (at most TA's ten), tidal 20 where there is water, wind
+  500 to 2500, surface metal 3, and `rebornart=1`, `supcommap`, `supcomversion` (docs/FORMATS.md;
+  `convert::VERSION`, raised whenever what the converter makes changes, so that the launcher
+  offers to make maps made before again). A map whose markers leave fewer than two starts is
+  refused: no battle is fought on it.
 - **Its file stem**: its name and `(SC)` (`Seton's Clutch (SC)`); a player's own map's folder
   too, whole (`Seton's Clutch (SC setons_clutch v0003)`: versions of a map share all but the end
   of their folders' names), past 48 characters cut with a mark of the whole name (`~` and six hex
@@ -198,9 +264,14 @@ each player has imported.
 ## Tests
 
 - `cargo test -p ta_supcom`: the readers on maps, archives, textures and data made in the tests
-  (none of the game's), the converter end to end on a small map (twice, the same bytes).
+  (none of the game's), the converter end to end on a small map (twice, the same bytes, its
+  features' too).
 - `cargo test --release -p ta_supcom --test installed -- --ignored --nocapture`: every map of the
-  player's copy read.
+  player's copy read; `every_installed_map_converts` (about twenty minutes) makes every skirmish
+  map and checks that each deposit takes an extractor, the starts the game's land units drive
+  between are joined for a tank, what the map's own features leave is held to them, and the 5 km
+  maps come out the same on three threads as on all; `how_each_map_matches_its_preview` (seconds)
+  shows each map's colours against the game's picture of it and the gain that matched them.
 - `cargo test -p ta_data own_features`, `cargo test -p ta_sim a_maps_cliffs`, `cargo test -p
   ta_formats cell_marks`, the editor's `a_copy_of_a_converted_map_keeps_its_own_features_and_cliffs`.
 - In the game: mount `ta-tools supcom`'s output as a mod and play it (`--map "Seton's Clutch

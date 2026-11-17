@@ -926,6 +926,20 @@ mod tests {
         drop(stream);
     }
 
+    /// The connection a peer that has just connected has on `listener`, the host's, which never
+    /// waits (`Host::bind`): on a busy machine it is not there yet the moment `connect` returns
+    /// (a GitHub macOS runner's accept said WouldBlock, the 1.0.7 release run).
+    fn accept_waiting(listener: &TcpListener) -> TcpStream {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match listener.accept() {
+                Ok((socket, _)) => return socket,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline => thread::sleep(Duration::from_millis(2)),
+                Err(e) => panic!("no connection to accept: {e}"),
+            }
+        }
+    }
+
     /// A one-frame writer queue drained explicitly by the test, so backpressure is
     /// deterministic and requires neither a huge history nor a slow loopback socket.
     struct ResumeTest {
@@ -941,7 +955,7 @@ mod tests {
             use crate::{LobbySlot, SlotKind};
             let mut host = Host::bind(0, 1).unwrap();
             let peer = TcpStream::connect(("127.0.0.1", host.port)).unwrap();
-            let (socket, _) = host.listener.accept().unwrap();
+            let socket = accept_waiting(&host.listener);
             let (incoming, rx) = mpsc::sync_channel(8);
             let (outgoing, frames) = mpsc::sync_channel(1);
             let queued = Arc::new(AtomicUsize::new(0));

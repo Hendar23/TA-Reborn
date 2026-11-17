@@ -166,8 +166,8 @@ pub(super) fn megabytes(bytes: u64) -> String {
 /// A mod's picture, cropped to fill (zooming in a little under the pointer; a `bundled`
 /// banner fitted whole instead); without one (before it has come, offline, or a mod of the
 /// player's own), a plate of its own: dark metal tinted in a colour of the mod's (`id`), the
-/// emblem faint behind its `name`.
-pub(super) fn paint_picture(painter: &egui::Painter, rect: Rect, texture: Option<&TextureHandle>, id: &str, name: &str, bundled: bool, hover: f32) {
+/// emblem faint behind its `name`, and its `icon` beside the name where it has one.
+pub(super) fn paint_picture(painter: &egui::Painter, rect: Rect, texture: Option<&TextureHandle>, id: &str, name: &str, bundled: bool, hover: f32, icon: Option<&TextureHandle>) {
     match texture {
         Some(texture) => {
             let size = texture.size_vec2();
@@ -209,12 +209,35 @@ pub(super) fn paint_picture(painter: &egui::Painter, rect: Rect, texture: Option
             widgets::paint_emblem(&faint, Rect::from_center_size(pos2(rect.max.x - side * 0.42, rect.center().y), vec2(side, side)));
             widgets::gradient_h(painter, Rect::from_min_max(rect.min, pos2(rect.min.x + rect.width() * 0.25, rect.max.y)), Color32::from_black_alpha(90), Color32::TRANSPARENT);
             widgets::gradient_v(painter, Rect::from_min_max(pos2(rect.min.x, rect.max.y - 50.0), rect.max), Color32::TRANSPARENT, Color32::from_black_alpha(120));
-            // The name, lettered as TA's titles are, as large as fits.
+            // The name, lettered as TA's titles are, as large as fits; after the mod's icon, where
+            // it has one (the two together in the middle).
+            let side = icon.map_or(0.0, |_| (rect.height() * 0.46).clamp(24.0, 112.0));
+            let gap = if icon.is_some() { (side * 0.18).max(8.0) } else { 0.0 };
+            let room = rect.width() * 0.84 - side - gap;
             let size = (rect.height() * 0.18).clamp(14.0, 44.0);
             let galley = painter.layout_no_wrap(name.to_uppercase(), display(size), TEXT_BRIGHT);
-            let galley = if galley.size().x > rect.width() * 0.8 { painter.layout_no_wrap(name.to_uppercase(), display((size * rect.width() * 0.8 / galley.size().x).max(9.0)), TEXT_BRIGHT) } else { galley };
-            metal::embossed(painter, rect.center() - galley.size() / 2.0, galley, TEXT_BRIGHT.gamma_multiply(0.9));
+            let galley = if galley.size().x > room { painter.layout_no_wrap(name.to_uppercase(), display((size * room / galley.size().x).max(9.0)), TEXT_BRIGHT) } else { galley };
+            let left = rect.center().x - (side + gap + galley.size().x) / 2.0;
+            if let Some(icon) = icon {
+                let at = Rect::from_min_size(pos2(left, rect.center().y - side / 2.0), vec2(side, side));
+                painter.rect_filled(at.expand(2.0), CornerRadius::same(4), Color32::from_black_alpha(140));
+                painter.add(egui::Shape::Rect(egui::epaint::RectShape::filled(at, CornerRadius::same(3), Color32::WHITE).with_texture(icon.id(), square_uv(icon))));
+            }
+            metal::embossed(painter, pos2(left + side + gap, rect.center().y - galley.size().y / 2.0), galley, TEXT_BRIGHT.gamma_multiply(0.9));
         }
+    }
+}
+
+/// The middle square of a picture, as texture coordinates: an icon not square, shown square.
+pub(super) fn square_uv(texture: &TextureHandle) -> Rect {
+    let [width, height] = texture.size();
+    let (width, height) = (width.max(1) as f32, height.max(1) as f32);
+    if width > height {
+        let u = height / width;
+        Rect::from_min_max(pos2((1.0 - u) / 2.0, 0.0), pos2((1.0 + u) / 2.0, 1.0))
+    } else {
+        let v = width / height;
+        Rect::from_min_max(pos2(0.0, (1.0 - v) / 2.0), pos2(1.0, (1.0 + v) / 2.0))
     }
 }
 

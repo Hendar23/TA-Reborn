@@ -149,8 +149,13 @@ pub fn describe(pixels: &[[f32; 3]]) -> Desc {
 /// [`describe`] with the colours taken to OKLab as `C` takes them.
 pub fn describe_in<C: Colour>(pixels: &[[f32; 3]]) -> Desc {
     let lab: Vec<[f32; 3]> = pixels.iter().map(|&c| C::oklab(c)).collect();
+    describe_lab(&lab)
+}
+
+/// [`describe`] of a tile whose colours are in OKLab already (32 x 32, row by row).
+pub fn describe_lab(lab: &[[f32; 3]]) -> Desc {
     let mut mean = [0.0f32; 3];
-    for c in &lab {
+    for c in lab {
         for k in 0..3 {
             mean[k] += c[k] / 1024.0;
         }
@@ -208,6 +213,14 @@ impl Tolerance {
     }
 
     fn alike(&self, a: &Desc, b: &Desc) -> Option<f32> {
+        self.alike_within(a, b, f32::INFINITY)
+    }
+
+    /// [`Tolerance::alike`], but `None` as soon as the likeness is sure to come out above
+    /// `worst` (strictly: one equal to it is still given). What it gives is exactly what
+    /// `alike` gives: the sum only grows as the layout's terms are added, so a part of it
+    /// that is already above `worst` tells.
+    fn alike_within(&self, a: &Desc, b: &Desc, worst: f32) -> Option<f32> {
         if a.phase != b.phase {
             return None;
         }
@@ -217,14 +230,21 @@ impl Tolerance {
         if dl > self.light || da > self.color || db > self.color {
             return None;
         }
+        let (light, color) = ((dl / self.light).powi(2), ((da + db) / self.color).powi(2));
+        if light + color > worst {
+            return None;
+        }
         let mut s = 0.0;
-        for (x, y) in a.layout.iter().zip(b.layout.iter()) {
+        for (k, (x, y)) in a.layout.iter().zip(b.layout.iter()).enumerate() {
             s += (x - y) * (x - y);
             if s > self.layout {
                 return None;
             }
+            if k % 12 == 11 && s / self.layout + light + color > worst {
+                return None;
+            }
         }
-        Some(s / self.layout + (dl / self.light).powi(2) + ((da + db) / self.color).powi(2))
+        Some(s / self.layout + light + color)
     }
 
     fn key(&self, d: &Desc) -> (u16, i32, i32, i32) {
@@ -268,7 +288,7 @@ pub fn group(descs: &[Desc], rock: &[f32], budget: usize, whole_share: f32) -> (
         assign[i as usize] = reps.len() as u32;
         reps.push(i);
     }
-    eprintln!("  tiles of rock kept whole: {}", whole.len());
+    log::info!("tiles of rock kept whole: {}", whole.len());
     (assign, reps, k)
 }
 
@@ -295,7 +315,7 @@ fn group_alike(descs: &[Desc], budget: usize) -> (Vec<u32>, Vec<u32>, f32) {
         (a, r, k)
     });
     let tol = Tolerance::at(k);
-    eprintln!("  tiles: {} -> {} (means within {:.4} light, {:.4} colour)", descs.len(), reps.len(), tol.light, tol.color);
+    log::info!("tiles: {} -> {} (means within {:.4} light, {:.4} colour)", descs.len(), reps.len(), tol.light, tol.color);
     // Each group's representative: its member nearest the group's mean.
     let mut sums = vec![([0.0f32; 3], [0.0f32; 48]); reps.len()];
     let mut counts = vec![0u32; reps.len()];
@@ -328,7 +348,7 @@ fn group_alike(descs: &[Desc], budget: usize) -> (Vec<u32>, Vec<u32>, f32) {
     }
     let reps: Vec<u32> = chosen.into_iter().zip(reps).map(|((_, i), first)| if i == u32::MAX { first } else { i }).collect();
     let (assign, reps) = versions(descs, assign, reps, budget);
-    eprintln!("  tiles kept: {} (with versions of the biggest groups)", reps.len());
+    log::info!("tiles kept: {} (with versions of the biggest groups)", reps.len());
     (assign, reps, k)
 }
 
@@ -344,8 +364,109 @@ const REPEAT: f32 = 0.3;
 const CANDIDATES: usize = 64;
 const WIDER: f32 = 3.0;
 const SWEEPS: usize = 6;
+
+/// A tile a place may take: how unlike the place's painting it is (lower, more alike) and its
+/// number. Ordered by likeness, then by number: a total order, so the same tiles are chosen on
+/// every computer, ties and all.
+#[derive(Clone, Copy, Debug)]
+struct Candidate {
+    e: f32,
+    g: u32,
+}
+
+impl Ord for Candidate {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.e.total_cmp(&other.e).then(self.g.cmp(&other.g))
+    }
+}
+
+impl PartialOrd for Candidate {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Candidate {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Candidate {}
+
+/// The 27 buckets round a place's own (a step either way in lightness and each colour channel,
+/// [`Tolerance::key`]): its own first, then those a step off in one, two, then three channels.
+const NEAREST_FIRST: [(i32, i32, i32); 27] = {
+    let mut out = [(0, 0, 0); 27];
+    let mut n = 0;
+    let mut off = 0;
+    while off <= 3 {
+        let mut dx = -1;
+        while dx <= 1 {
+            let mut dy = -1;
+            while dy <= 1 {
+                let mut dz = -1;
+                while dz <= 1 {
+                    if dx * dx + dy * dy + dz * dz == off {
+                        out[n] = (dx, dy, dz);
+                        n += 1;
+                    }
+                    dz += 1;
+                }
+                dy += 1;
+            }
+            dx += 1;
+        }
+        off += 1;
+    }
+    out
+};
+
 /// How much more rock in strata than its own painting a place's tile may show (see [`stitch`]).
 const STRATA_MARGIN: f32 = 0.25;
+
+/// The tiles kept that look like them, by their mean colour within a tolerance ([`Tolerance::key`]).
+type Buckets = FxHashMap<(u16, i32, i32, i32), Vec<u32>>;
+
+/// The tiles a place (`d`, showing `rock` of rock in strata, and tile `own` now) may take, with
+/// their likeness: the [`CANDIDATES`] most alike of the tiles `shown` within `tol` (by likeness,
+/// then by number), then its own tile if it is not among them (in the last one's place). They
+/// are kept as they are found, the least alike on top to give way, so that a place's list never
+/// holds more (lists of every alike tile, sorted, then cut, held thousands each and gigabytes in
+/// all on the largest maps); the buckets nearest the place's own first, so that the list fills
+/// with the most alike early and the rest are told apart sooner. Which are kept does not depend
+/// on that order.
+fn place_candidates(d: &Desc, rock: f32, own: u32, shown: &[Desc], rock_shown: &[f32], tol: &Tolerance, buckets: &Buckets) -> Vec<(u32, f32)> {
+    let key = tol.key(d);
+    let mut best: std::collections::BinaryHeap<Candidate> = std::collections::BinaryHeap::with_capacity(CANDIDATES + 1);
+    for &(dx, dy, dz) in &NEAREST_FIRST {
+        let Some(gs) = buckets.get(&(key.0, key.1 + dx, key.2 + dy, key.3 + dz)) else { continue };
+        for &g in gs {
+            let strata = rock_shown[g as usize] <= rock + STRATA_MARGIN;
+            if !strata {
+                continue;
+            }
+            let worst = if best.len() == CANDIDATES { best.peek().map_or(f32::INFINITY, |c| c.e) } else { f32::INFINITY };
+            let Some(e) = tol.alike_within(d, &shown[g as usize], worst) else { continue };
+            let c = Candidate { e, g };
+            if best.len() < CANDIDATES {
+                best.push(c);
+            } else if best.peek().is_some_and(|top| c < *top) {
+                best.pop();
+                best.push(c);
+            }
+        }
+    }
+    let mut list: Vec<(u32, f32)> = best.into_sorted_vec().into_iter().map(|c| (c.g, c.e)).collect();
+    if !list.iter().any(|c| c.0 == own) {
+        let e = tol.alike(d, &shown[own as usize]).unwrap_or(4.0);
+        if list.len() == CANDIDATES {
+            list.pop();
+        }
+        list.push((own, e));
+    }
+    list
+}
 
 /// Picks the tile every place shows (`assign`, indices into `shown`, the tiles kept as they
 /// will be drawn; the places, `descs`, a map `width` tiles wide, row by row) so that the tiles
@@ -364,39 +485,14 @@ const STRATA_MARGIN: f32 = 0.25;
 pub fn stitch(descs: &[Desc], shown: &[Desc], rock: &[f32], rock_shown: &[f32], assign: &mut [u32], width: usize, k: f32) -> usize {
     let width = width.max(1);
     let tol = Tolerance::at(k * WIDER);
-    let mut buckets: FxHashMap<(u16, i32, i32, i32), Vec<u32>> = FxHashMap::default();
+    let mut buckets: Buckets = FxHashMap::default();
     for (g, d) in shown.iter().enumerate() {
         buckets.entry(tol.key(d)).or_default().push(g as u32);
     }
     // Each place's candidates (its present tile always among them), with their likeness.
     let candidates: Vec<Vec<(u32, f32)>> = (0..descs.len())
         .into_par_iter()
-        .map(|i| {
-            let d = &descs[i];
-            let key = tol.key(d);
-            let mut list: Vec<(u32, f32)> = Vec::new();
-            for dx in -1..=1 {
-                for dy in -1..=1 {
-                    for dz in -1..=1 {
-                        if let Some(gs) = buckets.get(&(key.0, key.1 + dx, key.2 + dy, key.3 + dz)) {
-                            let strata = |g: u32| rock_shown[g as usize] <= rock[i] + STRATA_MARGIN;
-                            list.extend(gs.iter().filter(|&&g| strata(g)).filter_map(|&g| tol.alike(d, &shown[g as usize]).map(|e| (g, e))));
-                        }
-                    }
-                }
-            }
-            list.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
-            list.truncate(CANDIDATES);
-            let own = assign[i];
-            if !list.iter().any(|c| c.0 == own) {
-                let e = tol.alike(d, &shown[own as usize]).unwrap_or(4.0);
-                if list.len() == CANDIDATES {
-                    list.pop();
-                }
-                list.push((own, e));
-            }
-            list
-        })
+        .map(|i| place_candidates(&descs[i], rock[i], assign[i], shown, rock_shown, &tol, &buckets))
         .collect();
     let before = assign.to_vec();
     let rows = descs.len() / width;
@@ -474,7 +570,29 @@ pub fn shift(pixels: &mut [[f32; 3]], delta: &[f32; 48]) {
 
 /// [`shift`] with the colours taken to OKLab and back as `C` takes them.
 pub fn shift_in<C: Colour>(pixels: &mut [[f32; 3]], delta: &[f32; 48]) {
-    // The change near `side`, `a` pixels along it and `d` in from it.
+    for y in 0..32 {
+        for x in 0..32 {
+            let mut lab = C::oklab(pixels[y * 32 + x]);
+            shift_pixel(&mut lab, delta, x, y);
+            pixels[y * 32 + x] = C::srgb(lab);
+        }
+    }
+}
+
+/// [`shift`] of a tile whose colours are in OKLab (32 x 32, row by row), kept so: a tile settled
+/// round after round is taken to OKLab and back once, not every round.
+pub fn shift_lab(lab: &mut [[f32; 3]], delta: &[f32; 48]) {
+    for y in 0..32 {
+        for x in 0..32 {
+            shift_pixel(&mut lab[y * 32 + x], delta, x, y);
+        }
+    }
+}
+
+/// The shift of pixel (x, y)'s colour (OKLab): the change near each side (`delta`), `a` pixels
+/// along it and `d` in from it, added in turn.
+#[inline]
+fn shift_pixel(lab: &mut [f32; 3], delta: &[f32; 48], x: usize, y: usize) {
     let edge = |side: usize, a: f32, d: f32| -> [f32; 3] {
         let w = 1.0 - ((d - 4.0) / 4.0).clamp(0.0, 1.0);
         let s = ((a - 4.0) / 8.0).clamp(0.0, 3.0);
@@ -485,16 +603,10 @@ pub fn shift_in<C: Colour>(pixels: &mut [[f32; 3]], delta: &[f32; 48]) {
             (p + (q - p) * f) * w
         })
     };
-    for y in 0..32 {
-        for x in 0..32 {
-            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            let mut lab = C::oklab(pixels[y * 32 + x]);
-            for c in [edge(NORTH, px, py), edge(SOUTH, px, 32.0 - py), edge(WEST, py, px), edge(EAST, py, 32.0 - px)] {
-                for k in 0..3 {
-                    lab[k] += c[k];
-                }
-            }
-            pixels[y * 32 + x] = C::srgb(lab);
+    let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+    for c in [edge(NORTH, px, py), edge(SOUTH, px, 32.0 - py), edge(WEST, py, px), edge(EAST, py, 32.0 - px)] {
+        for k in 0..3 {
+            lab[k] += c[k];
         }
     }
 }
@@ -894,6 +1006,61 @@ mod tests {
         let order = compact(&mut assign, kept.len());
         assert_eq!(order.len(), distinct);
         assert!(assign.iter().all(|&g| (g as usize) < order.len()));
+    }
+
+    /// A place's candidates, found keeping only the best as they come, are exactly those the
+    /// stitching took before: every alike tile, sorted by likeness then number, cut to
+    /// [`CANDIDATES`], its own tile put in the last one's place when not among them. On tiles
+    /// whose likenesses tie (copies of one tile), in many buckets.
+    #[test]
+    fn a_places_candidates_are_the_most_alike_ties_and_all() {
+        // A field of tiles of a few colours, each colour many times over (so likenesses tie),
+        // some showing rock in strata.
+        let colour = |i: u32| [0.30 + (i % 7) as f32 * 0.004, 0.32 + (i % 5) as f32 * 0.003, 0.28 + (i % 3) as f32 * 0.003];
+        let shown: Vec<Desc> = (0..900u32).map(|i| {
+            let mut px = vec![colour(i); 1024];
+            // (A little layout to some, the same for many.)
+            for (j, p) in px.iter_mut().enumerate() {
+                if (j / 32 + i as usize % 4).is_multiple_of(8) {
+                    p[0] += 0.01;
+                }
+            }
+            describe(&px)
+        }).collect();
+        let rock_shown: Vec<f32> = (0..900).map(|i| if i % 11 == 0 { 0.9 } else { 0.0 }).collect();
+        for k in [4.0f32, 9.0, 20.0] {
+            let tol = Tolerance::at(k * WIDER);
+            let mut buckets: Buckets = FxHashMap::default();
+            for (g, d) in shown.iter().enumerate() {
+                buckets.entry(tol.key(d)).or_default().push(g as u32);
+            }
+            for (p, own) in [(3u32, 3u32), (17, 899), (250, 0), (601, 77)] {
+                let d = describe(&vec![colour(p); 1024]);
+                let got = place_candidates(&d, 0.1, own, &shown, &rock_shown, &tol, &buckets);
+                // As it was: every alike tile, sorted, cut.
+                let mut all: Vec<(u32, f32)> = Vec::new();
+                for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        for dz in -1..=1 {
+                            let key = tol.key(&d);
+                            if let Some(gs) = buckets.get(&(key.0, key.1 + dx, key.2 + dy, key.3 + dz)) {
+                                all.extend(gs.iter().filter(|&&g| rock_shown[g as usize] <= 0.1 + STRATA_MARGIN).filter_map(|&g| tol.alike(&d, &shown[g as usize]).map(|e| (g, e))));
+                            }
+                        }
+                    }
+                }
+                all.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+                assert!(all.len() > CANDIDATES, "the test wants more alike tiles than are kept: {}", all.len());
+                all.truncate(CANDIDATES);
+                if !all.iter().any(|c| c.0 == own) {
+                    let e = tol.alike(&d, &shown[own as usize]).unwrap_or(4.0);
+                    all.pop();
+                    all.push((own, e));
+                }
+                let bits = |l: &[(u32, f32)]| l.iter().map(|&(g, e)| (g, e.to_bits())).collect::<Vec<_>>();
+                assert_eq!(bits(&got), bits(&all), "k {k}, place {p}");
+            }
+        }
     }
 
     #[test]

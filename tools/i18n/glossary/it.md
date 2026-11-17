@@ -516,3 +516,117 @@ feminine (COME LA GIOCA). Straight apostrophes, as the validator's other strings
 | patch / the patched engines of later years / engine | patch (la patch, le patch) / i motori con le patch degli anni successivi / motore |
 | weapon ID / unit value (a script's) / cloak (unit value 111) | ID dell'arma (gli ID) / valore di unità / occultamento |
 | sides / campaigns of its own; TA's own computer players | fazioni / campagne proprie della mod; giocatori computer originali di TA |
+
+## A mod's presentation in the launcher (`pages/mods.rs`, `crates/ta_data/src/presentation.rs`)
+
+A mod's banner, gameplay preview, icon, screenshots and links in the MODS library, and the mod
+check's notes on them, under the report's group PRESENTAZIONE. Straight apostrophes, as the
+validator's other strings. `mod.toml`, `media/banner.png` and `{key}` (a manifest key: banner,
+preview, icon, screenshots) stay as they are: "La voce {key} di mod.toml punta a {path}". GIF is
+feminine (una GIF animata).
+
+| English | Italiano |
+|---|---|
+| PRESENTATION (the report's group of notes) | PRESENTAZIONE |
+| banner (the card and the top of the mod's page) | banner (il banner) |
+| gameplay preview (an animated GIF of the mod in play) | anteprima di gioco (as immagini di gioco) |
+| PLAY PREVIEW (the banner's button, with motion reduced) | AVVIA ANTEPRIMA (PLAY is AVVIA, as AVVIA LA CRONACA) |
+| icon (a mod's) | icona |
+| SCREENSHOTS / Screenshot {n} of {count} / {n} of {count} | SCREENSHOT (lo screenshot, gli screenshot) / Screenshot {n} di {count} / {n} di {count} |
+| MOD PAGE (a link to the mod's web page, beside its links) | PAGINA DELLA MOD (PAGINA MOD would read as the launcher's page Mod) |
+| the mod's media folder / a path from the mod's folder | la cartella media della mod / un percorso relativo alla cartella della mod |
+| frames (of a GIF) | fotogrammi |
+| shows blurred / shows sharp | appare sfocato / appare nitido |
+| … at best (the size to aim for) / Give it more pixels | l'ideale è … / Usa più pixel (no gender to agree) |
+| still picture / picture editor | immagine fissa / programma di grafica |
+| link / web address | link (il link) / indirizzo web |
+
+## Il tema dell'interfaccia di una mod (`pages/mods.rs`, `settings.rs`, `presentation.rs`)
+
+A mod's `[theme]` draws its battles' HUD in colours, pictures and a font of its own; the mod's page
+previews it under TEMA INTERFACCIA, the game's opzioni Interfaccia turn it off. HUD stays: l'HUD. A
+font is il font (carattere, the credits' TYPEFACE, would read as a letter beside a file name); the
+keywords carry both. The HUD's own metal (its side's tiles, where a picture would go) is il proprio
+fondo metallico, drawn invece: "metallo" alone reads as the resource. Straight apostrophes.
+
+| English | Italiano |
+|---|---|
+| interface theme / INTERFACE THEME (a mod page's caption) | tema dell'interfaccia / TEMA INTERFACCIA (as SCALA INTERFACCIA) |
+| MODS' INTERFACE THEMES (the switch) / in the game's Interface options | TEMI INTERFACCIA DELLE MOD / nelle opzioni Interfaccia del gioco |
+| HUD / panels | l'HUD / pannelli |
+| accent (a theme's colour) | colore d'accento |
+| font / font file | font (il font) / file di font |
+| the HUD draws its own metal there | l'HUD disegna invece il proprio fondo metallico |
+| the HUD keeps TA Reborn's own (colour, font) | lì l'HUD mantiene il colore di TA Reborn / mantiene quello di TA Reborn |
+| a tile (a picture repeated across the panels) | tessera |
+| a contrast of {ratio}:1 / {least}:1 reads well | un contrasto di {ratio}:1 / Con {least}:1 si legge bene |
+| the theme's {key} (a manifest key) / a colour key | la voce {key} del tema / il colore {key} |
+| side ([theme.sides.arm]) | fazione |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | Italiano |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} non può essere attiva insieme a {other}: disattivane una / incompatibile con {mods} |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} o versioni successive / hai la {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | RICHIEDE UN TA REBORN PIÙ RECENTE |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / la versione più vecchia di TA Reborn con cui funziona la mod |
+
+## The manifest of a mod as the check reads it, and its load order (`presentation.rs`, `validation.rs`, `mod_order.rs`)
+
+`mod.toml`, `[table]`, `[{table}]`, `depends`, `load_after`, `conflicts`, `panel_texture` and
+`tags = ["units"]` stay as written; a manifest key is una voce (feminine: la salta, la tralascia), as
+"La voce {key} di mod.toml". `{found}` and `{expected}` fill "La voce {key} di mod.toml è {found} ma
+dovrebbe essere {expected}": noun phrases with their article. Straight apostrophes.
+
+| English | Italiano |
+|---|---|
+| key (of mod.toml) / value / table / [table] line / manifest | voce / valore / tabella / riga [table] / manifesto |
+| text in quotes / a whole number / a number / true or false | un testo tra virgolette / un numero intero / un numero / true o false (TOML's own words) |
+| a date / a list in square brackets / a table | una data / una lista tra parentesi quadre / una tabella |
+| reads past it (an unknown key) / leaves it out (a value of another kind) | la salta / la tralascia |
+| a slip of the pen | una svista |
+| need each other in a circle / nest more than 64 deep | si richiedono a vicenda in un circolo chiuso / si annidano per più di 64 livelli |
+| plates (the HUD's, a theme's picture behind them) / the side's own metal plates | piastre / le piastre metalliche proprie della fazione |
+| line spacing / one frame in {stride} (a preview played with fewer frames) / choppier | interlinea / uno ogni {stride} / più a scatti |
+| TURN OFF {name} (a mod, beside ENABLE {name}) / STOP PREVIEW (beside PLAY PREVIEW) | DISATTIVA {name} / FERMA ANTEPRIMA (as STOP: FERMA) |
+
+## Stato di servizio danneggiato, profili illeggibili e tasti del launcher (`app/profile_page.rs`, `app/profiles.rs`, `pages/play.rs`, `app/polish.rs`)
+
+The launcher's KEYBOARD SHORTCUTS name the keys as Italian keyboards print them (Ctrl+1, Maiusc+Tab,
+Alt+Home), for `polish.rs` only; Cmd and Option stay. The shared notices "{name} è stata rimossa (è nel
+Cestino)" and "{name} è stata eliminata definitivamente" are feminine (mods, skins), so the unreadable
+profile's {name} is a feminine noun phrase. Page names in sentences in capitals, as the rail: la pagina
+AVVIA, la pagina PROFILO, la pagina MAPPE. Counts of maps made and not: "Mappe importate: {n}; non
+create: {failed}.", "Non è stato possibile creare nessuna delle mappe scelte ({n})."
+
+| English | Italiano |
+|---|---|
+| key labels Shift / Enter / End (launcher shortcuts) | Maiusc / Invio / Fine (Alt, Ctrl, Esc, Tab, Home, Cmd, Option kept) |
+| unreadable (a profile, the service record, a map) | illeggibile (ILLEGGIBILE, PROFILI ILLEGGIBILI, STATO DI SERVIZIO ILLEGGIBILE) |
+| The unreadable profile (the {name} of the delete notices) | La cartella del profilo illeggibile |
+| career file / set aside / put back (the damaged career.toml) | file della carriera / mettere da parte / rimettere al suo posto |
+| START A FRESH CAREER(…) / START A FRESH CAREER? | INIZIA UNA NUOVA CARRIERA(…) / INIZIARE UNA NUOVA CARRIERA? |
+| PUT IT RIGHT / CAREER NEEDS ATTENTION (the Play page's title) | RISOLVI / CARRIERA DA VERIFICARE |
+| MOVE TO RECYCLE BIN (button) | SPOSTA NEL CESTINO |
+| YOURS AND ALLIES / ENEMY UNITS (the armies' skins) / YOUR SKINS (filter) | TU E I TUOI ALLEATI / NEMICI / LE TUE SKIN |
+| KEEP BOTH / id (a skin's) | TIENILE ENTRAMBE / ID (l’ID) |
+| hue / saturation / brightness (colour picker) | Tonalità / Saturazione / Luminosità |
+| screen-reader marks OK / Not present / Error; {content}: found / not found | OK / Assente / Errore; presente / assente (no gender to agree) |
+| LEGAL / THE PROJECT (About page headings) | NOTE LEGALI / IL PROGETTO |
+
+## Supreme Commander: importare mappe e fazioni (`pages/supcom.rs`, `supcom.rs`, `supcom_factions.rs`)
+
+Counts that can be 1 as labels ("Mappe scelte: {n} su {total}", "Mappe tra cui scegliere: {total}");
+one map in a natural singular ("Importata 1 mappa: …", "Non è stato possibile creare 1 mappa").
+A faction made playable is "uno schieramento da giocare in schermaglia". Straight apostrophes.
+
+| English | Italiano |
+|---|---|
+| Held until the import ends (note and tip beside greyed controls) | Non disponibile durante l'importazione |
+| STOPPING… (the stop button) / Stopping… (progress words) | INTERRUZIONE… / Interruzione… |
+| the launcher's footer | la barra di stato del launcher |
+| Looking through {folder}… | Analisi di {folder}… |
+| UPDATE… / Update: import it again (a mod made by an older TA Reborn) | AGGIORNA… / Aggiornamento: reimportala |
+| the commanders' enhancements / upgrading buildings in place | i potenziamenti dei comandanti / gli edifici che salgono di livello sul posto |
+| shields / stealth fields / teleporting | scudi / campi di furtività (as "Furtiva: invisibile al radar") / teletrasporto |

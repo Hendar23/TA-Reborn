@@ -511,3 +511,92 @@ the validator's sentences, as "o motor de TA".
 | patch / the patched engines of later years / engine | patch (o patch) / os motores com patches dos anos seguintes / motor |
 | weapon ID / unit value (a script's) / cloak (unit value 111) | ID da arma (os IDs) / valor de unidade / camuflagem |
 | sides / campaigns of its own; TA's own computer players | lados / campanhas próprios do mod; jogadores da IA do próprio TA |
+
+## A mod's presentation in the MODS library (`pages/mods.rs`, `ta_data/src/presentation.rs`)
+
+A mod's banner, gameplay preview, icon, screenshots and links, and the mod check's notes on them
+(the report's group PRESENTATION). Manifest keys (`banner`, `preview`, `icon`, `screenshots`) and
+paths stay as written: "A chave {key} do mod.toml indica {path}" (indica, as "o replaces do
+mod.toml indica").
+
+| English | pt-BR |
+|---|---|
+| banner (the card and the top of the mod's page) | banner (o banner) |
+| gameplay preview (an animated GIF of the mod in play) / PLAY PREVIEW (its button, beside a ▶) | prévia de gameplay (gameplay: Brazil's word for footage; jogabilidade stays the settings' GAMEPLAY) / VER PRÉVIA |
+| icon (a mod's) | ícone |
+| screenshot(s) / SCREENSHOTS / Screenshot {n} of {count} / {n} of {count} | captura(s) de tela / CAPTURAS DE TELA / Captura de tela {n} de {count} / {n} de {count} |
+| MOD PAGE (the link to the mod's web page) | SITE DO MOD (as "o site do mod"; PÁGINA DO MOD would echo the mod's page in the library) |
+| PRESENTATION (the report's group heading) | APRESENTAÇÃO |
+| web address | endereço da web |
+| weighs {size} / make it smaller (the file) | pesa {size} / deixe o arquivo mais leve |
+| blurred / sharp | borrado / nítido ("fica borrado", "fica nítido") |
+| at best (the ideal size) | o ideal é ("o ideal é 1280 × 640") |
+| a still picture / an animated GIF | imagem estática / GIF animado |
+
+## A mod's interface theme (`pages/mods.rs`, `settings.rs`, `ta_data/src/presentation.rs`)
+
+A mod's `[theme]`: the battle's HUD in colours, pictures and a font of its own, previewed on the
+mod's page and checked under APRESENTAÇÃO. HUD stays HUD (o HUD, as Brazilian games write it).
+Manifest keys ({key}: `accent`, `text`, `panel_texture`, `font`...) stay as written, anchored by a
+noun: "A chave {key} do tema", "A cor {key} do tema". The fragments filling {extras} follow "com"
+and are joined by a comma ("com fonte própria, imagens de fundo nos painéis").
+
+| English | pt-BR |
+|---|---|
+| theme / INTERFACE THEME (the caption over the preview) | tema / TEMA DA INTERFACE |
+| MODS' INTERFACE THEMES (the game's Interface option) | TEMAS DE INTERFACE DOS MODS ("no jogo: ..., em Opções, Interface", as "em Opções, Jogabilidade") |
+| accent (the theme's main colour) | cor de destaque (as Windows' pt-BR) |
+| font / its own font | fonte / fonte própria |
+| pictures behind its panels (the panels' tiled picture) | imagens de fundo nos painéis |
+| its own metal (the panels' metal, drawn where a picture fails) | a textura metálica padrão ("o HUD desenha no lugar dela a textura metálica padrão"; not "metal": the resource) |
+| a tile (of a picture, repeated across the panels) | tile ("basta um tile de algumas centenas de pixels") |
+| hexadecimal digits | dígitos hexadecimais |
+| contrast of {ratio}:1 / reads well | contraste de {ratio}:1 / a leitura fica boa |
+| a side (in [theme.sides.arm]) | lado ("o lado {side}", "Lados do jogo: {sides}") |
+| TA Reborn's own (colour, font, HUD) | a cor / a fonte / o HUD do próprio TA Reborn |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | Português (Brasil) |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} não pode ficar ativado junto com {other}: desative um dos dois / incompatível com {mods} |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | o TA Reborn {version} ou posterior / a sua versão é {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | REQUER UM TA REBORN MAIS NOVO |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / a versão mais antiga do TA Reborn em que o mod funciona |
+
+## mod.toml's keys read past, and a load order that does not resolve (`presentation.rs`, `validation.rs`, `mod_order.rs`, `mods.rs`)
+
+| English | pt-BR |
+|---|---|
+| key / table / a [table] line (TOML; `[table]`, `[{table}]` kept) | chave / tabela / uma linha [table] ("A chave {key} do mod.toml está abaixo de uma linha [table]") |
+| read past (a key) / leave out (a value) | ignorar ("O TA Reborn não conhece a chave {key} do mod.toml e a ignora") / descartar ("o TA Reborn descarta esse valor") |
+| value kinds filling {found} and {expected} ("O valor da chave {key} do mod.toml é {found}, mas ela aceita {expected}") | texto entre aspas / um número inteiro / um número / true ou false (TOML's own words) / uma data / uma lista entre colchetes / uma tabela |
+| a later TA Reborn / older TA Reborns / a slip of the pen | uma versão mais nova do TA Reborn / versões mais antigas do TA Reborn / erro de digitação |
+| in a circle (dependencies) / nest more than 64 deep | em círculo / se aninham em mais de 64 níveis |
+| plates (the HUD's, panel_texture tiled behind them) / the side's own metal plates | placas ("a imagem {path} das placas") / as placas metálicas padrão do lado |
+| line spacing (a font's) | espaçamento entre linhas (altura das linhas) |
+| TURN OFF {name} / STOP PREVIEW (beside VER PRÉVIA) | DESATIVAR {name} (as ATIVAR {name}) / PARAR PRÉVIA |
+
+## The launcher's QA fixes: a damaged service record, unreadable profiles, errors (`profile_page.rs`, `profiles.rs`, `play.rs`, `http.rs`, `maps.rs`, `skins.rs`, `supcom.rs`, `widgets.rs`)
+
+| English | pt-BR |
+|---|---|
+| damaged (a file) / unreadable (a profile; a map's badge UNREADABLE) | danificado / ilegível (EXCLUIR O PERFIL ILEGÍVEL?, badge ILEGÍVEL) |
+| The unreadable profile (fills {name} in "{name} foi removido…") | O perfil ilegível (capitalised: it opens most of those sentences) |
+| set aside (the damaged career file) / put it right / PUT IT RIGHT | guardar à parte / corrigir / CORRIGIR |
+| START A FRESH CAREER / CAREER NEEDS ATTENTION / SERVICE RECORD UNREADABLE | COMEÇAR UMA NOVA CARREIRA / CARREIRA REQUER ATENÇÃO / REGISTRO DE SERVIÇO ILEGÍVEL |
+| MOVE TO RECYCLE BIN | MOVER PARA A LIXEIRA |
+| the Play / Profile / Maps page (in sentences) | a página Jogar / Perfil / Mapas |
+| setup (the downloaded installer) / graphics driver | instalador / driver de vídeo |
+| id (a skin's) / KEEP BOTH (an imported skin beside an installed one) | identificador / MANTER AS DUAS |
+| YOURS AND ALLIES / ENEMY UNITS (whose units wear a skin) | VOCÊ E ALIADOS / UNIDADES INIMIGAS |
+| RUNNING (the PLAY button while the game runs) | EM EXECUÇÃO (as JOGO EM EXECUÇÃO) |
+| key names in shortcut labels | as printed: Alt, Ctrl, Shift, Enter, Esc, Tab, Home, End; the Mac's Cmd, Option |
+| screen-reader marks OK / Not present / Error; "{content}: found / not found" | OK / Ausente / Erro; "{content}: presente / ausente" (two-gender words: the labels are Jogo base, Campanhas, Música…) |
+| error fragments filling {error}, {why} | lowercase clauses ("o tempo da conexão se esgotou", "está vazio") |
+| None of the {n} maps could be made / but {failed} could not be made | Nenhum mapa pôde ser criado (falhas: {n}) / não criados: {failed} (count-safe) |
+| Hue / Saturation and brightness (colour picker, spoken) | Matiz / Saturação e brilho ("saturação {s}%, brilho {v}%") |
+| Held until the import ends (the Supreme Commander dialog's amber note) / then import these (one key for both tabs: maps or factions) | Bloqueado durante a importação / e depois importe a seleção (gender-neutral) |
+| look through (a folder) / the launcher's footer | examinar ("Examinando {folder}…") / o rodapé do inicializador |
+| Imported 1 map / the {faction} faction (the singular keys) | 1 mapa importado / Facção {faction} importada; failures stay count-safe ("não criados: {failed}", "unidades não criadas: {failed}") |
+| the commanders' enhancements / upgrading buildings in place / shields / stealth fields / teleporting (Forged Alliance's, still to come) | as melhorias dos comandantes / o aprimoramento de edifícios no próprio lugar / escudos / campos de furtividade / teletransporte |

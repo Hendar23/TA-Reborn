@@ -13,7 +13,7 @@ use crate::fixed::{FULL_TURN, Fx, FxVec3, QUARTER_TURN, atan2, cos, heading_of, 
 use crate::host::{HostRequest, OtherUnit, UnitHost, script_angle};
 use crate::path::{FlowField, PathQuery, Pathfinder};
 use crate::rng::Rng;
-use crate::unit::{BuildJob, Drift, Economy, MAX_PLAYERS, Order, Player, PlayerSetup, Unit, UnitId, piece_world_position, player_bit};
+use crate::unit::{BuildJob, Drift, Economy, MAX_PLAYERS, Order, Player, PlayerSetup, Unit, UnitId, piece_world_heading, piece_world_position, player_bit};
 use crate::vision::{self, Seen, Sensor, Vision};
 use crate::world::{CELL, MoveSpec, Occupant, Region, World};
 
@@ -21,6 +21,11 @@ mod air;
 
 /// Base resource storage every player has regardless of buildings (TA default).
 const BASE_STORAGE: i64 = 1000;
+/// The most work capturing a unit takes, in worker time by seconds: what a Commander (300)
+/// does in two minutes. Four times the cost of anything over 9,000 metal is more: TA's own
+/// Galactic Gate, a campaign building never meant to be built (197,485 metal and 1,982,431
+/// energy), took a Commander 51 minutes.
+const CAPTURE_WORK_MOST: i64 = 300 * 120;
 const PATH_EXPANSIONS: usize = 20_000;
 /// A* node expansions allowed per tick across all units. Searches that exceed it return a
 /// partial path and re-plan on arrival, bounding the cost of army-wide orders on huge maps.
@@ -204,8 +209,14 @@ pub enum Command {
     EditQueue { player: u8, unit: UnitId, index: u32, type_id: usize, pos: Option<FxVec3>, to_front: bool },
     /// TA's `+shootall`, on or off: the player's units' weapons take on every enemy in reach
     /// alike, their bad targets too (see [`crate::unit::Player::shoot_all`]).
-    /// (Last: replays keep the earlier variants' numbers.)
     SetShootAll { player: u8, on: bool },
+    /// Drops an order equal to `order` from `unit`'s orders, as they stand when the command runs:
+    /// the one at `index` if it is still that, else the nearest that is; none left, nothing. The
+    /// rest stay as they are; the one under way, dropped, ends as a finished order does. A
+    /// player's Shift-click on an order already queued takes it back: a reclaim of what is already
+    /// to be reclaimed, a move to a waypoint already set.
+    /// (Last: replays keep the earlier variants' numbers.)
+    DropOrder { player: u8, unit: UnitId, index: u32, order: Order },
 }
 
 /// The index nearest `index` (the lower first, of two as near) of those below `len` that `is`
@@ -360,6 +371,23 @@ impl Feature {
     }
 }
 
+/// Which feature definitions are wreckage (by definition): the corpse of every unit type made of
+/// metal (its `Corpse`), what that leaves when destroyed (its heap, `featuredead`), and so on.
+/// Reclaimed, wreckage pays its metal alone, whatever energy its file gives ([`Sim::reclaim_value`]):
+/// TA's wrecks and heaps give metal and nothing else. (What a unit made of no metal leaves is not
+/// wreckage: TA's indigenous lifeforms, the Scorpions and Sea Serpents, cost energy alone, and their
+/// remains give energy as their files say, as a tree's do.)
+fn wreckage(types: &UnitTypes, data: &GameData) -> Vec<bool> {
+    let mut wreckage = vec![false; data.features.len()];
+    let mut left: Vec<usize> = types.types.iter().filter(|t| t.cost_metal > Fx::ZERO).filter_map(|t| data.feature_id(&t.def.corpse)).collect();
+    while let Some(f) = left.pop() {
+        if !std::mem::replace(&mut wreckage[f], true) && let Some(heap) = data.feature_id(&data.features[f].feature_dead) {
+            left.push(heap);
+        }
+    }
+    wreckage
+}
+
 /// A cell of the map's 16 px grid (x, z).
 type GridCell = (i32, i32);
 /// A shared route: movement class, start block (4 Ã— 4 cells), goal cell, arrival radius.
@@ -499,6 +527,9 @@ pub struct Sim {
     pub unit_limit: u32,
     /// Feature definition of a unit's wreck â†’ the unit type (for resurrection).
     wreck_of: rustc_hash::FxHashMap<usize, usize>,
+    /// By feature definition, whether it is wreckage, which pays its metal alone when reclaimed
+    /// ([`Sim::reclaim_value`]).
+    wreckage: Vec<bool>,
     /// Nearest cell of a region to an unreachable goal, per (spec, region, goal): static
     /// terrain, so the answers never go stale.
     reachable_near: rustc_hash::FxHashMap<(MoveSpec, Region, GridCell), Option<GridCell>>,
@@ -666,6 +697,7 @@ impl Sim {
                 sharing: Default::default(),
                 perks: Default::default(),
                 shoot_all: false,
+                radar_targeting: false,
             })
             .collect();
         let pathfinder = Pathfinder::new(world.width, world.height);
@@ -686,6 +718,7 @@ impl Sim {
                 wreck_of.entry(f).or_insert(t.id);
             }
         }
+        let wreckage = wreckage(&types, &data);
         let mut sim = Sim {
             tick: 0,
             types,
@@ -714,6 +747,7 @@ impl Sim {
             commander_ends_game: false,
             unit_limit: u32::MAX,
             wreck_of,
+            wreckage,
             reachable_near: Default::default(),
             open_goals: Default::default(),
             parallel: true,
@@ -823,6 +857,7 @@ impl Sim {
         let (owner, pos) = (u.owner, u.pos);
         let e = &mut self.players[owner as usize].economy;
         let paid = e.energy >= cost;
+        e.tick_energy_wanted += cost;
         if paid {
             e.energy -= cost;
             e.tick_energy_out += cost;
@@ -903,17 +938,32 @@ impl Sim {
         if flags & vision::RADAR != 0 && jammed & vision::RADAR_JAM == 0 { Seen::Radar } else { Seen::Hidden }
     }
 
-    /// Whether a unit is under the water: a submarine (a ship with a `WaterLine`: the
-    /// simulation keeps ships at the surface, the client draws submarines that far under it),
-    /// or one on the sea bed with the water over its top (an amphibious kbot crossing; a tank
-    /// in the shallows is not). As in TA, only weapons that go under the water (torpedoes,
-    /// depth charges: `waterweapon`) reach it, and radar doesn't see it; sonar does.
+    /// Whether a unit is wholly under the water ([`Sim::submerged_at`]). As in TA, only weapons
+    /// that go under the water (torpedoes, depth charges: `waterweapon`) reach it, by an order
+    /// or of their own accord, by shot or blast, and radar doesn't see it; sonar does.
     pub fn submerged(&self, u: &Unit) -> bool {
-        let t = self.types.get(u.type_id);
+        self.submerged_at(u.type_id, u.pos)
+    }
+
+    /// Whether a unit of `type_id` standing at `pos` is wholly under the water, nothing of it over
+    /// the surface: a submarine (a ship with a `WaterLine`: the simulation keeps ships at the
+    /// surface, the client draws submarines that far under it) under the surface; one of TA's
+    /// underwater buildings (`UnitDef::stands_on_sea_bed`: its underwater metal extractors,
+    /// storages and fusion plants) with the water over its base, however tall its model (the
+    /// Arm's extractor reaches 42 px over its base and may stand in 19 px of water, its fusion
+    /// plant 42 in 34: TA's surface weapons never fired on one); anything else with the water over
+    /// the top of its model (an amphibious kbot crossing the sea bed; a tank in the shallows is
+    /// not). Hovercraft and aircraft never are. Whether a unit reaches into the water at all is
+    /// [`Sim::in_water_at`].
+    pub fn submerged_at(&self, type_id: usize, pos: FxVec3) -> bool {
+        let t = self.types.get(type_id);
+        let sea = self.world.sea_level;
+        let wet = || self.world.depth_at(pos.x, pos.z) > Fx::ZERO;
         match t.locomotion {
-            Locomotion::Naval => t.waterline > Fx::ZERO && u.model_pos(t).y < self.world.sea_level && self.world.depth_at(u.pos.x, u.pos.z) > Fx::ZERO,
+            Locomotion::Naval => t.waterline > Fx::ZERO && pos.y - t.waterline < sea && wet(),
             Locomotion::Air | Locomotion::Hover => false,
-            _ => u.pos.y + t.model.height.max(Fx::from_int(8)) < self.world.sea_level,
+            Locomotion::Static if t.on_sea_bed => pos.y < sea && wet(),
+            _ => pos.y + t.model.height.max(Fx::from_int(8)) < sea,
         }
     }
 
@@ -980,6 +1030,27 @@ impl Sim {
                 u.dead = true;
                 u.killer = Some(nobody);
             }
+        }
+    }
+
+    /// TA's `HealTime` (its Commanders', 27): a finished unit of a type that has one mends itself,
+    /// [`crate::defs::HEAL_POINTS`] hit points every `HealTime` seconds, a share of them every tick
+    /// (the shares of each `HealTime` of ticks add up to exactly that), up to its full health, at no
+    /// cost; under fire, paralysed or carried as well. A frame, one being taken apart (no longer
+    /// whole) or a dead unit does not. (See docs/FORMATS.md.)
+    fn heal_units(&mut self) {
+        if !self.types.heals {
+            return;
+        }
+        let (types, tick) = (self.types.clone(), self.tick);
+        for u in self.units.iter_mut().flatten() {
+            let t = types.get(u.type_id);
+            if t.heal_ticks == 0 || u.dead || !u.is_complete() || u.health <= Fx::ZERO || u.health >= t.max_health {
+                continue;
+            }
+            let k = tick % t.heal_ticks;
+            let heal = crate::defs::HEAL_POINTS.share(k + 1, t.heal_ticks) - crate::defs::HEAL_POINTS.share(k, t.heal_ticks);
+            u.health = (u.health + heal).min(t.max_health);
         }
     }
 
@@ -1781,6 +1852,16 @@ impl Sim {
         queue_order(&mut u.orders, order, queue, pos);
     }
 
+    /// `command` done now, as the next tick will do it, without the tick: for the interface's
+    /// copy of the game that shows the player's orders before they are in it (given while the
+    /// battle is paused, or on their way to a multiplayer host), so that what they tell units shows
+    /// at once. Never on the game itself, which takes its commands at the start of a tick
+    /// ([`Sim::step`]) as every other copy of it does: one that took a command so would play on
+    /// differently from them.
+    pub fn preview(&mut self, command: &Command) {
+        self.apply(command);
+    }
+
     fn apply(&mut self, c: &Command) {
         let valid = match c {
             Command::Order { order, .. } => valid_order_position(order),
@@ -2033,6 +2114,24 @@ impl Sim {
                     p.shoot_all = *on;
                 }
             }
+            Command::DropOrder { player, unit, index, order } => {
+                let Some(u) = self.unit(*unit).filter(|u| u.owner == *player) else { return };
+                let orders = &u.orders;
+                let Some(j) = nearest_index(orders.len(), *index as usize, |j| orders[j] == *order) else { return };
+                // Taken out where it stands, the rest kept as they are (not given again: a patrol's
+                // return leg, added as its first order was given, would be added once more). The one
+                // under way ends as a finished order does, and the next is taken up.
+                if j == 0 {
+                    self.finish_build_job(*unit);
+                    self.stop(*unit);
+                }
+                if let Some(u) = self.unit_mut(*unit) {
+                    u.orders.remove(j);
+                    if j == 0 && !u.stance_is_scripted() {
+                        u.in_build_stance = false;
+                    }
+                }
+            }
             Command::Signal { player, kind, at } => {
                 if self.players.get(*player as usize).is_none_or(|p| p.defeated) {
                     return;
@@ -2119,6 +2218,7 @@ impl Sim {
         self.update_projectiles();
         self.update_fires();
         self.acid_seas();
+        self.heal_units();
         let t3 = std::time::Instant::now();
         self.decay_abandoned_frames();
         self.process_deaths();
@@ -2435,7 +2535,7 @@ impl Sim {
         // takes on of its own accord, its bad targets: a tank does not run after a gunship.)
         let engages = |a: &Unit| {
             !self.types.get(a.type_id).category_mask.intersects(&t.no_chase_mask)
-                && (0..3).any(|s| {
+                && (0..ta_data::unit::MAX_WEAPONS).any(|s| {
                     t.weapons[s].is_some_and(|w| {
                         let w = self.weapon_types.get(w);
                         !w.command_fire && self.engages(t.id, s, w, a)
@@ -2648,11 +2748,12 @@ impl Sim {
         if !self.unit(id).is_some_and(|u| u.in_build_stance) {
             return;
         }
-        // A Commander (300 worker time) takes a Flash tank in about two seconds and a
-        // Galactic Gate in a minute or two: the work is four times the cost (its metal, a
-        // sixtieth of its energy and twenty), counted as construction counts it.
+        // A Commander (300 worker time) takes a Flash tank in about two seconds and nothing in
+        // more than two minutes: the work is four times the cost (its metal, a sixtieth of its
+        // energy and twenty), counted as construction counts it, up to `CAPTURE_WORK_MOST`.
         let cost = tt.cost_metal + tt.cost_energy / 60 + Fx::from_int(20);
-        let total = (cost.0.max(1) as u64).saturating_mul(4 * TICKS_PER_SECOND as u64);
+        let work = (cost * 4).min(Fx::from_int(CAPTURE_WORK_MOST));
+        let total = (work.0.max(1) as u64).saturating_mul(TICKS_PER_SECOND as u64);
         let finished = {
             let Some(tu) = self.unit_mut(target) else { return };
             tu.capture_work = tu.capture_work.saturating_add(t.work_rate.max(1)).min(total);
@@ -2882,8 +2983,8 @@ impl Sim {
             if d > r2 {
                 continue;
             }
-            let def = &self.data.features[f.def];
-            if def.reclaimable && (def.metal > 0.0 || def.energy > 0.0) && best_feature.is_none_or(|(bd, _)| d < bd) {
+            let (metal, energy) = self.reclaim_value(f.def);
+            if self.data.features[f.def].reclaimable && (metal > Fx::ZERO || energy > Fx::ZERO) && best_feature.is_none_or(|(bd, _)| d < bd) {
                 best_feature = Some((d, i));
             }
         }
@@ -3908,7 +4009,9 @@ impl Sim {
             done(self);
             return;
         }
-        let (metal, energy) = (Fx::from_f64(def.metal.max(0.0)), Fx::from_f64(def.energy.max(0.0)));
+        // (Wreckage: its metal alone.)
+        let (metal, energy) = self.reclaim_value(f.def);
+        let def = &self.data.features[f.def];
         let fp = (def.footprint_x, def.footprint_z);
         let u = self.unit(id).unwrap();
         let reach = t.build_distance + t.radius;
@@ -3951,33 +4054,31 @@ impl Sim {
         }
         // Work units: TA-like pacing where a 300-worker Commander reclaims a 100-metal
         // rock in about two seconds (twenty times its metal and a tenth of its energy, at
-        // least a hundred, counted as construction counts it). What the work done so far is
-        // worth is paid out, so the whole of it comes to the feature's metal and energy.
+        // least a hundred, counted as construction counts it). Its metal and energy come when
+        // it is reclaimed whole, as in TA: paid as the work went, reclaiming was worth more than
+        // TA's (players), its income felt at once. (The work stays on it if left unfinished.)
         let work = (metal + energy / 10).max(Fx::from_int(5)) * 20;
         let total = (work.0 as u64).saturating_mul(TICKS_PER_SECOND as u64);
         let f = &mut self.features[index];
-        let before = f.reclaim_work;
-        f.reclaim_work = before.saturating_add(t.work_rate.max(1)).min(total);
+        f.reclaim_work = f.reclaim_work.saturating_add(t.work_rate.max(1)).min(total);
         f.reclaimed = Fx::fraction(f.reclaim_work, total);
-        let (now, finished) = (f.reclaim_work, f.reclaim_work >= total);
-        let gained_metal = metal.share(now, total) - metal.share(before, total);
-        let gained_energy = energy.share(now, total) - energy.share(before, total);
-        let owner = self.unit(id).map_or(0, |u| u.owner) as usize;
-        let e = &mut self.players[owner].economy;
-        e.metal = (e.metal + gained_metal).min(e.metal_capacity.max(e.metal));
-        e.energy = (e.energy + gained_energy).min(e.energy_capacity.max(e.energy));
-        e.tick_metal_in += gained_metal;
-        e.tick_energy_in += gained_energy;
-        if finished {
+        if f.reclaim_work >= total {
+            let owner = self.unit(id).map_or(0, |u| u.owner) as usize;
+            let e = &mut self.players[owner].economy;
+            e.metal = (e.metal + metal).min(e.metal_capacity.max(e.metal));
+            e.energy = (e.energy + energy).min(e.energy_capacity.max(e.energy));
+            e.tick_metal_in += metal;
+            e.tick_energy_in += energy;
             self.remove_feature(index, true);
             done(self);
         }
     }
 
     /// Reclaiming one of our own units: construction in reverse. The unit falls back into a
-    /// nanoframe at the builder's construction pace, returning its metal as it goes, and is
-    /// gone (no wreck, no blast) when nothing is left. Other builders' work on it meanwhile
-    /// only mends it, as TA's repair does: it does not undo the reclaim ([`Sim::being_taken_apart`]).
+    /// nanoframe at the builder's construction pace, and is gone (no wreck, no blast) when
+    /// nothing is left, its metal paid then, as TA pays reclaiming at the end
+    /// ([`crate::unit::Unit::reclaim_owed`]). Other builders' work on it meanwhile only mends
+    /// it, as TA's repair does: it does not undo the reclaim ([`Sim::being_taken_apart`]).
     fn update_reclaim_unit_order(&mut self, id: UnitId, t: &UnitType, target: UnitId) {
         let done = |sim: &mut Sim| {
             sim.finish_build_job(id);
@@ -4045,21 +4146,26 @@ impl Sim {
         let step = ((t.work_rate.max(1) as u128 * total as u128) / reclaim_total as u128).clamp(1, u64::MAX as u128) as u64;
         let left = work.saturating_sub(step);
         let refund = tt.cost_metal.share(work, total) - tt.cost_metal.share(left, total);
-        let e = &mut self.players[owner as usize].economy;
-        e.metal = (e.metal + refund).min(e.metal_capacity.max(e.metal));
-        e.tick_metal_in += refund;
         let tick = self.tick;
+        let mut owed = Fx::ZERO;
         if let Some(tu) = self.unit_mut(target) {
             tu.set_build_work(left, total);
             tu.health = tu.health.min(tt.max_health * tu.build_progress).max(Fx::ONE);
             tu.taken_apart_at = Some(tick);
+            tu.reclaim_owed += refund;
+            owed = tu.reclaim_owed;
             // Taken apart: it stops working.
             tu.orders.clear();
             tu.factory_queue.clear();
         }
         if left == 0 {
+            // Gone: the metal taken off it comes now.
+            let e = &mut self.players[owner as usize].economy;
+            e.metal = (e.metal + owed).min(e.metal_capacity.max(e.metal));
+            e.tick_metal_in += owed;
             if let Some(tu) = self.unit_mut(target) {
                 tu.dead = true;
+                tu.reclaim_owed = Fx::ZERO;
                 // Gone without a Killed script, wreck or blast; taken apart by its own side,
                 // so no battle loss.
                 tu.death_processed = true;
@@ -4100,7 +4206,11 @@ impl Sim {
             let tt = self.types.get(u.type_id);
             let (total, work, owner, cost, max_health) = (tt.build_work, u.build_work, u.owner, tt.cost_metal, tt.max_health);
             let left = work.saturating_sub((total / FRAME_DECAY).max(1));
-            let refund = cost.share(work, total) - cost.share(left, total);
+            let mut refund = cost.share(work, total) - cost.share(left, total);
+            // (Gone: what its side's reclaiming took off it before comes too.)
+            if left == 0 {
+                refund += u.reclaim_owed;
+            }
             if let Some(p) = self.players.get_mut(owner as usize) {
                 let e = &mut p.economy;
                 e.metal = (e.metal + refund).min(e.metal_capacity.max(e.metal));
@@ -4112,6 +4222,7 @@ impl Sim {
                 if left == 0 {
                     // Gone without a Killed script, wreck or blast; given up, so no battle loss.
                     u.dead = true;
+                    u.reclaim_owed = Fx::ZERO;
                     u.death_processed = true;
                     u.removed = true;
                 }
@@ -4132,6 +4243,22 @@ impl Sim {
     /// The unit type a feature is the wreck of, if any.
     pub fn wreck_type(&self, feature: usize) -> Option<usize> {
         self.features.get(feature).filter(|f| f.alive).and_then(|f| self.wreck_of.get(&f.def).copied())
+    }
+
+    /// Whether features of definition `def` are wreckage: a unit's corpse or what it leaves (see
+    /// [`wreckage`]).
+    pub fn is_wreckage(&self, def: usize) -> bool {
+        self.wreckage.get(def).copied().unwrap_or(false)
+    }
+
+    /// What reclaiming a feature of definition `def` whole pays, metal and energy: what its file
+    /// gives, but wreckage pays its metal alone, as TA's wrecks and heaps do (rocks give metal, trees
+    /// energy, as their files say). Everything that values a feature goes by this: the reclaiming,
+    /// the time it takes, the builders on patrol, the computer players and the interface.
+    pub fn reclaim_value(&self, def: usize) -> (Fx, Fx) {
+        let Some(d) = self.data.features.get(def) else { return (Fx::ZERO, Fx::ZERO) };
+        let energy = if self.is_wreckage(def) { Fx::ZERO } else { Fx::from_f64(d.energy.max(0.0)) };
+        (Fx::from_f64(d.metal.max(0.0)), energy)
     }
 
     /// Resurrection: walk into range and pour the unit's energy cost into its wreck at the
@@ -4564,13 +4691,15 @@ impl Sim {
         let Some(frame) = self.unit(factory).and_then(|f| f.build).map(|b| b.target) else { return };
         let Some(u) = self.unit(frame).filter(|u| u.factory == Some(factory) && !u.is_complete() && !u.dead) else { return };
         let tt = self.types.get(u.type_id);
-        let (owner, refund) = (u.owner, tt.cost_metal.share(u.build_work, tt.build_work));
+        // What was put into it, and what its side's reclaiming took off it before.
+        let (owner, refund) = (u.owner, tt.cost_metal.share(u.build_work, tt.build_work) + u.reclaim_owed);
         let e = &mut self.players[owner as usize].economy;
         e.metal = (e.metal + refund).min(e.metal_capacity.max(e.metal));
         e.tick_metal_in += refund;
         if let Some(u) = self.unit_mut(frame) {
             // Gone without a Killed script, wreck or blast; given up, so no battle loss.
             u.dead = true;
+            u.reclaim_owed = Fx::ZERO;
             u.death_processed = true;
             u.removed = true;
         }
@@ -4651,7 +4780,8 @@ impl Sim {
         let f = self.unit(id).unwrap();
         let pad_pos = self.cob_piece_position(f, t, pad_piece).unwrap_or(f.pos);
         let owner = f.owner;
-        let heading = f.heading;
+        // (Facing as the pad is turned: `Sim::follow_build_pad`.)
+        let heading = self.cob_piece_heading(f, t, pad_piece).unwrap_or(f.heading);
         // The pad clear first: one of its own side's units standing still where the next would
         // go (built in no time, the instant-build cheat or many builders helping; given an
         // order as it was done: to guard the factory, or to build beside it) is sent off it, to
@@ -4766,6 +4896,10 @@ impl Sim {
         FxVec3::new(p.x, self.world.height_at(p.x, p.z), p.z)
     }
 
+    /// The unit in production rides the factory's build pad (`QueryBuildInfo`'s piece): where it
+    /// is, and turned as it is turned (TA's plants spin the pad about y while they build, 30
+    /// degrees a second, and the unit goes round with it); finished, it keeps the heading the pad
+    /// left it with.
     fn follow_build_pad(&mut self, id: UnitId, factory: UnitId) {
         let types = self.types.clone();
         let Some(f) = self.unit(factory) else { return };
@@ -4773,7 +4907,7 @@ impl Sim {
         let pad = self.call_script(factory, "QueryBuildInfo", &[0]).and_then(|p| p.first().copied()).unwrap_or(-1);
         let Some(f) = self.unit(factory) else { return };
         if let Some(mut p) = self.cob_piece_position(f, t, pad) {
-            let heading = f.heading;
+            let heading = self.cob_piece_heading(f, t, pad).unwrap_or(f.heading);
             // A ship is built at the surface, where it floats once done: a shipyard's pad is under
             // the water (the Core's yard stands 22 px deep). A hovercraft on a pad under the water
             // (a floating hover plant's) is on the water too.
@@ -4795,6 +4929,13 @@ impl Sim {
         let cob = u.cob.as_ref()?;
         let mp = cob.program.piece_map.get(usize::try_from(cob_piece).ok()?).copied().flatten()?;
         Some(piece_world_position(u, t, Some(cob), mp))
+    }
+
+    /// The heading of what stands on a script's piece (`piece_world_heading`).
+    fn cob_piece_heading(&self, u: &Unit, t: &UnitType, cob_piece: i32) -> Option<i32> {
+        let cob = u.cob.as_ref()?;
+        let mp = cob.program.piece_map.get(usize::try_from(cob_piece).ok()?).copied().flatten()?;
+        Some(piece_world_heading(u, t, Some(cob), mp))
     }
 
     // ---- Motion -------------------------------------------------------------------------
@@ -5239,6 +5380,8 @@ impl Sim {
             .filter(|(_, u)| u.as_ref().and_then(|u| u.carried_by).is_some_and(|c| self.unit(c).is_none_or(|c| types.get(c.type_id).transport_capacity > 0)))
             .map(|(slot, _)| slot)
             .collect();
+        // The players with a targeting facility at work, its upkeep paid (`Player::radar_targeting`).
+        let mut targeting = 0u64;
         for (slot, u) in self.units.iter_mut().enumerate() {
             let Some(u) = u else { continue };
             if !u.is_complete() || u.dead {
@@ -5278,11 +5421,16 @@ impl Sim {
                 }
             }
             let paid = upkeep.is_zero() || e.energy >= upkeep;
+            e.tick_energy_wanted += upkeep;
             // (For the figures the interface shows: `Sim::unit_flows`.)
             u.upkeep_paid = paid;
             if paid && upkeep > Fx::ZERO {
                 e.energy -= upkeep;
                 e.tick_energy_out += upkeep;
+            }
+            // (At work as `Sim::working` has it: switched on or not switchable, its upkeep paid.)
+            if t.def.is_targeting_upgrade && paid && (u.activated || !t.def.on_offable) {
+                targeting |= player_bit(u.owner);
             }
             if active && paid {
                 if t.extracts_metal > Fx::ZERO && let Some(origin) = u.occupied_origin {
@@ -5299,6 +5447,9 @@ impl Sim {
             e.metal += metal_in;
             e.tick_energy_in += energy_in;
             e.tick_metal_in += metal_in;
+        }
+        for (i, p) in self.players.iter_mut().enumerate() {
+            p.radar_targeting = targeting & player_bit(i as u8) != 0;
         }
         // What a player shares (by default what full storage would waste) goes to allies with
         // room, in player order (see `Sharing`).
@@ -5358,8 +5509,12 @@ impl Sim {
             e.energy_income = e.tick_energy_in * TICKS_PER_SECOND;
             e.metal_expense = e.tick_metal_out * TICKS_PER_SECOND;
             e.energy_expense = e.tick_energy_out * TICKS_PER_SECOND;
+            e.metal_wanted = e.tick_metal_wanted * TICKS_PER_SECOND;
+            e.energy_wanted = e.tick_energy_wanted * TICKS_PER_SECOND;
             e.tick_metal_out = Fx::ZERO;
             e.tick_energy_out = Fx::ZERO;
+            e.tick_metal_wanted = Fx::ZERO;
+            e.tick_energy_wanted = Fx::ZERO;
         }
     }
 
@@ -5509,6 +5664,14 @@ impl Sim {
     pub fn set_experience(&mut self, id: UnitId, xp: Fx) {
         if let Some(u) = self.unit_mut(id) {
             u.xp = xp.max(Fx::ZERO);
+        }
+    }
+
+    /// Scenario set-up: the unit fires at will on radar and sonar contacts too, as guns a spotter
+    /// directs do ([`crate::unit::Unit::radar_guided`]).
+    pub fn set_radar_guided(&mut self, id: UnitId, on: bool) {
+        if let Some(u) = self.unit_mut(id) {
+            u.radar_guided = on;
         }
     }
 
@@ -5665,6 +5828,7 @@ impl Sim {
             mix(u.pos.y.0);
             mix(u.pos.z.0);
             mix(u.fire_state as i64);
+            mix(u.radar_guided as i64);
             mix(u.move_state as i64);
             mix(u.path.len() as i64);
             for &(x, z) in &u.path { mix(x as i64); mix(z as i64); }
@@ -5718,6 +5882,7 @@ impl Sim {
             mix(u.repair_work as i64);
             mix(u.finished as i64);
             mix(u.taken_apart_at.map_or(-1, |t| t as i64));
+            mix(u.reclaim_owed.0);
             mix(u.worked_at.map_or(-1, |t| t as i64));
             mix(u.capture_work as i64);
             mix(u.in_build_stance as i64);
@@ -5773,6 +5938,7 @@ impl Sim {
             mix(p.sharing.keep_metal.map_or(-1, |k| k.0));
             mix(p.sharing.keep_energy.map_or(-1, |k| k.0));
             mix(p.shoot_all as i64);
+            mix(p.radar_targeting as i64);
         }
         mix(self.mission.is_some() as i64);
         if let Some(mission) = &self.mission {

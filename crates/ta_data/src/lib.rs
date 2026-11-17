@@ -9,11 +9,13 @@ mod compatibility;
 pub use compatibility::Compatibility;
 
 pub mod feature;
+pub mod font;
 pub mod map;
 pub mod mission;
 pub mod unit;
 pub mod weapon;
 pub mod validation;
+pub mod presentation;
 pub mod words;
 mod skin_catalogue;
 pub use skin_catalogue::skin_catalogue;
@@ -21,13 +23,13 @@ pub use skin_catalogue::skin_catalogue;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use ta_formats::image::Palette;
-use ta_formats::tdf::{self, TdfDocument};
+use ta_formats::tdf::{self, TdfDocument, TdfSection};
 use ta_vfs::Vfs;
 
 pub use feature::FeatureDef;
 pub use map::MapInfo;
 pub use unit::UnitDef;
-pub use weapon::{RenderType, WeaponDef};
+pub use weapon::{RenderType, STRATEGIC_CLASS, WeaponDef};
 
 /// Largest supported unit, feature or movement-class side, in 16-pixel map cells.
 /// Keeps occupancy/yard arrays and per-placement work bounded for untrusted mods.
@@ -89,6 +91,57 @@ pub struct GameData {
     move_index: FxHashMap<String, usize>,
     /// How many of `features` are the game's own (the rest are maps' own).
     game_features: usize,
+}
+
+/// The names of the sides the side data gives ([`side_data`], as written there, in capitals): ARM,
+/// CORE, a mod's own.
+pub fn side_names(vfs: &Vfs) -> Vec<String> {
+    side_data(vfs).map_or_else(Vec::new, |doc| {
+        doc.sections.iter().filter(|s| s.name.to_ascii_uppercase().starts_with("SIDE"))
+            .map(|s| s.get_str("name", "").trim().to_ascii_uppercase()).filter(|name| !name.is_empty()).collect()
+    })
+}
+
+/// The files that add sides to the game's (`gamedata/sidedata_<name>.tdf`), in the order they are
+/// read: by path.
+pub fn side_add_ons(vfs: &Vfs) -> Vec<String> {
+    let mut paths: Vec<String> = vfs
+        .list("gamedata", Some("tdf"), false)
+        .into_iter()
+        .filter(|p| p.rsplit('/').next().is_some_and(|f| f.to_ascii_lowercase().starts_with("sidedata_")))
+        .collect();
+    paths.sort();
+    paths
+}
+
+/// The side data: `gamedata/sidedata.tdf` (the game's, or a mod's in its place), and after its
+/// sides those the add-on files give (`gamedata/sidedata_<name>.tdf`, TA Reborn's: a mod adds a
+/// side without taking the others' file), their `[CANBUILD]` lists joined to its. An add-on's
+/// side named as one before it is passed over. None when there is no side data at all.
+pub fn side_data(vfs: &Vfs) -> Option<TdfDocument> {
+    let mut doc = read_tdf(vfs, "gamedata/sidedata.tdf");
+    for path in side_add_ons(vfs) {
+        let Some(add) = read_tdf(vfs, &path) else { continue };
+        let doc = doc.get_or_insert_with(TdfDocument::default);
+        let named = |doc: &TdfDocument, name: &str| doc.sections.iter().any(|s| s.name.to_ascii_uppercase().starts_with("SIDE") && s.get_str("name", "").trim().eq_ignore_ascii_case(name));
+        for section in add.sections {
+            let upper = section.name.to_ascii_uppercase();
+            if upper.starts_with("SIDE") {
+                let name = section.get_str("name", "").trim().to_string();
+                if name.is_empty() || named(doc, &name) {
+                    continue;
+                }
+                let n = doc.sections.iter().filter(|s| s.name.to_ascii_uppercase().starts_with("SIDE")).count();
+                doc.sections.push(TdfSection { name: format!("SIDE{n}"), ..section });
+            } else if upper == "CANBUILD" {
+                match doc.sections.iter_mut().find(|s| s.name.eq_ignore_ascii_case("CANBUILD")) {
+                    Some(lists) => lists.sections.extend(section.sections),
+                    None => doc.sections.push(section),
+                }
+            }
+        }
+    }
+    doc
 }
 
 fn read_tdf(vfs: &Vfs, path: &str) -> Option<TdfDocument> {
@@ -210,7 +263,7 @@ impl GameData {
         }
 
         let mut sides = Vec::new();
-        let side_doc = read_tdf(vfs, "gamedata/sidedata.tdf");
+        let side_doc = side_data(vfs);
         if let Some(doc) = &side_doc {
             for s in doc.sections.iter().filter(|s| s.name.to_ascii_uppercase().starts_with("SIDE")) {
                 sides.push(SideDef {
@@ -410,6 +463,33 @@ impl GameData {
 #[cfg(test)]
 mod compatibility_tests {
     use super::*;
+
+    /// A mod adds sides without the game's file (`gamedata/sidedata_<name>.tdf`): after the game's
+    /// sides, in path order, a side named as one before it passed over, its computer players' lists
+    /// joined to the game's.
+    #[test]
+    fn side_add_ons_add_sides_and_their_build_lists() {
+        let root = std::env::temp_dir().join(format!("ta_data_side_add_ons_{}", std::process::id()));
+        let files = [
+            ("gamedata/sidedata.tdf", "[SIDE0]{name=ARM;commander=ARMCOM;} [SIDE1]{name=CORE;commander=CORCOM;} [CANBUILD]{[ARMCOM]{canbuild1=ARMSOLAR;}}"),
+            ("gamedata/sidedata_supcom.tdf", "[SIDE0]{name=UEF;commander=UEL0001;} [SIDE1]{name=CORE;commander=OTHER;} [CANBUILD]{[UEL0001]{canbuild1=UEB1101;}}"),
+            ("gamedata/sidedata_zz.tdf", "[SIDE0]{name=AEON;commander=UAL0001;}"),
+        ];
+        for (path, text) in files {
+            let p = root.join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        }
+        let mut vfs = Vfs::new();
+        vfs.mount_mod_dir(&root, "test").unwrap();
+        let names = side_names(&vfs);
+        let doc = side_data(&vfs).unwrap();
+        std::fs::remove_dir_all(&root).ok();
+        assert_eq!(names, ["ARM", "CORE", "UEF", "AEON"]);
+        let lists = doc.section("CANBUILD").unwrap();
+        assert_eq!(lists.sections.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["ARMCOM", "UEL0001"]);
+        assert_eq!(doc.sections.iter().filter(|s| s.name.starts_with("SIDE")).map(|s| s.name.as_str()).collect::<Vec<_>>(), ["SIDE0", "SIDE1", "SIDE2", "SIDE3"]);
+    }
 
     #[test]
     fn menu_tabs_named_like_units_are_not_build_options() {

@@ -32,6 +32,10 @@ struct FeatureVisual {
     ore: f32,
     translucent: bool,
     model: Option<ModelId>,
+    /// A wreck drawn from its unit's own model with a surface of its own (a mod's: the Supreme
+    /// Commander units'): drawn burnt out, its player's colour gone to soot, its lights dead (TA's
+    /// wrecks are painted so already).
+    burnt_out: bool,
     /// Positive gap under the rest mesh (some wrecks' root offsets leave them above zero).
     /// Removed only for a feature anchored on the ground; buried or elevated art stays so.
     ground_sink: f32,
@@ -61,6 +65,14 @@ fn model_ground_sink(rest: &[Mat4], surfaces: &[Option<std::sync::Arc<crate::sce
 fn grounded_model_y(y: f32, simulated: f32, drawn: f32, sink: f32) -> f32 {
     // A deliberately elevated feature (including anything afloat) keeps its anchor.
     if (y - simulated).abs() <= 1.0 { y + drawn - simulated - sink } else { y }
+}
+
+/// Where a feature's model stands (`p`) and how it is turned: by the feature's heading (TA's angle
+/// units), as the scene turns a unit by its own (heading 0 facing +z, south; 16384 +x, east). A
+/// wreck lies as its unit faced when it died; the map's own features, placed at 0, as they were
+/// made. (Its footprint in the game stays square to the map, as TA's corpses' do.)
+fn model_root(p: Vec3, heading: i32) -> Mat4 {
+    Mat4::from_translation(p) * Mat4::from_rotation_y(heading as f32 * std::f32::consts::TAU / 65536.0)
 }
 
 /// A feature's 3D stand-in: the models it may be (one per instance, by its place), each
@@ -744,6 +756,10 @@ impl FeatureView {
         let mut patches: HashMap<usize, Vec<crate::feature_strokes::Blob>> = HashMap::new();
         // (With HD surfaces the standing paintings' palette static is calmed, as the ground's.)
         renderer.sprites.atlas.calm_paintings = renderer.lighting.hd_surfaces > 0.0;
+        // The wrecks and heaps the units leave (their `Corpse`, and its `featuredead`).
+        let mut corpses: std::collections::HashSet<String> = sim.types.types.iter().map(|t| t.def.corpse.to_ascii_lowercase()).filter(|c| !c.is_empty()).collect();
+        let heaps: Vec<String> = sim.data.features.iter().filter(|d| corpses.contains(&d.name.to_ascii_lowercase())).map(|d| d.feature_dead.to_ascii_lowercase()).filter(|h| !h.is_empty()).collect();
+        corpses.extend(heaps);
         for def_id in used {
             let def = &sim.data.features[def_id];
             let mut v = FeatureVisual {
@@ -758,17 +774,21 @@ impl FeatureView {
             if !def.object.is_empty() {
                 if let Some(models) = renderer.models.as_mut() {
                     let name = def.object.to_ascii_lowercase();
-                    v.model = vfs
-                        .read_opt(&format!("objects3d/{name}.3do"))
-                        .and_then(|b| ta_formats::model3do::Model3do::parse(&b).ok())
-                        .map(|mut m| {
+                    // (A model registered already, a unit's own as its wreck, is not read again.)
+                    v.model = models.library.id(&name).or_else(|| {
+                        vfs.read_opt(&format!("objects3d/{name}.3do")).and_then(|b| ta_formats::model3do::Model3do::parse(&b).ok()).map(|mut m| {
                             // A wreck's pads (an air plant's runway) clear of the ground.
                             ta_render::model::lift_ground_pads(&mut m);
-                            let id = models.library.add(&name, &m, &models.textures, palette);
-                            let surfaces = crate::scene::PieceSurface::of_render(&models.library, id);
-                            v.ground_sink = model_ground_sink(&models.library.info(id).rest_pose(), &surfaces);
-                            id
-                        });
+                            crate::scene::add_model(models, &|p| vfs.read_opt(p), &name, &m, palette)
+                        })
+                    });
+                    if let Some(id) = v.model {
+                        let surfaces = crate::scene::PieceSurface::of_render(&models.library, id);
+                        v.ground_sink = model_ground_sink(&models.library.info(id).rest_pose(), &surfaces);
+                    }
+                    // (Burnt out where its surface is drawn: one that does not fit its model leaves
+                    // it in TA's colours, which are no paint of a unit's own to burn.)
+                    v.burnt_out = v.model.is_some_and(|id| models.library.is_surfaced(id)) && corpses.contains(&def.name.to_ascii_lowercase());
                 }
             } else if !def.filename.is_empty() {
                 let key = def.filename.to_ascii_lowercase();
@@ -900,10 +920,12 @@ impl FeatureView {
     /// How a feature made during the battle looks now: embers and soot as the model shader's
     /// battle damage draws them (above 0.6 the embers glow), cooling to soot over [`COOLING`].
     fn heat(&self, index: usize, now: f32) -> f32 {
-        self.born.get(&index).map_or(0.0, |&t| {
-            let k = ((now - t) / COOLING).clamp(0.0, 1.0);
-            0.5 + 0.5 * (1.0 - k).powf(1.5)
-        })
+        self.born.get(&index).map_or(0.0, |&t| heat_after(now - t))
+    }
+
+    /// Whether the wrecks of feature type `def` are drawn burnt out (`FeatureVisual::burnt_out`).
+    pub fn burnt_out(&self, def: usize) -> bool {
+        self.visuals.get(&def).is_some_and(|v| v.burnt_out)
     }
 
     /// Builds sprite instances for features inside the visible ground rectangle, and the 3D
@@ -1028,10 +1050,8 @@ impl FeatureView {
             {
                 self.decals.push(SpriteInstance::new([p[0], p[1] + 0.3, p[2]], shadow).alpha(0.5 * (1.0 - shown3d)));
             }
+            // (A model's instances are `model_instances`'.)
             if v.frames.is_empty() {
-                if v.model.is_some() {
-                    self.matrices.push(vec![Mat4::from_translation(Vec3::from_array(p))]);
-                }
                 continue;
             }
             let frame = if f.burn_until != 0 && !v.burn_frames.is_empty() {
@@ -1124,12 +1144,17 @@ impl FeatureView {
     /// 3DO feature instances (rest pose; single-piece models get one matrix, others the
     /// root transform applied to each piece's rest offset). The wrecks in `waiting` are left out,
     /// as from the sprites (`update`): most wrecks are models.
-    pub fn model_instances<'a>(&'a mut self, sim: &Sim, renderer: &Renderer, view_min: Vec2, view_max: Vec2, waiting: &[usize]) -> Vec<DrawInstance<'a>> {
+    /// The features' models in view as instances (`waiting`: wrecks not shown yet; `posed`: wrecks
+    /// lying as their unit's death left them, by feature: their pieces from where they stand,
+    /// facing their heading).
+    pub fn model_instances<'a>(&'a mut self, sim: &Sim, renderer: &Renderer, view_min: Vec2, view_max: Vec2, waiting: &[usize], posed: &rustc_hash::FxHashMap<usize, Vec<Mat4>>) -> Vec<DrawInstance<'a>> {
         let Some(models) = renderer.models.as_ref() else { return Vec::new() };
         let margin = 96.0;
         let now = sim.tick as f32 / 30.0;
         let mut ids = Vec::new();
         let mut heats = Vec::new();
+        let mut burnt = Vec::new();
+        let mut keys = Vec::new();
         self.matrices.clear();
         let near = features_in_view(sim, view_min, view_max, margin);
         // Crystals on the metal deposits no building stands on (modern camera).
@@ -1153,6 +1178,8 @@ impl FeatureView {
                 self.matrices.push(vec![Mat4::from_translation(Vec3::new(p[0], ground, p[2])) * Mat4::from_rotation_y(yaw)]);
                 ids.push(self.ore_models[(h >> 8) as usize % self.ore_models.len()]);
                 heats.push(0.0);
+                burnt.push(false);
+                keys.push(0);
             }
         }
         for i in near {
@@ -1167,20 +1194,63 @@ impl FeatureView {
                 continue;
             }
             let ground = sim.world.height_at(f.pos.x, f.pos.z).to_f32();
-            p.y = grounded_model_y(p.y, ground, crate::scene::drawn_ground(&sim.world, p.x, p.z), visual.ground_sink);
-            let root = Mat4::from_translation(p);
             let rest = models.library.info(model).rest_pose();
-            self.matrices.push(rest.into_iter().map(|m| root * m).collect());
+            let pose = posed.get(&i).filter(|pose| pose.len() == rest.len());
+            // (A wreck in its death's pose lies where the clip left it, from where its unit stood:
+            // the gap under its model's rest pose is none of its.)
+            let sink = if pose.is_some() { 0.0 } else { visual.ground_sink };
+            p.y = grounded_model_y(p.y, ground, crate::scene::drawn_ground(&sim.world, p.x, p.z), sink);
+            let root = model_root(p, f.heading);
+            match pose {
+                // (The pose is from where the wreck stands, facing its heading: `root` turns it so.)
+                Some(pose) => self.matrices.push(pose.iter().map(|&m| if m == Mat4::ZERO { m } else { root * m }).collect()),
+                None => self.matrices.push(rest.into_iter().map(|m| root * m).collect()),
+            }
             ids.push(model);
             heats.push(self.heat(i, now));
+            burnt.push(visual.burnt_out);
+            keys.push(DrawInstance::feature_key(i));
         }
         ids.into_iter()
             .zip(heats)
+            .zip(burnt)
+            .zip(keys)
             .zip(self.matrices.iter())
-            .map(|((model, damage), m)| DrawInstance { model, pieces: m, team: 0, flags: 0, build: 1.0, damage, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL })
+            .map(|((((model, damage), burnt), key), m)| {
+                // (A unit's own model as its wreck: sooted all over, but no embers once cool; its
+                // player's colour the dark grey slot's; its lights out.)
+                let (team, flags, damage) = if burnt { (BURNT_TEAM, BURNT_LIGHTS, damage.max(BURNT_SOOT)) } else { (0, 0, damage) };
+                DrawInstance { model, pieces: m, team, flags, build: 1.0, damage, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL, key }
+            })
             .collect()
     }
 }
+
+/// How hot a wreck made `age` seconds ago is drawn ([`FeatureView::heat`]): the shader's battle
+/// damage, embers glowing above 0.6, cooling to soot over [`COOLING`].
+fn heat_after(age: f32) -> f32 {
+    let k = (age / COOLING).clamp(0.0, 1.0);
+    0.5 + 0.5 * (1.0 - k).powf(1.5)
+}
+
+/// The battle damage a wreck made with its unit's death `age` seconds ago is drawn with
+/// (`burnt`: drawn burnt out, sooted at least [`BURNT_SOOT`]): what a death clip's last pose fades
+/// to before its wreck takes its place (effects_remains.rs).
+pub(crate) fn wreck_damage(age: f32, burnt: bool) -> f32 {
+    let heat = heat_after(age);
+    if burnt { heat.max(BURNT_SOOT) } else { heat }
+}
+
+/// A burnt-out wreck's colour slot (TA's dark grey) for where its unit wore its player's colour
+/// (the unit shader's burnt-out grey, `player_colour`, is this slot's).
+const BURNT_TEAM: u32 = 7;
+/// Its lights, out.
+const BURNT_LIGHTS: u32 = 255 << ta_render::model::FLAG_LIGHTS_OUT_SHIFT;
+/// How sooted it is, cold (the shader's battle damage: under 0.6, no embers).
+const BURNT_SOOT: f32 = 0.58;
+/// A burnt-out wreck as drawn cold (its colour slot, its flags, its battle damage): as the map
+/// editor shows one placed on a map.
+pub(crate) const BURNT_OUT: (u32, u32, f32) = (BURNT_TEAM, BURNT_LIGHTS, BURNT_SOOT);
 
 /// A climatic optimizer's lamp (linear): the pale yellow TA paints it.
 const OPTIMIZER_LAMP: [f32; 3] = [0.79, 0.66, 0.15];
@@ -1743,6 +1813,19 @@ mod tests {
         buried.pieces[0].offset = fixed(0);
         assert_eq!(source_ground_sink(&buried), 0.0, "do not expose deliberately buried geometry");
         assert_eq!(source_ground_sink(&Model3do::default()), 0.0);
+    }
+
+    /// A wreck lies as its unit faced when it died: its model turned by the feature's heading the
+    /// way a unit's is by its own, heading 0 facing south (+z) and 16384 east (+x) (the wrecks
+    /// were all drawn facing south, as if every unit had died facing that way).
+    #[test]
+    fn wrecks_lie_as_their_units_faced() {
+        let at = Vec3::new(100.0, 20.0, 300.0);
+        for (heading, front) in [(0, Vec3::Z), (16384, Vec3::X), (-32768, -Vec3::Z), (-16384, -Vec3::X)] {
+            let root = model_root(at, heading);
+            assert!((root.transform_point3(Vec3::ZERO) - at).length() < 1e-4, "stands where it lies");
+            assert!((root.transform_vector3(Vec3::Z) - front).length() < 1e-4, "heading {heading}: its front to {front}");
+        }
     }
 
     #[test]

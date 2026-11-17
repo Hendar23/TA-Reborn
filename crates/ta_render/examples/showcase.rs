@@ -1097,7 +1097,7 @@ impl State {
         self.renderer.prepare_beams(&[]);
         self.renderer.prepare_sprites(&scene.decals, &scene.billboards, &effects, &smoke, &[]);
         let fleet = if ships { scene.fleet.as_slice() } else { &[] };
-        let instances = scene.placed.iter().chain(fleet).map(|u| DrawInstance { model: u.model, pieces: &u.matrices, team: u.team, flags: 0, build: 1.0, damage: 0.0, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL });
+        let instances = scene.placed.iter().chain(fleet).map(|u| DrawInstance { model: u.model, pieces: &u.matrices, team: u.team, flags: 0, build: 1.0, damage: 0.0, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL, key: 0 });
         self.renderer.prepare_models(instances);
     }
 

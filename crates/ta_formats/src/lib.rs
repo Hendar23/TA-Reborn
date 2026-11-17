@@ -5,13 +5,16 @@
 //! documented community specifications of the formats; no original game code is used.
 
 mod bin;
+pub mod anims;
 pub mod cob;
+pub mod dds;
 pub mod fnt;
 pub mod gaf;
 pub mod hpi;
 pub mod image;
 pub mod model3do;
 pub mod pcx;
+pub mod surface;
 pub mod tdf;
 pub mod tnt;
 

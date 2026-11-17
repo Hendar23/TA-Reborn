@@ -49,22 +49,42 @@ def run(args, *, cwd=None, capture=False, env=None):
     return result.stdout if capture else None
 
 
-def create_disk_image(source, dmg, *, attempts=5, pause=20):
-    """`hdiutil create` for the disk image, tried again while the system holds the new image's
-    device: on GitHub's macOS runners it fails now and then with "Resource busy" (a scan of the
-    new volume still holding it) and succeeds on a later try. Any other failure stops at once."""
-    command = [str(a) for a in ("hdiutil", "create", "-volname", "TA Reborn", "-srcfolder", source, "-ov", "-format", "UDZO", dmg)]
+# What hdiutil says while the system still holds the disk image a moment (a scan of the new
+# volume, the disk arbitration): on GitHub's macOS runners `hdiutil create` fails now and then
+# with "Resource busy", and `hdiutil verify` with "Resource temporarily unavailable" (the 1.0.7
+# release run), and a later try succeeds.
+HDIUTIL_HELD = ("Resource busy", "Resource temporarily unavailable")
+
+
+def hdiutil_retrying(command, *, attempts=5, pause=20, before_retry=None):
+    """Runs an `hdiutil` command, tried again while the system holds the image (see
+    `HDIUTIL_HELD`), `before_retry` called before each new try. Any other failure stops at once."""
+    command = [str(a) for a in command]
     for attempt in range(1, attempts + 1):
         result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         sys.stdout.write(result.stdout)
         sys.stderr.write(result.stderr)
         if result.returncode == 0:
             return
-        if attempt == attempts or "Resource busy" not in result.stdout + result.stderr:
+        said = result.stdout + result.stderr
+        if attempt == attempts or not any(held in said for held in HDIUTIL_HELD):
             raise subprocess.CalledProcessError(result.returncode, command, result.stdout, result.stderr)
-        print(f"hdiutil: resource busy, trying again in {pause} s ({attempt} of {attempts})", flush=True)
-        Path(dmg).unlink(missing_ok=True)
+        print(f"hdiutil {command[1]}: the image is held, trying again in {pause} s ({attempt} of {attempts})", flush=True)
+        if before_retry is not None:
+            before_retry()
         time.sleep(pause)
+
+
+def create_disk_image(source, dmg, *, attempts=5, pause=20):
+    """`hdiutil create` for the disk image, tried again while the system holds its device (see
+    `hdiutil_retrying`); a try's partial image is removed before the next."""
+    hdiutil_retrying(("hdiutil", "create", "-volname", "TA Reborn", "-srcfolder", source, "-ov", "-format", "UDZO", dmg),
+                     attempts=attempts, pause=pause, before_retry=lambda: Path(dmg).unlink(missing_ok=True))
+
+
+def verify_disk_image(dmg, *, attempts=5, pause=20):
+    """`hdiutil verify` of the finished disk image, tried again while the system holds it."""
+    hdiutil_retrying(("hdiutil", "verify", dmg), attempts=attempts, pause=pause)
 
 
 def require_tools(names):
@@ -598,7 +618,7 @@ def macos_packages(work, release, name, target, version, metadata):
         run(["xcrun", "notarytool", "submit", dmg, "--keychain-profile", notary, "--wait"])
         run(["xcrun", "stapler", "staple", dmg])
         run(["xcrun", "stapler", "validate", dmg])
-    run(["hdiutil", "verify", dmg])
+    verify_disk_image(dmg)
     for binary in PROGRAMS:
         copy_file(executables / binary, symbols / binary, 0o755)
     copy_file(resources / "build-info.json", symbols / "build-info.json")

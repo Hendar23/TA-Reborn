@@ -8,6 +8,7 @@ use std::time::Duration;
 use egui::{Color32, CornerRadius, Id, Key, LayerId, Modifiers, Order, RichText, Stroke};
 use ta_ui::i18n::{t, tf};
 use ta_ui::panel::{Exit, Panel};
+use ta_ui::tooltip::TooltipExt as _;
 
 use super::{Action, LauncherApp, Page};
 use crate::battles::Battles;
@@ -25,6 +26,10 @@ pub(crate) enum UpdateWait {
     Install,
     /// The map library's work (its status).
     Maps(&'static str),
+    /// Supreme Commander's maps being made, which closing the launcher would cut short.
+    SupcomMaps,
+    /// Supreme Commander's factions being made, likewise.
+    SupcomFactions,
     /// The profile being edited, which closing would lose.
     Profile,
     /// The skin editor's unsaved changes, likewise.
@@ -39,6 +44,8 @@ impl UpdateWait {
             UpdateWait::SkinWork => t("Wait for the current skin operation to finish, then try again."),
             UpdateWait::Install => t("Wait for the mod being installed"),
             UpdateWait::Maps(status) => t(status),
+            UpdateWait::SupcomMaps => t("Wait for the Supreme Commander maps being made, then try again."),
+            UpdateWait::SupcomFactions => t("Wait for the Supreme Commander factions being made, then try again."),
             UpdateWait::Profile | UpdateWait::SkinEdits => self.queued(),
         }
     }
@@ -50,6 +57,8 @@ impl UpdateWait {
             UpdateWait::SkinWork => t("READY · IT INSTALLS AFTER THE SKIN WORK"),
             UpdateWait::Install => t("READY · IT INSTALLS AFTER THE MOD"),
             UpdateWait::Maps(status) => t(status),
+            UpdateWait::SupcomMaps => t("READY · IT INSTALLS AFTER THE SUPREME COMMANDER MAPS"),
+            UpdateWait::SupcomFactions => t("READY · IT INSTALLS AFTER THE SUPREME COMMANDER FACTIONS"),
             UpdateWait::Profile => t("READY · IT INSTALLS WHEN THE PROFILE IS CLOSED"),
             UpdateWait::SkinEdits => t("READY · IT INSTALLS WHEN THE SKIN IS SAVED"),
         }
@@ -105,12 +114,14 @@ impl LauncherApp {
     }
 
     /// What keeps UPDATE NOW and INSTALL NOW from being pressed: Setup replaces the game's files,
-    /// and closing the launcher for it would stop a skin's work, a mod's install or the map
-    /// library's work.
+    /// and closing the launcher for it would stop a skin's work, a mod's install, a Supreme
+    /// Commander import or the map library's work.
     pub(crate) fn update_blocked(&self) -> Option<UpdateWait> {
         if self.game_running() { Some(UpdateWait::Game) }
         else if self.skins.busy() { Some(UpdateWait::SkinWork) }
         else if self.installer.busy() { Some(UpdateWait::Install) }
+        else if self.supcom.importing() { Some(UpdateWait::SupcomMaps) }
+        else if self.supcom.factions.importing() { Some(UpdateWait::SupcomFactions) }
         else { self.maps.status().map(UpdateWait::Maps) }
     }
 
@@ -140,7 +151,7 @@ impl LauncherApp {
         }
         match &download.step {
             Step::Downloading { .. } | Step::Checking => ctx.request_repaint_after(Duration::from_millis(150)),
-            Step::Ready(setup) if self.update_go && waits_for.is_none() => {
+            Step::Ready(_) if self.update_go && waits_for.is_none() => {
                 self.update_go = false;
                 // Setup closes/replaces this process. Do not rely on on_exit,
                 // where a failed save can no longer leave the player a Retry action.
@@ -148,8 +159,14 @@ impl LauncherApp {
                     self.update_error = Some(error);
                     return;
                 }
+                // Only the setup this download checked, held unchanged since, is run.
+                let Some(setup) = download.checked_setup() else {
+                    log::warn!("the update's setup is not held as checked: not run");
+                    self.update_error = Some(t("The downloaded setup is not the one that was checked. Download the update again.").to_string());
+                    return;
+                };
                 let here = crate::launch::app_dir().unwrap_or_default();
-                match crate::update::run_setup(setup, &here) {
+                match crate::update::run_setup(&setup, &here) {
                     Ok(()) => {
                         download.retain_for_setup();
                         log::info!("updating to {}: {} runs, the launcher closes for it", download.version, setup.display());
@@ -235,7 +252,7 @@ impl LauncherApp {
                     if off.is_empty() {
                         self.notify(tf("{name} is installed and on: {units} units, {maps} maps", &[("name", &entry.name), ("units", &units), ("maps", &maps)]), GREEN);
                     } else {
-                        self.notify(tf("{name} is installed and on in place of {others}: {units} units, {maps} maps", &[("name", &entry.name), ("others", &off.join(", ")), ("units", &units), ("maps", &maps)]), GREEN);
+                        self.notify(tf("{name} is installed and on in place of {others}: {units} units, {maps} maps", &[("name", &entry.name), ("others", &crate::pages::listed(&off)), ("units", &units), ("maps", &maps)]), GREEN);
                     }
                 }
                 None => {
@@ -268,6 +285,14 @@ impl LauncherApp {
             log::info!("dropped on the window: {}", path.display());
             let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
             match ext.as_str() {
+                // (The game opens it once it can be started: until the original game is found,
+                // the Play page says how to find it.)
+                "tasav" | "tarep" if self.detection.install().is_none() => {
+                    let file = path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned());
+                    log::info!("{file} not opened: Total Annihilation was not found");
+                    self.page = Page::Play;
+                    self.notify(tf("{file} opens once Total Annihilation is found: the Play page shows how to find it.", &[("file", &file)]), AMBER);
+                }
                 "tasav" => self.push(Action::PlayWith(vec!["--load".into(), path.into_os_string()])),
                 "tarep" => self.push(Action::PlayWith(vec!["--replay".into(), path.into_os_string()])),
                 "taskin" => self.push(Action::ImportSkin(path)),
@@ -286,11 +311,20 @@ impl LauncherApp {
         }
     }
 
+    /// A dialog is open over the page: the launcher's own, or the Mods library's screenshots on
+    /// the whole window. (Under one, the page and the shortcuts take no keys.)
     pub(crate) fn dialog_open(&self) -> bool {
+        self.mod_lightbox.is_some() || self.question_open()
+    }
+
+    /// A dialog of the launcher's own is open: over everything, the Mods library's screenshots on
+    /// the whole window too (they are only opened from the page). (Each a modal of its own: not
+    /// one of egui's popups, which `modal_open` sees as well.)
+    pub(crate) fn question_open(&self) -> bool {
         self.profiles.dialog_open() || self.show_shortcuts || self.whats_new.is_some()
             || self.confirm_uninstall.is_some() || self.confirm_replace.is_some() || self.mod_validation.selected.is_some() || self.conversion_prompt.is_some() || self.battle_prompt.is_some() || self.show_mod_folders
             || self.confirm_close || self.confirm_end_game || self.show_progress
-            || self.skins.ask.is_some()
+            || self.skins.ask.is_some() || self.supcom.open
     }
 
     pub(crate) fn modal_open(&self, ctx: &egui::Context) -> bool {
@@ -311,6 +345,9 @@ impl LauncherApp {
             self.pad = wanted.then(|| crate::pad::Pad::start(ctx));
         }
         let game_running = self.game_running();
+        // (Nothing having the focus, the first move goes to the page's main action; under a
+        // dialog, to the dialog's first control.)
+        let first = if self.modal_open(ctx) { None } else { crate::pad::first_focus(ctx) };
         let Some(pad) = &mut self.pad else { return };
         pad.listen(raw.focused && !game_running);
         let readings = pad.take();
@@ -319,7 +356,7 @@ impl LauncherApp {
         let screen = raw.screen_rect.map_or_else(|| ctx.content_rect().size(), |r| r.size());
         let time = raw.time.unwrap_or_else(|| ctx.input(|i| i.time));
         let focused = ctx.memory(|m| m.focused());
-        let frame = pad.state.frame(&readings, time, mouse, moved, screen, focused, ctx.text_edit_focused(), self.config.gameplay.gamepad_deadzone, self.config.gameplay.gamepad_sensitivity);
+        let frame = pad.state.frame(&readings, time, mouse, moved, screen, focused, first, ctx.text_edit_focused(), self.config.gameplay.gamepad_deadzone, self.config.gameplay.gamepad_sensitivity);
         raw.events.extend(frame.events);
         self.pad_pages += frame.pages;
         if let Some(at) = frame.cursor {
@@ -389,7 +426,7 @@ impl LauncherApp {
             self.confirm_uninstall = None;
             return;
         };
-        let (name, path) = (entry.info.manifest.name.clone(), entry.info.path.clone());
+        let (name, path) = (crate::supcom::mod_name(&entry.info.manifest).to_string(), entry.info.path.clone());
         let (needing, _) = self.mods.needed_by(&id, &self.config.mods.enabled);
         // (A catalogue mod downloaded by hand has no GET button to install it again.)
         let catalogued = crate::catalogue::get(&id).is_some_and(|entry| entry.file.is_some_and(|file| file.can_download()));
@@ -405,13 +442,14 @@ impl LauncherApp {
             ui.add(egui::Label::new(RichText::new(text).color(TEXT)).wrap());
             // (The mods that need it: they would not be loaded without it.)
             if !needing.is_empty() {
-                ui.add(egui::Label::new(RichText::new(tf("{mods} need it: they are not loaded without it.", &[("mods", &needing.join(", "))])).color(AMBER)).wrap());
+                ui.add(egui::Label::new(RichText::new(tf("{mods} need it: they are not loaded without it.", &[("mods", &crate::pages::listed(&needing))])).color(AMBER)).wrap());
             }
             ui.add(egui::Label::new(RichText::new(path.display().to_string()).font(mono(12.0)).color(STEEL)).wrap());
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
-                remove = ui.add_enabled(!self.game_running() && !self.installer.busy(), ActionButton::danger("REMOVE")).clicked();
+                let blocked = self.removal_blocked();
+                remove = ui.add_enabled(blocked.is_none(), ActionButton::danger("REMOVE")).disabled_tip(blocked.unwrap_or_default()).clicked();
                 if ui.add(ActionButton::secondary("KEEP")).clicked() {
                     self.confirm_uninstall = None;
                 }

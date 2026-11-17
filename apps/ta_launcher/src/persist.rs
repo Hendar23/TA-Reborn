@@ -2,13 +2,18 @@
 //!
 //! Unlike [`ta_config::Config::load`], loading here keeps the parse error so the UI can show
 //! it, and an unusable file is backed up (`config.toml.bak`) before it is first overwritten.
+//! The delayed save runs on a worker, one at a time: the wait for the lock the game shares, the
+//! reading, the fsync and the rename all happen there, never on the interface's thread. The
+//! explicit saves (Play, closing, switching commanders, Retry) wait for it, then save at once.
 
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use ta_config::Config;
 #[cfg(test)]
 use ta_config::{Audio, Graphics, limits};
+use ta_ui::i18n::{t, tf};
 
 /// Quiet period after the last edit before settings are written.
 pub const SAVE_DELAY: Duration = Duration::from_millis(700);
@@ -18,7 +23,7 @@ pub const SAVE_DELAY: Duration = Duration::from_millis(700);
 pub enum SaveStatus {
     /// Nothing has been changed in this session.
     Unchanged,
-    /// Edits are waiting for [`SAVE_DELAY`] to pass.
+    /// Edits are waiting for [`SAVE_DELAY`] to pass, or are being saved.
     Pending,
     Saved(Instant),
     Failed(String),
@@ -41,6 +46,33 @@ pub struct ConfigStore {
     pub load_error: Option<String>,
     /// Where the unusable file was backed up, once that happened.
     pub backup: Option<PathBuf>,
+    /// The delayed save under way on its worker.
+    saving: Option<Saving>,
+}
+
+/// A delayed save under way: the settings it was given, and where its outcome comes.
+struct Saving {
+    asked: Config,
+    outcome: mpsc::Receiver<Outcome>,
+}
+
+/// What a save on the worker made: its view of the file, the settings as it wrote them (the
+/// game's changes taken in) and how it went.
+struct Outcome {
+    disk: Disk,
+    config: Config,
+    status: SaveStatus,
+}
+
+/// What a save knows of the file: lent to it by the store (a worker has its own copy) and taken
+/// back once it is done.
+struct Disk {
+    path: PathBuf,
+    saved: Config,
+    needs_repair: bool,
+    had_file: bool,
+    load_error: Option<String>,
+    backup: Option<PathBuf>,
 }
 
 impl ConfigStore {
@@ -82,6 +114,7 @@ impl ConfigStore {
             status: SaveStatus::Unchanged,
             load_error,
             backup: None,
+            saving: None,
         };
         (store, config)
     }
@@ -91,101 +124,145 @@ impl ConfigStore {
         self.device_root.clone()
     }
 
-    /// Call once per frame: notices edits and saves once they have settled.
+    /// Call once per frame: notices edits, and saves them on a worker once they have settled
+    /// (one save at a time: the next waits for the one under way, whose end wakes the window).
     pub fn tick(&mut self, config: &mut Config, ctx: &egui::Context) {
+        self.take_finished(config);
         let now = Instant::now();
         if *config != self.seen {
             self.seen = config.clone();
             self.last_edit = Some(now);
-            self.status = if *config == self.saved { SaveStatus::Unchanged } else { SaveStatus::Pending };
+            self.status = if *config == self.saved && self.saving.is_none() { SaveStatus::Unchanged } else { SaveStatus::Pending };
         }
-        if *config == self.saved {
+        if self.saving.is_some() || *config == self.saved {
             return;
         }
         if let Some(edited) = self.last_edit {
             let elapsed = now.duration_since(edited);
             if elapsed >= SAVE_DELAY {
-                self.save_now(config);
+                self.save_soon(config, ctx);
             } else {
                 ctx.request_repaint_after(SAVE_DELAY - elapsed);
             }
         }
     }
 
-    /// Writes immediately (used by "Retry", before launching the game, and on exit). Should the
-    /// file have changed since it was read or written here (the game saved its options), only
-    /// what was changed here is written over it: the rest stays as the game left it, and
-    /// `config` takes it in.
-    pub fn save_now(&mut self, config: &mut Config) {
+    /// The delayed save, on a worker: the lock the game shares waited for, the file read and
+    /// combined with the game's changes, and the write, all there.
+    fn save_soon(&mut self, config: &mut Config, ctx: &egui::Context) {
         self.last_edit = None;
-        // Reading before acquiring the game's write lock loses a save made while
-        // we wait for that lock. Hold one transaction through the merge and write.
-        let transaction = match ta_config::SettingsTransaction::open(&self.path) {
-            Ok(transaction) => transaction,
+        let (send, outcome) = mpsc::channel();
+        let (mut disk, mut saving, waker) = (self.disk(), config.clone(), ctx.clone());
+        let worker = std::thread::Builder::new().name("settings save".into()).spawn(move || {
+            let status = disk.save(&mut saving);
+            let _ = send.send(Outcome { disk, config: saving, status });
+            waker.request_repaint();
+        });
+        match worker {
+            Ok(_) => self.saving = Some(Saving { asked: config.clone(), outcome }),
             Err(error) => {
-                self.seen = config.clone();
-                self.status = SaveStatus::Failed(error.to_string());
-                return;
-            }
-        };
-        // Recheck the file first: an editor or the game may have damaged it since
-        // startup. Never silently replace an unreadable external change.
-        match transaction.load() {
-            Ok(mut file) => {
-                sanitize(&mut file);
-                if file != self.saved {
-                    let Some(merged) = merge(&self.saved, config, &file) else {
-                        self.seen = config.clone();
-                        self.status = SaveStatus::Failed(ta_ui::i18n::t("Could not combine the game's settings with your unsaved changes. Your changes are still kept in the launcher.").to_string());
-                        return;
-                    };
-                    log::info!("{} was changed by the game since: its changes kept", self.path.display());
-                    *config = merged;
-                    // Even if the following write fails, these external values are now
-                    // part of our view. They are not local edits on the next retry.
-                    self.saved = file;
-                }
-            }
-            Err(ta_config::LoadError::Missing) => {},
-            Err(ta_config::LoadError::Invalid(error)) => {
-                self.load_error = Some(error);
-                self.needs_repair = true;
-                if let Err(message) = self.backup_unusable_file() {
-                    self.seen = config.clone();
-                    self.status = SaveStatus::Failed(message);
-                    return;
-                }
-            }
-            Err(error) => {
-                self.seen = config.clone();
-                self.status = SaveStatus::Failed(error.to_string());
-                return;
-            }
-        }
-        // An explicit save can run before tick sees the latest edit. Whether the write
-        // succeeds or fails, these values have been observed: only a new edit may restart
-        // the debounce, otherwise a failure's Retry action would disappear on the next tick.
-        self.seen = config.clone();
-        match transaction.save(config) {
-            Ok(()) => {
-                log::info!("saved settings to {}", self.path.display());
-                self.saved = config.clone();
-                self.needs_repair = false;
-                self.had_file = true;
-                self.load_error = None;
-                self.status = SaveStatus::Saved(Instant::now());
-            }
-            Err(e) => {
-                log::error!("could not save {}: {e}", self.path.display());
-                self.status = SaveStatus::Failed(e.to_string());
+                log::warn!("could not save the settings on a worker ({error}): saving them here");
+                self.save_now(config);
             }
         }
     }
 
+    /// The save the worker has finished, if it has, taken in (nothing is waited for).
+    fn take_finished(&mut self, config: &mut Config) {
+        let Some(saving) = &self.saving else { return };
+        let outcome = match saving.outcome.try_recv() {
+            Ok(outcome) => Some(outcome),
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => None,
+        };
+        if let Some(saving) = self.saving.take() {
+            self.take_outcome(config, saving.asked, outcome);
+        }
+    }
+
+    /// The save under way on the worker, if any, waited for and taken in: an explicit save, a
+    /// reload or a launch comes after it.
+    fn finish_saving(&mut self, config: &mut Config) {
+        let Some(saving) = self.saving.take() else { return };
+        let outcome = saving.outcome.recv().ok();
+        self.take_outcome(config, saving.asked, outcome);
+    }
+
+    /// What a save on the worker made of the file, under the edits made here since it was given
+    /// the settings (`asked`): those stay, and are saved in their turn.
+    fn take_outcome(&mut self, config: &mut Config, asked: Config, outcome: Option<Outcome>) {
+        let Some(Outcome { disk, config: written, status }) = outcome else {
+            // (The worker ended without a word: nothing is known to have been written.)
+            log::error!("the settings save on its worker stopped unexpectedly");
+            self.seen = config.clone();
+            self.status = SaveStatus::Failed(t("The settings could not be saved.").to_string());
+            return;
+        };
+        self.take_disk(disk);
+        let edited = *config != asked;
+        if !edited {
+            *config = written;
+        } else if written != asked
+            && let Some(merged) = merge(&asked, config, &written)
+        {
+            // (The game's changes the save took in, under the edits made since.)
+            *config = merged;
+        }
+        self.seen = config.clone();
+        if *config == self.saved {
+            self.last_edit = None;
+        }
+        self.status = if edited && *config != self.saved {
+            // (Saved from when they were made, as the debounce has them.)
+            self.last_edit.get_or_insert_with(Instant::now);
+            SaveStatus::Pending
+        } else {
+            status
+        };
+    }
+
+    /// The store's view of the file, lent to a save.
+    fn disk(&self) -> Disk {
+        Disk {
+            path: self.path.clone(),
+            saved: self.saved.clone(),
+            needs_repair: self.needs_repair,
+            had_file: self.had_file,
+            load_error: self.load_error.clone(),
+            backup: self.backup.clone(),
+        }
+    }
+
+    /// A save's view of the file, taken back.
+    fn take_disk(&mut self, disk: Disk) {
+        let Disk { path: _, saved, needs_repair, had_file, load_error, backup } = disk;
+        (self.saved, self.needs_repair, self.had_file, self.load_error, self.backup) = (saved, needs_repair, had_file, load_error, backup);
+    }
+
+    /// Writes immediately (used by "Retry", before launching the game, and on exit), after the
+    /// save under way on the worker, if any. Should the file have changed since it was read or
+    /// written here (the game saved its options), only what was changed here is written over it:
+    /// the rest stays as the game left it, and `config` takes it in.
+    pub fn save_now(&mut self, config: &mut Config) {
+        self.finish_saving(config);
+        self.last_edit = None;
+        let mut disk = self.disk();
+        let status = disk.save(config);
+        self.take_disk(disk);
+        // An explicit save can run before tick sees the latest edit. Whether the write
+        // succeeds or fails, these values have been observed: only a new edit may restart
+        // the debounce, otherwise a failure's Retry action would disappear on the next tick.
+        self.seen = config.clone();
+        self.status = status;
+    }
+
     /// Takes in the game's settings without losing edits made here before the save delay,
     /// or after a failed save. Local edits win conflicts; this launcher's own options stay
-    /// as it has them. Nothing is written until the usual debounce or an explicit retry.
+    /// as it has them, but for those the game's options change too (the seasons): what the game
+    /// saved of those is taken, unless they were changed here since the last save. Nothing is
+    /// written until the usual debounce or an explicit retry.
     pub fn reload_after_game(&mut self, config: &mut Config) -> Result<(), String> {
+        self.finish_saving(config);
         let mut file = Config::try_load_from(&self.path).map_err(|error| {
             ta_ui::i18n::tf("Could not reload settings from {path}: {error}", &[("path", &self.path.display()), ("error", &error)])
         })?;
@@ -193,7 +270,9 @@ impl ConfigStore {
         let mut merged = merge(&self.saved, config, &file).ok_or_else(|| {
             ta_ui::i18n::t("Could not combine the game's settings with your unsaved changes. Your changes are still kept in the launcher.").to_string()
         })?;
+        let shared = merged.launcher.clone();
         merged.launcher = config.launcher.clone();
+        merged.launcher.take_shared(&shared);
         self.saved = file;
         self.needs_repair = needs_repair;
         self.had_file = true;
@@ -213,9 +292,11 @@ impl ConfigStore {
         Ok(())
     }
 
-    /// Saves pending edits, if any. A caller starting the game must wait for success so the
-    /// game reads the settings the player chose. Failures leave those edits available to retry.
+    /// Saves pending edits, if any (after the save under way on the worker). A caller starting
+    /// the game must wait for success so the game reads the settings the player chose. Failures
+    /// leave those edits available to retry.
     pub fn flush(&mut self, config: &mut Config) -> Result<(), String> {
+        self.finish_saving(config);
         // Launch/Close/Switch are explicit boundaries. Check even without a local
         // edit: deletion or corruption since startup must not make the child silently
         // use defaults, and valid external edits should be reflected in this UI too.
@@ -231,6 +312,75 @@ impl ConfigStore {
             }
         }
         Ok(())
+    }
+}
+
+impl Drop for ConfigStore {
+    /// A save under way on the worker is let finish (it holds the game's lock on the file).
+    fn drop(&mut self) {
+        if let Some(saving) = self.saving.take() {
+            let _ = saving.outcome.recv();
+        }
+    }
+}
+
+impl Disk {
+    /// The save itself, under the lock the game shares, held from reading the file to writing
+    /// it. Should the file have changed since it was read or written here (the game saved its
+    /// options), only what was changed here is written over it, and `config` takes in the rest.
+    fn save(&mut self, config: &mut Config) -> SaveStatus {
+        // Reading before acquiring the game's write lock loses a save made while
+        // we wait for that lock. Hold one transaction through the merge and write.
+        let transaction = match ta_config::SettingsTransaction::open(&self.path) {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                log::error!("could not lock {} to save it: {error}", self.path.display());
+                return SaveStatus::Failed(tf("The settings file could not be opened to save it: {error}", &[("error", &error)]));
+            }
+        };
+        // Recheck the file first: an editor or the game may have damaged it since
+        // startup. Never silently replace an unreadable external change.
+        match transaction.load() {
+            Ok(mut file) => {
+                sanitize(&mut file);
+                if file != self.saved {
+                    let Some(merged) = merge(&self.saved, config, &file) else {
+                        return SaveStatus::Failed(t("Could not combine the game's settings with your unsaved changes. Your changes are still kept in the launcher.").to_string());
+                    };
+                    log::info!("{} was changed by the game since: its changes kept", self.path.display());
+                    *config = merged;
+                    // Even if the following write fails, these external values are now
+                    // part of our view. They are not local edits on the next retry.
+                    self.saved = file;
+                }
+            }
+            Err(ta_config::LoadError::Missing) => {}
+            Err(ta_config::LoadError::Invalid(error)) => {
+                self.load_error = Some(error);
+                self.needs_repair = true;
+                if let Err(message) = self.backup_unusable_file() {
+                    return SaveStatus::Failed(message);
+                }
+            }
+            Err(ta_config::LoadError::Unreadable(error)) => {
+                log::error!("could not read {} to save it: {error}", self.path.display());
+                return SaveStatus::Failed(tf("The settings file could not be read: {error}", &[("error", &error)]));
+            }
+        }
+        match transaction.save(config) {
+            Ok(()) => {
+                log::info!("saved settings to {}", self.path.display());
+                self.saved = config.clone();
+                self.needs_repair = false;
+                self.had_file = true;
+                self.load_error = None;
+                SaveStatus::Saved(Instant::now())
+            }
+            Err(e) => {
+                log::error!("could not save {}: {e}", self.path.display());
+                SaveStatus::Failed(tf("The settings could not be written: {error}", &[("error", &e)]))
+            }
+        }
     }
 
     /// Keeps a copy of a file we could not parse before replacing it, so hand edits survive.
@@ -251,10 +401,12 @@ impl ConfigStore {
             let mut next = name.clone();
             next.push(format!(".{suffix}"));
             backup = self.path.with_file_name(next);
-            suffix = suffix.checked_add(1).ok_or_else(|| "too many settings backups".to_string())?;
+            suffix = suffix.checked_add(1).ok_or_else(|| t("There are too many backups of the settings file: remove some of them, then try again.").to_string())?;
         }
-        std::fs::copy(&self.path, &backup)
-            .map_err(|e| format!("could not back up the unreadable settings file to {}: {e}", backup.display()))?;
+        std::fs::copy(&self.path, &backup).map_err(|e| {
+            log::error!("could not back up {} to {}: {e}", self.path.display(), backup.display());
+            tf("Could not back up the unreadable settings file to {path}: {error}", &[("path", &backup.display()), ("error", &e)])
+        })?;
         log::info!("backed up unreadable settings to {}", backup.display());
         self.backup = Some(backup);
         Ok(())
@@ -315,7 +467,7 @@ fn load(path: &Path) -> (Config, Option<String>) {
     match Config::try_load_from(path) {
         Ok(config) => (config, None),
         Err(ta_config::LoadError::Missing) => (Config::default(), None),
-        Err(e) => (Config::default(), Some(format!("the file could not be read: {e}"))),
+        Err(e) => (Config::default(), Some(tf("The file could not be read: {error}", &[("error", &e)]))),
     }
 }
 
@@ -470,9 +622,117 @@ mod tests {
         assert!(!path.exists(), "nothing is written before the delay");
         std::thread::sleep(SAVE_DELAY + Duration::from_millis(50));
         store.tick(&mut config, &ctx);
+        settle(&mut store, &mut config, &ctx);
         assert!(matches!(store.status, SaveStatus::Saved(_)), "{:?}", store.status);
         let (_, reloaded) = ConfigStore::open(path.clone());
         assert_eq!(reloaded.audio.music, 0.25);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Ticks until the save under way on the worker, if any, has been taken in.
+    fn settle(store: &mut ConfigStore, config: &mut Config, ctx: &egui::Context) {
+        let until = Instant::now() + Duration::from_secs(10);
+        while store.saving.is_some() {
+            assert!(Instant::now() < until, "the save never finished");
+            std::thread::sleep(Duration::from_millis(5));
+            store.tick(config, ctx);
+        }
+    }
+
+    /// Ticks past the save delay, so that the edits seen are being saved.
+    fn past_the_delay(store: &mut ConfigStore, config: &mut Config, ctx: &egui::Context) {
+        store.tick(config, ctx);
+        std::thread::sleep(SAVE_DELAY + Duration::from_millis(30));
+        store.tick(config, ctx);
+    }
+
+    /// The game holds the lock on the settings (its own save under way): the delayed save waits
+    /// for it on its worker, the interface's thread going on meanwhile (each tick at once), and
+    /// is taken in once the game lets go.
+    #[test]
+    fn the_delayed_save_waits_for_the_games_lock_on_its_worker() {
+        let path = temp_file("worker_waits");
+        Config::default().save_to(&path).unwrap();
+        let ctx = egui::Context::default();
+        let (mut store, mut config) = ConfigStore::open(path.clone());
+        let game = ta_config::SettingsTransaction::open(&path).unwrap();
+        config.audio.music = 0.25;
+        past_the_delay(&mut store, &mut config, &ctx);
+        assert!(store.saving.is_some(), "the save is under way on its worker");
+        for _ in 0..5 {
+            let started = Instant::now();
+            store.tick(&mut config, &ctx);
+            assert!(started.elapsed() < Duration::from_millis(100), "a tick never waits for the lock: {:?}", started.elapsed());
+            assert_eq!(store.status, SaveStatus::Pending);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(Config::load_from(&path).audio.music, Audio::default().music, "not written while the game holds the lock");
+        drop(game);
+        settle(&mut store, &mut config, &ctx);
+        assert!(matches!(store.status, SaveStatus::Saved(_)), "{:?}", store.status);
+        assert_eq!(Config::load_from(&path).audio.music, 0.25);
+        drop(store);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Edits made while a save is under way are not lost under its outcome, nor saved in a second
+    /// save beside it: the game's change the save took in, the edit made meanwhile and the edit
+    /// saved all end up in the settings, and the next save writes them all.
+    #[test]
+    fn edits_made_during_a_save_are_saved_after_it_with_the_games_changes() {
+        let path = temp_file("worker_edits_meanwhile");
+        Config::default().save_to(&path).unwrap();
+        let ctx = egui::Context::default();
+        let (mut store, mut config) = ConfigStore::open(path.clone());
+        let game_transaction = ta_config::SettingsTransaction::open(&path).unwrap();
+        config.audio.music = 0.25;
+        past_the_delay(&mut store, &mut config, &ctx);
+        assert!(store.saving.is_some());
+        // Meanwhile: the game saves a change of its own, and the player edits another setting.
+        let mut game = game_transaction.load().unwrap();
+        game.graphics.width = 1920;
+        game_transaction.save(&game).unwrap();
+        config.audio.effects = 0.5;
+        store.tick(&mut config, &ctx);
+        assert_eq!(store.status, SaveStatus::Pending);
+        drop(game_transaction);
+        settle(&mut store, &mut config, &ctx);
+        assert_eq!((config.audio.music, config.audio.effects, config.graphics.width), (0.25, 0.5, 1920), "nothing lost");
+        assert_eq!(store.status, SaveStatus::Pending, "the edit made meanwhile is still to be saved");
+        let file = Config::load_from(&path);
+        assert_eq!((file.audio.music, file.graphics.width), (0.25, 1920));
+        assert_eq!(file.audio.effects, Audio::default().effects, "one save at a time");
+        past_the_delay(&mut store, &mut config, &ctx);
+        settle(&mut store, &mut config, &ctx);
+        assert!(matches!(store.status, SaveStatus::Saved(_)), "{:?}", store.status);
+        assert_eq!(Config::load_from(&path), config);
+        drop(store);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Play, closing and switching commanders save at once: they wait for the save under way on
+    /// the worker, then save what was edited since.
+    #[test]
+    fn flush_waits_for_the_save_under_way_and_saves_after_it() {
+        let path = temp_file("worker_flush");
+        Config::default().save_to(&path).unwrap();
+        let ctx = egui::Context::default();
+        let (mut store, mut config) = ConfigStore::open(path.clone());
+        let game = ta_config::SettingsTransaction::open(&path).unwrap();
+        config.audio.music = 0.25;
+        past_the_delay(&mut store, &mut config, &ctx);
+        assert!(store.saving.is_some());
+        config.audio.effects = 0.5;
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            drop(game);
+        });
+        store.flush(&mut config).unwrap();
+        release.join().unwrap();
+        assert!(store.saving.is_none());
+        assert!(matches!(store.status, SaveStatus::Saved(_)), "{:?}", store.status);
+        let file = Config::load_from(&path);
+        assert_eq!((file.audio.music, file.audio.effects), (0.25, 0.5));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -563,18 +823,56 @@ mod tests {
         let (mut store, mut config) = ConfigStore::open(path.clone());
         let launcher = config.launcher.clone();
         config.audio.music = 0.25;
+        config.launcher.seasonal_theme = ta_config::SeasonalTheme::Christmas;
         let mut game = Config::load_from(&path);
         game.audio.music = 0.75;
         game.launcher.on_play = ta_config::OnPlay::Close;
+        game.launcher.themed_cursor = false;
+        game.launcher.seasonal_theme = ta_config::SeasonalTheme::Halloween;
+        game.launcher.seasonal_effects = false;
         game.save_to(&path).unwrap();
 
         store.reload_after_game(&mut config).unwrap();
         assert_eq!(config.audio.music, 0.25, "local edits win the same-field conflict");
-        assert_eq!(config.launcher, launcher, "this launcher's own options are kept");
+        assert_eq!(config.launcher.seasonal_theme, ta_config::SeasonalTheme::Christmas, "a season changed here wins its conflict too");
+        assert!(!config.launcher.seasonal_effects, "a season the game's options changed, and not changed here, is the game's");
+        let expected = ta_config::Launcher { seasonal_theme: ta_config::SeasonalTheme::Christmas, seasonal_effects: false, ..launcher };
+        assert_eq!(config.launcher, expected, "this launcher's own options are kept");
         assert_eq!(store.status, SaveStatus::Pending);
         assert!(store.last_edit.is_some(), "previously unseen edits get a save deadline");
         store.flush(&mut config).unwrap();
         assert_eq!(Config::load_from(&path), config);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// The game's options turned SEASONAL EFFECTS off and chose a theme, and the game ended: the
+    /// launcher takes them in, and writes nothing back over them (it used to put its own section
+    /// back whole, the seasons with it, a moment later).
+    #[test]
+    fn the_seasons_the_games_options_chose_are_kept_after_it_ends() {
+        let path = temp_file("reload_seasons");
+        Config::default().save_to(&path).unwrap();
+        let ctx = egui::Context::default();
+        let (mut store, mut config) = ConfigStore::open(path.clone());
+        store.tick(&mut config, &ctx);
+        // (As the game saves: its changes over the file, the launcher's section kept but for the
+        // seasons.)
+        let mut game = Config::load_from(&path);
+        game.launcher.seasonal_effects = false;
+        game.launcher.seasonal_theme = ta_config::SeasonalTheme::Halloween;
+        game.audio.music = 0.33;
+        game.save_keeping_launcher(&path).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+
+        store.reload_after_game(&mut config).unwrap();
+        assert!(!config.launcher.seasonal_effects);
+        assert_eq!(config.launcher.seasonal_theme, ta_config::SeasonalTheme::Halloween);
+        assert_eq!(config.audio.music, 0.33);
+        assert_eq!(store.status, SaveStatus::Unchanged, "nothing to write back");
+        past_the_delay(&mut store, &mut config, &ctx);
+        assert!(store.saving.is_none(), "no save is started");
+        store.flush(&mut config).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), written, "the file stays as the game left it");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -621,6 +919,7 @@ mod tests {
         std::fs::create_dir(&backup).unwrap();
         config.audio.music = 0.25;
         let error = store.flush(&mut config).expect_err("the unreadable file cannot be backed up");
+        assert!(error.starts_with("Could not back up the unreadable settings file to "), "words of the launcher's own (translated) around the system's: {error}");
 
         store.tick(&mut config, &egui::Context::default());
         assert_eq!(store.status, SaveStatus::Failed(error));

@@ -8,7 +8,7 @@ use ta_ui::tooltip::TooltipExt as _;
 
 use super::sentence;
 use crate::app::{Action, LauncherApp, ModsTab};
-use crate::modlist::{self, Resolution};
+use crate::modlist::{self, Blocker, Resolution};
 use crate::theme::*;
 use crate::widgets::{self, Glyph, Mark};
 
@@ -58,7 +58,7 @@ impl LauncherApp {
     fn load_order_row(&mut self, ui: &mut Ui, rect: Rect, index: usize, id: &str, count: usize, moves: &mut Option<(usize, usize)>) -> Option<Action> {
         let row = ui.interact(rect, Id::new(("load_order_row", id)), Sense::click_and_drag());
         let entry = self.mods.get(id).cloned();
-        let name = entry.as_ref().map_or(id.to_string(), |entry| entry.info.manifest.name.clone());
+        let name = entry.as_ref().map_or(id.to_string(), |entry| crate::supcom::mod_name(&entry.info.manifest).to_string());
         row.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, tf("{n}. {name}", &[("n", &(index + 1)), ("name", &name)])));
         widgets::reveal_focus(ui, &row);
         if let Some((at, keys)) = crate::library::menu::asked(ui, &row) {
@@ -224,6 +224,13 @@ impl LauncherApp {
                         }
                     }
                 }
+                // (What to turn off: the mod that needs another, or a newer TA Reborn; either of two
+                // that cannot be on together.)
+                let off: Vec<String> = match &self.mods.blocker {
+                    Some(Blocker::Dependency { module, .. }) | Some(Blocker::Newer { module }) => vec![module.clone()],
+                    Some(Blocker::Conflict { module, other }) => vec![module.clone(), other.clone()],
+                    Some(Blocker::Other) | None => Vec::new(),
+                };
                 ui.horizontal_wrapped(|ui| {
                     for dependency in fixes {
                         let name = self.mods.get(&dependency).map_or(dependency.clone(), |m| m.info.manifest.name.clone());
@@ -237,6 +244,12 @@ impl LauncherApp {
                         let button = if self.offline { button.disabled_tip(t("The launcher is offline.")) } else { button.hover_tip(t("Download and install it, then turn it on")) };
                         if button.clicked() {
                             self.push(Action::GetMod(entry.id));
+                        }
+                    }
+                    for id in off.into_iter().filter(|id| enabled.contains(id)) {
+                        let name = self.mods.get(&id).map_or(id.clone(), |m| m.info.manifest.name.clone());
+                        if ui.add(widgets::ActionButton::secondary(&tf("TURN OFF {name}", &[("name", &ta_ui::i18n::upper(&name))])).height(28.0)).clicked() {
+                            self.push(Action::DisableMod(id));
                         }
                     }
                 });

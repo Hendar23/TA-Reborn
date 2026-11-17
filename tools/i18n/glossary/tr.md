@@ -502,3 +502,102 @@ report's button quotes it as shown ("YENİDEN ÖLÇ düğmesine bas").
 | ID (a weapon's) | kimlik (silah kimliği, kimlikler) |
 | TA's later engines / the patched engines of later years | TA'nın sonraki motorları / sonraki yılların yamalı motorları |
 | the campaign screen | sefer ekranı |
+
+## A mod's presentation in the launcher (`pages/mods.rs`, `ta_data/src/presentation.rs`)
+
+`mod.toml`, `media/banner.png`, PNG, JPEG, GIF, http:// and https:// stay as they are; the `media`
+folder keeps its name ("modun media klasörü"). {key} is the manifest's own key (banner, preview,
+icon, screenshots): "mod.toml dosyasındaki {key} anahtarı".
+
+| English | Türkçe |
+|---|---|
+| banner (a mod's: its card and the top of its page) | afiş |
+| icon (a mod's) | simge (as STRATEJİK SİMGELER) |
+| preview / gameplay preview (an animated GIF) / PLAY PREVIEW | önizleme (as the skins page's; not the older ÖN İZLEME) / oynanış önizlemesi / ÖNİZLEMEYİ OYNAT |
+| screenshot / SCREENSHOTS / Screenshot {n} of {count}, {n} of {count} | ekran görüntüsü / EKRAN GÖRÜNTÜLERİ / Ekran görüntüsü {n} / {count}, {n} / {count} |
+| MOD PAGE (a link to the mod's web page) / link / web address | MOD SAYFASI / bağlantı ("{label} bağlantısı") / web adresi |
+| PRESENTATION (the report's group: how a mod presents itself) | SUNUM (beside PAKETLEME, DOSYALAR) |
+| names {path} / a path read from the mod's folder | {path} yolunu belirtiyor / yol, modun klasörüne göre okunur |
+| animated GIF / still picture / picture editor | hareketli GIF / hareketsiz resim / resim düzenleyici |
+| {width} × {height} (a picture's size) / at best | {width} × {height} boyutunda / en iyisi (en iyisi 1280 × 640) |
+| blurred / sharp / cut off (a picture) / Give it more pixels | bulanık görünür / net görünür / kırpılır / Çözünürlüğü artır |
+
+## A mod's interface theme (`pages/mods.rs`, `settings.rs`, `ta_data/src/presentation.rs`)
+
+HUD stays HUD (as the search words had it) and the sentences keep it suffix-free, a nominative
+subject ("HUD bu renklerle gösterilir", "HUD orada ... çizer"); where a suffix cannot be avoided it
+is read as a word: HUD'u, HUD'un. {key} is the manifest's key ("Temanın {key} anahtarı", a colour
+key "{key} rengi"). {extras} (its own font, pictures behind its panels, joined by ", " in the code)
+follows a colon, so its items stay nominative noun phrases: "ayrıca şunlar kullanılır: {extras}".
+
+| English | Türkçe |
+|---|---|
+| interface theme / INTERFACE THEME (the mod page's caption) | arayüz teması / ARAYÜZ TEMASI |
+| MODS' INTERFACE THEMES (the switch in Ayarlar, Arayüz) | MOD ARAYÜZ TEMALARI ("oyunun Ayarlar, Arayüz bölümündeki MOD ARAYÜZ TEMALARI seçeneğiyle") |
+| accent (the theme's colour) / text | vurgu rengi (as Windows' own) / metin |
+| font / its own font | yazı tipi / kendi yazı tipi |
+| pictures behind its panels | panellerde arka plan resimleri |
+| the HUD draws its own metal there (the side's panel tiles in place of a picture) | HUD orada kendi metal dokusunu çizer |
+| the HUD keeps TA Reborn's own | HUD orada TA Reborn'un kendi rengini korur / HUD, TA Reborn'un kendi yazı tipini korur |
+| the HUD does without it | HUD bu dosya olmadan çizilir |
+| a contrast of {ratio}:1 / {least}:1 reads well | kontrastı {ratio}:1 / {least}:1 ve üzeri bir kontrastla rahat okunur |
+| darker / lighter (colours) | koyulaştır / açıklaştır |
+| # and six hexadecimal digits | # ve ardından altı onaltılık basamak |
+| more than {most} (a size limit) | {most} sınırını aşıyor |
+| side (a theme's, named as sidedata.tdf names it) | taraf ("{side} tarafına", "Oyunun tarafları: {sides}") |
+| Off: TA Reborn's own always | Kapalıysa her zaman TA Reborn'un kendi görünümü kullanılır |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | Türkçe |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} ile {other} birlikte açık olamaz: birini kapat / şunlarla birlikte açık olamaz: {mods} (as "gerekli: {mods}") |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} veya üzeri (gerekli) / seninki {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | DAHA YENİ TA REBORN GEREKLİ |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn ("requires_reborn anahtarı") / modun çalıştığı en eski TA Reborn sürümü |
+
+## mod.toml's keys read past, and a load order that does not resolve (`presentation.rs`, `validation.rs`, `mod_order.rs`, `mods.rs`)
+
+| English | Türkçe |
+|---|---|
+| key / table / a [table] line (TOML; `[table]`, `[{table}]` kept) | anahtar / tablo / [table] satırı ("bir [table] satırının altında", "[{table}] tablosuna ait") |
+| read past (a key) / leave out (a value) | atlamak ("TA Reborn tanımıyor ve atlıyor") / dışarıda bırakmak ("TA Reborn bu değeri dışarıda bırakır") |
+| value kinds filling {found} and {expected}, bare nominatives ("{key} anahtarı {expected} bekliyor, ama {found} yazılmış") | tırnak içinde metin / tam sayı / sayı / true ya da false (TOML's own words) / tarih / köşeli parantez içinde liste / tablo |
+| did you mean {meant}? | {meant} anahtarını mı kastettin? (the question particle follows a noun, never the placeholder) |
+| a later TA Reborn / older TA Reborns / a slip of the pen | TA Reborn'un daha yeni bir sürümü / TA Reborn'un eski sürümleri / yazım hatası |
+| in a circle (dependencies) | bir döngü içinde |
+| plates (the HUD's, panel_texture tiled behind them) / the side's own metal plates | plakalar ("plakaların {path} resmi") / tarafın kendi metal plakaları |
+| line spacing / line height (a font's) | satır aralığı / satır yüksekliği |
+| TURN OFF {name} / STOP PREVIEW (beside ÖNİZLEMEYİ OYNAT) | KAPAT: {name} (as ETKİNLEŞTİR: {name}) / ÖNİZLEMEYİ DURDUR |
+
+## The launcher's QA fixes: a damaged service record, unreadable profiles, errors (`profile_page.rs`, `profiles.rs`, `play.rs`, `http.rs`, `maps.rs`, `skins.rs`, `supcom.rs`, `widgets.rs`)
+
+| English | Türkçe |
+|---|---|
+| damaged (a file) / unreadable (a profile; a map's badge UNREADABLE) | bozuk (Windows' word for a corrupt file) / okunamayan (OKUNAMAYAN PROFİL SİLİNSİN Mİ?; badge OKUNAMIYOR) |
+| set aside (the damaged career file) / put it right / PUT IT RIGHT | bir kenara ayırmak / düzeltmek / DÜZELT |
+| START A FRESH CAREER / START A FRESH CAREER? | YENİ BİR KARİYERE BAŞLA / YENİ BİR KARİYERE BAŞLANSIN MI? |
+| CAREER NEEDS ATTENTION / SERVICE RECORD UNREADABLE | KARİYER İLGİ BEKLİYOR / HİZMET KAYDI OKUNAMIYOR |
+| MOVE TO RECYCLE BIN | GERİ DÖNÜŞÜM KUTUSU'NA TAŞI |
+| the Profile page / the Maps page | PROFİL sayfası / HARİTALAR sayfası (as OYNA sayfası) |
+| setup (the downloaded installer) / graphics driver / the launcher crashed | kurulum dosyası / ekran kartı sürücüsü / Başlatıcı çöktü |
+| id (a skin's) / KEEP BOTH (an imported skin beside an installed one) | kimlik ("{id} kimlikli bir görünüm") / İKİSİNİ DE SAKLA |
+| YOURS AND ALLIES / ENEMY UNITS (whose units wear a skin) | SEN VE MÜTTEFİKLER / DÜŞMAN BİRİMLERİ |
+| RUNNING (the PLAY button while the game runs) | ÇALIŞIYOR (as OYUN ÇALIŞIYOR) |
+| key names in shortcut labels | as printed: Alt, Ctrl, Shift, Enter, Esc, Tab (not Sekme), Home, End; the Mac's Cmd, Option |
+| screen-reader marks OK / Not present / Error; "{content}: found / not found" | Tamam / Yok / Hata; "{content}: bulundu / bulunamadı" |
+| error fragments filling {error}, {why} | lowercase clauses ("bağlantı zaman aşımına uğradı", "içi boş") |
+| Hue / Saturation and brightness (colour picker, spoken) | Renk tonu / Doygunluk ve parlaklık ("doygunluk %{s}, parlaklık %{v}") |
+
+## Supreme Commander imports (`pages/supcom.rs`, `supcom.rs`, `supcom_factions.rs`)
+
+| English | Türkçe |
+|---|---|
+| faction (SupCom's) / {faction} faction / a side to play in skirmish | taraf (Supreme Commander tarafları) / {faction} tarafı / çatışmada oynanabilir bir taraf |
+| made (maps, units) / made (the factions, the mod) | oluşturulan, oluşturulamadı / hazırlanan, hazırlanıyor |
+| {failed} of its units could not be made | birimlerinden {failed} tanesi oluşturulamadı |
+| Held until the import ends (amber note by greyed controls) | İçe aktarma bitene kadar kilitli |
+| goes on with this closed (the dialog) | kapatsan da sürer |
+| the launcher's footer | başlatıcının durum çubuğu (as "status bar") |
+| commanders' enhancements / upgrading buildings in place | komutan geliştirmeleri / binaların yerinde yükseltilmesi |
+| shields / stealth fields / teleporting | kalkanlar / gizlilik alanları (not hayalet, TA's stealthy units) / ışınlanma |

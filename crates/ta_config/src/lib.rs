@@ -151,8 +151,31 @@ pub const RECORD_VERSION: u32 = 46;
 /// `[CANBUILD]` lists the computer players' (`UnitType::ai_build_options`): a player's
 /// constructors on a duty build what their menus offer; 92, a cell a map marks as a cliff
 /// (`ta_formats::tnt::CELL_CLIFF`: a map converted from Supreme Commander) is as steep as a
-/// slope can be.
-pub const SIMULATION_VERSION: u32 = 92;
+/// slope can be; 93, a piercing shot (TA's `noexplode`: the Commanders' D-gun) harms what stands
+/// within its area of effect all along its flight, units and features, from once it is that far
+/// from the gun, and runs on along the ground or the water it meets; 94, capturing takes four
+/// times the target's cost in work, never more than two minutes of a Commander's (TA's Galactic
+/// Gate took 51); 95, fire at will (and return fire) takes on only what its side sees, a radar or
+/// sonar contact by order alone; 96, reclaiming pays when it is done, as TA's does: a feature's
+/// metal and energy when it is reclaimed whole, a unit's metal when it is gone; 97, guns a
+/// scenario sets to be directed by a spotter (`Unit::radar_guided`: Iron Rain's battery) fire at
+/// will on radar and sonar contacts as well; 98, an automatic target past a weapon's firing reach
+/// no longer holds it: it looks round for one in reach and turns to it (an ordered one is kept),
+/// and attack-move and patrol stop for a target only once a weapon can fire on it; 99, a unit
+/// carries up to eight weapons (a mod's `Weapon4` to `Weapon8`, its script's `AimWeapon4`...);
+/// 100, a player's Targeting Facility at work (`IsTargetingUpgrade`) has its units fire at will
+/// on radar contacts; torpedoes hit what reaches into the water where it meets the water, run at
+/// their target's depth and as far as their range; surface weapons aim at the part of a unit out
+/// of the water, and never take on what is wholly under it (TA's underwater buildings, however
+/// tall), by an order either (the order ends); a weapon past the first whose own bad targets name
+/// an attack order's target keeps to its own targets; 101, a unit being built turns with its
+/// factory's pad (TA's plants spin it while they build), a unit with a `HealTime` (TA's
+/// Commanders) mends itself, 100 hit points in that many seconds, and wreckage (a unit's corpse
+/// and its heap) pays its metal alone when reclaimed; 102, an interceptor's `interceptor` and a
+/// missile's `targetable` are sets of classes (as the Spring engine reads them): an interceptor
+/// shoots down only the missiles whose classes it shares (TA's own all class 1), and once they are
+/// within its range; the no-nukes mutator leaves out the strategic class alone.
+pub const SIMULATION_VERSION: u32 = 102;
 /// Records shorter than one year of simulated time are supported. Shared with the
 /// launcher's metadata reader so impossible durations cannot start endless save catch-up.
 pub const MAX_RECORD_TICKS: u64 = 30 * 3600 * 24 * 365;
@@ -1208,6 +1231,9 @@ pub struct Gameplay {
     /// The classic interface's art and lettering in TA's own square pixels, enlarged as they
     /// are (off: smoothed for the screen, sharp at any size).
     pub classic_pixels: bool,
+    /// A mod's interface theme in its battles: the HUD in the colours (and pictures and font) the
+    /// mod gives it (off: TA Reborn's own always).
+    pub mod_themes: bool,
     /// Player colours, health bars and map marks in colours that stay apart with colour
     /// blindness (units tinted to match).
     pub colour_blind: bool,
@@ -1287,6 +1313,7 @@ impl Default for Gameplay {
             ta_cursors: true,
             classic_interface: false,
             classic_pixels: false,
+            mod_themes: true,
             colour_blind: false,
             team_markers: false,
             keyboard_pointer: false,
@@ -1630,6 +1657,16 @@ impl Config {
 /// changes to them, though it keeps the rest of the launcher's section as the file has it.
 const SHARED_LAUNCHER_KEYS: [&str; 2] = ["seasonal_effects", "seasonal_theme"];
 
+impl Launcher {
+    /// Takes from `other` the settings of this section the game's options change too
+    /// ([`SHARED_LAUNCHER_KEYS`]: the seasons); the rest stay this one's (the launcher keeping its
+    /// own section as it has it, but for what the game saved of those).
+    pub fn take_shared(&mut self, other: &Launcher) {
+        self.seasonal_effects = other.seasonal_effects;
+        self.seasonal_theme = other.seasonal_theme;
+    }
+}
+
 fn check_settings_size(bytes: u64) -> std::io::Result<()> {
     if bytes > MAX_CONFIG_BYTES {
         Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "settings file exceeds the 4 MiB limit"))
@@ -1719,6 +1756,24 @@ fn put_changes(base: &toml::Value, mine: &toml::Value, theirs: &mut toml::Value)
 #[cfg(test)]
 mod preset_tests {
     use super::*;
+
+    /// What the launcher takes of its own section from the file after a game is exactly what the
+    /// game saves of it: every key of [`SHARED_LAUNCHER_KEYS`], and nothing else.
+    #[test]
+    fn the_launcher_takes_the_shared_keys_and_only_those() {
+        // (Every field set apart from its default: a new one has to be set here too.)
+        let other = Launcher { on_play: OnPlay::Close, seasonal_effects: false, seasonal_theme: SeasonalTheme::Halloween, themed_cursor: false,
+            window: Some([800.0, 600.0]), maximized: true, seen_version: "9.9.9".into() };
+        let mut mine = Launcher::default();
+        mine.take_shared(&other);
+        let value = |launcher: &Launcher| toml::Value::try_from(launcher).unwrap();
+        let (mine, other, default) = (value(&mine), value(&other), value(&Launcher::default()));
+        for (key, theirs) in other.as_table().unwrap() {
+            let expected = if SHARED_LAUNCHER_KEYS.contains(&key.as_str()) { Some(theirs) } else { default.get(key) };
+            assert_eq!(mine.get(key), expected, "{key}");
+            assert!(SHARED_LAUNCHER_KEYS.contains(&key.as_str()) || default.get(key) != Some(theirs), "{key} is set apart from its default");
+        }
+    }
 
     #[test]
     fn alternating_game_and_launcher_edits_merge_by_field() {

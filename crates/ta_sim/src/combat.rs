@@ -1,11 +1,13 @@
 //! Weapons, projectiles, damage and death.
 //!
 //! Aiming follows TA: the engine computes a heading/pitch to the target relative to the unit
-//! and starts the script's `AimPrimary/Secondary/Tertiary` thread; when that thread returns
-//! non-zero the weapon is aimed. Firing asks `QueryPrimary` for the muzzle piece, calls
-//! `FirePrimary` for recoil/flash animation and launches a projectile from the muzzle.
+//! and starts the script's `AimPrimary/Secondary/Tertiary` thread (`AimWeapon1` to `AimWeapon8`
+//! in a mod's scripts, for up to eight weapons: [`ta_data::unit::WEAPON_FUNCTIONS`]); when that
+//! thread returns non-zero the weapon is aimed. Firing asks `QueryPrimary` for the muzzle piece,
+//! calls `FirePrimary` for recoil/flash animation and launches a projectile from the muzzle.
 
 use ta_data::RenderType;
+use ta_data::unit::{MAX_WEAPONS, WeaponFunction};
 
 use crate::cob::{TICKS_PER_SECOND, ThreadTag};
 use crate::defs::{Locomotion, Trajectory, WeaponType};
@@ -21,10 +23,14 @@ mod projectiles;
 #[cfg(test)]
 mod targeting_tests;
 
-const AIM_FUNCS: [&str; 3] = ["AimPrimary", "AimSecondary", "AimTertiary"];
-const AIM_FROM_FUNCS: [&str; 3] = ["AimFromPrimary", "AimFromSecondary", "AimFromTertiary"];
-const QUERY_FUNCS: [&str; 3] = ["QueryPrimary", "QuerySecondary", "QueryTertiary"];
-const FIRE_FUNCS: [&str; 3] = ["FirePrimary", "FireSecondary", "FireTertiary"];
+#[cfg(test)]
+mod water_tests;
+
+/// The name a unit's script gives the function `f` of its weapon in `slot` (TA's `AimPrimary`,
+/// or Spring's `AimWeapon1`: [`crate::defs::Callins::weapon_functions`]).
+fn weapon_function(t: &crate::defs::UnitType, f: WeaponFunction, slot: usize) -> &'static str {
+    t.callins.weapon_functions[slot][f as usize]
+}
 
 /// How far apart the planes of a group sent at one target come in on it, across their front
 /// (see `Sim::air_attack_pass`).
@@ -195,6 +201,27 @@ fn hit_sphere(u: &Unit, sim: &Sim) -> (FxVec3, Fx) {
     (center, r)
 }
 
+/// What a shot of `w` meets of a unit: its collision sphere, but for a unit partly in the water
+/// (in it, [`Sim::in_water`], not wholly under it) the part of it the shot can reach, by where it
+/// meets the water: a torpedo, which runs under the surface, its sphere with the middle no
+/// higher than the surface, and a weapon that stays over the water no lower. A ship's hull, a
+/// floating tower, what wades or stands on the sea bed is hit there, within its radius of its
+/// middle, from under the water and from over it. (A tall floating tower's sphere stood over the
+/// water, out of the way of the torpedoes run under it: TA's submarines fired at the floating
+/// missile towers, the Defender - NS and the Stinger, for ever without a hit; an amphibious
+/// K-bot's middle was under the water, and a boat's laser went off on the water in front of it.)
+fn reach_sphere(u: &Unit, w: &WeaponType, sim: &Sim) -> (FxVec3, Fx) {
+    let (mut centre, radius) = hit_sphere(u, sim);
+    let sea = sim.world.sea_level;
+    // (Asked of every unit near every shot: whether it is in the water only where its middle is
+    // on the other side of the surface from the shot.)
+    let across = if w.torpedo { centre.y > sea } else { !w.water && centre.y < sea };
+    if across && sim.in_water(u) {
+        centre.y = sea;
+    }
+    (centre, radius)
+}
+
 /// Closest distance between segment a→b and point c.
 fn segment_distance(a: FxVec3, b: FxVec3, c: FxVec3) -> Fx {
     let d = b - a;
@@ -292,11 +319,18 @@ impl Sim {
         w.def.fire_submersed || !self.submerged(u)
     }
 
-    /// A body actually in the water, including surface ships and wading units.
+    /// A body actually in the water, including surface ships and wading units
+    /// ([`Sim::in_water_at`]), not carried and not in flight.
     pub fn in_water(&self, u: &Unit) -> bool {
-        !u.dead && u.carried_by.is_none() && !self.airborne(u)
-            && u.model_pos(self.unit_type(u)).y <= self.world.sea_level
-            && self.world.depth_at(u.pos.x, u.pos.z) > Fx::ZERO
+        !u.dead && u.carried_by.is_none() && !self.airborne(u) && self.in_water_at(u.type_id, u.pos)
+    }
+
+    /// Whether a unit of `type_id` standing at `pos` reaches into the water: its base (a ship's
+    /// hull, a submarine, the foot of what floats, wades or stands on the sea bed) at or under the
+    /// surface, over water. What torpedoes reach: they hit it where it meets the water
+    /// (`reach_sphere`). Hovercraft riding on the water do too (their base at the surface).
+    pub fn in_water_at(&self, type_id: usize, pos: FxVec3) -> bool {
+        pos.y - self.types.get(type_id).waterline <= self.world.sea_level && self.world.depth_at(pos.x, pos.z) > Fx::ZERO
     }
 
     fn target_in_water(&self, target: Target) -> bool {
@@ -307,12 +341,32 @@ impl Sim {
         }
     }
 
-    /// Torpedoes intercept the wet part of a surface hull, not its deck in the air.
+    /// Whether `w` reaches `target` where it is: what is wholly under the water only a weapon that
+    /// goes under it (`waterweapon`: torpedoes, depth charges, [`Sim::submerged`]), and a torpedo
+    /// only what reaches into the water ([`Sim::in_water`]). (Whether it hits that kind, in
+    /// flight or on the ground, is [`Sim::can_engage`]'s.)
+    pub(crate) fn reaches(&self, w: &WeaponType, target: &Unit) -> bool {
+        !(!w.water && self.submerged(target) || w.torpedo && !self.in_water(target))
+    }
+
+    /// [`Sim::reaches`] for any target: a place, a torpedo only in the water.
+    pub(crate) fn weapon_reaches(&self, w: &WeaponType, target: Target) -> bool {
+        match target {
+            Target::Unit(id) => self.unit(id).is_some_and(|tu| self.reaches(w, tu)),
+            Target::Ground(_) | Target::Projectile(_) => !w.torpedo || self.target_in_water(target),
+        }
+    }
+
+    /// Torpedoes intercept the wet part of a surface hull, not its deck in the air; a weapon that
+    /// stays over the water aims at the part of a unit out of it, not at its middle under the
+    /// surface, where the shot would go off on the water in front of it (`reach_sphere`).
     fn weapon_target_point(&self, w: &WeaponType, target: Target) -> Option<FxVec3> {
         let mut p = self.target_point(target)?;
         if w.torpedo {
             if !self.target_in_water(target) { return None; }
             p.y = p.y.min(self.world.sea_level - Fx::from_int(2));
+        } else if !w.water && p.y < self.world.sea_level + Fx::from_int(2) && matches!(target, Target::Unit(_)) && self.target_in_water(target) {
+            p.y = self.world.sea_level + Fx::from_int(2);
         }
         Some(p)
     }
@@ -363,6 +417,8 @@ impl Sim {
         let e = &mut self.players[owner].economy;
         e.metal_demand_next += worth(w.metal_per_shot, full);
         e.energy_demand_next += worth(w.energy_per_shot, full);
+        e.tick_metal_wanted += worth(w.metal_per_shot, full);
+        e.tick_energy_wanted += worth(w.energy_per_shot, full);
         let mut work = (e.build_factor.0.max(0) as u64).min(full);
         // Last tick's demand cannot predict a newly started silo or what another builder
         // has already spent. Limit work to the stores that remain, including rounding at
@@ -397,7 +453,13 @@ impl Sim {
     }
 
     /// Anti-missile defence: an interceptor with missiles in stock fires at enemy
-    /// interceptable projectiles (nukes) headed into its coverage.
+    /// interceptable projectiles of its classes (`WeaponDef::intercepts`: TA's nukes, a mod's
+    /// tactical missiles for its tactical defences) headed into its coverage, or crossing it,
+    /// once they are within its reach: its range (its coverage where that is larger; with no
+    /// range written, as far as they are). TA's anti-nukes reach across its maps (22,000 px and
+    /// more); a tactical defence a few hundred px across takes the missiles coming down on what
+    /// it covers as they come within it, as the Spring engine's and Forged Alliance's do, rather
+    /// than sending its shot across the map at one still climbing out of its tube.
     pub(crate) fn update_interceptors(&mut self) {
         if !self.tick.is_multiple_of(5) || !self.projectiles.iter().any(|p| self.weapon_types.get(p.weapon).def.targetable) {
             return;
@@ -412,7 +474,7 @@ impl Sim {
             .flat_map(|u| {
                 let t = types.get(u.type_id);
                 let weapons = &weapons;
-                (0..3).filter_map(move |slot| {
+                (0..MAX_WEAPONS).filter_map(move |slot| {
                     let w = weapons.get(t.weapons[slot]?);
                     (w.def.interceptor && (!w.def.stockpile || u.stockpile > 0)).then_some((u.id, slot))
                 })
@@ -432,13 +494,14 @@ impl Sim {
                 continue;
             }
             let coverage = w.interceptor_coverage();
+            let reach = (w.range > Fx::ZERO).then(|| w.range.max(coverage));
             let (pos, owner) = (u.pos, u.owner);
             let current = u.weapons[slot].target;
             let threat = self
                 .projectiles
                 .iter()
-                .filter(|p| !p.dead && self.is_enemy(p.owner_player, owner) && weapons.get(p.weapon).def.targetable && !self.intercepted.contains(&p.id) && !assigned.contains(&p.id))
-                .filter(|p| p.target_pos.within_xz(pos, coverage) || p.pos.within_xz(pos, coverage))
+                .filter(|p| !p.dead && self.is_enemy(p.owner_player, owner) && w.def.intercepts(&weapons.get(p.weapon).def) && !self.intercepted.contains(&p.id) && !assigned.contains(&p.id))
+                .filter(|p| (p.target_pos.within_xz(pos, coverage) || p.pos.within_xz(pos, coverage)) && reach.is_none_or(|r| p.pos.within_xz(pos, r)))
                 .min_by_key(|p| (current != Some(Target::Projectile(p.id)), (p.pos - pos).xz().length_sq_raw(), p.id))
                 .map(|p| (p.id, p.pos));
             let Some((pid, ppos)) = threat else {
@@ -503,12 +566,18 @@ impl Sim {
             _ => false,
         };
         let can_hit = |w: &WeaponType| if flying { w.hits_air } else { w.hits_ground };
-        let has_normal = t.weapons.iter().enumerate().any(|(slot, w)| available[slot] && w.is_some_and(|w| !weapons.get(w).command_fire && can_hit(weapons.get(w))));
+        // (Of the weapons that take the order: `Sim::takes_order`.)
+        let has_normal = t.weapons.iter().enumerate().any(|(slot, w)| {
+            available[slot] && w.is_some_and(|w| {
+                let w = weapons.get(w);
+                !w.command_fire && can_hit(w) && forced.is_none_or(|tg| self.takes_order(t, slot, w, tg, owner))
+            })
+        });
         let aircraft = t.locomotion == Locomotion::Air;
 
         // (Slots index the type's weapons, the unit's weapon states and the aim functions.)
         #[allow(clippy::needless_range_loop)]
-        for slot in 0..3 {
+        for slot in 0..MAX_WEAPONS {
             let Some(wid) = t.weapons[slot] else {
                 // No weapon here: nothing may hold a target in this slot.
                 if let Some(u) = self.unit_mut(id) {
@@ -529,7 +598,7 @@ impl Sim {
             if w.def.interceptor {
                 let pending = self.unit(id).and_then(|u| u.weapons[slot].target);
                 let valid = matches!(pending, Some(Target::Projectile(pid)) if !self.intercepted.contains(&pid)
-                    && self.projectiles.iter().any(|p| p.id == pid && !p.dead && self.is_enemy(owner, p.owner_player) && weapons.get(p.weapon).def.targetable));
+                    && self.projectiles.iter().any(|p| p.id == pid && !p.dead && self.is_enemy(owner, p.owner_player) && w.def.intercepts(&weapons.get(p.weapon).def)));
                 if !valid && let Some(u) = self.unit_mut(id) {
                     u.retarget(slot, None);
                 }
@@ -539,6 +608,11 @@ impl Sim {
             // (`Sim::bomber_lookout`) and keep them for its runs (not cleared after a drop; a
             // building through the turn out of its sight as well, `Sim::held_building`).
             let roving_bombs = roving && w.command_fire && w.trajectory == Trajectory::Dropped && !w.def.stockpile && fire_state >= 2;
+            // The order's target, if this weapon takes it (`Sim::takes_order`): one it can reach
+            // (nothing wholly under the water for a surface gun, nothing out of it for a torpedo),
+            // and for a weapon past the first none of its own bad targets. A weapon that doesn't
+            // goes on choosing its own targets, as with no order.
+            let forced = forced.filter(|&tg| self.takes_order(t, slot, w, tg, owner));
             // Choose a target: forced (attack order) or automatic when allowed.
             let current = self.unit(id).and_then(|u| u.weapons[slot].target);
             // Hold fire: only what an attack order names (a target kept from before is dropped).
@@ -547,10 +621,9 @@ impl Sim {
             } else if w.command_fire {
                 forced
                     .filter(|_| manual || (slot == 0 || !has_normal) && can_hit(w))
-                    .filter(|&tg| !w.torpedo || self.target_in_water(tg))
                     .or(current.filter(|&tg| roving_bombs && (self.target_valid(id, w, tg) || self.held_building(tg, owner) && self.within_reach(id, w, tg))))
             } else {
-                forced.filter(|&tg| !w.torpedo || self.target_in_water(tg)).or(current.filter(|&tg| fire_state >= 1 && self.target_valid(id, w, tg)))
+                forced.or(current.filter(|&tg| fire_state >= 1 && self.target_valid(id, w, tg)))
             };
             // Nothing to shoot, or only a bad target (taken on last): a look round on the weapon's
             // tick for a better one, which it turns to.
@@ -558,12 +631,24 @@ impl Sim {
                 Some(Target::Unit(tid)) if forced != target => self.unit(tid).is_some_and(|tu| self.bad_target(t.id, slot, tu)) && !self.players.get(owner as usize).is_some_and(|p| p.shoot_all),
                 _ => false,
             };
-            if available[slot] && (target.is_none() || on_bad) && (!w.command_fire || roving_bombs) && fire_state >= 2 && (self.tick + id.slot as u64).is_multiple_of(RETARGET_TICKS) {
+            // An automatic target kept past what the weapon can fire on (it is kept a little past
+            // the weapon's range, `Sim::target_valid`, as it moves about): a look round too, for
+            // one in reach, which it turns to, bad or not. With none it is kept, and fired on the
+            // moment it comes back into reach. (An ordered target is the order's; a roving
+            // bomber's runs keep theirs.)
+            let past_reach = match target {
+                Some(tg) if forced != Some(tg) && !roving_bombs => self.weapon_target_point(w, tg).is_none_or(|tp| {
+                    let from = self.aim_from_point(id, slot);
+                    from.distance_xz(tp) > w.range + self.target_radius(tg) || self.launch_pitch(w, tp - from).is_none()
+                }),
+                _ => false,
+            };
+            if available[slot] && (target.is_none() || on_bad || past_reach) && (!w.command_fire || roving_bombs) && fire_state >= 2 && (self.tick + id.slot as u64).is_multiple_of(RETARGET_TICKS) {
                 let tick = self.tick;
                 let skip = self.unit(id).and_then(|u| u.weapons[slot].blocked).filter(|&(_, until)| tick < until).map(|(t, _)| t);
                 let reach = if roving_bombs { self.bomber_lookout(t).min(w.range) } else { w.range };
                 let found = self.find_target(id, slot, w, owner, skip, reach);
-                if target.is_none() || matches!(found, Some(Target::Unit(tid)) if self.unit(tid).is_some_and(|tu| !self.bad_target(t.id, slot, tu))) {
+                if target.is_none() || past_reach && found.is_some() || matches!(found, Some(Target::Unit(tid)) if self.unit(tid).is_some_and(|tu| !self.bad_target(t.id, slot, tu))) {
                     target = found;
                 }
             }
@@ -586,7 +671,7 @@ impl Sim {
             let from = self.aim_from_point(id, slot);
             let dist = from.distance_xz(tp);
             let reach = w.range + self.target_radius(target);
-            if forced == Some(target) && dist > reach + Fx::from_int(16) {
+            if dist > reach + Fx::from_int(16) {
                 continue;
             }
             // Heading relative to the body; pitch from a ballistic solution when needed.
@@ -595,7 +680,7 @@ impl Sim {
             // Under the water only torpedoes and depth charges reach (an ordered target is
             // left to the order: the unit has nothing to hit it with).
             let under = matches!(target, Target::Unit(tid) if !w.water && self.unit(tid).is_some_and(|tu| self.submerged(tu)));
-            let pitch = if under || forced != Some(target) && dist > reach { None } else { self.launch_pitch(w, to) };
+            let pitch = if under { None } else { self.launch_pitch(w, to) };
             let Some(pitch) = pitch else {
                 // Out of the shells' reach (or under the water): an automatic target is passed
                 // over for a while, for one it can hit.
@@ -679,7 +764,8 @@ impl Sim {
     fn aim_weapon(&mut self, id: UnitId, slot: usize, heading: i32, pitch: i32) -> bool {
         let Some(u) = self.unit(id) else { return false };
         let tag = ThreadTag::Aim(slot as u16);
-        let has_aim = u.cob.as_ref().is_some_and(|c| c.has_function(AIM_FUNCS[slot]));
+        let aim = weapon_function(self.types.get(u.type_id), WeaponFunction::Aim, slot);
+        let has_aim = u.cob.as_ref().is_some_and(|c| c.has_function(aim));
         let tick = self.tick;
         let Some(u) = self.unit_mut(id) else { return false };
         match u.cob.as_mut().filter(|_| has_aim) {
@@ -704,7 +790,7 @@ impl Sim {
                 if ask {
                     c.supersede_aims(slot as u16);
                     // (As TA hands them, 0..65535: see `script_angle`.)
-                    c.start(AIM_FUNCS[slot], &[script_angle(heading), script_angle(pitch)], tag);
+                    c.start(aim, &[script_angle(heading), script_angle(pitch)], tag);
                     let ws = &mut u.weapons[slot];
                     ws.aim_heading = heading;
                     ws.aim_pitch = pitch;
@@ -820,13 +906,39 @@ impl Sim {
 
     /// Whether the weapon in `slot` of a unit of `shooter_type` can take `target` on of its own
     /// accord, wherever they stand: it hits that kind (an aircraft in flight; what is on the
-    /// ground or the water), and reaches it (only `waterweapon`s under the water, torpedoes only
-    /// what is in it). Its bad targets too, last ([`Sim::bad_target`]). (Range, sight, the ground
-    /// between and the shooter's own state apart: what automatic targeting, kept targets and
-    /// return fire ask.)
+    /// ground or the water), and reaches it ([`Sim::reaches`]: only `waterweapon`s what is wholly
+    /// under the water, torpedoes only what is in it). Its bad targets too, last
+    /// ([`Sim::bad_target`]). (Range, sight, the ground between and the shooter's own state
+    /// apart: what automatic targeting, kept targets and return fire ask.)
     pub(crate) fn can_engage(&self, w: &WeaponType, target: &Unit) -> bool {
-        (if self.airborne(target) { w.hits_air } else { w.hits_ground })
-            && !(!w.water && self.submerged(target) || w.torpedo && !self.in_water(target))
+        (if self.airborne(target) { w.hits_air } else { w.hits_ground }) && self.reaches(w, target)
+    }
+
+    /// Whether the weapon in `slot` of a unit of type `t` (`owner`'s) takes the target of the
+    /// unit's attack (or manual-fire) order: one it reaches where it is ([`Sim::weapon_reaches`]),
+    /// and, for a weapon past the first, not one of the bad targets it names of its own
+    /// ([`Sim::keeps_to_own_targets`]): such a weapon goes on choosing its targets as it would
+    /// without the order while the others fire as ordered.
+    pub(crate) fn takes_order(&self, t: &crate::defs::UnitType, slot: usize, w: &WeaponType, target: Target, owner: u8) -> bool {
+        self.weapon_reaches(w, target)
+            && !matches!(target, Target::Unit(id) if self.unit(id).is_some_and(|tu| self.keeps_to_own_targets(t, slot, w, tu.type_id, owner)))
+    }
+
+    /// Whether the weapon in `slot` of a unit of type `t` (`owner`'s) leaves an attack order on a
+    /// unit of `target_type` to the unit's other weapons and keeps to its own targets: a second
+    /// or third weapon, not one fired on command (the Commanders' D-gun, bombs: those fire as
+    /// ordered), whose own bad targets (`wsec_`/`wspe_badTargetCategory`, not the unit's
+    /// `BadTargetCategory`: [`crate::defs::UnitType::own_bad_targets`]) name the target. TA's
+    /// Skeeter and Searcher, ordered on a boat, laser it and fire their anti-air missiles
+    /// (`NOTAIR`) at the aircraft about, else at the nearest enemy, as with no order; the
+    /// destroyers' and cruisers' depth charges (`NOTSUB`) keep to the submarines. With the
+    /// player's `+shootall` nothing is a bad target, and every weapon takes the order.
+    pub fn keeps_to_own_targets(&self, t: &crate::defs::UnitType, slot: usize, w: &WeaponType, target_type: usize, owner: u8) -> bool {
+        slot > 0
+            && !w.command_fire
+            && t.own_bad_targets[slot]
+            && self.types.get(target_type).category_mask.intersects(&t.weapon_bad_masks[slot])
+            && !self.players.get(owner as usize).is_some_and(|p| p.shoot_all)
     }
 
     /// Whether the weapon in `slot` takes `target` on first ([`Sim::can_engage`], and not one of
@@ -860,17 +972,27 @@ impl Sim {
         self.can_engage(w, tu) && u.pos.within_xz(tu.pos, w.range + Fx::from_int(48))
     }
 
+    /// Whether a unit's fire at will takes on what its side has on radar or sonar as well as what
+    /// it sees: a spotter's guns (`Unit::radar_guided`, a scenario's), and every unit of a player
+    /// with a targeting facility at work (`Player::radar_targeting`: TA's `IsTargetingUpgrade`,
+    /// "Automatic Radar Targeting"). Every other unit's takes on only what its side sees.
+    pub(crate) fn fires_on_radar(&self, u: &Unit) -> bool {
+        u.radar_guided || self.players.get(u.owner as usize).is_some_and(|p| p.radar_targeting)
+    }
+
     /// Whether an automatic target is still worth shooting by the weapon in `slot`. Ground is
     /// never one: only an attack order names ground, and once the order is gone (Stop, another
-    /// order) so is it. (A bad target is, until a better one comes into reach: see
-    /// `update_weapons`.)
+    /// order) so is it. Nor is one gone out of its side's sight, a radar or sonar contact now:
+    /// only an order fires on those, but for guns directed by radar ([`Sim::fires_on_radar`]).
+    /// (A bad target is, until a better one comes into reach: see `update_weapons`.)
     fn target_valid(&self, id: UnitId, w: &WeaponType, t: Target) -> bool {
         match t {
             Target::Ground(_) => false,
             Target::Projectile(_) => false,
             Target::Unit(tid) => {
                 let (Some(u), Some(tu)) = (self.unit(id), self.unit(tid)) else { return false };
-                if tu.dead || tu.carried_by.is_some() || !self.is_enemy(u.owner, tu.owner) || self.seen_by(tu, u.owner) == crate::vision::Seen::Hidden {
+                let seen = self.seen_by(tu, u.owner);
+                if tu.dead || tu.carried_by.is_some() || !self.is_enemy(u.owner, tu.owner) || seen == crate::vision::Seen::Hidden || seen == crate::vision::Seen::Radar && !self.fires_on_radar(u) {
                     return false;
                 }
                 self.can_engage(w, tu) && u.pos.within_xz(tu.pos, w.range + Fx::from_int(48))
@@ -883,11 +1005,16 @@ impl Sim {
     /// aircraft about, its other armed units VTOL and an aircraft only with nothing on the ground
     /// in reach; with the owner's `+shootall` they count as any other), for a computer player's
     /// unit a mission's priority targets first, and among those the one that has just hit the
-    /// unit. Computer players' units never pick what a mission tells them to ignore. `reach`:
-    /// how far it looks (the weapon's range, a roving bomber's sight).
+    /// unit. Computer players' units never pick what a mission tells them to ignore. Only what
+    /// its side sees (and, for guns directed by radar, [`Sim::fires_on_radar`]: a spotter's, or
+    /// any of a player with a targeting facility at work, what it has on radar): a radar or sonar
+    /// contact in the fog is fired on by order alone, as players asked (long-range guns kept
+    /// firing at will on radar alone, never spotted, past what their cost was balanced for), and
+    /// as TA had it without its Targeting Facility. `reach`: how far it looks (the weapon's range,
+    /// a roving bomber's sight).
     fn find_target(&mut self, id: UnitId, weapon_slot: usize, w: &WeaponType, owner: u8, skip: Option<UnitId>, reach: Fx) -> Option<Target> {
         let u = self.unit(id)?;
-        let pos = u.pos;
+        let (pos, radar_guided) = (u.pos, self.fires_on_radar(u));
         let bad_mask = self.types.get(u.type_id).weapon_bad_masks[weapon_slot];
         let attacker = u.last_attacker.filter(|_| self.tick <= u.last_hit_tick + 2 * TICKS_PER_SECOND as u64);
         // (Shells: from about where the gun stands, to the target's middle.)
@@ -918,7 +1045,8 @@ impl Sim {
             // Eligibility is read-only: a candidate that cannot beat the current winner
             // needs no visibility, submersion or ballistic checks.
             if best.is_some_and(|b| key >= b) { continue; }
-            if self.seen_by(o, owner) == crate::vision::Seen::Hidden { continue; }
+            let seen = self.seen_by(o, owner);
+            if seen == crate::vision::Seen::Hidden || seen == crate::vision::Seen::Radar && !radar_guided { continue; }
             // (What it hits, only torpedoes and depth charges under the water.)
             if !self.can_engage(w, o) {
                 continue;
@@ -939,7 +1067,8 @@ impl Sim {
         let piece = match self.aim_from_cache.get(&(type_id, slot as u8)) {
             Some(&p) => p,
             None => {
-                let p = self.call_script(id, AIM_FROM_FUNCS[slot], &[0]).and_then(|p| p.first().copied());
+                let aim_from = weapon_function(self.types.get(type_id), WeaponFunction::AimFrom, slot);
+                let p = self.call_script(id, aim_from, &[0]).and_then(|p| p.first().copied());
                 self.aim_from_cache.insert((type_id, slot as u8), p);
                 p
             }
@@ -1161,7 +1290,7 @@ impl Sim {
 
     fn fire(&mut self, id: UnitId, slot: usize, w: &WeaponType, target: Target, tp: FxVec3, pitch: i32) {
         let Some(owner) = self.unit(id).map(|u| u.owner) else { return };
-        if w.def.interceptor && !matches!(target, Target::Projectile(pid) if self.projectiles.iter().any(|p| p.id == pid && !p.dead && self.is_enemy(owner, p.owner_player) && self.weapon_types.get(p.weapon).def.targetable)) {
+        if w.def.interceptor && !matches!(target, Target::Projectile(pid) if self.projectiles.iter().any(|p| p.id == pid && !p.dead && self.is_enemy(owner, p.owner_player) && w.def.intercepts(&self.weapon_types.get(p.weapon).def))) {
             return;
         }
         let (target, tp) = self.launch_target(w, target, tp);
@@ -1177,15 +1306,29 @@ impl Sim {
             let energy = self.shot_energy(id, w);
             let e = &mut self.players[owner as usize].economy;
             if e.energy < energy || e.metal < w.metal_per_shot {
+                // Waiting for its price, it tries again every tick: it asks for it at the pace its
+                // reload would fire it (the use shown, `Economy::metal_wanted`).
+                let reload = i64::from(w.reload_ticks.max(1));
+                e.tick_energy_wanted += energy / reload;
+                e.tick_metal_wanted += w.metal_per_shot / reload;
                 return;
             }
             e.energy -= energy;
             e.metal -= w.metal_per_shot;
             e.tick_energy_out += energy;
             e.tick_metal_out += w.metal_per_shot;
+            e.tick_energy_wanted += energy;
+            e.tick_metal_wanted += w.metal_per_shot;
         }
-        let muzzle_piece = self.call_script(id, QUERY_FUNCS[slot], &[0]).and_then(|p| p.first().copied());
-        self.start_script(id, FIRE_FUNCS[slot], &[]);
+        let (query, fire) = match self.unit(id) {
+            Some(u) => {
+                let t = self.types.get(u.type_id);
+                (weapon_function(t, WeaponFunction::Query, slot), weapon_function(t, WeaponFunction::Fire, slot))
+            }
+            None => return,
+        };
+        let muzzle_piece = self.call_script(id, query, &[0]).and_then(|p| p.first().copied());
+        self.start_script(id, fire, &[]);
         // The recoil rocks the hull away from the shot, in the unit's own frame (TA's
         // RockUnit: tilts about the x and z axes, 500 at most).
         if let Some(u) = self.unit(id)
@@ -1205,8 +1348,14 @@ impl Sim {
             })
             .unwrap_or(u.model_pos(t) + FxVec3::new(Fx::ZERO, t.model.height / 2, Fx::ZERO));
         let (unit_heading, unit_speed) = (u.heading, u.speed);
-        // Re-solve the launch angle from the actual muzzle (the aim-from piece differs).
-        let pitch = self.launch_pitch(w, tp - muzzle).unwrap_or(pitch);
+        // Re-solve the launch angle from the actual muzzle (the aim-from piece differs). A torpedo
+        // fired under the water sets off for its target's depth (`projectiles::torpedo_aim`).
+        let pitch = if w.torpedo && muzzle.y < self.world.sea_level {
+            let to = projectiles::torpedo_aim(tp - muzzle);
+            atan2(to.y, to.length_xz().max(Fx::ONE))
+        } else {
+            self.launch_pitch(w, tp - muzzle).unwrap_or(pitch)
+        };
 
         // Direction: heading to the target plus accuracy error; launch pitch as solved.
         // Veterans aim better (up to 60% less scatter).
@@ -1420,7 +1569,7 @@ impl Sim {
             Target::Unit(tid) => ordered != Some(tg) && self.unit(tid).is_none_or(|tu| self.types.get(tu.type_id).weapons.iter().all(|w| w.is_none())),
             _ => false,
         };
-        let slots: Vec<usize> = (0..3)
+        let slots: Vec<usize> = (0..MAX_WEAPONS)
             .filter(|&s| {
                 t.weapons[s].is_some_and(|w| {
                     let w = self.weapon_types.get(w);
@@ -1603,21 +1752,48 @@ impl Sim {
             if !f.alive || !f.pos.within_xz(pos, r + Fx::from_int(8)) {
                 continue;
             }
-            let def = &self.data.features[f.def];
-            if def.indestructible || f.burn_until != 0 {
-                // Burning features burn down on their own.
+            self.hit_feature(i, damage, ignite);
+        }
+    }
+
+    /// A piercing shot (TA's `noexplode`: the Commanders' D-gun) over the features in its way:
+    /// those within its blast's reach of its flight this tick, measured to where they stand,
+    /// are hit as by its blast. (What a destroyed one leaves lies in its way still, and is hit
+    /// as the shot passes on: a wreck it crosses goes, heap and all.)
+    fn sweep_features(&mut self, from: FxVec3, to: FxVec3, w: &WeaponType) {
+        let r = w.aoe_radius.max(Fx::from_int(12)) + Fx::from_int(8);
+        let ignite = w.def.fire_starter.clamp(0.0, 100.0) as u32;
+        let mut near = Vec::new();
+        self.feature_grid.near(from + (to - from).scale(Fx::HALF), (to - from).length_xz() / 2 + r, &mut near);
+        for i in near {
+            let i = i as usize;
+            let f = &self.features[i];
+            if !f.alive || segment_distance(from, to, f.pos) > r {
                 continue;
             }
-            if def.flamable && ignite > 0 && self.rng.chance(ignite, 100) {
-                self.ignite(i);
-                continue;
-            }
-            let f = &mut self.features[i];
-            f.health -= damage;
-            if f.health <= Fx::ZERO {
-                let next = self.data.features[f.def].feature_dead.clone();
-                self.replace_feature(i, &next);
-            }
+            self.hit_feature(i, w.default_damage, ignite);
+        }
+    }
+
+    /// A blast or a piercing shot reaches a feature: a flammable one (a tree) may catch fire
+    /// instead, with `ignite` percent chance; the others take the damage and, destroyed, leave
+    /// their `featuredead`.
+    fn hit_feature(&mut self, i: usize, damage: Fx, ignite: u32) {
+        let f = &self.features[i];
+        let def = &self.data.features[f.def];
+        if def.indestructible || f.burn_until != 0 {
+            // Burning features burn down on their own.
+            return;
+        }
+        if def.flamable && ignite > 0 && self.rng.chance(ignite, 100) {
+            self.ignite(i);
+            return;
+        }
+        let f = &mut self.features[i];
+        f.health -= damage;
+        if f.health <= Fx::ZERO {
+            let next = self.data.features[f.def].feature_dead.clone();
+            self.replace_feature(i, &next);
         }
     }
 
@@ -1841,7 +2017,10 @@ impl Sim {
         };
         let u = self.unit(id).unwrap();
         let t = types.get(u.type_id);
-        if t.weapons.iter().flatten().next().is_some() && t.weapons.iter().flatten().all(|&w| weapons.get(w).torpedo) && !self.target_in_water(target) {
+        // Nothing it carries reaches the target where it is (torpedoes a unit or a place out of
+        // the water; surface guns, bombs and missiles what is wholly under it): the order ends,
+        // as a failed one, rather than following the target about for ever.
+        if t.weapons.iter().flatten().next().is_some() && !t.weapons.iter().flatten().any(|&w| self.weapon_reaches(weapons.get(w), target)) {
             self.halt(id);
             if let Some(u) = self.unit_mut(id) {
                 u.orders.pop_front();
@@ -1851,18 +2030,20 @@ impl Sim {
         }
         // How near to go: the reach of the weapons this order fires, as `update_weapons` has
         // them (a Commander's D-gun waits for manual fire: going by its 240 it stopped beyond
-        // its laser's 200 from a mine; a shell's carry where it is less than its range), else
-        // the farthest any of them reaches.
+        // its laser's 200 from a mine; a shell's carry where it is less than its range; a
+        // second weapon keeping to its own targets, `Sim::takes_order`, not at all: a Skeeter
+        // closes to its laser's reach, not its missiles'), else the farthest any of them reaches.
         let manual = matches!(u.orders.front(), Some(Order::ManualFire(_)));
         let flying = match target {
             Target::Unit(tid) => self.unit(tid).is_some_and(|tu| self.airborne(tu)),
             _ => false,
         };
-        let can_hit = |w: &WeaponType| self.weapon_can_fire_from(u, w) && (!w.torpedo || self.target_in_water(target)) && if flying { w.hits_air } else { w.hits_ground };
-        let has_normal = t.weapons.iter().flatten().any(|&w| !weapons.get(w).command_fire && can_hit(weapons.get(w)));
-        let fires = |slot: usize, w: &WeaponType| if w.command_fire { (manual || slot == 0 || !has_normal) && can_hit(w) } else { !manual && can_hit(w) };
+        let can_hit = |w: &WeaponType| self.weapon_can_fire_from(u, w) && self.weapon_reaches(w, target) && if flying { w.hits_air } else { w.hits_ground };
+        let takes = |slot: usize, w: &WeaponType| self.takes_order(t, slot, w, target, owner);
+        let has_normal = (0..MAX_WEAPONS).any(|s| t.weapons[s].is_some_and(|w| { let w = weapons.get(w); !w.command_fire && can_hit(w) && takes(s, w) }));
+        let fires = |slot: usize, w: &WeaponType| if w.command_fire { (manual || slot == 0 || !has_normal) && can_hit(w) } else { !manual && can_hit(w) && takes(slot, w) };
         let dy = tp.y - (u.model_pos(t).y + t.model.height / 2);
-        let reaches = (0..3).filter_map(|s| t.weapons[s].map(|w| (s, weapons.get(w))));
+        let reaches = (0..MAX_WEAPONS).filter_map(|s| t.weapons[s].map(|w| (s, weapons.get(w))));
         let available = reaches.clone().filter(|&(_, w)| self.weapon_can_fire_from(u, w));
         let submerged_guns = reaches.clone().next().is_some() && available.clone().next().is_none();
         let firing = available.clone().filter(|&(s, w)| fires(s, w)).map(|(_, w)| self.weapon_reach(w, dy)).max().filter(|r| !r.is_zero());

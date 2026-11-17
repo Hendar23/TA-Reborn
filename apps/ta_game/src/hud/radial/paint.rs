@@ -17,10 +17,6 @@ use crate::hud_icons::{self, Glyph};
 use crate::radial::{self, Entry, Id, Tone};
 use crate::theme::*;
 
-/// The colours of metal and energy, as the deck's costs have them.
-const METAL: Color32 = Color32::from_rgb(170, 184, 196);
-const ENERGY: Color32 = Color32::from_rgb(242, 212, 60);
-
 /// Where the ring is and how big, this frame: what every plate is measured from.
 #[derive(Clone, Copy, Debug)]
 pub struct Space {
@@ -130,8 +126,8 @@ impl Skin {
                 lit_outer: [234.0, 192.0, 98.0],
                 glow: [242.0, 200.0, 96.0],
                 edge: Color32::from_rgb(14, 13, 11),
-                edge_lit: AMBER_BRIGHT,
-                ink: CREAM,
+                edge_lit: pal().accent_bright,
+                ink: pal().button_text,
                 ink_lit: Color32::from_rgb(34, 24, 8),
                 dark_ink_lit: true,
             }
@@ -306,14 +302,14 @@ fn content(p: &Painter, sp: &Space, a: f32, (r0, r1): (f32, f32), width: f32, e:
         // A small arrowhead after the word: it opens a ring of its own.
         let tip = pos2(label_at.x + label.size().x + sp.pt(7.5), label_at.y + label.size().y / 2.0);
         let (h, w) = (sp.pt(3.1), sp.pt(4.2));
-        let (fill, edge) = if skin.dark_ink_lit && hot > 0.5 { (Color32::from_rgb(40, 28, 8), Color32::from_white_alpha(70)) } else { (AMBER, Color32::from_black_alpha(170)) };
+        let (fill, edge) = if skin.dark_ink_lit && hot > 0.5 { (Color32::from_rgb(40, 28, 8), Color32::from_white_alpha(70)) } else { (pal().accent, Color32::from_black_alpha(170)) };
         p.add(Shape::convex_polygon(vec![tip, tip + vec2(-w, -h), tip + vec2(-w, h)], fade(fill, alpha), Stroke::new(1.0, fade(edge, alpha))));
     }
     let below = label_at.y + label.size().y + sp.pt(1.0);
     if let Some((metal_cost, energy_cost)) = e.cost {
         cost_chip(p, pos2(at.x, below), (metal_cost, energy_cost), alpha, sp);
     } else if let Some(detail) = &e.detail {
-        p.text(pos2(at.x, below), Align2::CENTER_TOP, detail, strong(sp.text(9.0)), fade(STEEL, alpha));
+        p.text(pos2(at.x, below), Align2::CENTER_TOP, detail, strong(sp.text(9.0)), fade(pal().steel, alpha));
     }
     // How many are queued, or how many choices there are within: a roundel on the picture's corner.
     if e.count > 0 {
@@ -324,7 +320,7 @@ fn content(p: &Painter, sp: &Space, a: f32, (r0, r1): (f32, f32), width: f32, e:
     }
     // On or the setting it has: a lamp on the inner edge.
     if e.lit && !e.disabled {
-        p.add(metal::faded_lamp(polar(centre, a, r0 + sp.pt(7.5)), sp.pt(2.6), GREEN, 1.0, alpha));
+        p.add(metal::faded_lamp(polar(centre, a, r0 + sp.pt(7.5)), sp.pt(2.6), pal().good, 1.0, alpha));
     }
 }
 
@@ -373,7 +369,7 @@ fn stamp(p: &Painter, rect: Rect, glyph: Glyph, ink: Color32, alpha: f32, on_bra
 fn cost_chip(p: &Painter, top: Pos2, (metal_cost, energy_cost): (f32, f32), alpha: f32, sp: &Space) {
     let size = sp.text(9.5);
     let short = |v: f32| if v >= 10_000.0 { format!("{:.0}k", v / 1000.0) } else { format!("{v:.0}") };
-    let (m, en) = (p.layout_no_wrap(short(metal_cost), strong(size), METAL), p.layout_no_wrap(short(energy_cost), strong(size), ENERGY));
+    let (m, en) = (p.layout_no_wrap(short(metal_cost), strong(size), pal().metal_bar), p.layout_no_wrap(short(energy_cost), strong(size), pal().energy_bar));
     let pad = sp.pt(3.5);
     let gap = sp.pt(4.0);
     let w = m.size().x + en.size().x + gap + 2.0 * pad;
@@ -384,8 +380,8 @@ fn cost_chip(p: &Painter, top: Pos2, (metal_cost, energy_cost): (f32, f32), alph
     p.rect_stroke(chip, 3.0, Stroke::new(1.0, Color32::from_black_alpha((210.0 * alpha) as u8)), StrokeKind::Inside);
     let y = chip.center().y;
     let x = chip.min.x + pad;
-    p.galley_with_override_text_color(pos2(x, y - m.size().y / 2.0), m.clone(), fade(METAL, alpha));
-    p.galley_with_override_text_color(pos2(x + m.size().x + gap, y - en.size().y / 2.0), en, fade(ENERGY, alpha));
+    p.galley_with_override_text_color(pos2(x, y - m.size().y / 2.0), m.clone(), fade(pal().metal_bar, alpha));
+    p.galley_with_override_text_color(pos2(x + m.size().x + gap, y - en.size().y / 2.0), en, fade(pal().energy_bar, alpha));
 }
 
 /// A brass roundel with a figure in it (how many are queued): or, for what is not a queue, a steel one.
@@ -396,7 +392,7 @@ fn badge(p: &Painter, c: Pos2, r: f32, text: &str, alpha: f32, brass: bool, sp: 
     p.circle_filled(c, r, fade(body, alpha));
     p.circle_filled(c + vec2(-r * 0.22, -r * 0.28), r * 0.72, fade(shine, 0.55 * alpha));
     p.circle_filled(c + vec2(r * 0.12, r * 0.2), r * 0.62, fade(body, 0.85 * alpha));
-    let ink = if brass { Color32::from_rgb(34, 24, 8) } else { TEXT_BRIGHT };
+    let ink = if brass { Color32::from_rgb(34, 24, 8) } else { pal().text_bright };
     let galley = p.layout_no_wrap(text.to_string(), display(sp.text(if text.len() > 2 { 9.5 } else { 11.0 })), ink);
     let at = c - galley.size() / 2.0 + vec2(0.0, 0.5);
     if brass {
@@ -421,7 +417,7 @@ pub fn key_cap(p: &Painter, sp: &Space, at: Pos2, key: &str, hot: f32, alpha: f3
     p.rect_filled(cap.translate(vec2(0.0, 1.0)), 3.0, Color32::from_white_alpha((18.0 * alpha) as u8));
     let fill = Color32::from_black_alpha(196).lerp_to_gamma(Color32::from_rgb(78, 58, 20), hot);
     p.rect_filled(cap, 3.0, fade(fill, alpha));
-    p.rect_stroke(cap, 3.0, Stroke::new(1.0, fade(metal::STEEL_SHADE.lerp_to_gamma(AMBER_BRIGHT, hot), alpha)), StrokeKind::Inside);
+    p.rect_stroke(cap, 3.0, Stroke::new(1.0, fade(metal::STEEL_SHADE.lerp_to_gamma(pal().accent_bright, hot), alpha)), StrokeKind::Inside);
     p.hline(cap.shrink2(vec2(3.0, 0.0)).x_range(), cap.min.y + 1.5, Stroke::new(1.0, Color32::from_white_alpha((20.0 * alpha) as u8)));
     p.galley_with_override_text_color(cap.center() - galley.size() / 2.0, galley, fade(ink, alpha));
 }
@@ -577,7 +573,7 @@ pub fn hub_face(p: &Painter, sp: &Space, h: &Hub, face_alpha: f32) {
     if let Some(health) = h.health.filter(|_| h.back.is_none()) {
         let (ri, ro) = (r - 6.5 * s, r - 3.2 * s);
         p.add(Shape::mesh(shape::ring(c, (ri, ro), (0.0, std::f32::consts::TAU), 2, |_, w| Color32::from_black_alpha((150.0 * (1.0 - 0.4 * w.abs()) * a) as u8))));
-        let colour = if health > 0.6 { GREEN } else if health > 0.3 { AMBER } else { RED };
+        let colour = if health > 0.6 { pal().good } else if health > 0.3 { pal().accent } else { pal().bad };
         if health > 0.004 {
             p.add(Shape::mesh(shape::ring(c, (ri + 0.4, ro - 0.4), (0.0, std::f32::consts::TAU * health), 3, |_, w| {
                 let lift = 1.0 - 0.55 * w.abs();
@@ -598,12 +594,12 @@ pub fn hub_face(p: &Painter, sp: &Space, h: &Hub, face_alpha: f32) {
             let (inner, outer) = if lit { (Color32::from_rgb(180, 136, 52), Color32::from_rgb(240, 204, 118)) } else { (Color32::from_rgb(58, 57, 52), Color32::from_rgb(98, 96, 88)) };
             p.add(Shape::mesh(shape::ring(dial, (di, dr), (lo, hi), 1, |_, w| if w < 0.0 { inner.gamma_multiply(a) } else { outer.gamma_multiply(a) })));
         }
-        stamp(p, Rect::from_center_size(dial, EVec2::splat(13.0 * s)), Glyph::Back, fade(CREAM, a.min(1.0)), a, false);
-        let name = hud_icons::lettering(p, ring, sp.text(9.5), r * 1.5, fade(CREAM, a));
+        stamp(p, Rect::from_center_size(dial, EVec2::splat(13.0 * s)), Glyph::Back, fade(pal().button_text, a.min(1.0)), a, false);
+        let name = hud_icons::lettering(p, ring, sp.text(9.5), r * 1.5, fade(pal().button_text, a));
         let at = pos2(c.x - name.size().x / 2.0, c.y + 14.0 * s);
-        outlined(p, at.round(), name, fade(CREAM, a), a, true);
-        let caption = p.layout_no_wrap(ta_ui::i18n::t("BACK").to_string(), strong(sp.text(8.0)), fade(STEEL, a));
-        p.galley(pos2(c.x - caption.size().x / 2.0, c.y + 26.0 * s), caption, fade(STEEL, a));
+        outlined(p, at.round(), name, fade(pal().button_text, a), a, true);
+        let caption = p.layout_no_wrap(ta_ui::i18n::t("BACK").to_string(), strong(sp.text(8.0)), fade(pal().steel, a));
+        p.galley(pos2(c.x - caption.size().x / 2.0, c.y + 26.0 * s), caption, fade(pal().steel, a));
     } else {
         if let Some(pic) = h.picture {
             let size = 36.0 * s;
@@ -613,9 +609,9 @@ pub fn hub_face(p: &Painter, sp: &Space, h: &Hub, face_alpha: f32) {
         }
         if !h.name.is_empty() {
             let chord = 2.0 * (r * r - (24.0 * s).powi(2)).max(1.0).sqrt() - 4.0;
-            let name = fitted_name(p, h.name, sp.text(9.5), chord.max(30.0), fade(CREAM, a));
+            let name = fitted_name(p, h.name, sp.text(9.5), chord.max(30.0), fade(pal().button_text, a));
             let at = pos2(c.x - name.size().x / 2.0, c.y + 14.0 * s);
-            outlined(p, at.round(), name, fade(CREAM, a), a, true);
+            outlined(p, at.round(), name, fade(pal().button_text, a), a, true);
         }
     }
     // The pages of a ring too long for one: a dot to each, the one it is on lit.
@@ -633,7 +629,7 @@ pub fn hub_face(p: &Painter, sp: &Space, h: &Hub, face_alpha: f32) {
                 }
                 _ => now,
             };
-            p.add(metal::faded_lamp(pos2(x0 + spacing * k as f32, y), 1.6 * s, AMBER, lit, a));
+            p.add(metal::faded_lamp(pos2(x0 + spacing * k as f32, y), 1.6 * s, pal().accent, lit, a));
         }
     }
 }
@@ -669,7 +665,7 @@ pub fn plate(p: &Painter, sp: &Space, cur: &str, prev: &str, mix: f32, wrap: f32
     let (k_cur, k_prev) = (((m - 0.3) / 0.7).clamp(0.0, 1.0), (1.0 - m * 2.2).clamp(0.0, 1.0));
     let grown = (m * 1.7).min(1.0);
     let grown = grown * grown * (3.0 - 2.0 * grown);
-    let layout = |text: &str, k: f32| (!text.is_empty()).then(|| p.layout(text.to_string(), body(sp.text(12.5)), fade(TEXT_BRIGHT, sp.alpha * k), wrap));
+    let layout = |text: &str, k: f32| (!text.is_empty()).then(|| p.layout(text.to_string(), body(sp.text(12.5)), fade(pal().text_bright, sp.alpha * k), wrap));
     let (g_cur, g_prev) = (layout(cur, k_cur), layout(prev, k_prev));
     let size = match (&g_cur, &g_prev) {
         (Some(c), Some(o)) => vec2(o.size().x + (c.size().x - o.size().x) * grown, o.size().y + (c.size().y - o.size().y) * grown),
@@ -693,10 +689,10 @@ pub fn plate(p: &Painter, sp: &Space, cur: &str, prev: &str, mix: f32, wrap: f32
     p.add(metal::vgrad(strip, fade(Color32::from_rgb(232, 196, 108), a), fade(Color32::from_rgb(150, 114, 45), a)));
     let words = p.with_clip_rect(rect.shrink(1.0).intersect(p.clip_rect()));
     if let Some(g) = g_prev {
-        words.galley(pos2(sp.centre.x - g.size().x / 2.0, top - sp.pt(slide) * e), g, fade(TEXT_BRIGHT, sp.alpha * k_prev));
+        words.galley(pos2(sp.centre.x - g.size().x / 2.0, top - sp.pt(slide) * e), g, fade(pal().text_bright, sp.alpha * k_prev));
     }
     if let Some(g) = g_cur {
-        words.galley(pos2(sp.centre.x - g.size().x / 2.0, top + sp.pt(slide) * (1.0 - e)), g, fade(TEXT_BRIGHT, sp.alpha * k_cur));
+        words.galley(pos2(sp.centre.x - g.size().x / 2.0, top + sp.pt(slide) * (1.0 - e)), g, fade(pal().text_bright, sp.alpha * k_cur));
     }
 }
 

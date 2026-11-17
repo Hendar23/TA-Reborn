@@ -45,7 +45,8 @@ impl MusicControl {
         let response = ui.interact(note, id.with("note"), if available { Sense::click() } else { Sense::hover() });
         let opener = ui.interact(arrow, id.with("arrow"), Sense::click());
         let ctx = ui.ctx().clone();
-        let hot = ctx.animate_bool_with_time(id.with("hot"), (available && response.hovered()) || opener.hovered() || self.open, 0.12);
+        // (Reached with the keys, it warms as under the pointer: a ring says which part.)
+        let hot = ctx.animate_bool_with_time(id.with("hot"), (available && (response.hovered() || response.has_focus())) || opener.hovered() || opener.has_focus() || self.open, 0.12);
         let down = (available && response.is_pointer_button_down_on()) || opener.is_pointer_button_down_on();
         let painter = ui.painter();
         painter.add(metal::slab(&ctx, rect, Slab::Slot, hot, down));
@@ -80,8 +81,9 @@ impl MusicControl {
             let top = foot - (size * level).max(2.0);
             painter.rect_filled(Rect::from_min_max(pos2(x, top), pos2(x + bar, foot)), CornerRadius::same(1), if sounding { AMBER } else { STEEL_DIM.gamma_multiply(0.6) });
         }
-        if time > 0.0 {
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(66));
+        // (The bars dance while they are in sight, and the idle animations may move.)
+        if time > 0.0 && ui.is_rect_visible(rect) {
+            ta_ui::motion::next_frame(&ctx, std::time::Duration::from_millis(66));
         }
         let tip = if !available {
             t("No music in your install").to_string()
@@ -95,20 +97,25 @@ impl MusicControl {
         };
         let response = response.on_hover_text(tip);
         response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, available, on, t("LAUNCHER MUSIC")));
+        widgets::focus_ring(ui, &response, note.shrink(2.0));
         if response.clicked() {
             ta_ui::sound::play(ui.ctx(), ta_ui::sound::UiSound::Toggle);
             action = Some(MusicAction::Toggle);
         }
-        // The arrow: the panel.
+        // The arrow: the panel (a screen reader told it opens one, and whether it is open).
         let painter = ui.painter();
         let c = arrow.center() + vec2(0.0, if down && opener.is_pointer_button_down_on() { 2.0 } else { 1.0 });
         let points = if self.open { vec![c + vec2(-4.0, 2.0), c + vec2(4.0, 2.0), c + vec2(0.0, -3.0)] } else { vec![c + vec2(-4.0, -2.0), c + vec2(4.0, -2.0), c + vec2(0.0, 3.0)] };
-        painter.add(Shape::convex_polygon(points, if self.open || opener.hovered() { AMBER_BRIGHT } else { STEEL }, Stroke::NONE));
+        painter.add(Shape::convex_polygon(points, if self.open || opener.hovered() || opener.has_focus() { AMBER_BRIGHT } else { STEEL }, Stroke::NONE));
+        opener.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, t("MUSIC OPTIONS")));
+        widgets::focus_ring(ui, &opener, arrow.shrink(2.0));
         let opener = opener.on_hover_text(t("The music: what plays, its volume, the next track"));
         if opener.clicked() {
             self.open = !self.open;
             ta_ui::sound::play(ui.ctx(), ta_ui::sound::UiSound::Toggle);
         }
+        let open = self.open;
+        let _ = ctx.accesskit_node_builder(opener.id, |node| node.set_expanded(open));
         if self.open {
             action = self.panel(ui, rect, opener.rect, on, playing, volume, available).or(action);
         }
@@ -224,6 +231,58 @@ fn paint_note(painter: &egui::Painter, rect: Rect, colour: Color32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both parts of the control are reached with the keys, each ringed as it has the focus, and
+    /// named for a screen reader: the switch, on or off, and the arrow that opens the panel, and
+    /// whether it is open (Enter opens it).
+    #[test]
+    fn the_music_control_is_reached_with_the_keys_and_named() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        ctx.enable_accesskit();
+        let rect = Rect::from_min_size(pos2(300.0, 20.0), vec2(84.0, 40.0));
+        let arrow = Rect::from_min_max(pos2(rect.max.x - ARROW, rect.min.y), rect.max);
+        let mut control = MusicControl::default();
+        let run = |control: &mut MusicControl, key: Option<egui::Key>| {
+            let events = key.into_iter().map(|key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }).collect();
+            let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))), events, ..Default::default() };
+            let mut ids = (Id::NULL, Id::NULL);
+            let mut volume = 0.45;
+            let mut output = ctx.run_ui(raw, |ui| {
+                let id = ui.id().with("launcher_music");
+                ids = (id.with("note"), id.with("arrow"));
+                control.show(ui, rect, true, Some("music/14.mp3"), &mut volume, true);
+            });
+            output.textures_delta.clear();
+            (output, ids)
+        };
+        // Where the brass focus ring is drawn (its rectangle), if it is.
+        fn ring(shape: &Shape) -> Option<Rect> {
+            match shape {
+                Shape::Vec(shapes) => shapes.iter().find_map(ring),
+                Shape::Rect(r) if r.stroke.color == AMBER_BRIGHT && r.stroke.width == 2.0 => Some(r.rect),
+                _ => None,
+            }
+        }
+        let node = |output: &egui::FullOutput, id: Id| output.platform_output.accesskit_update.as_ref().and_then(|tree| tree.nodes.iter().find(|(n, _)| *n == id.accesskit_id()).map(|(_, node)| node.clone()));
+        let (output, (note_id, arrow_id)) = run(&mut control, None);
+        assert!(output.shapes.iter().all(|s| ring(&s.shape).is_none()), "no ring without the focus");
+        let switch = node(&output, note_id).expect("the switch is told");
+        assert_eq!((switch.role(), switch.label()), (egui::accesskit::Role::CheckBox, Some("LAUNCHER MUSIC")));
+        let opener = node(&output, arrow_id).expect("the arrow is told");
+        assert_eq!((opener.role(), opener.label(), opener.is_expanded()), (egui::accesskit::Role::Button, Some("MUSIC OPTIONS"), Some(false)));
+        for (id, part) in [(note_id, Rect::from_min_max(rect.min, pos2(arrow.min.x, rect.max.y))), (arrow_id, arrow)] {
+            ctx.memory_mut(|m| m.request_focus(id));
+            let (output, _) = run(&mut control, None);
+            let at = output.shapes.iter().find_map(|s| ring(&s.shape)).expect("a ring round the part with the focus");
+            assert!(part.x_range().contains(at.center().x), "{at:?} round {part:?}");
+        }
+        // Enter on the arrow (it has the focus): the panel opens, and says so.
+        run(&mut control, Some(egui::Key::Enter));
+        let (output, _) = run(&mut control, None);
+        assert!(control.open);
+        assert_eq!(node(&output, arrow_id).and_then(|n| n.is_expanded()), Some(true));
+    }
 
     #[test]
     fn tracks_are_named_for_the_player() {

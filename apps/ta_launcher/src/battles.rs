@@ -41,19 +41,31 @@ pub struct Battles {
     picture: Option<Receiver<Option<(PathBuf, egui::ColorImage)>>>,
     /// The newest picture, and its texture.
     pub backdrop: Option<(PathBuf, egui::TextureHandle)>,
+    /// The folders being looked at again ([`Battles::refresh`]).
+    refreshing: Option<Receiver<Refreshed>>,
+}
+
+/// What looking at the folders again found: the recent saves and replays (the newest, and those
+/// before it), and the newest picture when it is not the one shown (`Some(None)`: none now).
+struct Refreshed {
+    saves: (Option<Record>, Vec<Record>),
+    replays: (Option<Record>, Vec<Record>),
+    picture: Option<Option<(PathBuf, egui::ColorImage)>>,
 }
 
 /// The picture's longest side once loaded (it fills a banner a window wide).
 const PICTURE_SIDE: u32 = 1920;
 /// Include the latest record and five alternatives without turning Play into a library.
 const RECENT_RECORDS: usize = 6;
+/// The pictures the banner may show, by their files' extensions.
+const PICTURES: [&str; 3] = ["png", "jpg", "jpeg"];
 
 impl Battles {
     /// Looks in the settings folder's `saves` and `replays` and in `pictures` (the newest
     /// picture is loaded in the background: [`Battles::poll`]).
     pub fn scan(settings_dir: &Path, pictures: PathBuf) -> Battles {
         let (saves_dir, replays_dir) = (settings_dir.join("saves"), settings_dir.join("replays"));
-        let pictures_newest_first = newest_first(&pictures, &["png", "jpg", "jpeg"]);
+        let pictures_newest_first = newest_first(&pictures, &PICTURES);
         let picture = (!pictures_newest_first.is_empty()).then(|| {
             let (tx, rx) = channel();
             let _ = std::thread::Builder::new().name("launcher picture".into()).spawn(move || {
@@ -74,12 +86,40 @@ impl Battles {
             pictures_dir: pictures,
             picture,
             backdrop: None,
+            refreshing: None,
         }
     }
 
-    /// Takes in the picture once it has loaded; true when it did.
+    /// Looks in the folders again, on a thread of its own (F5 and RESCAN, the window back in
+    /// front: battles saved, deleted or copied in meanwhile); what it finds takes the place of
+    /// what is shown once [`Battles::poll`] takes it in.
+    pub fn refresh(&mut self) {
+        let (saves, replays, pictures) = (self.saves_dir.clone(), self.replays_dir.clone(), self.pictures_dir.clone());
+        // (Not the pictures while the first is still being read: it comes as it was going to.)
+        let pictures = self.picture.is_none().then_some(pictures);
+        let shown = self.backdrop.as_ref().map(|(path, _)| path.clone());
+        let (tx, rx) = channel();
+        let spawned = std::thread::Builder::new().name("launcher battles".into()).spawn(move || {
+            let _ = tx.send(Refreshed {
+                saves: recent_records(&saves, "tasav"),
+                replays: recent_records(&replays, "tarep"),
+                picture: pictures.and_then(|dir| newest_picture(newest_first(&dir, &PICTURES), shown.as_deref())),
+            });
+        });
+        match spawned {
+            Ok(_) => self.refreshing = Some(rx),
+            Err(e) => log::warn!("could not look at the battles again: {e}"),
+        }
+    }
+
+    /// Takes in what was looked at again and the picture once they are read; true when it did.
+    /// The window coming back to the front looks at the folders again ([`Battles::refresh`]).
     pub fn poll(&mut self, ctx: &egui::Context) -> bool {
-        let Some(rx) = &self.picture else { return false };
+        if ctx.input(|i| i.raw.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(true)))) {
+            self.refresh();
+        }
+        let refreshed = self.take_refresh(ctx);
+        let Some(rx) = &self.picture else { return refreshed };
         match rx.try_recv() {
             Ok(picture) => {
                 self.picture = None;
@@ -92,10 +132,35 @@ impl Battles {
                 // Reduced motion can leave this window fully idle while a large photo
                 // decodes. Keep a bounded wakeup until its result can be displayed.
                 ctx.request_repaint_after(std::time::Duration::from_millis(120));
-                false
+                refreshed
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.picture = None;
+                refreshed
+            }
+        }
+    }
+
+    /// What [`Battles::refresh`] found, taken in once it is there; true when it was.
+    fn take_refresh(&mut self, ctx: &egui::Context) -> bool {
+        let Some(rx) = &self.refreshing else { return false };
+        match rx.try_recv() {
+            Ok(found) => {
+                self.refreshing = None;
+                (self.save, self.older_saves) = found.saves;
+                (self.replay, self.older_replays) = found.replays;
+                if let Some(picture) = found.picture {
+                    self.backdrop = picture.map(|(path, image)| (path, ctx.load_texture("launcher-backdrop", image, egui::TextureOptions::LINEAR)));
+                }
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                // (Idle, nothing else asks for a frame: one comes to take it in.)
+                ctx.request_repaint_after(std::time::Duration::from_millis(120));
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.refreshing = None;
                 false
             }
         }
@@ -105,6 +170,20 @@ impl Battles {
     pub fn loading(&self) -> bool {
         self.picture.is_some()
     }
+}
+
+/// Of the pictures `newest_first`, the newest that reads, unless it is the one `shown` (`None`:
+/// it stays); `Some(None)` when none reads, the one shown gone too.
+fn newest_picture(newest_first: Vec<PathBuf>, shown: Option<&Path>) -> Option<Option<(PathBuf, egui::ColorImage)>> {
+    for path in newest_first {
+        if Some(path.as_path()) == shown {
+            return None;
+        }
+        if let Some(image) = load_picture(&path) {
+            return Some(Some((path, image)));
+        }
+    }
+    Some(None)
 }
 
 /// Newest files first, with a stable path tie-break when timestamps match.
@@ -502,6 +581,58 @@ mod tests {
         let battles = Battles::scan(&dir, dir.join("pictures"));
         assert_eq!(battles.save.unwrap().title, "My battle");
         assert_eq!(battles.replay.unwrap().title, "My battle");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Looked at again (F5, RESCAN, the window back in front), the folders give what is in them
+    /// now, on a thread, taken in by `poll`: a save deleted meanwhile goes, a replay and a photo
+    /// put there come, a photo deleted goes. Nothing is looked at while the window is away.
+    #[test]
+    fn the_battles_are_looked_at_again_when_asked_and_when_the_window_comes_back() {
+        let dir = temp_dir("refresh");
+        let (saves, replays, pictures) = (dir.join("saves"), dir.join("replays"), dir.join("pictures"));
+        for folder in [&saves, &replays, &pictures] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        let write = |path: &Path, title: &str, at: u64| {
+            std::fs::write(path, record(ta_config::RECORD_VERSION, path.extension().is_some_and(|e| e == "tarep"), &[2; 100], 1800, at, title)).unwrap();
+            std::fs::File::options().write(true).open(path).unwrap().set_modified(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(at)).unwrap();
+        };
+        write(&saves.join("older.tasav"), "Older battle", 1_761_000_000);
+        write(&saves.join("newer.tasav"), "Newer battle", 1_761_000_100);
+        let mut battles = Battles::scan(&dir, pictures.clone());
+        let title = |record: &Option<Record>| record.as_ref().map(|r| r.title.clone());
+        assert_eq!(title(&battles.save), Some("Newer battle".into()));
+        let ctx = egui::Context::default();
+        let settle = |battles: &mut Battles, events: Vec<egui::Event>| {
+            let mut events = Some(events);
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                let raw = egui::RawInput { events: events.take().unwrap_or_default(), ..Default::default() };
+                let mut output = ctx.run_ui(raw, |ui| { battles.poll(ui.ctx()); });
+                output.textures_delta.clear();
+                if battles.refreshing.is_none() || std::time::Instant::now() > until {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        std::fs::remove_file(saves.join("newer.tasav")).unwrap();
+        settle(&mut battles, vec![egui::Event::WindowFocused(false)]);
+        assert_eq!(title(&battles.save), Some("Newer battle".into()), "not looked at while the window is away");
+        settle(&mut battles, vec![egui::Event::WindowFocused(true)]);
+        assert_eq!(title(&battles.save), Some("Older battle".into()), "back in front: the deleted save is gone");
+        assert!(battles.older_saves.is_empty());
+        write(&replays.join("watch.tarep"), "A replay", 1_761_000_200);
+        image::RgbaImage::from_pixel(8, 4, image::Rgba([10, 20, 30, 255])).save(pictures.join("photo.png")).unwrap();
+        battles.refresh();
+        settle(&mut battles, Vec::new());
+        assert_eq!(title(&battles.replay), Some("A replay".into()));
+        assert_eq!(battles.backdrop.as_ref().map(|(path, _)| path.clone()), Some(pictures.join("photo.png")));
+        std::fs::remove_file(pictures.join("photo.png")).unwrap();
+        battles.refresh();
+        settle(&mut battles, Vec::new());
+        assert!(battles.backdrop.is_none(), "a photo deleted leaves the banner");
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -1,5 +1,6 @@
-//! ZSoft PCX decoder (8-bit indexed with trailing 256-colour palette, or 24-bit planar).
-//! TA uses PCX for build pictures (`unitpics/*.pcx`), menu backgrounds and map previews.
+//! ZSoft PCX decoder (8-bit indexed with trailing 256-colour palette, or 24-bit planar), and a
+//! writer of the 24-bit kind ([`write_rgb`]: the build pictures TA Reborn makes of other games'
+//! units). TA uses PCX for build pictures (`unitpics/*.pcx`), menu backgrounds and map previews.
 
 use crate::bin::{u16_at, u8_at};
 use crate::image::{IndexedImage, Palette};
@@ -104,9 +105,65 @@ impl PcxImage {
     }
 }
 
+/// A 24-bit PCX of `width` by `height` pixels from `rgb` (three bytes a pixel, row by row): each
+/// row's red, green and blue planes in turn, run-length coded a plane's row at a time.
+pub fn write_rgb(width: u32, height: u32, rgb: &[u8]) -> Vec<u8> {
+    let (w, h) = (width as usize, height as usize);
+    // (A row's plane an even number of bytes, as the format asks.)
+    let line = w.next_multiple_of(2);
+    let mut out = vec![0u8; 128];
+    out[0] = 0x0A;
+    out[1] = 5;
+    out[2] = 1;
+    out[3] = 8;
+    out[8..10].copy_from_slice(&(width.saturating_sub(1) as u16).to_le_bytes());
+    out[10..12].copy_from_slice(&(height.saturating_sub(1) as u16).to_le_bytes());
+    out[12..14].copy_from_slice(&72u16.to_le_bytes());
+    out[14..16].copy_from_slice(&72u16.to_le_bytes());
+    out[65] = 3;
+    out[66..68].copy_from_slice(&(line as u16).to_le_bytes());
+    out[68..70].copy_from_slice(&1u16.to_le_bytes());
+    let mut row = vec![0u8; line];
+    for y in 0..h {
+        for c in 0..3 {
+            for x in 0..w {
+                row[x] = rgb[(y * w + x) * 3 + c];
+            }
+            let mut x = 0;
+            while x < line {
+                let value = row[x];
+                let mut run = 1;
+                while x + run < line && run < 63 && row[x + run] == value {
+                    run += 1;
+                }
+                if run > 1 || value >= 0xC0 {
+                    out.push(0xC0 | run as u8);
+                }
+                out.push(value);
+                x += run;
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A picture written as a 24-bit PCX reads back the same, runs and bytes of 0xC0 and over
+    /// among its pixels, an odd width padded.
+    #[test]
+    fn a_written_picture_reads_back() {
+        let (w, h) = (5u32, 3u32);
+        let rgb: Vec<u8> = (0..w * h * 3).map(|i| if i % 7 == 0 { 0xC5 } else if i < 20 { 9 } else { (i * 13 % 256) as u8 }).collect();
+        let back = PcxImage::parse(&write_rgb(w, h, &rgb)).unwrap();
+        assert_eq!((back.width, back.height), (w, h));
+        let rgba = back.to_rgba();
+        for i in 0..(w * h) as usize {
+            assert_eq!(&rgba[i * 4..i * 4 + 3], &rgb[i * 3..i * 3 + 3], "pixel {i}");
+        }
+    }
 
     fn image(planes: u8, stride: u16) -> Vec<u8> {
         let mut data = vec![0; 128];

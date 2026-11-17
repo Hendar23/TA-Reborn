@@ -252,7 +252,7 @@ impl LauncherApp {
         let installed = self.detection.install().is_some();
         let running = self.game_running();
         let mut watch = false;
-        section_heading(ui, "CREDITS", |ui| {
+        section_heading(ui, n("CREDITS"), |ui| {
             if installed {
                 let button = ui.add_enabled(!running, ActionButton::secondary("WATCH THE CREDITS").height(28.0));
                 let button = if running {
@@ -353,7 +353,7 @@ impl LauncherApp {
     /// Reborn's own (GPL-3.0-or-later; the licence and the third-party notices the package ships,
     /// when they are there), Total Annihilation's owners', and that no asset of the game is in it.
     fn licences(&mut self, ui: &mut Ui) {
-        section_heading(ui, "LEGAL", |_| {});
+        section_heading(ui, n("LEGAL"), |_| {});
         let (licence, notices) = legal_files(&launch::app_dir().unwrap_or_default());
         let statements = [
             (Mark::Licence, n("FREE SOFTWARE"), n("TA Reborn is free software under the GNU General Public License, version 3 or any later version: you may share and change it on its terms. It comes with no warranty. The open-source libraries it is built with keep their own licences, listed in THIRD-PARTY-NOTICES.txt.")),
@@ -560,7 +560,7 @@ fn stamp(ui: &mut Ui, text: &str, colour: Color32) {
 /// The project in three facts, side by side (one over another in a narrow window): written anew,
 /// what modern hardware allows, and the player's own copy, as it was.
 fn project_facts(ui: &mut Ui) {
-    section_heading(ui, "THE PROJECT", |_| {});
+    section_heading(ui, n("THE PROJECT"), |_| {});
     let facts = [
         (Mark::Nib, n("WRITTEN ANEW"), n("A clean-room reimplementation of the Total Annihilation engine, written from scratch in Rust, that keeps the 1997 classic's rules and content.")),
         (Mark::Chip, n("BUILT FOR TODAY"), n("High resolutions, a free perspective camera, dynamic lighting, larger armies and first-class mod support.")),
@@ -791,6 +791,19 @@ mod tests {
         }
         drop(app);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The parts' headings are translated: `section_heading` is not among the calls the language
+    /// template's extractor reads (`ta-tools i18n`), so each title is marked with `n`.
+    #[test]
+    fn every_parts_heading_is_marked_for_translation() {
+        let call = ["section_heading", "(ui, "].concat();
+        let source = include_str!("about.rs");
+        let titles: Vec<&str> = source.split(call.as_str()).skip(1).map(|rest| rest.split(',').next().unwrap_or_default()).collect();
+        assert!(titles.len() >= 3, "{titles:?}");
+        for title in titles {
+            assert!(title.starts_with("n(\""), "a heading the template would miss: {title}");
+        }
     }
 
     /// The system report says what a bug report needs: the version, the game's data, the

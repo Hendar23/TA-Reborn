@@ -34,6 +34,8 @@ struct Member {
 pub struct Scd {
     path: PathBuf,
     file: File,
+    /// The archive's length: nothing is read, or made room for, past it.
+    len: u64,
     /// Members by their normalised path ([`normalise`]).
     members: BTreeMap<String, Member>,
 }
@@ -89,7 +91,7 @@ impl Scd {
             }
             members.entry(normalise(&name)).or_insert(Member { method, crc, packed, size, local });
         }
-        Ok(Scd { path: path.to_path_buf(), file, members })
+        Ok(Scd { path: path.to_path_buf(), file, len, members })
     }
 
     pub fn path(&self) -> &Path {
@@ -114,16 +116,26 @@ impl Scd {
         if m.size > MAX_MEMBER || m.packed > MAX_MEMBER {
             return Err(bad("too large"));
         }
+        // (What the directory claims is checked against the archive before any room is made for
+        // it: a damaged or made-up entry claims what it likes.)
+        if m.local.checked_add(30).is_none_or(|end| end > self.len) {
+            return Err(bad("damaged member"));
+        }
         let head = read_at(&self.file, m.local, 30).map_err(|e| Error::io(&self.path, e))?;
         if u32_le(&head, 0) != LOCAL {
             return Err(bad("damaged member"));
         }
         let data_at = m.local + 30 + u16_le(&head, 26) as u64 + u16_le(&head, 28) as u64;
+        if data_at.checked_add(m.packed).is_none_or(|end| end > self.len) || (m.method == 0 && m.packed != m.size) {
+            return Err(bad("damaged member"));
+        }
         let packed = read_at(&self.file, data_at, m.packed as usize).map_err(|e| Error::io(&self.path, e))?;
         let bytes = match m.method {
             0 => packed,
             8 => {
-                let mut out = Vec::with_capacity(m.size as usize);
+                // (Deflate packs at most about a thousand to one: room made for what the packed
+                // bytes can hold, grown if a real member holds more.)
+                let mut out = Vec::with_capacity(m.size.min(m.packed.saturating_mul(1032)) as usize);
                 flate2::read::DeflateDecoder::new(&packed[..]).take(m.size + 1).read_to_end(&mut out).map_err(|_| bad("damaged deflate stream"))?;
                 out
             }
@@ -242,5 +254,27 @@ pub(crate) mod tests {
         // Not an archive at all.
         std::fs::write(&path, b"not a zip").unwrap();
         assert!(Scd::open(&path).is_err());
+    }
+
+    /// A directory entry claiming more than its archive holds is refused before room is made for
+    /// what it claims.
+    #[test]
+    fn a_member_claiming_more_than_the_archive_holds_is_refused() {
+        let dir = crate::tests::Temp::new("scd-claims");
+        let path = dir.0.join("x.scd");
+        let mut bytes = zip(&[("a.bp", b"PropBlueprint {}", false), ("b.bp", b"PropBlueprint {}", true)]);
+        // The central directory's entries: their packed and unpacked sizes made 200 MB.
+        let dir_at = u32_le(&bytes, bytes.len() - 22 + 16) as usize;
+        let mut o = dir_at;
+        while o + 46 <= bytes.len() && u32_le(&bytes, o) == CENTRAL {
+            let name_len = u16_le(&bytes, o + 28) as usize;
+            bytes[o + 20..o + 24].copy_from_slice(&(200u32 << 20).to_le_bytes());
+            bytes[o + 24..o + 28].copy_from_slice(&(200u32 << 20).to_le_bytes());
+            o += 46 + name_len;
+        }
+        std::fs::write(&path, bytes).unwrap();
+        let scd = Scd::open(&path).unwrap();
+        assert!(scd.read("a.bp").is_err());
+        assert!(scd.read("b.bp").is_err());
     }
 }

@@ -152,6 +152,61 @@ fn nuclear_targeting_accounts_for_visible_mobile_missile_defence() {
     assert_eq!(out.len(), 1, "unseen mobile defences must not become omniscient AI intelligence");
 }
 
+/// Cover counts by class: an anti-nuke (class 1) is no cover against a tactical launcher's
+/// missiles (class 2), and is no anti-nuke to the computer players against them; a tactical
+/// defence (class 2, firing at its reload, no stock) stops every missile of a salvo in turn, so
+/// what it covers is left alone. A tactical missile goes on nothing worth less than it costs.
+#[test]
+fn missile_cover_counts_by_class() {
+    let setup = |anti_class: u32, stocked: bool, extractor_metal: f64| {
+        let mut sim = fixture_edit(|data| {
+            let factory = data.unit_id("FACTORY").unwrap();
+            data.units[factory].build_options.clear();
+            data.units[factory].weapons[0] = Some("GUN".into());
+            let gun = data.weapon_id("GUN").unwrap();
+            let w = &mut data.weapons[gun];
+            w.stockpile = true; w.command_fire = true; w.targetable = true; w.targetable_mask = 2;
+            w.range = 400.0; w.area_of_effect = 128.0; w.metal_per_shot = 180.0; w.energy_per_shot = 3600.0;
+            let tank = data.unit_id("TANK").unwrap();
+            data.units[tank].weapons[0] = Some("BOMB".into());
+            let anti = data.weapon_id("BOMB").unwrap();
+            let w = &mut data.weapons[anti];
+            w.dropped = false; w.command_fire = false; w.interceptor = true; w.interceptor_mask = anti_class; w.stockpile = stocked;
+            w.coverage = 200.0; w.range = 32000.0;
+            let extractor = data.unit_id("EXTRACTOR").unwrap();
+            data.units[extractor].build_cost_metal = extractor_metal;
+        });
+        sim.los_enabled = false;
+        let silo = sim.spawn_unit(sim.types.id("FACTORY").unwrap(), 0, FxVec3::from_ints(100, 60, 500), 0, true).unwrap();
+        sim.spawn_unit(sim.types.id("EXTRACTOR").unwrap(), 1, FxVec3::from_ints(350, 60, 500), 0, true).unwrap();
+        sim.spawn_unit(sim.types.id("TANK").unwrap(), 1, FxVec3::from_ints(360, 60, 500), 0, true).unwrap();
+        sim.grant_stockpile(silo, 1);
+        let mut ai = SkirmishAi::new(0, &sim, Difficulty::Hard);
+        ai.remember(&sim, &ai.survey(&sim));
+        let mut out = Vec::new();
+        ai.run_silos(&sim, &ai.survey(&sim), &mut out);
+        out.len()
+    };
+    assert_eq!(setup(1, true, 500.0), 1, "an anti-nuke is no cover against tactical missiles");
+    assert_eq!(setup(2, true, 500.0), 0, "a stocked tactical defence counts as cover");
+    assert_eq!(setup(2, false, 500.0), 0, "an unstocked one stops each missile in turn: left alone");
+    assert_eq!(setup(1, true, 50.0), 0, "nothing worth less than the missile");
+    // A building taking strategic missiles is an anti-nuke to the computer players; one taking
+    // tactical missiles alone is not.
+    for (class, anti_nuke) in [(1, true), (2, false), (3, true)] {
+        let sim = fixture_edit(|data| {
+            let factory = data.unit_id("FACTORY").unwrap();
+            data.units[factory].build_options.clear();
+            data.units[factory].weapons[0] = Some("BOMB".into());
+            let bomb = data.weapon_id("BOMB").unwrap();
+            let w = &mut data.weapons[bomb];
+            w.dropped = false; w.command_fire = false; w.interceptor = true; w.interceptor_mask = class; w.coverage = 200.0;
+        });
+        let ai = SkirmishAi::new(0, &sim, Difficulty::Hard);
+        assert_eq!(ai.info[sim.types.id("FACTORY").unwrap()].role == Role::AntiNuke, anti_nuke, "interceptor class {class}");
+    }
+}
+
 #[test]
 fn defeating_a_land_enemy_replans_for_the_remaining_island_enemy() {
     let base = fixture_players(3, |_| {});
@@ -266,6 +321,101 @@ fn resource_producing_factories_still_build_armies() {
     ai.run_factories(&sim, &ai.survey(&sim), &mut commands);
     assert!(commands.iter().any(|command| matches!(command, Command::Produce { factory: id, type_id, count, .. }
         if *id == factory && *type_id == sim.types.id("TANK").unwrap() && *count > 0)), "income must not disable factory production");
+}
+
+/// Three tiers of factories and constructors, as the Supreme Commander factions have: each
+/// constructor builds the factories up to the tier past its own (and extractors and power), each
+/// factory turns out the constructors of its tier. `tiers` 2 leaves the third out (as TA's).
+fn tier_fixture(tiers: u8) -> Sim {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let dir = std::env::temp_dir().join(format!("ta-ai-tiers-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    std::fs::create_dir_all(dir.join("units")).unwrap();
+    std::fs::create_dir_all(dir.join("weapons")).unwrap();
+    let mut units = vec![
+        ("EXTRACTOR".to_string(), "ExtractsMetal=1; FootprintX=2; FootprintZ=2;".to_string()),
+        ("POWER".to_string(), "EnergyMake=20; FootprintX=2; FootprintZ=2;".to_string()),
+        ("TANK".to_string(), "CanMove=1; MaxVelocity=2; Weapon1=GUN;".to_string()),
+    ];
+    for tier in 1..=tiers {
+        units.push((format!("BUILD{tier}"), format!("Builder=1; WorkerTime=300; BuildDistance=200; CanMove=1; MaxVelocity=2; Category=LEVEL{tier};")));
+        units.push((format!("FACT{tier}"), format!("Builder=1; WorkerTime=30; FootprintX=4; FootprintZ=4; BuildTime=100; Category=LEVEL{tier};")));
+    }
+    for (name, keys) in &units {
+        std::fs::write(dir.join(format!("units/{name}.fbi")), format!("[UNITINFO] {{ UnitName={name}; Objectname={name}; MaxDamage=1000; SightDistance=100; BuildCostMetal=100; {keys} }}")).unwrap();
+    }
+    std::fs::write(dir.join("weapons/test.tdf"), "[GUN] { range=200; reloadtime=1; weaponvelocity=400; [DAMAGE] { default=10; } }").unwrap();
+    let mut vfs = ta_vfs::Vfs::new();
+    vfs.mount_mod_dir(&dir, "test").unwrap();
+    let mut data = GameData::load(&vfs);
+    std::fs::remove_dir_all(dir).unwrap();
+    for tier in 1..=tiers {
+        let builder = data.unit_id(&format!("BUILD{tier}")).unwrap();
+        let mut builds = vec!["EXTRACTOR".to_string(), "POWER".to_string()];
+        builds.extend((1..=(tier + 1).min(tiers)).map(|t| format!("FACT{t}")));
+        data.units[builder].build_options = builds;
+        let factory = data.unit_id(&format!("FACT{tier}")).unwrap();
+        data.units[factory].build_options = vec![format!("BUILD{tier}"), "TANK".into()];
+    }
+    let data = Arc::new(data);
+    let types = Arc::new(UnitTypes::compile(&data, &|_| None));
+    let cells = 96u32;
+    let n = (cells * cells) as usize;
+    let map = TntMap { width: cells, height: cells, sea_level: 0, heights: vec![60; n], features: vec![FEATURE_NONE; n], tiles: vec![], tile_map: vec![], feature_names: vec![], minimap: Default::default(), flags: Vec::new() };
+    let players: Vec<_> = (0..2).map(|color| PlayerSetup { side: "ARM".into(), color, start: FxVec3::ZERO, metal: fx(1000), energy: fx(1000), ai: false }).collect();
+    let mut sim = Sim::new(types, data, &map, &MapInfo::default(), 0, &players, 7);
+    sim.start_spots = vec![FxVec3::from_ints(300, 0, 300), FxVec3::from_ints(1300, 0, 1300)];
+    sim.players[0].start = sim.start_spots[0];
+    sim.players[1].start = sim.start_spots[1];
+    // Ten minutes in, metal to spare: past the gates of the first advanced factory.
+    sim.tick = 10 * MINUTE;
+    let e = &mut sim.players[0].economy;
+    e.metal_capacity = fx(10_000);
+    e.energy_capacity = fx(10_000);
+    e.metal = fx(5000);
+    e.energy = fx(10_000);
+    sim
+}
+
+/// A constructor of our factories' top tier puts up a factory of the next tier its options hold,
+/// one at a time and once (the Supreme Commander factions' tech 3), on the economy the first
+/// advanced factory takes; with no tier past the second (TA's factories) it never does.
+#[test]
+fn constructors_climb_the_factory_tiers_one_at_a_time() {
+    let mut sim = tier_fixture(3);
+    let id = |sim: &Sim, name: &str| sim.types.id(name).unwrap();
+    let ai = SkirmishAi::new(0, &sim, Difficulty::Normal);
+    let tiers = ["FACT1", "FACT2", "FACT3", "BUILD2", "TANK"].map(|n| ai.factory_tier(&sim, id(&sim, n)));
+    assert_eq!(tiers, [1, 2, 3, 0, 0], "a factory's tier is the highest tech of the constructors it makes");
+    sim.spawn_unit(id(&sim, "FACT2"), 0, FxVec3::from_ints(300, 0, 300), 0, true).unwrap();
+    let first = sim.spawn_unit(id(&sim, "BUILD2"), 0, FxVec3::from_ints(420, 0, 300), 0, true).unwrap();
+    let second = sim.spawn_unit(id(&sim, "BUILD2"), 0, FxVec3::from_ints(420, 0, 360), 0, true).unwrap();
+    let mut ai = SkirmishAi::new(0, &sim, Difficulty::Normal);
+    let s = ai.survey(&sim);
+    assert_eq!(s.factory_tier, 2);
+    let (mut plan, _) = ai.start_builders(&sim, &s, &mut Vec::new());
+    let fact3 = id(&sim, "FACT3");
+    let task = ai.builder_task(&sim, &s, sim.unit(first).unwrap(), &mut plan);
+    assert!(matches!(task, Some(Task::Build(t, _)) if t == fact3), "the next tier's factory: {task:?}");
+    assert_eq!(plan.tier, 3);
+    let task = ai.builder_task(&sim, &s, sim.unit(second).unwrap(), &mut plan);
+    assert!(!matches!(task, Some(Task::Build(t, _)) if t == fact3), "one at a time: {task:?}");
+    // Its factory up (a frame is enough), no second.
+    sim.spawn_unit(fact3, 0, FxVec3::from_ints(300, 0, 500), 0, false).unwrap();
+    let s = ai.survey(&sim);
+    assert_eq!(s.factory_tier, 3);
+    let (mut plan, _) = ai.start_builders(&sim, &s, &mut Vec::new());
+    let task = ai.builder_task(&sim, &s, sim.unit(first).unwrap(), &mut plan);
+    assert!(!matches!(task, Some(Task::Build(t, _)) if t == fact3), "one of each tier: {task:?}");
+    // Two tiers only, as TA's: the top tier's constructor puts up no other factory for it.
+    let mut sim = tier_fixture(2);
+    sim.spawn_unit(id(&sim, "FACT2"), 0, FxVec3::from_ints(300, 0, 300), 0, true).unwrap();
+    let builder = sim.spawn_unit(id(&sim, "BUILD2"), 0, FxVec3::from_ints(420, 0, 300), 0, true).unwrap();
+    let mut ai = SkirmishAi::new(0, &sim, Difficulty::Normal);
+    let s = ai.survey(&sim);
+    let (mut plan, _) = ai.start_builders(&sim, &s, &mut Vec::new());
+    let task = ai.builder_task(&sim, &s, sim.unit(builder).unwrap(), &mut plan);
+    assert_eq!(plan.tier, 0, "{task:?}");
+    assert!(!matches!(task, Some(Task::Build(t, _)) if ai.info[t].role == Role::Factory && ai.factory_tier(&sim, t) >= 2), "{task:?}");
 }
 
 #[test]

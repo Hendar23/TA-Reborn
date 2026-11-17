@@ -32,6 +32,7 @@ mod rounded;
 mod skin;
 mod sight;
 mod smooth;
+pub mod surfaced;
 #[cfg(test)]
 mod xray;
 
@@ -120,6 +121,10 @@ pub const FLAG_RUN_SHIFT: u32 = 16;
 /// Bits 24-31 of the flags: how far its lights are out (0 lit, 255 dark): its lamps and glows
 /// shine by themselves only while it works (switched on, powered, not stunned).
 pub const FLAG_LIGHTS_OUT_SHIFT: u32 = 24;
+/// Bits 24-31 of a [`DrawInstance::team`] (bits 0-7 are the player's colour slot): how far its
+/// player's colour has gone to the burnt-out grey of a wreck (0..255), a dying unit's last pose
+/// fading into its wreck (the game's `effects_remains.rs`).
+pub const TEAM_BURNT_SHIFT: u32 = 24;
 
 /// [`DrawInstance::playing`] for things whose animated textures all play (features, previews:
 /// nothing of theirs holds them).
@@ -960,6 +965,18 @@ struct Prepared {
     origins: Vec<Option<usize>>,
 }
 
+/// How much of a model's shapes is built beyond its faces as TA drew them
+/// ([`ModelLibrary::add_cpu_scoped`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shapes {
+    /// TA's forms made whole (halves, caps, backs, joints, connectors) and Reborn's kit fitted.
+    Detailed,
+    /// TA's forms made whole, no kit (a livery over TA's own paint).
+    Whole,
+    /// The faces as drawn, nothing added ([`ModelLibrary::add_plain`]).
+    AsDrawn,
+}
+
 /// CPU-side accumulation of all model meshes; uploaded when changed.
 #[derive(Default)]
 pub struct ModelLibrary {
@@ -988,6 +1005,14 @@ pub struct ModelLibrary {
     index_buffer: Option<wgpu::Buffer>,
     /// The buffers are also what ray tracing builds its acceleration structures from.
     pub(crate) blas_input: bool,
+    /// Models with surfaces of their own -> the material slots they paint with (surfaced.rs).
+    surfaced: HashMap<ModelId, Vec<u32>>,
+    /// A model -> the lighter one drawn in its place far off (its surface's `far`: the same
+    /// pieces in the same order).
+    far: HashMap<ModelId, ModelId>,
+    /// By model: 1 for one with a lighter one for far off, 2 for such a lighter one, else 0
+    /// (what a frame's instances are told by, without a lookup each).
+    far_roles: Vec<u8>,
 }
 
 impl ModelLibrary {
@@ -1027,7 +1052,16 @@ impl ModelLibrary {
         paint_map: impl Fn(u32) -> Option<&'p kit::PaintMap>,
         palette: &Palette,
     ) -> ModelId {
-        self.add_cpu_scoped(name, name, model, |name, _| texture(name), paint_map, palette, None, None, true)
+        self.add_cpu_scoped(name, name, model, |name, _| texture(name), paint_map, palette, None, None, Shapes::Detailed)
+    }
+
+    /// A model's faces as TA draws them and nothing more: no halves made whole, no caps, backs or
+    /// joints, no kit (Reborn's plates, seams, bolts and rounding). For a mod's model whose own
+    /// surface is no use (it does not read, or does not fit it): a mesh made for a paint of its
+    /// own, which the kit would cut into plates along every triangle (`ta_game`'s `surface_for`).
+    pub fn add_plain(&mut self, name: &str, model: &Model3do, textures: &TextureLibrary, palette: &Palette) -> ModelId {
+        let paint_map = |layer: u32| textures.paint_maps.get(layer as usize).and_then(Option::as_ref);
+        self.add_cpu_scoped(name, name, model, |name, _| textures.get(name), paint_map, palette, None, None, Shapes::AsDrawn)
     }
 
     /// A model's shapes as the game builds them (TA's faces made whole and capped, and Reborn's
@@ -1075,7 +1109,7 @@ impl ModelLibrary {
         }
         let livery = (skins.livery().is_some() || textures.livery_ready).then_some(bank);
         // (A livery over TA's own paint is on TA's own shapes: no kit, at any size.)
-        let kit = !skins.livery().is_some_and(|l| l.original);
+        let shapes = if skins.livery().is_some_and(|l| l.original) { Shapes::Whole } else { Shapes::Detailed };
         self.add_cpu_scoped(
             &format!("(unit:{unit}/{object}/skin:{})", skins.id()),
             object,
@@ -1088,7 +1122,7 @@ impl ModelLibrary {
             palette,
             livery,
             skins.untextured(&unit).map(bank_texture),
-            kit,
+            shapes,
         )
     }
 
@@ -1102,7 +1136,7 @@ impl ModelLibrary {
         palette: &Palette,
         livery: Option<u32>,
         untextured: Option<TextureRef>,
-        kit: bool,
+        build: Shapes,
     ) -> ModelId {
         let key = key.to_ascii_lowercase();
         if let Some(&id) = self.by_name.get(&key) {
@@ -1120,7 +1154,7 @@ impl ModelLibrary {
         let mut budget = kit::Budget::default();
         static ROUNDED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let rounding = self.rounded.unwrap_or_else(|| *ROUNDED.get_or_init(|| std::env::var("TA_ROUNDED").map_or(true, |v| v != "0")));
-        let fit_kit = kit && model
+        let fit_kit = build == Shapes::Detailed && model
             .pieces
             .iter()
             .flat_map(|piece| &piece.primitives)
@@ -1160,26 +1194,28 @@ impl ModelLibrary {
             .zip(&drawn)
             .map(|(piece, prims)| prims.iter().map(|prim| prim.indices.iter().map(|&i| fixed(piece.vertices[i as usize])).collect()).collect())
             .collect();
-        fn to_mend<'a>(model: &Model3do, shapes: &'a [Vec<Vec<Vec3>>], rest: &[Vec3]) -> Vec<caps::PieceFaces<'a>> {
+        // (Nothing mended or made whole on a model drawn as it is.)
+        let mend = mending() && build != Shapes::AsDrawn;
+        fn to_mend<'a>(model: &Model3do, shapes: &'a [Vec<Vec<Vec3>>], rest: &[Vec3], mend: bool) -> Vec<caps::PieceFaces<'a>> {
             model
                 .pieces
                 .iter()
                 .zip(shapes)
                 .zip(rest)
-                .map(|((piece, faces), &offset)| caps::PieceFaces { faces: faces.as_slice(), offset, mend: mending() && !is_effect_piece(&piece.name) })
+                .map(|((piece, faces), &offset)| caps::PieceFaces { faces: faces.as_slice(), offset, mend: mend && !is_effect_piece(&piece.name) })
                 .collect()
         }
-        let forms = mending() && self.forms.unwrap_or_else(whole_forms);
+        let forms = mend && self.forms.unwrap_or_else(whole_forms);
         let joints = if forms { joints::supports(model, &shapes) } else { vec![Vec::new(); shapes.len()] };
-        let mut halves = if forms { halves::complete(&to_mend(model, &shapes, &rest)) } else { vec![halves::Halves::default(); shapes.len()] };
+        let mut halves = if forms { halves::complete(&to_mend(model, &shapes, &rest, mend)) } else { vec![halves::Halves::default(); shapes.len()] };
         for (faces, h) in shapes.iter_mut().zip(&halves) {
             faces.extend(h.mirrored.iter().map(|m| m.corners.clone()));
         }
-        let mut mendings: Vec<caps::Mending> = caps::mend(&to_mend(model, &shapes, &rest), forms);
+        let mut mendings: Vec<caps::Mending> = caps::mend(&to_mend(model, &shapes, &rest, mend), forms);
         // (And the faces a 3D camera sees from behind given their backs: see halves.rs.)
         if forms {
             let before: Vec<usize> = halves.iter().map(|h| h.mirrored.len()).collect();
-            halves::give_backs(&to_mend(model, &shapes, &rest), &mut mendings, &mut halves);
+            halves::give_backs(&to_mend(model, &shapes, &rest, mend), &mut mendings, &mut halves);
             for ((faces, h), &k) in shapes.iter_mut().zip(&halves).zip(&before) {
                 faces.extend(h.mirrored[k..].iter().map(|m| m.corners.clone()));
             }
@@ -1244,7 +1280,7 @@ impl ModelLibrary {
             for corners in &joints[pi] {
                 faces.push((metal(true), Face { corners: corners.clone(), normal: face_normal(corners) }));
             }
-            if mending() && !is_effect_piece(&piece.name) {
+            if mend && !is_effect_piece(&piece.name) {
                 thicken_lone_sheets(&mut faces);
             }
             // (TA's own faces, and the caps of before, first and in their order; then what makes
@@ -1518,8 +1554,17 @@ impl ModelLibrary {
     /// enough on screen to show (always, with no camera: wallpapers, the showroom); the
     /// original otherwise. Every pass (colour, shadows, ray tracing, debris) draws the same
     /// choice but the water's reflection, which draws the original (see `draw_reflection`);
-    /// the pieces and their order are the original's either way.
-    pub(super) fn detail_for(&self, original: ModelId, root: Mat4, camera: Option<&Camera>, reborn: bool) -> ModelId {
+    /// the pieces and their order are the original's either way. `was_far`: whether the same
+    /// instance was drawn as its lighter model far off last frame (none: not known), which it
+    /// stays as between [`surfaced::FAR_PIXELS_BACK`] and [`surfaced::FAR_PIXELS`].
+    pub(super) fn detail_for(&self, original: ModelId, root: Mat4, camera: Option<&Camera>, reborn: bool, was_far: Option<bool>) -> ModelId {
+        // (A model with a lighter one for far off, whatever the art style: surfaced.rs.)
+        if let Some(&far) = self.far.get(&original) {
+            let info = &self.models[original as usize];
+            let least = if was_far == Some(false) { surfaced::FAR_PIXELS_BACK } else { surfaced::FAR_PIXELS };
+            let near = camera.is_none_or(|camera| projected_pixels(camera, root.transform_point3(Vec3::Y * info.height * 0.5), info.radius.max(info.height * 0.5)) >= least);
+            return if near { original } else { far };
+        }
         // (`TA_REBORN_DETAIL=0`: Reborn's paint on the original shapes, for comparisons.)
         static DETAIL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let wanted = *DETAIL.get_or_init(|| std::env::var("TA_REBORN_DETAIL").map_or(true, |v| v != "0"));
@@ -2377,6 +2422,23 @@ pub struct DrawInstance<'a> {
     /// (`ta_sim::Unit::textures_playing`); the others hold their first frame, as TA drew them.
     /// [`PLAYING_ALL`] for things without a script.
     pub playing: u64,
+    /// Who it is from frame to frame ([`DrawInstance::unit_key`], [`DrawInstance::feature_key`]):
+    /// what is chosen by its size on the screen (a lighter model far off) holds while that size
+    /// is near where the choice changes, instead of swapping back and forth as the camera shakes
+    /// or a walker bobs. 0: no one in particular (chosen afresh every frame).
+    pub key: u64,
+}
+
+impl DrawInstance<'_> {
+    /// [`DrawInstance::key`] for a unit (its slot and that slot's generation in the simulation).
+    pub fn unit_key(slot: u32, generation: u32) -> u64 {
+        1 << 62 | (generation as u64 & 0x3FFF_FFFF) << 32 | slot as u64
+    }
+
+    /// [`DrawInstance::key`] for a feature (its index in the simulation).
+    pub fn feature_key(index: usize) -> u64 {
+        2 << 62 | index as u64
+    }
 }
 
 /// A piece's world matrix as the shaders read it: the three rows of a 3×4 affine matrix.
@@ -2446,6 +2508,8 @@ fn write_matrices(out: wgpu::WriteOnly<'_, [[u8; 48]]>, order: &[u32], list: &[D
 pub struct ModelRenderer {
     pub library: ModelLibrary,
     pub textures: TextureLibrary,
+    /// The paint of models with surfaces of their own (surfaced.rs).
+    pub surfaces: surfaced::SurfaceTextures,
     art_style_reborn: bool,
     pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
@@ -2468,6 +2532,13 @@ pub struct ModelRenderer {
     /// This frame's instances that occlude the ground around them (contact occlusion): model,
     /// root piece matrix and how built it is (0..1).
     pub(crate) occluder_roots: Vec<(ModelId, Mat4, f32)>,
+    /// Last frame's instances of models with a lighter one for far off, by their `key`: whether
+    /// each was drawn as the lighter one (see `ModelLibrary::detail_for`).
+    far_last: rustc_hash::FxHashMap<u64, bool>,
+    /// By model, the frame its paint was last asked for (models with surfaces: surfaced.rs), and
+    /// this frame's number.
+    paint_asked: Vec<u32>,
+    paint_frame: u32,
 }
 
 impl ModelRenderer {
@@ -2572,6 +2643,19 @@ impl ModelRenderer {
                 paint_array(8),
                 paint_array(9),
                 paint_array(10),
+                // The paint of models with surfaces of their own, and where each material's is
+                // (surfaced.rs).
+                paint_array(11),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 12,
+                    visibility: S::FRAGMENT,
+                    ty: B::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -2727,13 +2811,15 @@ impl ModelRenderer {
         });
         let matrix_buffer = Self::make_matrix_buffer(device, 1024);
         let instance_buffer = Self::make_instance_buffer(device, 256);
-        let bind_group = Self::make_bind_group(device, &layout, &matrix_buffer, &textures, &sampler);
+        let surfaces = surfaced::SurfaceTextures::new(device);
+        let bind_group = Self::make_bind_group(device, &layout, &matrix_buffer, &textures, &surfaces, &sampler);
         ModelRenderer {
             library: ModelLibrary {
                 blas_input: crate::util::ray_traced(),
                 ..Default::default()
             },
             textures,
+            surfaces,
             art_style_reborn: true,
             pipeline,
             shadow_pipeline,
@@ -2750,6 +2836,9 @@ impl ModelRenderer {
             instance_buffer,
             bind_group,
             occluder_roots: Vec::new(),
+            far_last: Default::default(),
+            paint_asked: Vec::new(),
+            paint_frame: 0,
         }
     }
 
@@ -2776,6 +2865,7 @@ impl ModelRenderer {
         layout: &wgpu::BindGroupLayout,
         matrices: &wgpu::Buffer,
         textures: &TextureLibrary,
+        surfaces: &surfaced::SurfaceTextures,
         sampler: &wgpu::Sampler,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2826,6 +2916,14 @@ impl ModelRenderer {
                     binding: 10,
                     resource: wgpu::BindingResource::TextureView(&textures.second[2]),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: wgpu::BindingResource::TextureView(&surfaces.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: surfaces.table.as_entire_binding(),
+                },
             ],
         })
     }
@@ -2848,18 +2946,51 @@ impl ModelRenderer {
         use rayon::prelude::*;
         self.library.upload(device);
         let mut list: Vec<DrawInstance<'a>> = instances.into_iter().collect();
-        // Each instance's model by its size on screen (Reborn's detail up close): an army's on
+        // Each instance's model by its size on screen (Reborn's detail up close; a lighter model
+        // far off, as it was drawn last frame while its size is near the change): an army's on
         // all cores.
-        let (library, reborn, camera) = (&self.library, self.art_style_reborn, view.map(|v| v.0));
+        let (library, reborn, camera, far_last) = (&self.library, self.art_style_reborn, view.map(|v| v.0), &self.far_last);
         let detail = |inst: &mut DrawInstance<'a>| {
             if let Some(root) = inst.pieces.first() {
-                inst.model = library.detail_for(inst.model, *root, camera, reborn);
+                let was_far = (inst.key != 0 && library.far_role(inst.model) == surfaced::FAR_HAS).then(|| far_last.get(&inst.key).copied()).flatten();
+                inst.model = library.detail_for(inst.model, *root, camera, reborn, was_far);
             }
         };
         if list.len() >= PARALLEL_INSTANCES {
             list.par_iter_mut().with_min_len(128).for_each(detail);
         } else {
             list.iter_mut().for_each(detail);
+        }
+        // (What each was drawn as, for the next frame.)
+        if !self.library.far.is_empty() {
+            self.far_last.clear();
+            for inst in list.iter().filter(|inst| inst.key != 0) {
+                match self.library.far_role(inst.model) {
+                    surfaced::FAR_HAS => self.far_last.insert(inst.key, false),
+                    surfaced::FAR_IS => self.far_last.insert(inst.key, true),
+                    _ => None,
+                };
+            }
+        }
+        // The paint of the models with surfaces drawn, asked for the first time they are (each
+        // model's once a frame).
+        if !self.library.surfaced.is_empty() {
+            self.paint_frame = self.paint_frame.wrapping_add(1).max(1);
+            if self.paint_asked.len() < self.library.models.len() {
+                self.paint_asked.resize(self.library.models.len(), 0);
+            }
+            for inst in &list {
+                let Some(asked) = self.paint_asked.get_mut(inst.model as usize) else { continue };
+                if *asked != self.paint_frame {
+                    *asked = self.paint_frame;
+                    for &slot in self.library.surface_slots(inst.model) {
+                        self.surfaces.want(slot);
+                    }
+                }
+            }
+        }
+        if self.surfaces.update(device, queue) {
+            self.bind_group = Self::make_bind_group(device, &self.layout, &self.matrix_buffer, &self.textures, &self.surfaces, &self.sampler);
         }
         // Instances by model, each model's in the order given (indices into `list`).
         let models = self.library.models.len();
@@ -2947,7 +3078,7 @@ impl ModelRenderer {
         }
         if (self.matrix_buffer.size() as usize) < len * 48 {
             self.matrix_buffer = Self::make_matrix_buffer(device, len.next_power_of_two());
-            self.bind_group = Self::make_bind_group(device, &self.layout, &self.matrix_buffer, &self.textures, &self.sampler);
+            self.bind_group = Self::make_bind_group(device, &self.layout, &self.matrix_buffer, &self.textures, &self.surfaces, &self.sampler);
         }
         let need_i = self.instances.len() * std::mem::size_of::<InstanceData>();
         if (self.instance_buffer.size() as usize) < need_i {
@@ -3070,7 +3201,8 @@ impl ModelRenderer {
                             Some((
                                 model,
                                 p,
-                                inst.team,
+                                // (Its player's colour: the ray tracer's reflections take no fade.)
+                                inst.team & 0xFF,
                                 [
                                     m[0][0], m[0][1], m[0][2], m[0][3], m[1][0], m[1][1], m[1][2],
                                     m[1][3], m[2][0], m[2][1], m[2][2], m[2][3],
@@ -3208,25 +3340,25 @@ mod tests {
         let custom = TextureRef { layer: skin::CUSTOM | 2, ..original };
         let mut library = ModelLibrary::default();
         let palette = Palette::default();
-        let a = library.add_cpu_scoped("unit:a/shared", "shared", &model, |_, eligible| Some(if eligible { custom } else { original }), |_| None, &palette, None, None, true);
-        let b = library.add_cpu_scoped("unit:b/shared", "shared", &model, |_, _| Some(original), |_| None, &palette, Some(0), None, true);
+        let a = library.add_cpu_scoped("unit:a/shared", "shared", &model, |_, eligible| Some(if eligible { custom } else { original }), |_| None, &palette, None, None, Shapes::Detailed);
+        let b = library.add_cpu_scoped("unit:b/shared", "shared", &model, |_, _| Some(original), |_| None, &palette, Some(0), None, Shapes::Detailed);
         let enemy = TextureRef { layer: custom.layer | skin::ENEMY, ..custom };
-        let opposing = library.add_cpu_scoped("unit:a/shared/skin:enemy", "shared", &model, |_, eligible| Some(if eligible { enemy } else { original }), |_| None, &palette, None, None, true);
-        let again = library.add_cpu_scoped("unit:a/shared", "shared", &model, |_, _| panic!("matching selections must reuse the mesh"), |_| None, &palette, None, None, true);
+        let opposing = library.add_cpu_scoped("unit:a/shared/skin:enemy", "shared", &model, |_, eligible| Some(if eligible { enemy } else { original }), |_| None, &palette, None, None, Shapes::Detailed);
+        let again = library.add_cpu_scoped("unit:a/shared", "shared", &model, |_, _| panic!("matching selections must reuse the mesh"), |_| None, &palette, None, None, Shapes::Detailed);
         assert_eq!(again, a);
         assert_ne!(opposing, a, "the same unit and object can have opposing paint");
         let c = library.add_cpu("shared", &model, |_| Some(original), |_| None, &palette);
         let mut effect = model.clone();
         effect.pieces[0].name = "muzzle_flash".into();
-        let d = library.add_cpu_scoped("unit:d/effect", "effect", &effect, |_, eligible| Some(if eligible { custom } else { original }), |_| None, &palette, Some(0), Some(custom), true);
+        let d = library.add_cpu_scoped("unit:d/effect", "effect", &effect, |_, eligible| Some(if eligible { custom } else { original }), |_| None, &palette, Some(0), Some(custom), Shapes::Detailed);
         let mut plain = model.clone();
         for primitive in &mut plain.pieces[0].primitives {
             primitive.texture = None;
         }
-        let e = library.add_cpu_scoped("unit:e/plain", "plain", &plain, |_, _| None, |_| None, &palette, None, Some(custom), true);
+        let e = library.add_cpu_scoped("unit:e/plain", "plain", &plain, |_, _| None, |_| None, &palette, None, Some(custom), Shapes::Detailed);
         // The enemy bank's livery; and a livery with a texture mapped over it.
-        let theirs = library.add_cpu_scoped("unit:f/shared/skin:enemy", "shared", &model, |_, _| Some(original), |_| None, &palette, Some(skin::ENEMY), None, true);
-        let mapped = library.add_cpu_scoped("unit:g/shared", "shared", &model, |_, eligible| Some(if eligible { custom } else { original }), |_| None, &palette, Some(0), None, true);
+        let theirs = library.add_cpu_scoped("unit:f/shared/skin:enemy", "shared", &model, |_, _| Some(original), |_| None, &palette, Some(skin::ENEMY), None, Shapes::Detailed);
+        let mapped = library.add_cpu_scoped("unit:g/shared", "shared", &model, |_, eligible| Some(if eligible { custom } else { original }), |_| None, &palette, Some(0), None, Shapes::Detailed);
         assert_ne!(a, b);
         assert_ne!(a, c);
         assert_ne!(b, c);
@@ -3289,7 +3421,7 @@ mod tests {
         let armour = TextureRef { layer: 3, frames: 1, emissive: false, roughness: 0.6, metallic: 0.1, mean: [128; 3] };
         let mut library = ModelLibrary::default();
         let palette = Palette::default();
-        let id = library.add_cpu_scoped("unit:box/box/skin:test", "box", &model, |_, _| Some(armour), |_| None, &palette, Some(skin::ENEMY), None, true);
+        let id = library.add_cpu_scoped("unit:box/box/skin:test", "box", &model, |_, _| Some(armour), |_| None, &palette, Some(skin::ENEMY), None, Shapes::Detailed);
         let Some(&detailed) = library.detail.get(&id) else { panic!("the kit plates a wide box") };
         let info = library.info(detailed);
         let used: std::collections::BTreeSet<u32> = library.indices[info.first_index as usize..][..info.index_count as usize].iter().copied().collect();
@@ -3297,9 +3429,9 @@ mod tests {
         assert!(plain.iter().any(|v| v.layer & (skin::LIVERY | skin::ENEMY) == skin::LIVERY | skin::ENEMY), "seams take the livery");
         assert!(plain.iter().filter(|v| v.layer & skin::LIVERY != 0).all(|v| v.layer & skin::ENEMY != 0), "from the face's bank");
         // TA's originals (a livery over TA's own paint, Heritage's): the same box, no kit at any size.
-        let original = library.add_cpu_scoped("unit:box/box/skin:originals", "box", &model, |_, _| Some(armour), |_| None, &palette, Some(0), None, false);
+        let original = library.add_cpu_scoped("unit:box/box/skin:originals", "box", &model, |_, _| Some(armour), |_| None, &palette, Some(0), None, Shapes::Whole);
         assert!(!library.detail.contains_key(&original), "TA's own shapes take no kit");
-        assert_eq!(library.detail_for(original, Mat4::IDENTITY, None, true), original);
+        assert_eq!(library.detail_for(original, Mat4::IDENTITY, None, true, None), original);
     }
 
 

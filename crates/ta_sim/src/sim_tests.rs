@@ -119,6 +119,38 @@ fn queued_orders_are_bounded_and_stop_can_clear_a_full_queue() {
     assert_eq!(sim.unit(id).unwrap().orders.front(), Some(&Order::Stop));
 }
 
+/// The interface's copy of the game shows orders before their tick (`Sim::preview`, a battle
+/// paused): the copy has them as the tick will give them, no tick passes in it, and the game
+/// itself is untouched, given them at their tick as ever.
+#[test]
+fn a_copy_shown_orders_before_their_tick_leaves_the_game_alone() {
+    let data = data_of(&[unit("TANK", "CanMove=1; MaxVelocity=1;"), unit("MAKER", "MakesMetal=1; EnergyUse=3; ActivateWhenBuilt=1; OnOffable=1;")]);
+    let mut sim = sim_of(data, 1);
+    let tank = sim.spawn_unit(sim.types.id("TANK").unwrap(), 0, FxVec3::from_ints(100, 60, 100), 0, true).unwrap();
+    let maker = sim.spawn_unit(sim.types.id("MAKER").unwrap(), 0, FxVec3::from_ints(300, 60, 300), 0, true).unwrap();
+    sim.step(&[Command::SetActive { player: 0, units: vec![maker], on: true }]);
+    assert!(sim.unit(maker).unwrap().activated);
+    let before = sim.checksum();
+    let commands = [
+        Command::Order { player: 0, units: vec![tank], order: Order::Move(FxVec3::from_ints(600, 60, 100)), queue: false },
+        Command::Order { player: 0, units: vec![tank], order: Order::Patrol(FxVec3::from_ints(600, 60, 600)), queue: true },
+        Command::SetActive { player: 0, units: vec![maker], on: false },
+    ];
+    let mut shown = sim.clone();
+    for c in &commands {
+        shown.preview(c);
+    }
+    assert_eq!(sim.checksum(), before, "the game itself is untouched");
+    assert_eq!(shown.tick, sim.tick, "no tick passes in the copy");
+    let orders: Vec<Order> = shown.unit(tank).unwrap().orders.iter().cloned().collect();
+    assert!(matches!(orders[..], [Order::Move(_), Order::Patrol(_), Order::Patrol(_)]), "the move, then the patrol there and back: {orders:?}");
+    assert!(!shown.unit(maker).unwrap().activated, "switched off at once");
+    // The game given them at their tick: the same orders, the same switch.
+    sim.step(&commands);
+    assert_eq!(sim.unit(tank).unwrap().orders.iter().cloned().collect::<Vec<_>>(), orders);
+    assert!(!sim.unit(maker).unwrap().activated);
+}
+
 #[test]
 fn nobody_owns_units_who_is_not_in_the_battle() {
     let data = data_of(&[unit("TANK", "CanMove=1; MaxVelocity=1;")]);
@@ -578,6 +610,149 @@ fn weapon_file(name: &str, keys: &str) -> (String, String) {
 }
 
 #[test]
+fn piercing_shots_sweep_their_damage_area_and_hit_each_unit_once() {
+    let mut data = data_of(&[
+        unit("SHOOTER", "Weapon1=SHOT;"),
+        unit("TARGET", "FootprintX=2; FootprintZ=2;"),
+        weapon_file("SHOT", "areaofeffect=48; noexplode=1; commandfire=1;"),
+    ]);
+    let weapon = data.weapon_id("SHOT").unwrap();
+    data.weapons[weapon].default_damage = 60.0;
+    let mut sim = sim_of(data, 2);
+    let target_type = sim.types.id("TARGET").unwrap();
+    let t = sim.types.get(target_type);
+    let y = Fx::from_int(60) + t.model.height.max(Fx::from_int(8)) / 2;
+    let z = Fx::from_int(255) + t.collision_radius();
+    let shooter = sim.spawn_unit(sim.types.id("SHOOTER").unwrap(), 0, FxVec3::from_ints(200, 60, 255), 0, true).unwrap();
+    let friendly = sim.spawn_unit(target_type, 0, FxVec3::new(Fx::from_int(280), Fx::from_int(60), z + Fx::from_int(12)), 0, true).unwrap();
+    let enemy = sim.spawn_unit(target_type, 1, FxVec3::new(Fx::from_int(340), Fx::from_int(60), z + Fx::from_int(12)), 0, true).unwrap();
+    let outside = sim.spawn_unit(target_type, 1, FxVec3::new(Fx::from_int(400), Fx::from_int(60), z + Fx::from_int(64)), 0, true).unwrap();
+    sim.step(&[]);
+    let full = sim.unit(enemy).unwrap().health;
+    let shooter_full = sim.unit(shooter).unwrap().health;
+    let pos = FxVec3::new(Fx::from_int(200), y, Fx::from_int(255));
+    sim.projectiles.push(crate::Projectile {
+        id: 1, weapon, owner: shooter, owner_player: 0, pos, prev_pos: pos, vel: FxVec3::from_ints(80, 0, 0),
+        target: None, target_pos: pos, age: 0, ttl: 8, hits: Vec::new(), dead: false,
+    });
+    for _ in 0..8 { sim.step(&[]); }
+    for id in [friendly, enemy] {
+        assert_eq!(sim.unit(id).unwrap().health, full - Fx::from_int(60), "the damage area reaches friends and enemies beside the flight, once each");
+    }
+    assert_eq!(sim.unit(outside).unwrap().health, full, "outside the damage area");
+    assert_eq!(sim.unit(shooter).unwrap().health, shooter_full, "the shot still excludes its owner");
+    assert!(sim.projectiles.is_empty(), "piercing shots still expire");
+}
+
+#[test]
+fn dgun_sweeps_hit_trees_and_rocks_as_its_blast_would_without_stopping_the_shot() {
+    // (TA's D-gun says `firestarter=70`: a tree in its way catches fire as often, else goes.)
+    for fire_starter in [0, 100] {
+        let mut data = data_of(&[
+            unit("SHOOTER", "Weapon1=SHOT;"),
+            weapon_file("SHOT", &format!("rendertype=3; areaofeffect=48; noexplode=1; commandfire=1; firestarter={fire_starter};")),
+            ("features/all/targets.tdf".into(), "[TREE] { damage=1000; height=40; blocking=1; flamable=1; burnmin=10; burnmax=10; } [ROCK] { damage=1000; blocking=1; } [PERMANENT] { damage=1000; blocking=1; indestructible=1; }".into()),
+        ]);
+        let weapon = data.weapon_id("SHOT").unwrap();
+        data.weapons[weapon].default_damage = 30000.0;
+        let mut sim = sim_of(data, 1);
+        let shooter = sim.spawn_unit(sim.types.id("SHOOTER").unwrap(), 0, FxVec3::from_ints(200, 60, 300), 0, true).unwrap();
+        let tree = sim.place_feature("TREE", FxVec3::from_ints(250, 60, 300), 0).unwrap();
+        let burning = sim.place_feature("TREE", FxVec3::from_ints(300, 60, 320), 0).unwrap();
+        let rock = sim.place_feature("ROCK", FxVec3::from_ints(350, 60, 300), 0).unwrap();
+        let permanent = sim.place_feature("PERMANENT", FxVec3::from_ints(320, 60, 300), 0).unwrap();
+        let outside = sim.place_feature("TREE", FxVec3::from_ints(300, 60, 400), 0).unwrap();
+        sim.ignite(burning);
+        let pos = FxVec3::from_ints(200, 70, 300);
+        sim.projectiles.push(crate::Projectile {
+            id: 1, weapon, owner: shooter, owner_player: 0, pos, prev_pos: pos, vel: FxVec3::from_ints(200, 0, 0),
+            target: None, target_pos: pos, age: 0, ttl: 5, hits: Vec::new(), dead: false,
+        });
+        sim.step(&[]);
+        assert!(!sim.features[rock].alive && sim.features[rock].burn_until == 0, "a rock in the way is destroyed");
+        if fire_starter == 0 {
+            assert!(!sim.features[tree].alive && sim.features[tree].burn_until == 0, "a tree in the way is destroyed");
+        } else {
+            assert!(sim.features[tree].alive && sim.features[tree].burn_until != 0, "a tree in the way catches fire");
+        }
+        assert!(sim.features[burning].alive && sim.features[burning].burn_until != 0, "a burning tree burns down on its own");
+        for index in [permanent, outside] {
+            assert!(sim.features[index].alive, "indestructible features and trees outside the damage area survive");
+            assert_eq!(sim.features[index].health, Fx::from_int(1000));
+        }
+        assert_eq!(sim.projectiles.len(), 1, "destroying features must not consume a piercing shot");
+    }
+}
+
+#[test]
+fn piercing_shots_run_along_the_ground_or_the_water_they_meet() {
+    let mut data = data_of(&[
+        unit("SHOOTER", "Weapon1=SHOT;"),
+        unit("TARGET", "FootprintX=2; FootprintZ=2;"),
+        weapon_file("SHOT", "areaofeffect=48; noexplode=1; commandfire=1;"),
+    ]);
+    let weapon = data.weapon_id("SHOT").unwrap();
+    data.weapons[weapon].default_damage = 60.0;
+    // Aimed down into flat ground (at 60), it would pass some 60 px under a unit 320 px on.
+    let mut sim = sim_of(data.clone(), 1);
+    let shooter = sim.spawn_unit(sim.types.id("SHOOTER").unwrap(), 0, FxVec3::from_ints(200, 60, 255), 0, true).unwrap();
+    let target = sim.spawn_unit(sim.types.id("TARGET").unwrap(), 0, FxVec3::from_ints(520, 60, 255), 0, true).unwrap();
+    sim.step(&[]);
+    let full = sim.unit(target).unwrap().health;
+    let pos = FxVec3::from_ints(200, 80, 255);
+    sim.projectiles.push(crate::Projectile {
+        id: 1, weapon, owner: shooter, owner_player: 0, pos, prev_pos: pos, vel: FxVec3::from_ints(40, -10, 0),
+        target: None, target_pos: pos, age: 0, ttl: 10, hits: Vec::new(), dead: false,
+    });
+    for _ in 0..3 { sim.step(&[]); }
+    assert_eq!(sim.projectiles[0].pos.y, Fx::from_int(60), "it runs on along the ground");
+    for _ in 0..6 { sim.step(&[]); }
+    assert_eq!(sim.unit(target).unwrap().health, full - Fx::from_int(60), "the unit on the ground in its way is hit");
+    // Over the sea (its floor at 20, its surface at 60) it runs along the water.
+    let mut sea = flat_map();
+    sea.heights = vec![20; sea.heights.len()];
+    sea.sea_level = 60;
+    let mut sim = sim_on_map(data, 1, &sea);
+    let pos = FxVec3::from_ints(200, 80, 255);
+    sim.projectiles.push(crate::Projectile {
+        id: 1, weapon, owner: UnitId { slot: 1000, generation: 0 }, owner_player: 0, pos, prev_pos: pos, vel: FxVec3::from_ints(40, -10, 0),
+        target: None, target_pos: pos, age: 0, ttl: 10, hits: Vec::new(), dead: false,
+    });
+    for _ in 0..4 { sim.step(&[]); }
+    assert_eq!(sim.projectiles[0].pos.y, Fx::from_int(60), "it runs on along the water");
+}
+
+#[test]
+fn a_piercing_shots_area_never_reaches_back_over_those_beside_the_gun() {
+    let mut data = data_of(&[
+        unit("SHOOTER", "Weapon1=SHOT;"),
+        unit("TARGET", "FootprintX=2; FootprintZ=2;"),
+        weapon_file("SHOT", "areaofeffect=48; noexplode=1; commandfire=1;"),
+    ]);
+    let weapon = data.weapon_id("SHOT").unwrap();
+    data.weapons[weapon].default_damage = 60.0;
+    let mut sim = sim_of(data, 1);
+    let target_type = sim.types.id("TARGET").unwrap();
+    let t = sim.types.get(target_type);
+    let y = Fx::from_int(60) + t.model.height.max(Fx::from_int(8)) / 2;
+    // Beside the flight, outside the unit's own reach of it, inside its area's.
+    let beside = Fx::from_int(255) + t.collision_radius() + Fx::from_int(12);
+    let shooter = sim.spawn_unit(sim.types.id("SHOOTER").unwrap(), 0, FxVec3::from_ints(160, 60, 255), 0, true).unwrap();
+    let builder = sim.spawn_unit(target_type, 0, FxVec3::new(Fx::from_int(200), Fx::from_int(60), beside), 0, true).unwrap();
+    let further = sim.spawn_unit(target_type, 0, FxVec3::new(Fx::from_int(330), Fx::from_int(60), beside), 0, true).unwrap();
+    sim.step(&[]);
+    let full = sim.unit(builder).unwrap().health;
+    let pos = FxVec3::new(Fx::from_int(200), y, Fx::from_int(255));
+    sim.projectiles.push(crate::Projectile {
+        id: 1, weapon, owner: shooter, owner_player: 0, pos, prev_pos: pos, vel: FxVec3::from_ints(10, 0, 0),
+        target: None, target_pos: pos, age: 0, ttl: 20, hits: Vec::new(), dead: false,
+    });
+    for _ in 0..20 { sim.step(&[]); }
+    assert_eq!(sim.unit(builder).unwrap().health, full, "beside the gun as it fires");
+    assert_eq!(sim.unit(further).unwrap().health, full - Fx::from_int(60), "beside the flight further on");
+}
+
+#[test]
 fn ceasefire_protects_against_projectiles_after_the_attacker_is_removed() {
     for protected in [false, true] {
         for (through, paralyzer) in [(false, false), (true, false), (false, true)] {
@@ -891,6 +1066,150 @@ fn ground_weapon_acquires_landed_aircraft_and_releases_on_takeoff() {
 }
 
 #[test]
+fn fire_at_will_takes_on_only_what_its_side_sees_and_a_radar_contact_by_order() {
+    let data = data_of(&[
+        unit("GUN", "Weapon1=GUN; SightDistance=100; RadarDistance=600;"),
+        unit("TARGET", "MaxDamage=100000;"),
+        unit("SPOTTER", "CanMove=1; MaxVelocity=10; Acceleration=10; BrakeRate=10; TurnRate=5000; SightDistance=200;"),
+        weapon_file("GUN", ""),
+    ]);
+    let mut sim = sim_of(data, 2);
+    let gun = sim.spawn_unit(sim.types.id("GUN").unwrap(), 0, FxVec3::from_ints(300, 0, 300), 0, true).unwrap();
+    // 250 px off: in the gun's reach (400) and its radar's, out of its sight (100).
+    let target = sim.spawn_unit(sim.types.id("TARGET").unwrap(), 1, FxVec3::from_ints(550, 0, 300), 0, true).unwrap();
+    sim.step(&[]);
+    assert_eq!(sim.seen_by(sim.unit(target).unwrap(), 0), Seen::Radar);
+    let fired = |sim: &mut Sim| sim.take_events().iter().any(|e| matches!(e, SimEvent::WeaponFired { unit, .. } if *unit == gun));
+    for _ in 0..30 { sim.step(&[]); }
+    assert!(!fired(&mut sim) && sim.unit(gun).unwrap().weapons[0].target.is_none(), "a radar contact in the fog is not fired on at will");
+    // A spotter of ours in sight of it (out of the line of fire): fired on at will.
+    let spotter = sim.spawn_unit(sim.types.id("SPOTTER").unwrap(), 0, FxVec3::from_ints(550, 0, 430), 0, true).unwrap();
+    for _ in 0..30 { sim.step(&[]); }
+    assert_eq!(sim.seen_by(sim.unit(target).unwrap(), 0), Seen::Visible);
+    assert!(fired(&mut sim), "seen by its side, it is fired on at will");
+    // The spotter gone: a radar contact again, let go.
+    sim.step(&[Command::Order { player: 0, units: vec![spotter], order: Order::Move(FxVec3::from_ints(550, 0, 900)), queue: false }]);
+    for _ in 0..150 { sim.step(&[]); }
+    assert_eq!(sim.seen_by(sim.unit(target).unwrap(), 0), Seen::Radar);
+    sim.take_events();
+    for _ in 0..30 { sim.step(&[]); }
+    assert!(!fired(&mut sim) && sim.unit(gun).unwrap().weapons[0].target.is_none(), "out of sight again, let go");
+    // An order fires on the radar contact.
+    sim.step(&[Command::Order { player: 0, units: vec![gun], order: Order::Attack(Target::Unit(target)), queue: false }]);
+    for _ in 0..30 { sim.step(&[]); }
+    assert!(fired(&mut sim), "an attack order fires on a radar contact");
+}
+
+#[test]
+fn a_spotters_guns_fire_at_will_on_what_radar_shows() {
+    let data = data_of(&[
+        unit("GUN", "Weapon1=GUN; SightDistance=100; RadarDistance=600;"),
+        unit("TARGET", "MaxDamage=100000;"),
+        weapon_file("GUN", ""),
+    ]);
+    let mut sim = sim_of(data, 2);
+    let gun = sim.spawn_unit(sim.types.id("GUN").unwrap(), 0, FxVec3::from_ints(300, 0, 300), 0, true).unwrap();
+    let target = sim.spawn_unit(sim.types.id("TARGET").unwrap(), 1, FxVec3::from_ints(550, 0, 300), 0, true).unwrap();
+    sim.set_radar_guided(gun, true);
+    sim.step(&[]);
+    assert_eq!(sim.seen_by(sim.unit(target).unwrap(), 0), Seen::Radar);
+    sim.take_events();
+    for _ in 0..30 { sim.step(&[]); }
+    assert!(
+        sim.take_events().iter().any(|e| matches!(e, SimEvent::WeaponFired { unit, .. } if *unit == gun)),
+        "a gun a spotter directs fires at will on a radar contact"
+    );
+}
+
+/// Core Contingency's Targeting Facility (`istargetingupgrade=1`, "Automatic Radar Targeting"):
+/// while one of a player's is at work, that player's guns fire at will on what radar shows as on
+/// what is seen. Not an ally's facility, not one switched off or short of the energy it uses, and
+/// never a gun set to hold fire.
+#[test]
+fn a_targeting_facility_lets_its_players_guns_fire_at_will_on_radar_contacts() {
+    let data = data_of(&[
+        unit("GUN", "Weapon1=GUN; SightDistance=100; RadarDistance=600;"),
+        unit("TARGET", "MaxDamage=100000;"),
+        // As Core Contingency's files have it.
+        unit("TARG", "istargetingupgrade=1; onoffable=1; ActivateWhenBuilt=1; EnergyUse=1250; SightDistance=210; FootprintX=5; FootprintZ=4;"),
+        weapon_file("GUN", ""),
+    ]);
+    let mut sim = sim_of(data, 3);
+    // Player 2 is player 0's ally.
+    sim.set_team(2, 0);
+    for p in 0..3 {
+        sim.set_starting_resources(p, Fx::from_int(1000), Fx::from_int(1_000_000));
+    }
+    let gun = sim.spawn_unit(sim.types.id("GUN").unwrap(), 0, FxVec3::from_ints(300, 0, 300), 0, true).unwrap();
+    // 250 px off: in the gun's reach (400) and its radar's (600), out of its sight (100).
+    let target = sim.spawn_unit(sim.types.id("TARGET").unwrap(), 1, FxVec3::from_ints(550, 0, 300), 0, true).unwrap();
+    // An ally's facility, far from the target (none of ours yet).
+    sim.spawn_unit(sim.types.id("TARG").unwrap(), 2, FxVec3::from_ints(150, 0, 850), 0, true).unwrap();
+    let fired = |sim: &mut Sim| sim.take_events().iter().any(|e| matches!(e, SimEvent::WeaponFired { unit, .. } if *unit == gun));
+    // Some ticks to settle (the facility's state is set at the economy's end), then whether the
+    // gun fired in a second.
+    let fires = |sim: &mut Sim, commands: &[Command]| {
+        sim.step(commands);
+        for _ in 0..3 { sim.step(&[]); }
+        sim.take_events();
+        (0..30).any(|_| {
+            sim.step(&[]);
+            fired(sim)
+        })
+    };
+    sim.step(&[]);
+    assert_eq!(sim.seen_by(sim.unit(target).unwrap(), 0), Seen::Radar);
+    assert!(!fires(&mut sim, &[]), "no facility of ours (an ally's directs its own guns): a radar contact is not fired on at will");
+    assert!(sim.players[2].radar_targeting && !sim.players[0].radar_targeting);
+    // Our own.
+    let facility = sim.spawn_unit(sim.types.id("TARG").unwrap(), 0, FxVec3::from_ints(150, 0, 700), 0, true).unwrap();
+    assert!(fires(&mut sim, &[]), "with a facility at work, a radar contact is fired on at will");
+    assert!(sim.players[0].radar_targeting);
+    assert_eq!(sim.seen_by(sim.unit(target).unwrap(), 0), Seen::Radar, "still a radar contact");
+    // Held fire holds.
+    let fire = |state: u8| Command::SetStates { player: 0, units: vec![gun], fire: Some(state), movement: None };
+    assert!(!fires(&mut sim, &[fire(0)]), "held fire holds");
+    assert!(fires(&mut sim, &[fire(2)]), "and fire at will again");
+    // Switched off: no more.
+    assert!(!fires(&mut sim, &[Command::SetActive { player: 0, units: vec![facility], on: false }]), "the facility switched off");
+    assert!(!sim.players[0].radar_targeting && sim.unit(gun).unwrap().weapons[0].target.is_none(), "the contact let go");
+    assert!(fires(&mut sim, &[Command::SetActive { player: 0, units: vec![facility], on: true }]), "switched on again");
+    // Short of the energy it uses (1,250 a second): as a radar, it is not at work.
+    sim.set_starting_resources(0, Fx::from_int(1000), Fx::ZERO);
+    assert!(!fires(&mut sim, &[]), "its upkeep unpaid, the facility is not at work");
+    assert!(!sim.players[0].radar_targeting);
+}
+
+#[test]
+fn a_dropped_order_goes_from_the_queue_as_it_stands() {
+    let data = data_of(&[unit("WALKER", "CanMove=1; MaxVelocity=1;")]);
+    let mut sim = sim_of(data, 2);
+    let walker = sim.spawn_unit(sim.types.id("WALKER").unwrap(), 0, FxVec3::from_ints(200, 0, 200), 0, true).unwrap();
+    let [a, b, c] = [(600, 200), (600, 600), (200, 600)].map(|(x, z)| Order::Move(FxVec3::from_ints(x, 0, z)));
+    let order = |order: &Order, queue| Command::Order { player: 0, units: vec![walker], order: order.clone(), queue };
+    sim.step(&[order(&a, false), order(&b, true), order(&c, true)]);
+    let orders = |sim: &Sim| sim.unit(walker).unwrap().orders.iter().cloned().collect::<Vec<_>>();
+    let drop = |order: &Order, index| Command::DropOrder { player: 0, unit: walker, index, order: order.clone() };
+    sim.step(&[drop(&b, 1)]);
+    assert_eq!(orders(&sim), [a.clone(), c.clone()], "the second dropped, the rest kept in order");
+    sim.step(&[drop(&c, 5)]);
+    assert_eq!(orders(&sim), [a.clone()], "the queue moved on since the click: the nearest that is it");
+    sim.step(&[drop(&b, 0)]);
+    assert_eq!(orders(&sim), [a.clone()], "one not queued: nothing");
+    sim.step(&[Command::DropOrder { player: 1, unit: walker, index: 0, order: a.clone() }]);
+    assert_eq!(orders(&sim), [a.clone()], "another player's units are not theirs to change");
+    sim.step(&[drop(&a, 0)]);
+    assert!(orders(&sim).is_empty(), "the one under way, the last: it stops");
+    // A move and a patrol after it: the move dropped, the patrol stays as it was (given again,
+    // its return leg was added once more).
+    sim.step(&[order(&a, false), order(&Order::Patrol(FxVec3::from_ints(400, 0, 700)), true)]);
+    let patrol: Vec<Order> = orders(&sim).into_iter().skip(1).collect();
+    assert!(!patrol.is_empty() && patrol.iter().all(|o| matches!(o, Order::Patrol(_))), "{patrol:?}");
+    sim.step(&[drop(&a, 0)]);
+    assert_eq!(orders(&sim), patrol, "the patrol as it was, no leg added");
+}
+
+#[test]
 fn radar_contacts_accept_attacks_and_losing_contact_preserves_queued_orders() {
     let data = data_of(&[
         unit("SHOOTER", "CanMove=1; MaxVelocity=1; Weapon1=GUN; SightDistance=32; RadarDistance=500;"),
@@ -913,6 +1232,26 @@ fn radar_contacts_accept_attacks_and_losing_contact_preserves_queued_orders() {
     assert_eq!(sim.unit(s).unwrap().orders.front(), Some(&Order::Move(retreat)));
     sim.step(&[]);
     assert_eq!(sim.unit(s).unwrap().move_request, Some(retreat));
+}
+
+#[test]
+fn a_shot_waiting_for_its_energy_asks_for_it_at_its_reload_pace() {
+    let data = data_of(&[
+        unit("GUN", "Weapon1=ZAP; SightDistance=500;"),
+        unit("DUMMY", "MaxDamage=100000;"),
+        weapon_file("ZAP", "energypershot=300;"),
+    ]);
+    let mut sim = sim_of(data, 2);
+    let gun = sim.spawn_unit(sim.types.id("GUN").unwrap(), 0, FxVec3::from_ints(300, 0, 300), 0, true).unwrap();
+    sim.spawn_unit(sim.types.id("DUMMY").unwrap(), 1, FxVec3::from_ints(400, 0, 300), 0, true).unwrap();
+    sim.set_starting_resources(0, Fx::ZERO, Fx::ZERO);
+    for _ in 0..40 { sim.step(&[]); }
+    let w = sim.weapon_types.get(sim.types.get(sim.unit(gun).unwrap().type_id).weapons[0].unwrap()).clone();
+    let e = &sim.players[0].economy;
+    assert_eq!(e.energy_expense, Fx::ZERO, "nothing paid with no energy");
+    // (Not its whole price every tick it tries again: its price over its reload.)
+    assert_eq!(e.energy_wanted, w.energy_per_shot / i64::from(w.reload_ticks.max(1)) * TICKS_PER_SECOND);
+    assert!(e.energy_wanted > Fx::ZERO);
 }
 
 /// A factory (a builder that does not move) takes the orders its weapons fire on, as TA's do, what
@@ -1090,6 +1429,92 @@ fn a_nuke_sent_at_a_unit_comes_down_where_the_unit_stood_at_its_launch() {
             assert_eq!(after.health, full, "and is unharmed");
         }
     }
+}
+
+/// Interceptors take the missiles of their classes (TA's `interceptor` and `targetable` read as
+/// sets of classes, as the Spring engine reads them): an anti-nuke (1) a nuke (1) and no tactical
+/// missile (2), a tactical defence (2, unstocked, at its reload) the reverse, one of both (3)
+/// either; TA's own 1 and 1 as ever. A missile no interceptor takes flies on untouched.
+#[test]
+fn interceptors_take_only_the_missiles_of_their_classes() {
+    for (anti, missile, takes) in [(1, 1, true), (1, 2, false), (2, 2, true), (2, 1, false), (3, 2, true), (3, 1, true)] {
+        let stock = if anti == 1 { "stockpile=1;" } else { "" };
+        let data = data_of(&[
+            unit("DEFENDER", "Weapon1=ANTI;"),
+            unit("SILO", "Weapon1=MISSILE;"),
+            weapon_file("ANTI", &format!("interceptor={anti}; {stock} coverage=1000; range=1000; tracks=1; guidance=1; turnrate=32768; weaponvelocity=1500; flighttime=10; reloadtime=1;")),
+            weapon_file("MISSILE", &format!("targetable={missile}; stockpile=1; commandfire=1; guidance=1; turnrate=32768; weaponvelocity=200; flighttime=60;")),
+        ]);
+        let mut sim = sim_of(data, 2);
+        let defender = sim.spawn_unit(sim.types.id("DEFENDER").unwrap(), 0, FxVec3::from_ints(300, 60, 300), 0, true).unwrap();
+        let silo_type = sim.types.id("SILO").unwrap();
+        let silo = sim.spawn_unit(silo_type, 1, FxVec3::from_ints(900, 60, 900), 0, true).unwrap();
+        if anti == 1 {
+            sim.grant_stockpile(defender, 1);
+        }
+        let pos = FxVec3::from_ints(700, 400, 300);
+        sim.projectiles.push(crate::combat::Projectile {
+            id: 100, weapon: sim.types.get(silo_type).weapons[0].unwrap(), owner: silo, owner_player: 1,
+            pos, prev_pos: pos, vel: FxVec3::ZERO, target: None, target_pos: FxVec3::from_ints(300, 60, 300),
+            age: 0, ttl: 1800, hits: Vec::new(), dead: false,
+        });
+        sim.take_events();
+        let (mut fired, mut intercepted) = (false, false);
+        for _ in 0..120 {
+            sim.step(&[]);
+            for e in sim.take_events() {
+                match e {
+                    SimEvent::WeaponFired { unit, .. } if unit == defender => fired = true,
+                    SimEvent::Intercepted { defender: 0, attacker: 1, .. } => intercepted = true,
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!((fired, intercepted), (takes, takes), "interceptor {anti} against targetable {missile}");
+        assert_eq!(sim.projectiles.iter().any(|p| p.id == 100), !takes, "interceptor {anti} against targetable {missile}: the missile flies on unless taken");
+    }
+}
+
+/// An interceptor takes a missile coming down on what it covers once the missile is within its
+/// range: a tactical defence 200 px across holds its fire while the missile is still far off (its
+/// shot would run out before it got there) and takes it as it comes in. One with no range written
+/// (as the anti-nukes of the tests above) takes it wherever it is.
+#[test]
+fn a_tactical_defence_takes_a_missile_once_it_is_within_its_range() {
+    let data = data_of(&[
+        unit("DEFENDER", "Weapon1=ANTI;"),
+        unit("SILO", "Weapon1=MISSILE;"),
+        weapon_file("ANTI", "interceptor=2; coverage=200; range=200; tracks=1; guidance=1; turnrate=32768; weaponvelocity=1500; startvelocity=1500; flighttime=10; reloadtime=1;"),
+        weapon_file("MISSILE", "targetable=2; stockpile=1; commandfire=1; guidance=1; turnrate=32768; weaponvelocity=200; flighttime=60;"),
+    ]);
+    let mut sim = sim_of(data, 2);
+    let home = FxVec3::from_ints(100, 60, 500);
+    let defender = sim.spawn_unit(sim.types.id("DEFENDER").unwrap(), 0, home, 0, true).unwrap();
+    let silo_type = sim.types.id("SILO").unwrap();
+    let silo = sim.spawn_unit(silo_type, 1, FxVec3::from_ints(950, 60, 900), 0, true).unwrap();
+    let pos = FxVec3::from_ints(950, 300, 500);
+    sim.projectiles.push(crate::combat::Projectile {
+        id: 100, weapon: sim.types.get(silo_type).weapons[0].unwrap(), owner: silo, owner_player: 1,
+        pos, prev_pos: pos, vel: FxVec3::from_ints(-6, 0, 0), target: None, target_pos: home,
+        age: 3, ttl: 1800, hits: Vec::new(), dead: false,
+    });
+    sim.take_events();
+    let (mut fired, mut intercepted) = (None, false);
+    for tick in 0..300 {
+        let before = sim.projectiles.iter().find(|p| p.id == 100).map(|p| (p.pos - home).xz().length());
+        sim.step(&[]);
+        for e in sim.take_events() {
+            match e {
+                SimEvent::WeaponFired { unit, .. } if unit == defender => fired = fired.or(before.map(|far| (tick, far))),
+                SimEvent::Intercepted { defender: 0, attacker: 1, .. } => intercepted = true,
+                _ => {}
+            }
+        }
+    }
+    let (tick, far) = fired.expect("the defence fires");
+    // (It looks every fifth tick: the missile comes on some 33 px between looks.)
+    assert!(far <= Fx::from_int(207) && far > Fx::from_int(160) && tick > 80, "it fires as the missile comes within its range: {far:?} px off, tick {tick}");
+    assert!(intercepted && !sim.projectiles.iter().any(|p| p.id == 100), "and takes it");
 }
 
 #[test]
@@ -2631,4 +3056,200 @@ fn units_of_the_computer_players_lists_are_built_but_not_offered() {
         sim.step(&[]);
         sim.units().any(|u| u.type_id == ai_ship && u.is_complete())
     }), "made when an order names it, as a computer player's");
+}
+
+/// A factory's script spins its build pad about y while it builds (TA's plants: `spin pad around
+/// y-axis speed <30>` from `StartBuilding`, `stop-spin` in `StopBuilding`): the unit being built
+/// rides the pad round, from the factory's own heading on, and keeps the heading the pad left it
+/// with when it is done; then it drives out.
+#[test]
+fn a_unit_being_built_turns_with_the_factory_pad() {
+    use crate::cob::CobProgram;
+    use crate::defs::{ModelDef, PieceDef};
+    use ta_formats::cob::{CobFunction, CobScript, op};
+    let data = data_of(&[
+        unit("PLANT", "Builder=1; WorkerTime=100; FootprintX=4; FootprintZ=4; BuildTime=1000; BuildCostMetal=100; TEDClass=PLANT;"),
+        unit("TANK", "CanMove=1; MaxVelocity=1; Acceleration=0.1; BrakeRate=0.1; TurnRate=600; BuildTime=300; BuildCostMetal=10; FootprintX=1; FootprintZ=1;"),
+    ]);
+    let mut sim = sim_of(with_menu(data, "PLANT", &["TANK"]), 1);
+    sim.set_starting_resources(0, Fx::from_int(10000), Fx::from_int(10000));
+    let (plant_type, tank_type) = (sim.types.id("PLANT").unwrap(), sim.types.id("TANK").unwrap());
+    // Its model, a base and a pad on it; its script readies it as it opens, names the pad as where
+    // it builds and spins the pad while it builds, as TA's plants' do.
+    let pieces = vec!["base".to_string(), "pad".to_string()];
+    let mut script = CobScript { pieces: pieces.clone(), ..Default::default() };
+    let function = |script: &mut CobScript, name: &str, code: &[u32]| {
+        script.functions.push(CobFunction { name: name.into(), offset: script.code.len() as u32 });
+        script.code.extend_from_slice(code);
+    };
+    function(&mut script, "Activate", &[op::PUSH_CONSTANT, crate::host::value::IN_BUILD_STANCE as u32, op::PUSH_CONSTANT, 1, op::SET_VALUE, op::PUSH_CONSTANT, 0, op::RETURN]);
+    function(&mut script, "QueryBuildInfo", &[op::CREATE_LOCAL, op::PUSH_CONSTANT, 1, op::POP_LOCAL, 0, op::PUSH_CONSTANT, 0, op::RETURN]);
+    function(&mut script, "StartBuilding", &[op::PUSH_CONSTANT, 0, op::PUSH_CONSTANT, 5461, op::SPIN, 1, 1, op::PUSH_CONSTANT, 0, op::RETURN]);
+    function(&mut script, "StopBuilding", &[op::PUSH_CONSTANT, 0, op::STOP_SPIN, 1, 1, op::PUSH_CONSTANT, 0, op::RETURN]);
+    {
+        let t = &mut Arc::get_mut(&mut sim.types).unwrap().types[plant_type];
+        t.model = Arc::new(ModelDef {
+            pieces: vec![
+                PieceDef { name: "base".into(), parent: None, offset: FxVec3::ZERO, top: Fx::ZERO },
+                PieceDef { name: "pad".into(), parent: Some(0), offset: FxVec3::ZERO, top: Fx::ZERO },
+            ],
+            ..Default::default()
+        });
+        t.model_to_cob = vec![Some(0), Some(1)];
+        t.script = Some(Arc::new(CobProgram::new(script, &pieces)));
+    }
+    let east = 16384;
+    let plant = sim.spawn_unit(plant_type, 0, FxVec3::from_ints(400, 60, 400), east, true).unwrap();
+    let pad = |sim: &Sim| {
+        let f = sim.unit(plant).unwrap();
+        piece_world_heading(f, sim.types.get(plant_type), f.cob.as_ref(), 1)
+    };
+    sim.step(&[Command::Produce { player: 0, factory: plant, type_id: tank_type, count: 1 }]);
+    // Three seconds of building (`BuildTime` 300 at `WorkerTime` 100), the pad turning 30 degrees
+    // a second: a quarter turn.
+    let (mut tank, mut first, mut turned, mut last) = (None, None, 0i64, 0);
+    for _ in 0..30 * 10 {
+        let before = pad(&sim);
+        sim.step(&[]);
+        let Some(id) = tank.or_else(|| sim.units().find(|u| u.type_id == tank_type).map(|u| u.id)) else { continue };
+        tank = Some(id);
+        let u = sim.unit(id).unwrap();
+        if u.is_complete() {
+            break;
+        }
+        // (It rides the pad as the pad stood at the start of the tick: the scripts turn it after.)
+        assert_eq!(u.heading, before, "turned as the pad is turned");
+        if first.is_none() {
+            first = Some(u.heading);
+        } else {
+            turned += wrap_angle(u.heading - last) as i64;
+        }
+        last = u.heading;
+    }
+    let tank = tank.expect("the plant builds the tank");
+    assert_eq!(first, Some(east), "begun facing as the plant faces");
+    assert!((14_000..=18_000).contains(&turned), "a quarter turn as it is built: {turned}");
+    let u = sim.unit(tank).unwrap();
+    assert!(u.is_complete());
+    assert_eq!(u.heading, last, "finished, it keeps the heading the pad left it with");
+    // Released, it drives out of the plant (the pad stopped).
+    for _ in 0..30 * 8 {
+        sim.step(&[]);
+    }
+    let stopped = pad(&sim);
+    sim.step(&[]);
+    assert_eq!(pad(&sim), stopped, "the pad stops when the unit is done");
+    let (u, f) = (sim.unit(tank).unwrap(), sim.unit(plant).unwrap());
+    assert!(u.factory.is_none() && !u.pos.within_xz(f.pos, Fx::from_int(48)), "out of the plant: {:?} from {:?}", u.pos, f.pos);
+}
+
+/// TA's `HealTime` (its Commanders', 27): a finished unit of a type that has one mends itself, 100
+/// hit points in that many seconds (a share of them every tick), up to its full health and no
+/// further, at no cost; a unit without it does not.
+#[test]
+fn a_unit_with_a_heal_time_mends_itself() {
+    let data = data_of(&[
+        unit("COMMANDER", "MaxDamage=3000; HealTime=27; Commander=1; FootprintX=2; FootprintZ=2;"),
+        unit("TANK", "MaxDamage=3000; FootprintX=2; FootprintZ=2;"),
+    ]);
+    let mut sim = sim_of(data, 1);
+    let (commander_type, tank_type) = (sim.types.id("COMMANDER").unwrap(), sim.types.id("TANK").unwrap());
+    assert_eq!((sim.types.get(commander_type).heal_ticks, sim.types.get(tank_type).heal_ticks), (27 * 30, 0));
+    let commander = sim.spawn_unit(commander_type, 0, FxVec3::from_ints(300, 60, 300), 0, true).unwrap();
+    let tank = sim.spawn_unit(tank_type, 0, FxVec3::from_ints(500, 60, 300), 0, true).unwrap();
+    for id in [commander, tank] {
+        sim.unit_mut(id).unwrap().health = Fx::from_int(1000);
+    }
+    let energy = sim.players[0].economy.energy;
+    for _ in 0..27 * 30 {
+        sim.step(&[]);
+    }
+    assert_eq!(sim.unit(commander).unwrap().health, Fx::from_int(1100), "100 hit points in 27 seconds");
+    assert_eq!(sim.unit(tank).unwrap().health, Fx::from_int(1000), "no HealTime, no mending");
+    assert_eq!(sim.players[0].economy.energy, energy, "at no cost");
+    // Evenly: half of it in half the time.
+    for _ in 0..27 * 15 {
+        sim.step(&[]);
+    }
+    let half = sim.unit(commander).unwrap().health - Fx::from_int(1100);
+    assert!((half - Fx::from_int(50)).abs() < Fx::from_ratio(1, 100), "{half:?}");
+    // Up to its full health, and no further.
+    sim.unit_mut(commander).unwrap().health = Fx::from_int(2990);
+    for _ in 0..27 * 30 {
+        sim.step(&[]);
+    }
+    assert_eq!(sim.unit(commander).unwrap().health, Fx::from_int(3000));
+}
+
+/// A unit that dies leaves its wreck lying as it faced (TA's wrecks keep their unit's heading); its
+/// footprint stays the corpse file's, square to the map.
+#[test]
+fn a_wreck_lies_as_its_unit_faced() {
+    let data = data_of(&[
+        unit("TANK", "CanMove=1; MaxVelocity=1; BuildCostMetal=100; Corpse=TANK_DEAD; FootprintX=2; FootprintZ=3;"),
+        ("features/all/corpses.tdf".into(), "[TANK_DEAD] { footprintx=2; footprintz=3; blocking=1; reclaimable=1; metal=50; damage=500; }".into()),
+    ]);
+    let mut sim = sim_of(data, 1);
+    let tank_type = sim.types.id("TANK").unwrap();
+    for (k, heading) in [0, 5000, 16384, -12000, -32768].into_iter().enumerate() {
+        let tank = sim.spawn_unit(tank_type, 0, FxVec3::from_ints(200 + 120 * k as i64, 60, 400), heading, true).unwrap();
+        let u = sim.unit_mut(tank).unwrap();
+        (u.health, u.last_damage, u.dead) = (Fx::ZERO, Fx::ONE, true);
+        let before = sim.features.len();
+        sim.step(&[]);
+        assert_eq!(sim.features.len(), before + 1, "a wreck");
+        let f = &sim.features[before];
+        assert_eq!(f.heading, heading, "lying as its unit faced");
+        let def = &sim.data.features[f.def];
+        assert_eq!((def.footprint_x, def.footprint_z), (2, 3));
+        assert_eq!(sim.world.occupant(f.origin.0 + 1, f.origin.1 + 2), crate::world::Occupant::Feature(before as u32), "its footprint as the file has it");
+    }
+}
+
+/// Reclaimed whole, wreckage (a unit's corpse and the heap it leaves) pays its metal alone, whatever
+/// energy its file gives, as TA's wrecks give metal and nothing else; a tree pays its energy and a
+/// rock its metal, as their files say; and the remains of a unit made of no metal (TA's Scorpions
+/// and Sea Serpents) are no wreckage: their energy, as their file says.
+#[test]
+fn wreckage_pays_its_metal_alone() {
+    let data = data_of(&[
+        unit("BUILDER", "Builder=1; CanMove=1; MaxVelocity=2; Acceleration=1; BrakeRate=1; TurnRate=32768; WorkerTime=300; BuildDistance=100; CanReclamate=1; FootprintX=2; FootprintZ=2;"),
+        unit("TANK", "CanMove=1; MaxVelocity=1; BuildCostMetal=100; BuildCostEnergy=1000; Corpse=TANK_DEAD; FootprintX=2; FootprintZ=2;"),
+        unit("CRITTER", "CanMove=1; MaxVelocity=1; BuildCostMetal=0; BuildCostEnergy=1000; Corpse=critter_dead; FootprintX=2; FootprintZ=2;"),
+        ("features/all/stuff.tdf".into(), [
+            "[TANK_DEAD] { footprintx=2; footprintz=2; blocking=1; reclaimable=1; metal=50; energy=400; featuredead=TANK_HEAP; damage=500; }",
+            "[TANK_HEAP] { footprintx=2; footprintz=2; blocking=0; reclaimable=1; metal=20; energy=300; damage=500; }",
+            "[CRITTER_DEAD] { footprintx=2; footprintz=2; blocking=1; reclaimable=1; metal=0; energy=300; damage=500; }",
+            "[TREE] { footprintx=1; footprintz=1; blocking=1; reclaimable=1; energy=250; damage=500; }",
+            "[ROCK] { footprintx=2; footprintz=2; blocking=1; reclaimable=1; metal=100; damage=500; }",
+        ].join("\n")),
+    ]);
+    let sim = sim_of(data, 1);
+    let id = |name: &str| sim.data.feature_id(name).unwrap();
+    let (wreck, heap, critter, tree, rock) = (id("TANK_DEAD"), id("TANK_HEAP"), id("CRITTER_DEAD"), id("TREE"), id("ROCK"));
+    assert!(sim.is_wreckage(wreck) && sim.is_wreckage(heap), "a unit's corpse, and the heap it leaves");
+    assert!(!sim.is_wreckage(critter) && !sim.is_wreckage(tree) && !sim.is_wreckage(rock));
+    let n = Fx::from_int;
+    assert_eq!(sim.reclaim_value(wreck), (n(50), Fx::ZERO));
+    assert_eq!(sim.reclaim_value(heap), (n(20), Fx::ZERO));
+    assert_eq!(sim.reclaim_value(critter), (Fx::ZERO, n(300)));
+    assert_eq!(sim.reclaim_value(tree), (Fx::ZERO, n(250)));
+    assert_eq!(sim.reclaim_value(rock), (n(100), Fx::ZERO));
+    // Reclaimed: what the stores take.
+    for (name, metal, energy) in [("TANK_DEAD", 50, 0), ("TANK_HEAP", 20, 0), ("CRITTER_DEAD", 0, 300), ("TREE", 0, 250), ("ROCK", 100, 0)] {
+        let mut sim = sim.clone();
+        let index = sim.place_feature(name, FxVec3::from_ints(520, 60, 520), 0).unwrap();
+        let builder = sim.spawn_unit(sim.types.id("BUILDER").unwrap(), 0, FxVec3::from_ints(400, 60, 520), 0, true).unwrap();
+        (sim.players[0].economy.metal, sim.players[0].economy.energy) = (Fx::ZERO, Fx::ZERO);
+        sim.step(&[Command::Order { player: 0, units: vec![builder], order: Order::Reclaim(index), queue: false }]);
+        for _ in 0..30 * 30 {
+            sim.step(&[]);
+            if !sim.features[index].alive {
+                break;
+            }
+        }
+        assert!(!sim.features[index].alive, "{name} reclaimed");
+        let e = &sim.players[0].economy;
+        assert_eq!((e.metal, e.energy), (n(metal), n(energy)), "{name} pays");
+    }
 }

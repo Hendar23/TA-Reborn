@@ -56,23 +56,31 @@ at once:
   square, a power of two and opaque. Clear a slot to show the livery there again.
 - **Undo** and **Redo** (Ctrl+Z, Ctrl+Y) step back and forth; **Revert** goes back to the skin as
   last saved. **Save** (Ctrl+S) keeps it in the settings folder's `skins/`; **Save as…** keeps a
-  copy under another name. Leaving the editor with changes not saved asks first.
+  copy under another name. Leaving the editor with changes not saved asks first; **Save** there
+  saves and leaves.
 
 Your own skins have **Edit**, **Export…** and **Delete** (to the Recycle Bin) in the library.
 A saved skin's folder also holds `UNIT-TEXTURES.toml`, the unit and texture names of your game
 and enabled mods, for editing `skin.toml` by hand (see Manifest). Saving in the editor changes
-only `skin.toml` and the pictures it adds, so working files kept in the folder stay as they are.
+only `skin.toml` and the pictures it adds, so working files kept in the folder stay as they are:
+a new picture never takes the name of a file already there, and the only pictures a save takes
+away are those the editor itself wrote that the skin no longer uses.
 
 ## Share
 
 Choose **Export…** to make one `.taskin` file. Share that file; another player uses **Import**
-or drops it onto the launcher. Importing adds the skin without selecting it.
+or drops it onto the launcher. Importing adds the skin without selecting it. When a skin with
+the same id is installed already, the launcher asks: **Replace** puts the imported skin in its
+place (the installed one goes to the Recycle Bin, with any working files in its folder), and
+**Keep both** installs the new one beside it under an id of its own (`camo-2`).
 
 Export includes only the manifest and its referenced PNGs. Working documents, the unit
 reference and unrelated files stay in the author folder. Existing skins and export files
-are never overwritten. For a new edition, change the manifest's `id` and containing folder
-to a new matching name; export to a new filename. Built-in exports create editable
-copies such as `desert-copy` or `christmas-copy`.
+are never overwritten without asking. For a new edition, change the manifest's `id` and
+containing folder to a new matching name; export to a new filename. Built-in exports create
+editable copies such as `desert-copy` or `christmas-copy`; a skin saved in the editor never
+takes one of those ids (a customized Desert named "Desert copy" is `desert-copy-2`), so the two
+never meet.
 
 The settings folder is `%APPDATA%\TA Reborn` on Windows, or the application's configuration
 folder on Linux. To create a unit reference from a development build:

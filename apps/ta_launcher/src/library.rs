@@ -63,12 +63,15 @@ pub struct Pictures {
     name: &'static str,
     threads: usize,
     cap: usize,
+    /// How the textures are drawn (smoothly, and to their edges unless repeated).
+    options: egui::TextureOptions,
     queue: Option<Arc<Queue>>,
     workers: Vec<JoinHandle<()>>,
     results: Option<mpsc::Receiver<Made>>,
     pending: HashSet<String>,
     show: HashSet<String>,
-    failed: HashSet<String>,
+    /// The pictures that could not be made, and why.
+    failed: HashMap<String, String>,
     textures: HashMap<String, (TextureHandle, u64)>,
     sizes: HashMap<String, (u32, u32)>,
     frame: u64,
@@ -79,8 +82,23 @@ const QUEUE_CAP: usize = 512;
 
 impl Pictures {
     pub fn new(name: &'static str, threads: usize, cap: usize) -> Self {
-        Self { name, threads, cap, queue: None, workers: Vec::new(), results: None, pending: HashSet::new(), show: HashSet::new(),
-            failed: HashSet::new(), textures: HashMap::new(), sizes: HashMap::new(), frame: 0, made: 0 }
+        Self { name, threads, cap, options: egui::TextureOptions::LINEAR, queue: None, workers: Vec::new(), results: None, pending: HashSet::new(), show: HashSet::new(),
+            failed: HashMap::new(), textures: HashMap::new(), sizes: HashMap::new(), frame: 0, made: 0 }
+    }
+
+    /// Its textures drawn so (a picture repeated across what it fills: `TextureWrapMode::Repeat`).
+    pub fn options(mut self, options: egui::TextureOptions) -> Self {
+        self.options = options;
+        self
+    }
+
+    /// Lets go of every texture, and of the pictures still waiting their turn (those being made
+    /// are let go as they come in): none of them is on show any more.
+    pub fn clear(&mut self) {
+        if self.textures.is_empty() && self.show.is_empty() { return; }
+        self.drop_queued();
+        self.show.clear();
+        self.textures.clear();
     }
 
     /// The picture for `key`, if made (it counts as shown this frame).
@@ -94,10 +112,16 @@ impl Pictures {
 
     /// Whether `key` still needs asking for to show: not made, not on its way to show, not failed.
     pub fn wanted(&self, key: &str) -> bool {
-        !self.textures.contains_key(key) && !self.show.contains(key) && !self.failed.contains(key)
+        !self.textures.contains_key(key) && !self.show.contains(key) && !self.failed.contains_key(key)
     }
 
-    pub fn failed(&self, key: &str) -> bool { self.failed.contains(key) }
+    pub fn failed(&self, key: &str) -> bool { self.failed.contains_key(key) }
+
+    /// Why `key`'s picture could not be made, if it could not.
+    pub fn failure(&self, key: &str) -> Option<&str> { self.failed.get(key).map(String::as_str) }
+
+    /// How many pictures could not be made (it changes as more fail, or failures are forgotten).
+    pub fn failures(&self) -> usize { self.failed.len() }
 
     /// What a maker learnt of `key`'s size, kept after its texture is let go.
     pub fn size(&self, key: &str) -> Option<(u32, u32)> { self.sizes.get(key).copied() }
@@ -143,7 +167,7 @@ impl Pictures {
 
     /// Looks ahead for `key`: made after everything asked for to show, its size kept, no texture.
     pub fn prefetch(&mut self, key: String, make: impl FnOnce() -> anyhow::Result<Picture> + Send + 'static) {
-        if self.textures.contains_key(&key) || self.pending.contains(&key) || self.failed.contains(&key) || self.sizes.contains_key(&key) { return; }
+        if self.textures.contains_key(&key) || self.pending.contains(&key) || self.failed.contains_key(&key) || self.sizes.contains_key(&key) { return; }
         let Some(queue) = self.queue() else { return };
         let mut jobs = queue.jobs.lock().unwrap_or_else(|e| e.into_inner());
         jobs.push_back((key.clone(), Box::new(make)));
@@ -194,13 +218,13 @@ impl Pictures {
                 Ok(picture) => {
                     if let Some(size) = picture.size { self.sizes.insert(key.clone(), size); }
                     if show {
-                        let texture = ctx.load_texture(format!("{}:{key}", self.name), picture.image, egui::TextureOptions::LINEAR);
+                        let texture = ctx.load_texture(format!("{}:{key}", self.name), picture.image, self.options);
                         self.textures.insert(key, (texture, self.frame));
                     }
                 }
                 Err(error) => {
                     log::debug!("{} picture {key}: {error}", self.name);
-                    self.failed.insert(key);
+                    self.failed.insert(key, error);
                 }
             }
         }
@@ -265,6 +289,30 @@ pub fn cache_dir(data: &Path, kind: &str) -> PathBuf {
 pub fn cache_file(dir: &Path, key: &str) -> PathBuf {
     use sha2::{Digest, Sha256};
     dir.join(format!("{:x}.jpg", Sha256::digest(key.as_bytes())))
+}
+
+/// Deletes the pictures cached in `dir` but those cached under `keys` (with what is kept beside
+/// each: a map's size): those of things gone, or changed since (a picture is cached by its
+/// content's identity), are not kept for ever. Only the cache's own files go (a picture's name is
+/// its key's digest), and those still being written are left alone unless an hour old.
+pub fn prune_cache(dir: &Path, keys: &[String]) {
+    use sha2::{Digest, Sha256};
+    let keep: HashSet<String> = keys.iter().map(|key| format!("{:x}", Sha256::digest(key.as_bytes()))).collect();
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut gone = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else { continue };
+        let digest = name.split('.').next().unwrap_or_default();
+        if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) || !entry.file_type().is_ok_and(|kind| kind.is_file()) { continue; }
+        let stale = if name.ends_with(".part") {
+            entry.metadata().ok().and_then(|m| m.modified().ok()).and_then(|at| at.elapsed().ok()).is_some_and(|age| age > std::time::Duration::from_secs(3600))
+        } else {
+            (name.ends_with(".jpg") || name.ends_with(".size")) && !keep.contains(digest)
+        };
+        if stale && std::fs::remove_file(&path).is_ok() { gone += 1; }
+    }
+    if gone > 0 { log::info!("{gone} cached pictures of things no longer there let go of in {}", dir.display()); }
 }
 
 /// Reads a cached picture, if there is one.

@@ -590,3 +590,122 @@ you): "Die Mod läuft", "Die Prüfung brach ab".
 | TA's later engines / the patched engines of later years | spätere TA-Engines / die gepatchten Engines späterer Jahre |
 | ID, IDs (a weapon's) | ID, IDs (Waffen-ID) |
 | the campaign screen | die Kampagnenseite (as die Gefechtsseite) |
+
+## A mod's presentation in the launcher (`pages/mods.rs`, `crates/ta_data/src/presentation.rs`)
+
+A mod's banner, gameplay preview, icon, screenshots and links in the MODS library, and the mod
+check's notes on them, under the report's group PRÄSENTATION. The mod's own folder is "der Ordner
+der Mod" (Mod-Ordner is the mods folder); `mod.toml`, `media/banner.png` and `{key}` (a manifest
+key: banner, preview, icon, screenshots) stay as they are: "Der Eintrag {key} in mod.toml verweist
+auf {path}, eine Datei …".
+
+| English | Deutsch |
+|---|---|
+| PRESENTATION (the report's group of notes) | PRÄSENTATION |
+| banner (the card and the top of the mod's page) | Banner (das Banner) |
+| gameplay preview (an animated GIF of the mod in play) | Gameplay-Vorschau |
+| PLAY PREVIEW (the banner's button, with motion reduced) | VORSCHAU ABSPIELEN (as CHRONIK ABSPIELEN) |
+| icon (a mod's) | Symbol (das Symbol), as STRATEGISCHE SYMBOLE |
+| SCREENSHOTS / Screenshot {n} of {count} / {n} of {count} | SCREENSHOTS / Screenshot {n} von {count} / {n} von {count} |
+| MOD PAGE (a link to the mod's web page, beside its links) | MOD-SEITE |
+| the mod's media folder / a path from the mod's folder | der Ordner „media“ der Mod / ein Pfad relativ zum Ordner der Mod |
+| frames (of a GIF) | Frames (as the mod check's "{frames} Frames") |
+| shows blurred / shows sharp | wirkt unscharf / wirkt scharf |
+| … at best (the size to aim for) | am besten … |
+| still picture / picture editor | Standbild / Bildbearbeitungsprogramm |
+| link / web address | Link / Webadresse |
+
+## A mod's interface theme (`pages/mods.rs`, `settings.rs`, `presentation.rs`)
+
+A mod's `[theme]` draws its battles' HUD in colours, pictures and a font of its own; the mod's page
+previews it under OBERFLÄCHENDESIGN, the game's Options (Oberfläche) turn it off. A theme is ein
+Design here (Windows' word for one; Thema stays the season's, SAISONALES THEMA); the HUD stays das
+HUD. `{extras}` follows "mit", so its pieces are datives ("eigener Schriftart", "Bildern hinter
+seinen Panels"). The HUD's own metal (its side's tiles, where a picture would go) is its
+Metalloptik: "Metall" alone reads as the resource.
+
+| English | Deutsch |
+|---|---|
+| interface theme / INTERFACE THEME (a mod page's caption) / theme (in the notes) | Oberflächendesign / OBERFLÄCHENDESIGN / Design ("des Designs") |
+| MODS' INTERFACE THEMES (the switch) / in the game's Interface options | OBERFLÄCHENDESIGNS DER MODS / im Spiel unter Optionen, Oberfläche |
+| HUD / panels | das HUD / Panels (as UI-SKALIERUNG's hint) |
+| accent (a theme's colour) | Akzentfarbe (Akzent is the skin editor's Detail) |
+| font / font file | Schriftart (as SCHRIFTART) / Schriftdatei |
+| the HUD draws its own metal there | Das HUD zeigt stattdessen seine eigene Metalloptik |
+| the HUD keeps TA Reborn's own (colour, font) | Das HUD behält dort die Farbe von TA Reborn / behält die von TA Reborn |
+| a tile (a picture repeated across the panels) | Kachel |
+| a contrast of {ratio}:1 / {least}:1 reads well | einen Kontrast von {ratio}:1 / Ab {least}:1 ist sie gut lesbar |
+| the theme's {key} (a manifest key) / a colour key | der Eintrag {key} des Designs / die Farbe {key} |
+| side ([theme.sides.arm]) | Seite (as "Benötigt die Seite {side}") |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | Deutsch |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} kann nicht zusammen mit {other} aktiviert sein: Deaktiviere eine der beiden / kann nicht zusammen mit {mods} aktiviert sein |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn {version} oder neuer / Installiert ist {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | BENÖTIGT NEUERES TA REBORN |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / die älteste Version von TA Reborn, in der die Mod läuft |
+
+## A mod's manifest as the check reads it, and its load order (`presentation.rs`, `validation.rs`, `mod_order.rs`)
+
+`mod.toml`, `[table]`, `[{table}]`, `depends`, `load_after`, `conflicts`, `panel_texture` and
+`tags = ["units"]` stay as written; a manifest key is ein Eintrag throughout ("Der Eintrag {key} in
+mod.toml", as the presentation notes). `{found}` and `{expected}` fill "Der Eintrag {key} in mod.toml
+ist {found}, erwartet wird aber {expected}": noun phrases that read the same in the nominative and the
+accusative.
+
+| English | Deutsch |
+|---|---|
+| key (of mod.toml) / value / table / [table] line / manifest | Eintrag / Wert / Tabelle / [table]-Zeile / Manifest |
+| text in quotes / a whole number / a number / true or false | Text in Anführungszeichen / eine ganze Zahl / eine Zahl / true oder false (TOML's own words) |
+| a date / a list in square brackets / a table | ein Datum / eine Liste in eckigen Klammern / eine Tabelle |
+| reads past it (an unknown key) / leaves it out (a value of another kind) | wird überlesen / lässt ihn weg |
+| a slip of the pen | ein Schreibfehler |
+| need each other in a circle / nest more than 64 deep | benötigen einander im Kreis / mehr als 64 Ebenen tief verschachtelt |
+| plates (the HUD's, a theme's picture behind them) / the side's own metal plates | Platten / die eigenen Metallplatten der Seite |
+| line spacing / its letters show at {percent}% of their size | Zeilenabstand / ihre Buchstaben erscheinen mit {percent}% ihrer Größe |
+| one frame in {stride} (a preview played with fewer of its frames) / choppier | einen von {stride} Frames / ruckeliger |
+| TURN OFF {name} (a mod, beside ENABLE {name}) / STOP PREVIEW (beside PLAY PREVIEW) | {name} DEAKTIVIEREN / VORSCHAU STOPPEN |
+
+## A damaged service record, unreadable profiles and the launcher's keys (`app/profile_page.rs`, `app/profiles.rs`, `pages/play.rs`, `app/polish.rs`)
+
+The launcher's KEYBOARD SHORTCUTS name the keys as German keyboards print them (Strg+1, Umschalt+Tab,
+Alt+Pos1): an exception to "key names stay English" above, for `polish.rs` only; the Mac's Cmd and
+Option stay as they are. No sentence opens on "Sie" or "Ihre" for a profile, a file or a map (it reads
+as the formal you): "Die Profile bleiben unverändert", "Die Karte kann weder …". Counts of maps made
+and not made read for any number: "Karten importiert: {n}; nicht erstellt: {failed}.", "Keine der
+gewählten Karten konnte erstellt werden ({n})."
+
+| English | Deutsch |
+|---|---|
+| key labels Ctrl / Shift / Enter / Home / End (launcher shortcuts) | Strg / Umschalt / Eingabe / Pos1 / Ende (Alt, Esc, Tab, Cmd, Option kept) |
+| unreadable (a profile, a service record, a map) / UNREADABLE (a map's status) | unlesbar / UNLESBAR (UNLESBARE PROFILE, DIENSTAKTE UNLESBAR) |
+| career file / set aside (the damaged career.toml) / put back | Karrieredatei / beiseitelegen / zurücklegen |
+| START A FRESH CAREER(…) / a fresh career | NEUE KARRIERE BEGINNEN(…) / eine neue Karriere |
+| PUT IT RIGHT (button, link) / CAREER NEEDS ATTENTION (the Play page's title) | BEHEBEN / PROBLEM MIT DER KARRIERE |
+| MOVE TO RECYCLE BIN (button) | IN DEN PAPIERKORB |
+| YOURS AND ALLIES / ENEMY UNITS (the armies' skins) / YOUR SKINS (filter) | EIGENE UND VERBÜNDETE / FEINDE (as FÜR FEINDE) / DEINE SKINS |
+| KEEP BOTH (an imported skin whose id is taken) | BEIDE BEHALTEN |
+| hue / saturation / brightness (colour picker) | Farbton / Sättigung / Helligkeit |
+| screen-reader marks OK / Not present / Error; {content}: found / not found | OK / Nicht vorhanden / Fehler; gefunden / nicht gefunden |
+| LEGAL / THE PROJECT (About page headings) | RECHTLICHES / DAS PROJEKT |
+
+## Importing Supreme Commander's maps and factions (`pages/supcom.rs`, `supcom.rs`, `supcom_factions.rs`)
+
+The game's name compounds with hyphens: Supreme-Commander-Karten, Supreme-Commander-Fraktionen
+(chips SUPREME-COMMANDER-KARTEN / -FRAKTIONEN), the button SUPREME COMMANDER… kept. A faction's
+name follows its noun: "Fraktion {faction} importiert", "Supreme-Commander-Fraktion {faction}
+importiert". The one-map messages are singular ("1 Karte importiert: Du findest sie …", "1 Karte
+konnte nicht erstellt werden"); other counts read for any number ("nicht erstellte Einheiten:
+{failed}"). "then import these" (the maps or factions chosen) is "importiere dann deine Auswahl":
+"diese" would point back at the mod or the maps just named.
+
+| English | Deutsch |
+|---|---|
+| Held until the import ends (beside greyed controls) | Während des Imports gesperrt |
+| STOPPING… / IMPORT MAPS / REPLACE AND IMPORT | WIRD ANGEHALTEN… / KARTEN IMPORTIEREN / ERSETZEN UND IMPORTIEREN |
+| UPDATE… (a mod made by an older TA Reborn, imported again) | UPDATE… (as UPDATE · {size}) |
+| with this (dialog) closed / the launcher's footer | bei geschlossenem Dialog / die Statusleiste des Launchers |
+| the commanders' enhancements / upgrading buildings in place | die Erweiterungen der Kommandanten / das Aufrüsten von Gebäuden an Ort und Stelle |
+| shields / stealth fields / teleporting | Schilde / Tarnkappenfelder (as Tarnkappe, TA's stealth; tarnen is cloak) / Teleportation |

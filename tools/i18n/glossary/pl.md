@@ -567,3 +567,99 @@ lines in the nominative (KTOKOLWIEK TO CZYTA, NADAWCA NIEUSTALONY).
 | TA's later engines / the patched engines of later years | późniejsze silniki TA / załatane silniki z późniejszych lat |
 | a pixel count from a placeholder | px („o wysokości {height} px”: no plural form to choose) |
 | the campaign screen | ekran kampanii (as ekran potyczki) |
+
+## A mod's presentation in the MODS library (`pages/mods.rs`, `ta_data/src/presentation.rs`)
+
+A mod's banner, gameplay preview, icon, screenshots and links, and the mod check's notes on them
+(the report's group PRESENTATION). Manifest keys (`banner`, `preview`, `icon`, `screenshots`) and
+paths stay as written, anchored by a noun so they stay in the nominative: „Klucz {key} w mod.toml
+wskazuje plik {path}”, „Plik {path} waży {size}”, „Obraz {path} ma wymiary {width} × {height}”.
+
+| English | Polski |
+|---|---|
+| banner (the card and the top of the mod's page) | baner (banera, banerem) |
+| gameplay preview (an animated GIF of the mod in play) / PLAY PREVIEW | podgląd rozgrywki (as GAMEPLAY = ROZGRYWKA) / ODTWÓRZ PODGLĄD (as Play = Odtwórz) |
+| icon (a mod's) | ikona |
+| screenshot(s) / SCREENSHOTS / Screenshot {n} of {count} / {n} of {count} | zrzut(y) ekranu / ZRZUTY EKRANU / Zrzut ekranu {n} z {count} / {n} z {count} |
+| MOD PAGE (the link to the mod's web page) | STRONA MODA (as „strona moda”, WEBSITE = STRONA) |
+| PRESENTATION (the report's group heading) | PREZENTACJA |
+| names (a manifest naming a file) / web address | wskazuje / adres internetowy |
+| weighs / blurred / sharp | waży / rozmyty / ostry |
+| give it more pixels / at best | zwiększ rozdzielczość / najlepiej |
+| frames and seconds from placeholders | „klatki: {frames}, czas: {seconds} s” (count-safe); a count of screenshots: „Zrzuty ekranu w mod.toml: {count}” |
+
+## A mod's interface theme (`pages/mods.rs`, `settings.rs`, `ta_data/src/presentation.rs`)
+
+A mod's `[theme]`: the battle's HUD in colours, pictures and a font of its own, previewed on the
+mod's page and checked under PREZENTACJA. HUD stays HUD, masculine, kept in the nominative or
+accusative („HUD ma te kolory”, „własny HUD TA Reborn”) so it never needs HUD-u. Manifest keys
+({key}: `accent`, `text`, `panel_texture`, `font`...) stay as written, anchored by a noun: „Klucz
+{key} motywu”, „Kolor {key} motywu”. The fragments filling {extras} are accusatives after „HUD ma
+te kolory, a także …”, joined by a comma („własną czcionkę, obrazy w tle paneli”).
+
+| English | Polski |
+|---|---|
+| theme / INTERFACE THEME (the caption over the preview) | motyw (as MOTYW SEZONOWY) / MOTYW INTERFEJSU |
+| MODS' INTERFACE THEMES (the game's Interface option) | MOTYWY INTERFEJSU MODÓW („w grze (Opcje, Interfejs)”, as „Opcje, Rozgrywka”) |
+| accent (the theme's main colour) | kolor akcentu (as Windows' Polish) |
+| font / its own font | czcionka / własną czcionkę |
+| pictures behind its panels (the panels' tiled picture) | obrazy w tle paneli |
+| its own metal (the panels' metal, drawn where a picture fails) | własna metalowa tekstura („HUD rysuje w jego miejsce własną metalową teksturę”; not „metal”: the resource) |
+| a tile (of a picture, repeated across the panels) | kafelek („kafelek o boku kilkuset pikseli”) |
+| hexadecimal digits | cyfry szesnastkowe |
+| contrast of {ratio}:1 / reads well | kontrast {ratio}:1 / dobrze czyta się od {least}:1 |
+| a side (in [theme.sides.arm]) | frakcja, as the mod check's other notes („frakcji {side}”, „Frakcje gry: {sides}”) |
+| TA Reborn's own (colour, font, HUD) | własny kolor / własna czcionka / własny HUD TA Reborn |
+
+## A mod's conflicts and the TA Reborn it needs (`main.rs`, `modlist.rs`, `pages/mods.rs`, `presentation.rs`)
+
+| English | Polski |
+|---|---|
+| cannot be on with (a load order's problem / the mod page's line under "requires {mods}") | {name} nie może być włączony razem z modem {other}: wyłącz jeden z nich / niezgodny z: {mods} (as „wymaga: {mods}”) |
+| TA Reborn {version} or later / this is {current} (this TA Reborn's version) | TA Reborn w wersji {version} lub nowszej / obecna wersja to {current} |
+| NEEDS A NEWER TA REBORN (a card's red lamp, for screen readers) | WYMAGA NOWSZEGO TA REBORN |
+| requires_reborn (mod.toml's key, kept) / the oldest TA Reborn the mod plays in | requires_reborn / najstarsza wersja TA Reborn, w której działa mod |
+
+## mod.toml's keys read past, and a load order that does not resolve (`presentation.rs`, `validation.rs`, `mod_order.rs`, `mods.rs`)
+
+| English | Polski |
+|---|---|
+| key / table / a [table] line (TOML; `[table]`, `[{table}]` kept) | klucz / tabela / wiersz [table] („Klucz {key} w mod.toml znajduje się pod wierszem [table]”) |
+| read past (a key) / leave out (a value) | pomija („TA Reborn nie zna klucza {key} w mod.toml i pomija go”, „TA Reborn ją pomija”) |
+| value kinds filling {found} and {expected}, in the nominative („Wartość klucza {key} w mod.toml to {found}, a ten klucz przyjmuje: {expected}.”) | tekst w cudzysłowie / liczba całkowita / liczba / true lub false (TOML's own words) / data / lista w nawiasach kwadratowych / tabela |
+| a later TA Reborn / older TA Reborns / a slip of the pen | nowsza wersja TA Reborn / starsze wersje TA Reborn / literówka |
+| in a circle (dependencies) / the chain of mods needing mods | w zamkniętym kręgu / łańcuch wymaganych modów |
+| plates (the HUD's, panel_texture tiled behind them) / the side's own metal plates | płyty („na obrazie płyt {path}”) / własne metalowe płyty frakcji |
+| line spacing (a font's) | interlinia |
+| TURN OFF {name} / STOP PREVIEW (beside ODTWÓRZ PODGLĄD) | WYŁĄCZ {name} (as WŁĄCZ {name}) / ZATRZYMAJ PODGLĄD |
+
+## The launcher's QA fixes: a damaged service record, unreadable profiles, errors (`profile_page.rs`, `profiles.rs`, `play.rs`, `http.rs`, `maps.rs`, `skins.rs`, `supcom.rs`, `widgets.rs`)
+
+| English | Polski |
+|---|---|
+| damaged (a file) / unreadable (a profile; a map's badge UNREADABLE) | uszkodzony / nieczytelny (USUNĄĆ NIECZYTELNY PROFIL?; badge NIECZYTELNA, as UKRYTA, DOSTĘPNA) |
+| The unreadable profile (fills {name} in „Usunięto {name} (jest w Koszu)”) | nieczytelny profil (lowercase: it stands mid-sentence in most of them; nominative, as names are) |
+| set aside (the damaged career file) / put it right / PUT IT RIGHT | odłożyć na bok / naprawić / NAPRAW |
+| START A FRESH CAREER / CAREER NEEDS ATTENTION / SERVICE RECORD UNREADABLE | ROZPOCZNIJ NOWĄ KARIERĘ / KARIERA WYMAGA UWAGI / NIECZYTELNY PRZEBIEG SŁUŻBY |
+| MOVE TO RECYCLE BIN | PRZENIEŚ DO KOSZA |
+| the Profile page / the Maps page | strona PROFIL / strona MAPY (as strona GRAJ) |
+| setup (the downloaded installer) / graphics driver / the launcher crashed | instalator / sterownik karty graficznej / Launcher uległ awarii |
+| id (a skin's) / KEEP BOTH (an imported skin beside an installed one) | identyfikator / ZACHOWAJ OBIE |
+| YOURS AND ALLIES / ENEMY UNITS (whose units wear a skin) | TY I SOJUSZNICY / WROGIE JEDNOSTKI |
+| RUNNING (the PLAY button while the game runs) | TRWA GRA (as TRWA POMIAR) |
+| key names in shortcut labels | as printed: Alt, Ctrl, Shift, Enter, Esc, Tab, Home, End; the Mac's Cmd, Option |
+| screen-reader marks OK / Not present / Error; "{content}: found / not found" | OK / Brak / Błąd; „{content}: znaleziono / nie znaleziono” (impersonal: no agreement with the label) |
+| error fragments filling {error}, {why} | lowercase clauses („upłynął limit czasu połączenia”, „jest pusty”) |
+| None of the {n} maps could be made / but {failed} could not be made | „Nie udało się utworzyć żadnej mapy (nieudane: {n})” / „nie udało się utworzyć: {failed}” (count-safe) |
+| Hue / Saturation and brightness (colour picker, spoken) | Odcień / Nasycenie i jasność („nasycenie {s}%, jasność {v}%”) |
+
+## Supreme Commander: Forged Alliance's maps and factions imported (`pages/supcom.rs`, `supcom.rs`, `supcom_factions.rs`, `pages/mods.rs`)
+
+| English | Polski |
+|---|---|
+| SUPREME COMMANDER MAPS / FACTIONS (footer chips) / the launcher's footer | MAPY / FRAKCJE SUPREME COMMANDER / stopka launchera |
+| Held until the import ends (amber note by greyed controls) | Zablokowane do końca importu |
+| then import these (the IMPORT button's wait reasons) | „a potem zaimportuj wybrane”; „…zaimportuj mapy / frakcje” where the sentence names the other tab's work |
+| UPDATE… / Update: import it again / Made by an older TA Reborn (a mod made by the import) | AKTUALIZUJ… / Aktualizacja: ponowny import / Utworzony przez starszą wersję TA Reborn |
+| but {failed} of its units could not be made | „ale nie udało się utworzyć części jej jednostek (nieudane: {failed})” (count-safe) |
+| commanders' enhancements / upgrading buildings in place / shields / stealth fields / teleporting | ulepszenia dowódców / ulepszanie budynków na miejscu / tarcze / pola niewykrywalności (as „Niewykrywalna: nie widać jej na radarze”) / teleportacja |

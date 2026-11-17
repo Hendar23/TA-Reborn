@@ -508,7 +508,7 @@ fn drive(sim: &mut Sim, t: &UnitType, at: FxVec3, target_type: usize, check: &mu
             // has come to rest (some answer while it still turns), against the heading the
             // engine asked for (relative to the body).
             sim.step(&[Command::Order { player: 0, units: vec![id], order: Order::Attack(Target::Unit(target)), queue: false }]);
-            let mut was = [true; 3];
+            let mut was = [true; ta_data::unit::MAX_WEAPONS];
             let mut pending: Vec<(usize, usize, i32)> = Vec::new();
             for k in 1..=90 {
                 if k > 1 {
@@ -519,7 +519,7 @@ fn drive(sim: &mut Sim, t: &UnitType, at: FxVec3, target_type: usize, check: &mu
                 for (slot, was) in was.iter_mut().enumerate() {
                     let ws = &u.weapons[slot];
                     if t.weapons[slot].is_some() && ws.aimed && !*was {
-                        pending.extend(heading_turrets(t, ["AimPrimary", "AimSecondary", "AimTertiary"][slot]).into_iter().map(|turret| (slot, turret, ws.aim_heading)));
+                        pending.extend(heading_turrets(t, t.callins.weapon_functions[slot][ta_data::unit::WeaponFunction::Aim as usize]).into_iter().map(|turret| (slot, turret, ws.aim_heading)));
                     }
                     *was = ws.aimed;
                 }

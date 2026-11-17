@@ -60,11 +60,17 @@ fn slots(count: usize) -> Vec<Vec<Slot>> {
     let left = Slot { middle: 225.0, sweep: 2.0 * HALF_ARC };
     let right = Slot { middle: 135.0, sweep: -2.0 * HALF_ARC };
     let top = Slot { middle: 0.0, sweep: 2.0 * HALF_ARC };
+    // Four (a mod's units carry up to eight weapons, those that read the same one arc between
+    // them, `Perspective::weapons`; the first four are shown) on the diagonals,
+    // clear of the reticle's lines and of each other.
+    let upper_left = Slot { middle: 315.0, sweep: 2.0 * HALF_ARC };
+    let upper_right = Slot { middle: 45.0, sweep: -2.0 * HALF_ARC };
     match count {
         0 => Vec::new(),
         1 => vec![vec![left, right]],
         2 => vec![vec![left], vec![right]],
-        _ => vec![vec![left], vec![right], vec![top]],
+        3 => vec![vec![left], vec![right], vec![top]],
+        _ => vec![vec![left], vec![right], vec![upper_left], vec![upper_right]],
     }
 }
 
@@ -101,8 +107,8 @@ pub(super) fn readiness(pen: &Pen, c: Pos2, r: f32, p: &Perspective, game: &Game
         let cost = wt.filter(|wt| wt.command_fire && w.manual).map_or(0.0, |wt| game.sim.shot_energy(u.id, wt).to_f32());
         let starved = w.manual && cost > energy;
         let col = state_colour(w, starved);
-        let fired = (now - p.hud.last_shot[w.slot.min(2)]) as f32;
-        let came = (now - p.hud.ready_since[w.slot.min(2)]) as f32;
+        let fired = (now - w.latest(&p.hud.last_shot)) as f32;
+        let came = (now - w.latest(&p.hud.ready_since)) as f32;
         // (A pulse as it comes ready, a flash as it fires.)
         let pulse = if w.ready && (0.0..0.35).contains(&came) { 1.0 - came / 0.35 } else { 0.0 };
         let flash = if (0.0..0.15).contains(&fired) { 1.0 - fired / 0.15 } else { 0.0 };
@@ -581,10 +587,16 @@ mod tests {
         assert_eq!(slots(1)[0].len(), 2);
         assert_eq!(slots(2).iter().map(Vec::len).collect::<Vec<_>>(), [1, 1]);
         assert_eq!(slots(3).len(), 3);
-        // (Never more than three: a unit has three weapons.)
-        assert_eq!(slots(5).len(), 3);
-        // The arcs keep off the reticle's lines, which run to the four points of the compass.
-        for count in 1..=3 {
+        // (Never more than four: a mod's unit may carry eight weapons, the first four shown.)
+        assert_eq!(slots(4).len(), 4);
+        assert_eq!(slots(8).len(), 4);
+        // The arcs keep off the reticle's lines, which run to the four points of the compass, and
+        // off each other.
+        for count in 1..=4 {
+            let arcs: Vec<(f32, f32)> = slots(count).iter().flatten().map(|s| (s.middle - HALF_ARC, s.middle + HALF_ARC)).collect();
+            for (i, a) in arcs.iter().enumerate() {
+                assert!(arcs[i + 1..].iter().all(|b| a.1 <= b.0 || b.1 <= a.0), "{count}: {arcs:?}");
+            }
             for slot in slots(count).iter().flatten() {
                 let (a, b) = (slot.middle - HALF_ARC, slot.middle + HALF_ARC);
                 for line in [0.0f32, 90.0, 180.0, 270.0, 360.0] {

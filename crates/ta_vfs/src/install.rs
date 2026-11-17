@@ -144,12 +144,13 @@ pub fn find_file_ci(dir: &Path, name: &str) -> Option<PathBuf> {
         .map(|e| e.path())
 }
 
-/// Finds a folder in `dir` ignoring case.
+/// Finds a folder in `dir` ignoring case: a folder, or a link to one (a junction or a symbolic
+/// link, as a game moved to another drive leaves behind: the entry's own type is the link's).
 pub fn find_dir_ci(dir: &Path, name: &str) -> Option<PathBuf> {
     std::fs::read_dir(dir)
         .ok()?
         .filter_map(|e| e.ok())
-        .find(|e| e.file_type().is_ok_and(|t| t.is_dir()) && e.file_name().to_string_lossy().eq_ignore_ascii_case(name))
+        .find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(name) && (e.file_type().is_ok_and(|t| t.is_dir()) || e.path().is_dir()))
         .map(|e| e.path())
 }
 
@@ -620,6 +621,38 @@ pub fn steam_libraries(steam_root: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder that is a link to one elsewhere (a junction on Windows, as a game moved to another
+    /// drive leaves its `gamedata` behind; a symbolic link elsewhere) is found as a folder, in any
+    /// case. Skipped where this system will not make one.
+    #[test]
+    fn folders_behind_links_are_found() {
+        let base = std::env::temp_dir().join(format!("ta_dir_links_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let real = base.join("elsewhere").join("GameData");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("env.scd"), b"x").unwrap();
+        let game = base.join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        let link = game.join("gamedata");
+        #[cfg(windows)]
+        let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(&link).arg(&real).output().is_ok_and(|o| o.status.success());
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&real, &link).is_ok();
+        #[cfg(not(any(windows, unix)))]
+        let made = false;
+        if made {
+            assert_eq!(find_dir_ci(&game, "GAMEDATA"), Some(link.clone()));
+            assert!(find_file_ci(&link, "ENV.SCD").is_some());
+        } else {
+            eprintln!("no link made here: skipped");
+        }
+        assert_eq!(find_dir_ci(&base, "Elsewhere"), Some(base.join("elsewhere")));
+        assert_eq!(find_dir_ci(&game, "missing"), None);
+        // (The link goes first, then what it leads to.)
+        let _ = std::fs::remove_dir(&link);
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn steam_libraries_include_macos_and_linux_homes_and_external_libraries() {
