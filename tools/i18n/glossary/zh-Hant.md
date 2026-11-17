@@ -542,3 +542,5 @@ print them (Alt, Ctrl, Shift, Cmd, Option, Enter, Esc, Tab, Home, End).
 | LEGAL / THE PROJECT (About page headings) / MUSIC OPTIONS | 法律資訊 / 本專案 / 音樂選項 |
 | a Supreme Commander map's scenario file | 場景檔 (TA Reborn's scenarios stay 劇本) |
 | proxy / redirect / timed out / exception / the launcher crashed | 代理伺服器 / 重新導向 / 逾時 / 例外狀況 / 啟動器當機 |
+| stealth field (Forged Alliance's) / teleporting / upgrading buildings in place | 匿蹤力場 (as Stealthy 匿蹤; cloak stays 隱形) / 傳送 / 建築原地升級 |
+| the launcher's footer (its activity chips) / Held until the import ends | 啟動器底部的狀態列 / 匯入結束前無法變更 |

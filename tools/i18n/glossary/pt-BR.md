@@ -596,3 +596,7 @@ and are joined by a comma ("com fonte própria, imagens de fundo nos painéis").
 | error fragments filling {error}, {why} | lowercase clauses ("o tempo da conexão se esgotou", "está vazio") |
 | None of the {n} maps could be made / but {failed} could not be made | Nenhum mapa pôde ser criado (falhas: {n}) / não criados: {failed} (count-safe) |
 | Hue / Saturation and brightness (colour picker, spoken) | Matiz / Saturação e brilho ("saturação {s}%, brilho {v}%") |
+| Held until the import ends (the Supreme Commander dialog's amber note) / then import these (one key for both tabs: maps or factions) | Bloqueado durante a importação / e depois importe a seleção (gender-neutral) |
+| look through (a folder) / the launcher's footer | examinar ("Examinando {folder}…") / o rodapé do inicializador |
+| Imported 1 map / the {faction} faction (the singular keys) | 1 mapa importado / Facção {faction} importada; failures stay count-safe ("não criados: {failed}", "unidades não criadas: {failed}") |
+| the commanders' enhancements / upgrading buildings in place / shields / stealth fields / teleporting (Forged Alliance's, still to come) | as melhorias dos comandantes / o aprimoramento de edifícios no próprio lugar / escudos / campos de furtividade / teletransporte |

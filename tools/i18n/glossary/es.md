@@ -653,3 +653,15 @@ PERFIL, la página MAPAS. Recuentos de mapas creados y no creados válidos para 
 | hue / saturation / brightness (selector de color) | Tono / Saturación / Brillo |
 | marcas del lector OK / Not present / Error; {content}: found / not found | Correcto / Ausente / Error; presente / ausente (sin concordancia de género) |
 | LEGAL / THE PROJECT (página Acerca de) | AVISO LEGAL / EL PROYECTO |
+
+## Importar de Supreme Commander: Forged Alliance (`pages/supcom.rs`, `supcom.rs`, `supcom_factions.rs`)
+
+La página MODS, como la página MAPAS. "then import these", donde pueden ser mapas o facciones: "y luego
+importa lo elegido". Con una sola cifra, singular natural ("Se ha importado 1 mapa"); los fallos,
+como etiqueta válida para cualquier número: "sin crear: {failed}", "unidades sin crear: {failed}".
+
+| English | Español |
+|---|---|
+| Held until the import ends (nota junto a controles atenuados) / the launcher's footer | Bloqueado durante la importación / la barra de estado del lanzador |
+| import it again (un mod hecho por un TA Reborn anterior) / UPDATE… | importar de nuevo, vuelve a importarlo / ACTUALIZAR… |
+| the commanders' enhancements / upgrading buildings in place / stealth fields / teleporting | las mejoras de los comandantes / la mejora de edificios in situ / los campos de sigilo / el teletransporte |

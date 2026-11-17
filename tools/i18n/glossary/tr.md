@@ -588,3 +588,16 @@ follows a colon, so its items stay nominative noun phrases: "ayrıca şunlar kul
 | screen-reader marks OK / Not present / Error; "{content}: found / not found" | Tamam / Yok / Hata; "{content}: bulundu / bulunamadı" |
 | error fragments filling {error}, {why} | lowercase clauses ("bağlantı zaman aşımına uğradı", "içi boş") |
 | Hue / Saturation and brightness (colour picker, spoken) | Renk tonu / Doygunluk ve parlaklık ("doygunluk %{s}, parlaklık %{v}") |
+
+## Supreme Commander imports (`pages/supcom.rs`, `supcom.rs`, `supcom_factions.rs`)
+
+| English | Türkçe |
+|---|---|
+| faction (SupCom's) / {faction} faction / a side to play in skirmish | taraf (Supreme Commander tarafları) / {faction} tarafı / çatışmada oynanabilir bir taraf |
+| made (maps, units) / made (the factions, the mod) | oluşturulan, oluşturulamadı / hazırlanan, hazırlanıyor |
+| {failed} of its units could not be made | birimlerinden {failed} tanesi oluşturulamadı |
+| Held until the import ends (amber note by greyed controls) | İçe aktarma bitene kadar kilitli |
+| goes on with this closed (the dialog) | kapatsan da sürer |
+| the launcher's footer | başlatıcının durum çubuğu (as "status bar") |
+| commanders' enhancements / upgrading buildings in place | komutan geliştirmeleri / binaların yerinde yükseltilmesi |
+| shields / stealth fields / teleporting | kalkanlar / gizlilik alanları (not hayalet, TA's stealthy units) / ışınlanma |

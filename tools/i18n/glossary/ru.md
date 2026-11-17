@@ -582,3 +582,17 @@ A button named in a launcher sentence goes in «», with кнопка where it i
 | Hue / Saturation and brightness (the colour picker, spoken) | Оттенок / Насыщенность и яркость |
 | LEGAL / THE PROJECT (About's headings) / MUSIC OPTIONS | ПРАВОВАЯ ИНФОРМАЦИЯ / О ПРОЕКТЕ / НАСТРОЙКИ МУЗЫКИ |
 | MiB | МиБ (as ГиБ) |
+
+## Supreme Commander's maps and factions imported (`pages/supcom.rs`, `supcom.rs`, `supcom_factions.rs`)
+
+Supreme Commander and Forged Alliance stay as written, feminine as игра ("оригинальная Supreme Commander", "куда установлена Forged Alliance").
+
+| English | Русский |
+|---|---|
+| SUPREME COMMANDER… on the Maps / Mods page (in a sentence) | кнопка «SUPREME COMMANDER…» на странице «Карты» / «Моды» ("причину покажет кнопка …", "Их список откроет кнопка …") |
+| UPDATE… / Update: import it again (a mod made by an older TA Reborn) | ОБНОВИТЬ… (as the mark UPDATE: ОБНОВИТЬ) / Обновление: импортируйте заново |
+| then import these (the maps or factions chosen) | затем импортируйте выбранное (no gender to agree on either tab) |
+| Held until the import ends (amber, beside greyed controls) | Недоступно до окончания импорта |
+| the launcher's footer | строка состояния лаунчера (as "в строке состояния") |
+| a side to play in skirmish / a side each | отдельная сторона в схватке / каждая фракция — отдельная сторона |
+| stealth fields / shields / teleporting / upgrading buildings in place | поля скрытности (as Скрытный: не виден на радаре; not маскировка, the cloak) / щиты / телепортация / модернизация зданий на месте |

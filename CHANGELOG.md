@@ -106,6 +106,47 @@
 - Reclaiming a wreck gives metal only, as in TA, even where a mod's wreck says it holds energy;
   rocks and trees give what their files say.
 
+### Fixed
+- The launcher's Supreme Commander dialog, opened again from the Mods page, showed its MAPS tab's
+  maps as dark squares, still marked as they were (IMPORTED after REMOVE MAP PACK). Each tab now
+  looks for the game again whenever it is shown after the dialog was closed, the factions' too
+  while they are being made; and once the map pack is removed, the game's maps are chosen again
+  rather than IMPORT 0 MAPS.
+- A Supreme Commander import was out of sight once its dialog was closed or showed the other tab.
+  It now has its place in the launcher's footer, how far it has got, a click opening the dialog
+  at its tab; the dialog opens at the tab whose import is under way; its CLOSE says the import goes
+  on; and the other tab says when it has ended.
+- UPDATE NOW and INSTALL NOW did not wait for a Supreme Commander import: Setup closed the launcher
+  in the middle of one, losing its work. The update now waits for it, as for a mod being installed.
+- The Supreme Commander maps and factions made by an older TA Reborn were marked UPDATE only in
+  their dialog. The Mods page marks them too (their card, the UPDATES filter and the count on the
+  rail), with UPDATE… to make them again.
+- A factions import cut short (the launcher killed, the power gone) left about 400 MB behind for
+  good; it is now cleared at the next start, as a maps import's is.
+- A maps import that could not write a map (the disk full) threw away every map it had made. It
+  now checks there is room on the disk before it starts, says what went wrong against that map,
+  and installs the maps made so far; and it keeps the maps already in the pack without copying
+  them (up to 1.2 GB), so it needs little more room than the maps it makes. The factions' import
+  checks the room first too.
+- Importing replaced another mod of the same id as the map pack or the factions' mod, its files
+  deleted, without a word: it now asks first, as installing a package over a mod does. The
+  imports find the pack and the factions' mod wherever the launcher finds mods (one kept in the
+  extra mods folder is made again there, and none is made behind a copy in TA Reborn's program
+  folder), and the factions' mod can no longer be removed or replaced while it is being made, nor
+  checked while an import replaces it.
+- CHANGE FOLDER… with a folder that does not hold Forged Alliance said so in a notice hidden under
+  the dialog. The folder is now looked through without holding the window up and what it holds is
+  said in the dialog; the original Supreme Commander is told apart from Forged Alliance (taken
+  first where a folder holds both); and the folder chosen, or the copy switched to (GOG's or
+  Steam's), is kept for the next start.
+- In the Supreme Commander dialog: STOP AFTER THIS MAP shows it was pressed, the maps' import says
+  what it is doing (reading the games' files, making a map, installing them) and STOP is greyed
+  while it installs, as the factions' is, with why; why IMPORT cannot be pressed is written beside
+  it; the dialog is as tall on either tab, its tabs stay in place, and the maps' list ends between
+  two rows instead of leaving an empty band; Shift+Tab and a gamepad go back up the list; one map
+  or one faction is told as one, and none chosen as none; the units that could not be made are
+  named; the "Still to come" line is up to date; and an error from the system is said once.
+
 ## 1.0.7 — 2026-11-16
 
 Mods can present themselves in the launcher with a banner, an animated preview, an icon and

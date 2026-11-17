@@ -5,17 +5,27 @@ skirmish. The maps are made on the player's computer from their own copy of the 
 Steam's), into a map pack in their mods folder; nothing of Supreme Commander's is shipped with
 TA Reborn or kept in this repository.
 
-- **Players:** the launcher's Maps page, **SUPREME COMMANDER…**. The dialog finds the game,
-  lists its skirmish maps and the player's own (downloaded maps and Forged Alliance Forever's
-  vault) with the game's own pictures of them, and makes the chosen ones, one after another (at
-  first the game's own maps not imported yet, or changed since, are chosen; the player's own
-  never are; after an import, only those not made stay chosen, to try again):
-  most in seconds, the largest in up to about three minutes; all 54 of the game's take about 20
-  minutes and 1.2 GB. STOP AFTER THIS MAP ends it once the map in hand is made; closing the
-  launcher asks first, then ends it at once, the map in hand left out. Either way the maps made
-  become the map pack **Supreme Commander maps** (`map-pack-supreme-commander`), turned on, in
-  the map library and in skirmish. Importing again makes the maps chosen again and keeps the
-  others; REMOVE MAP PACK removes them all.
+- **Players:** the launcher's Maps page, **SUPREME COMMANDER…** (its MAPS tab; the Mods page's
+  opens the same dialog at its FACTIONS). The dialog finds the game (a folder chosen with CHANGE
+  FOLDER…, or the copy switched to, is kept for the next start in the launcher's settings folder,
+  `supcom.toml`), lists its skirmish maps and the player's own (downloaded maps and Forged
+  Alliance Forever's vault) with the game's own pictures of them, and makes the chosen ones, one
+  after another (at first the game's own maps not imported yet, or changed since, are chosen; the
+  player's own never are; after an import, only those not made stay chosen, to try again; once
+  the pack is removed, they are chosen afresh): most in seconds, the largest in up to about three
+  minutes; all 54 of the game's take about 20 minutes and 1.2 GB. The import checks first that
+  the disk has room for them (the maps the pack holds are kept by linking their files, not
+  copying them), and goes on with the dialog closed: the launcher's footer shows how far it has
+  got, and a click there opens the dialog again. STOP AFTER THIS MAP ends it once the map in hand
+  is made; a map that cannot be written (the disk full) ends it there, said against that map;
+  closing the launcher asks first, then ends it at once, the map in hand left out; an update of
+  the launcher waits for it. Each way the maps made become the map pack **Supreme Commander maps**
+  (`map-pack-supreme-commander`), turned on, in the map library and in skirmish: made again where
+  the launcher finds it (a copy kept in the extra mods folder there; none behind a copy in TA
+  Reborn's program folder), and in place of another mod of that id only once the player agrees.
+  Importing again makes the maps chosen again and keeps the others; REMOVE MAP PACK removes them
+  all. The pack's `version` is that of the converter that made its oldest map: older than this TA
+  Reborn's (`convert::VERSION`), the Mods page marks it UPDATE, as the dialog marks each map.
 - **Developers:** `cargo build --release -p ta_tools`, then `target/release/ta-tools supcom
   <out> [--only scmp_009,x1mp_001] [--preview <dir>] [--game <folder>] [--budget n]
   [--max-cells n]` makes the maps into `<out>/maps` (mount it as a mod to play them), with
@@ -45,12 +55,19 @@ case). Looked for, in order:
   Forged Alliance`.
 - The usual folders on C: to F:, and off Windows the same in Wine's, Lutris', Bottles', Heroic's,
   CrossOver's and Proton's prefixes.
-- A folder the player picks (or one level down in it).
+- A folder the player picks (or one level down in it), looked through on a worker and kept in
+  the launcher's settings. The original Supreme Commander is laid out as Forged Alliance is:
+  Forged Alliance is told from it by its own maps in its maps folder (`X1MP_…`, `X1CA_…`) or by its
+  data path naming it (`bin/SupComDataPath.lua`), and is taken first where a folder holds both;
+  the dialog says when the folder chosen holds the original. A folder chosen before that no longer
+  holds the game is said so, the copy found used meanwhile.
 
 The players' own maps: `<Documents>/My Games/Gas Powered Games/Supreme Commander Forged
-Alliance/maps` (Documents where Windows keeps it: often a OneDrive folder), FAF's copy of it
-under `ProgramData\FAForever\user`, and on Linux the same in the game's Proton prefix and in the
-home folder.
+Alliance/maps` (Documents where Windows keeps it: often a OneDrive folder; Forged Alliance
+Forever's client keeps its vault there too unless moved, as its `client.prefs` records:
+`vaultBaseDirectory`, `mapsDirectory`), the older FAF client's copy of it under
+`ProgramData\FAForever\user`, and on Linux the same in the game's Proton prefix and in the home
+folder. With none found, the dialog names the folder it looks in first.
 
 Steam's and GOG's copies are laid out alike (`bin/SupremeCommander.exe`, `gamedata/*.scd`,
 `maps/`); FAF's client runs the same files. Both read whole, and make the same maps byte for

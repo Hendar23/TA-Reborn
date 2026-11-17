@@ -3,7 +3,9 @@
 //! The game: GOG's (product 1444785261, also inside GOG's Gold Edition), Steam's (app 9420), the
 //! old boxed copy's (THQ's registry key), the usual folders, and off Windows Heroic's GOG
 //! installs, Wine's, Lutris', Bottles', CrossOver's and Proton's prefixes, and Steam's libraries.
-//! A folder counts when it holds the game's data (`gamedata/env.scd`) and its maps (`maps/`).
+//! A folder counts when it holds the game's data (`gamedata/env.scd`) and its maps (`maps/`); the
+//! original Supreme Commander's are laid out alike, and Forged Alliance is told from it by what
+//! only it has ([`is_forged_alliance`]).
 //!
 //! The players' own maps (downloaded, or Forged Alliance Forever's vault):
 //! `<Documents>/My Games/Gas Powered Games/Supreme Commander Forged Alliance/maps`, Documents
@@ -71,15 +73,36 @@ pub fn validate(root: &Path) -> bool {
     find_file_ci(&gamedata, "env.scd").is_some() && find_dir_ci(root, "maps").is_some()
 }
 
+/// Whether the game in `root` is Forged Alliance rather than the original Supreme Commander, whose
+/// folders are laid out alike: its own maps are in its maps folder (the expansion's, `X1MP_...`
+/// and `X1CA_...`, which the original has none of), or its data path names it
+/// (`bin/SupComDataPath.lua`, where the original names its own folder in Documents).
+pub fn is_forged_alliance(root: &Path) -> bool {
+    let expansion_maps = find_dir_ci(root, "maps").and_then(|maps| std::fs::read_dir(maps).ok()).is_some_and(|entries| {
+        entries.flatten().any(|e| e.file_type().is_ok_and(|t| t.is_dir()) && e.file_name().to_string_lossy().to_ascii_lowercase().starts_with("x1"))
+    });
+    expansion_maps
+        || find_dir_ci(root, "bin")
+            .and_then(|bin| find_file_ci(&bin, "SupComDataPath.lua"))
+            .and_then(|lua| std::fs::read(lua).ok())
+            .is_some_and(|text| String::from_utf8_lossy(&text).to_ascii_lowercase().contains("forged alliance"))
+}
+
 /// The game in `picked`, a folder the player chose, or one level down in it (players often pick
-/// the folder the game is in).
+/// the folder the game is in): Forged Alliance before the original Supreme Commander, whichever
+/// comes first by name; the original only where it is all there is.
 pub fn validate_picked(picked: &Path) -> Option<PathBuf> {
-    if validate(picked) {
+    let here = validate(picked);
+    if here && is_forged_alliance(picked) {
         return Some(picked.to_path_buf());
     }
-    let mut children: Vec<PathBuf> = std::fs::read_dir(picked).ok()?.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()).take(512).collect();
+    let mut children: Vec<PathBuf> = std::fs::read_dir(picked).ok().map(|entries| entries.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()).take(512).collect()).unwrap_or_default();
     children.sort();
-    children.into_iter().find(|c| validate(c))
+    let games: Vec<PathBuf> = children.into_iter().filter(|c| validate(c)).collect();
+    if let Some(forged) = games.iter().find(|c| is_forged_alliance(c)) {
+        return Some(forged.clone());
+    }
+    if here { Some(picked.to_path_buf()) } else { games.into_iter().next() }
 }
 
 /// Every copy of the game found, each once, in the order: GOG, Steam, the boxed copy, the
@@ -195,6 +218,13 @@ pub fn user_map_folders() -> Vec<PathBuf> {
     out
 }
 
+/// Where the players' own maps are looked for first, whether there are any or not (Documents'
+/// `My Games/Gas Powered Games/Supreme Commander Forged Alliance/maps`, as the game and Forged
+/// Alliance Forever's vault keep them): what is named when none are found.
+pub fn user_maps_folder() -> Option<PathBuf> {
+    documents_folders().into_iter().next().map(|documents| join_ci(&documents, USER_MAPS))
+}
+
 /// The player's Documents folder: where Windows keeps it (the shell's own record of it, which
 /// follows OneDrive), else `Documents` in the home folder.
 fn documents_folders() -> Vec<PathBuf> {
@@ -256,11 +286,21 @@ pub fn same_folder(a: &Path, b: &Path) -> bool {
 mod tests {
     use super::*;
 
-    /// A copy of the game's folders (empty files where its archives are).
+    /// A copy of the game's folders (empty files where its archives are), with the expansion's
+    /// own maps.
     pub(crate) fn fake_install(root: &Path) {
+        fake_original(root);
+        std::fs::create_dir_all(root.join("Maps").join("X1MP_001")).unwrap();
+    }
+
+    /// The original Supreme Commander's folders, laid out as Forged Alliance's are (its maps but
+    /// not the expansion's, its data path naming its own folder).
+    fn fake_original(root: &Path) {
         std::fs::create_dir_all(root.join("GameData")).unwrap();
         std::fs::write(root.join("GameData").join("ENV.scd"), b"PK").unwrap();
         std::fs::create_dir_all(root.join("Maps").join("SCMP_001")).unwrap();
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::write(root.join("bin").join("SupComDataPath.lua"), "mount_contents(SHGetFolderPath('PERSONAL') .. 'My Games\\\\Gas Powered Games\\\\Supreme Commander\\\\maps', '/maps')").unwrap();
     }
 
     #[test]
@@ -279,6 +319,28 @@ mod tests {
         std::fs::remove_dir_all(root.join("Maps")).unwrap();
         assert!(!validate(&root), "no maps: not the game");
         assert_eq!(validate_picked(&dir.0), None);
+    }
+
+    /// Forged Alliance is told from the original Supreme Commander (laid out alike) by its own
+    /// maps or its data path; picked, a folder holding both gives Forged Alliance, though the
+    /// original comes first by name, and the original only where it is all there is.
+    #[test]
+    fn forged_alliance_is_told_from_the_original_game() {
+        let dir = crate::tests::Temp::new("original");
+        let original = dir.0.join("Supreme Commander");
+        let forged = dir.0.join("Supreme Commander Forged Alliance");
+        fake_original(&original);
+        assert!(validate(&original) && !is_forged_alliance(&original));
+        assert_eq!(validate_picked(&dir.0), Some(original.clone()), "the original, where it is all there is");
+        fake_install(&forged);
+        assert!(is_forged_alliance(&forged));
+        assert_eq!(validate_picked(&dir.0), Some(forged.clone()), "Forged Alliance before the original");
+        assert_eq!(validate_picked(&original), Some(original.clone()), "the original picked itself is still the game found there");
+        // Its data path names it, though its maps are not the expansion's.
+        std::fs::remove_dir_all(forged.join("Maps").join("X1MP_001")).unwrap();
+        assert!(!is_forged_alliance(&forged));
+        std::fs::write(forged.join("bin").join("SupComDataPath.lua"), "mount_contents(SHGetFolderPath('PERSONAL') .. 'My Games\\\\Gas Powered Games\\\\Supreme Commander Forged Alliance\\\\maps', '/maps')").unwrap();
+        assert!(is_forged_alliance(&forged));
     }
 
     /// Steam's libraries are searched for the game's folder, as its app manifest names it.

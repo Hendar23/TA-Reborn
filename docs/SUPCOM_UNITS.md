@@ -12,13 +12,20 @@ gameplay, and their walks and deaths. Their sounds come later.
 
 - **Players:** the launcher's Mods page, **SUPREME COMMANDER…** (or the Maps page's, its
   FACTIONS tab). The dialog finds the game (as for its maps: GOG's or Steam's copy, or a folder
-  chosen), counts each faction's units by kind, with its commander's build picture, and makes the
-  factions chosen into the mod **Supreme Commander factions** (`supcom-factions`), turned on, a
-  side each in skirmish. All four take about 400 MB and, on a fast computer, ten seconds; a stop
-  installs nothing, and the mod is made whole each time, of the factions chosen (those left out
-  are taken out of it). The mod keeps the version of the converter that made it
-  (`factions::make::VERSION`, its manifest's `version`): a mod made by an older one is marked
-  UPDATE. It needs the TA Reborn that made it, or newer (`requires_reborn`).
+  chosen, kept for the next start), counts each faction's units by kind, with its commander's
+  build picture, and makes the factions chosen into the mod **Supreme Commander factions**
+  (`supcom-factions`), turned on, a side each in skirmish. All four take about 440 MB (3,638
+  files) and, on a fast computer, about half a minute, most of it writing and installing their
+  files; the room on the disk is checked first. A stop installs nothing (not once the mod is being
+  installed: STOP is greyed then), and the mod is made whole each time, of the factions chosen
+  (those left out are taken out of it); a unit that cannot be made is named in the dialog. It goes
+  on with the dialog closed (the launcher's footer shows it), and an update of the launcher waits
+  for it; the mod cannot be removed or replaced meanwhile. Like the maps' pack, it is made again
+  where the launcher finds it, and in place of another mod of its id only once the player agrees.
+  The mod keeps the version of the converter that made it (`factions::make::VERSION`, its
+  manifest's `version`): a mod made by an older one is marked UPDATE, in the dialog and on the Mods
+  page (its card, the UPDATES filter, UPDATE…). It needs the TA Reborn that made it, or newer
+  (`requires_reborn`).
 - **Developers:** every unit of the player's copy read, with what its blueprints name that is not
   there, the conventions below held over all of them, and every unit made a model twice, the same:
   `cargo test --release -p ta_supcom --test installed_units -- --ignored --nocapture`

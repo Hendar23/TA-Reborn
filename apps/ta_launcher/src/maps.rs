@@ -1064,7 +1064,10 @@ pub(crate) mod tests {
         let pack = temp.0.join("pack");
         map(&pack, "Setons Clutch (SC)", "Seton's Clutch");
         std::fs::write(pack.join("maps").join("Setons Clutch (SC).ota"), "[GlobalHeader]{missionname=Seton's Clutch; numplayers=2; supcommap=SCMP_009; [Schema 0]{[specials]{[special0]{specialwhat=StartPos1;XPos=32;ZPos=32;} [special1]{specialwhat=StartPos2;XPos=128;ZPos=128;}}}}").unwrap();
-        let catalogue = scan(Request { game_dir: Some(base), builtin: None, mods: vec![info(pack, "map-pack-supreme-commander")], enabled: vec!["map-pack-supreme-commander".into()] }).unwrap();
+        // (The pack as an import makes it, named so: another mod of its id keeps its own name.)
+        let mut made = info(pack, "map-pack-supreme-commander");
+        made.manifest.name = "Supreme Commander maps".into();
+        let catalogue = scan(Request { game_dir: Some(base), builtin: None, mods: vec![made], enabled: vec!["map-pack-supreme-commander".into()] }).unwrap();
         let of = |stem: &str| catalogue.entries.iter().find(|entry| entry.stem == stem).map(|entry| (entry.origin, entry.source.clone(), entry.ribbon())).unwrap();
         assert_eq!(of("coast"), (Origin::TotalAnnihilation, "Total Annihilation".into(), None));
         assert_eq!(of("lakes"), (Origin::CoreContingency, "Core Contingency".into(), None));

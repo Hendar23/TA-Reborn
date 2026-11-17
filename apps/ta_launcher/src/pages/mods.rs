@@ -88,7 +88,7 @@ impl LauncherApp {
             }
             if ui.add(ActionButton::secondary("SUPREME COMMANDER…").height(height))
                 .hover_tip(t("Import the factions of Supreme Commander: Forged Alliance from your own copy of the game (GOG's or Steam's): their units and buildings, to play in skirmish.")).clicked() {
-                self.push(Action::SupcomFactionsOpen);
+                self.push(Action::SupcomOpen(crate::supcom::Tab::Factions));
             }
             if ui.add(ActionButton::secondary("MOD FOLDERS…").height(height)).hover_tip(t("The folders mods are looked for in")).clicked() {
                 self.show_mod_folders = true;
@@ -555,6 +555,11 @@ impl LauncherApp {
                 }
             }
         }
+        if installed.is_some()
+            && let Some(tab) = crate::supcom::update_tab(&self.mods, id)
+        {
+            menu.add(n("UPDATE…"), Icon::Download, ModChoice::Do(Action::SupcomOpen(tab))).main();
+        }
         if installed.is_some() {
             if on {
                 menu.add(n("TURN OFF"), Icon::Switch(false), ModChoice::Do(Action::DisableMod(id.into())));
@@ -623,12 +628,16 @@ impl LauncherApp {
         let installed = self.mods.get(&item.id);
         let version = installed.map(|entry| entry.info.manifest.version.as_str());
         let update = item.catalogue.and_then(|entry| mod_library::waiting_update(entry, self.mods.updatable_version(&item.id)));
+        // (Supreme Commander's maps or factions made by an older converter: made again in their dialog.)
+        let remake = crate::supcom::update_tab(&self.mods, &item.id);
         let on = self.config.mods.enabled.contains(&item.id);
         let stage = self.installer.stages.get(&item.id).filter(|stage| stage.active());
         let detail = if let Some(stage) = stage {
             getmods::stage_progress(stage).1
         } else if let Some(newer) = update {
             tf("Update: {version}", &[("version", &newer)])
+        } else if remake.is_some() {
+            t("Update: import it again").to_string()
         } else if let Some(entry) = item.catalogue {
             tf("by {team}", &[("team", &entry.team)])
         } else {
@@ -638,7 +647,7 @@ impl LauncherApp {
                 None => kind,
             }
         };
-        let lamp = if stage.is_some() { Some(SKY) } else if on { Some(GREEN) } else if update.is_some() { Some(AMBER) } else if item.installed { Some(STEEL) } else { None };
+        let lamp = if stage.is_some() { Some(SKY) } else if on { Some(GREEN) } else if update.is_some() || remake.is_some() { Some(AMBER) } else if item.installed { Some(STEEL) } else { None };
         // (A mod that needs a newer TA Reborn than this is not mounted: as grave as errors.)
         let newer = installed.is_some_and(|entry| ta_vfs::mods::version_older(ta_vfs::mods::REBORN_VERSION, &entry.info.manifest.requires_reborn) == Some(true));
         let check = if !item.installed { None } else if newer { Some((RED, n("NEEDS A NEWER TA REBORN"))) } else {
@@ -737,6 +746,9 @@ impl LauncherApp {
         if self.game_running() { Some(t("The game is running.")) }
         else if self.installer.busy() { Some(t("Wait for the installs to finish.")) }
         else if self.maps.importing() { Some(t("Wait for the map import to finish.")) }
+        // (An import installs its mod again as it ends, and turns it on.)
+        else if self.supcom.importing() { Some(t("Wait for the Supreme Commander maps being made, then try again.")) }
+        else if self.supcom.factions.importing() { Some(t("Wait for the Supreme Commander factions being made, then try again.")) }
         else { None }
     }
 
@@ -848,8 +860,15 @@ impl LauncherApp {
                 if !manifest.authors.is_empty() {
                     ui.add(egui::Label::new(RichText::new(tf("by {team}", &[("team", &super::listed(&manifest.authors))])).font(strong(12.5)).color(AMBER)).wrap());
                 }
+                let remake = crate::supcom::update_tab(&self.mods, &item.id);
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+                    // (Made by an older converter: made again from the player's copy of the game.)
+                    if let Some(tab) = remake
+                        && ui.add(ActionButton::primary("UPDATE…").height(28.0)).hover_tip(t("Made by an older TA Reborn: import it again from your copy of the game to bring it up to date.")).clicked()
+                    {
+                        actions.push(Action::SupcomOpen(tab));
+                    }
                     let mut toggled = on;
                     if widgets::toggle_named(ui, &mut toggled, crate::supcom::mod_name(manifest)).hover_tip(t("Turn the mod on or off for the next game")).changed() {
                         actions.push(if toggled { Action::EnableMod(item.id.clone()) } else { Action::DisableMod(item.id.clone()) });
@@ -920,6 +939,9 @@ impl LauncherApp {
             }
             (None, Some(entry)) => {
                 let manifest = &entry.info.manifest;
+                if crate::supcom::update_tab(&self.mods, &item.id).is_some() {
+                    ui.add(egui::Label::new(RichText::new(t("Made by an older TA Reborn: UPDATE… imports it again from your copy of the game.")).color(AMBER)).wrap());
+                }
                 let shown = if manifest.version.is_empty() { t("Unknown") } else { &manifest.version };
                 tags(ui, &|ui: &mut Ui| {
                     widgets::tag(ui, &tf("Version: {version}", &[("version", &shown)]), STEEL);

@@ -630,3 +630,8 @@ A button named in a launcher sentence goes in «», with кнопка where it i
 | Hue / Saturation and brightness (the colour picker, spoken) | Відтінок / Насиченість і яскравість |
 | LEGAL / THE PROJECT (About's headings) / MUSIC OPTIONS | ПРАВОВА ІНФОРМАЦІЯ / ПРО ПРОЄКТ / ПАРАМЕТРИ МУЗИКИ (options: параметри) |
 | MiB | МіБ (as ГіБ) |
+| Supreme Commander's factions (its import dialog, the footer chip ФРАКЦІЇ SUPREME COMMANDER) / mass points | фракція (TA's and mods' sides stay сторона) / точки маси |
+| the launcher's footer (its activity chips) | рядок стану лаунчера (as "в рядку стану") |
+| Held until the import ends (amber note by greyed controls, also their tip) / Still to come | Недоступно до кінця імпорту / Ще в планах |
+| SC's commanders' enhancements / upgrading buildings in place / stealth fields / teleporting | удосконалення командирів / модернізація будівель на місці / поля невидимості (not маскування: TA's cloak) / телепортація |
+| then import these (a greyed IMPORT's tip, shared by the maps' and factions' tabs) | потім імпортуйте вибране (вибрані карти / вибрані фракції where one tab alone says it) |

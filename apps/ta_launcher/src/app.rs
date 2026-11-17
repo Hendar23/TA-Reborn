@@ -139,9 +139,10 @@ fn page_label(page: Page) -> &'static str {
 pub enum Action {
     Play,
     Maps(crate::maps::Action),
-    /// Opens the dialog that imports Supreme Commander's maps (and looks for the game).
-    SupcomOpen,
-    /// Picks the folder Supreme Commander: Forged Alliance is installed in.
+    /// Opens the dialog that imports Supreme Commander's maps and factions at this tab (or at the
+    /// other, where only its import is under way), looking for the game.
+    SupcomOpen(crate::supcom::Tab),
+    /// Picks the folder Supreme Commander: Forged Alliance is installed in (checked on a worker).
     SupcomBrowse,
     /// Uses this copy of the game of those found (GOG's, Steam's...).
     SupcomUse(std::path::PathBuf),
@@ -149,12 +150,12 @@ pub enum Action {
     SupcomImport,
     /// Stops the import after the map being made.
     SupcomStop,
-    /// Opens the same dialog at the game's factions (and looks for its units).
-    SupcomFactionsOpen,
     /// Makes the chosen factions into the mod `supcom-factions`.
     SupcomFactionsImport,
     /// Stops the factions' import: nothing is installed.
     SupcomFactionsStop,
+    /// The import asked about goes ahead over another mod of its id (REPLACE AND IMPORT).
+    SupcomReplace,
     Rescan,
     BrowseInstall,
     /// Forgets the configured game folder and detects the install automatically.
@@ -550,6 +551,8 @@ impl LauncherApp {
         } else {
             None
         };
+        // (Where Supreme Commander: Forged Alliance is, as the player chose it before.)
+        let supcom_choice = crate::supcom::load_choice(&store.dir());
         let unattended = args.screenshot.is_some() || args.film.is_some();
         let window = (!unattended && args.window_size.is_none()).then(|| (config.launcher.window.unwrap_or([1120.0, 720.0]), config.launcher.maximized));
         // A handheld's first start maximises this window too (it opened before the settings
@@ -624,7 +627,7 @@ impl LauncherApp {
             mods,
             mod_validation,
             maps: Default::default(),
-            supcom: Default::default(),
+            supcom: crate::supcom::Import::new(supcom_choice),
             game: GameState::Idle,
             browse_error: None,
             actions: match (args.autoplay, args.autobenchmark) {
@@ -734,7 +737,7 @@ impl LauncherApp {
             ("maps-list", _) => self.maps.view = crate::maps::View::List,
             // (The dialog that imports Supreme Commander's maps, the game looked for.)
             ("supcom", maps) => {
-                self.supcom.show(&self.store.dir().join("mods"));
+                self.open_supcom(crate::supcom::Tab::Maps);
                 if !maps.is_empty() {
                     self.supcom.auto_start = Some(maps.split(',').map(|m| m.trim().to_string()).filter(|m| !m.is_empty()).collect());
                     if let Some(capture) = &mut self.capture { capture.wait_for_validation(); }
@@ -742,7 +745,7 @@ impl LauncherApp {
             }
             // (The same dialog at the game's factions; those named imported once listed: `all`.)
             ("supcom-factions", sides) => {
-                self.supcom.show_factions(&self.store.dir().join("mods"));
+                self.open_supcom(crate::supcom::Tab::Factions);
                 if !sides.is_empty() {
                     self.supcom.factions.auto_start = Some(sides.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect());
                     if let Some(capture) = &mut self.capture { capture.wait_for_validation(); }
@@ -1052,30 +1055,28 @@ impl LauncherApp {
         }
         match action {
             Action::Maps(action) => self.maps_action(action, frame),
-            Action::SupcomOpen => self.supcom.show(&self.store.dir().join("mods")),
+            Action::SupcomOpen(tab) => self.open_supcom(tab),
             Action::SupcomBrowse => {
-                if let Some(dir) = rfd::FileDialog::new().set_title(ta_ui::i18n::t("Supreme Commander: Forged Alliance's folder")).set_parent(frame).pick_folder()
-                    && !self.supcom.pick(&dir, &self.store.dir().join("mods"))
-                {
-                    self.notify(ta_ui::i18n::tf("Supreme Commander: Forged Alliance is not in {folder}: choose the folder it is installed in (it holds gamedata and maps).", &[("folder", &dir.display())]), AMBER);
+                // (Not while an import reads the game, nor while a folder chosen is looked through.)
+                if self.supcom.importing() || self.supcom.factions.importing() || self.supcom.checking().is_some() { return; }
+                if let Some(dir) = rfd::FileDialog::new().set_title(ta_ui::i18n::t("Supreme Commander: Forged Alliance's folder")).set_parent(frame).pick_folder() {
+                    self.supcom.check_folder(dir);
                 }
             }
             Action::SupcomUse(root) => {
                 if !self.supcom.importing() && !self.supcom.factions.importing() {
-                    self.supcom.pick(&root, &self.store.dir().join("mods"));
+                    self.supcom.pick(root);
                 }
             }
-            Action::SupcomImport => match (self.supcom_blocked(), self.detection.install().map(|i| i.root.clone())) {
-                (None, Some(ta)) => self.supcom.start(ta, self.store.dir()),
-                (why, _) => self.notify(why.unwrap_or_else(|| ta_ui::i18n::t("Find your Total Annihilation install on the Play page first.")), AMBER),
-            },
+            Action::SupcomImport => self.start_supcom_import(crate::supcom::Tab::Maps, false),
             Action::SupcomStop => self.supcom.stop(),
-            Action::SupcomFactionsOpen => self.supcom.show_factions(&self.store.dir().join("mods")),
-            Action::SupcomFactionsImport => match self.factions_blocked() {
-                None => self.supcom.factions.start(self.store.dir()),
-                Some(why) => self.notify(why, AMBER),
-            },
+            Action::SupcomFactionsImport => self.start_supcom_import(crate::supcom::Tab::Factions, false),
             Action::SupcomFactionsStop => self.supcom.factions.stop(),
+            Action::SupcomReplace => {
+                if let Some((tab, _)) = self.supcom.confirm_replace.take() {
+                    self.start_supcom_import(tab, true);
+                }
+            }
             Action::ShowModReport(id) => self.mod_validation.selected = Some(id),
             Action::ValidateMod(id) => {
                 // Mod authors may have just changed a manifest or added a dependency.
@@ -1359,6 +1360,58 @@ impl LauncherApp {
                     self.install_catalogue(entry, Some(path));
                 }
             }
+        }
+    }
+
+    /// Where the launcher finds mods and installs them, for the Supreme Commander dialog.
+    fn supcom_roots(&self) -> crate::supcom::Roots {
+        crate::supcom::Roots { folders: mod_folders(&self.config, &self.store), mods_dir: self.store.dir().join("mods") }
+    }
+
+    /// Opens the Supreme Commander dialog at `tab` (or at the other, where only its import is under
+    /// way), looking for the game where the tab's look is not current.
+    pub(crate) fn open_supcom(&mut self, tab: crate::supcom::Tab) {
+        let roots = self.supcom_roots();
+        self.supcom.show(tab, roots);
+    }
+
+    /// IMPORT on a tab of the Supreme Commander dialog: started, unless something keeps it from
+    /// starting now (said in the dialog, or in a notice with it closed), or the mod of its id
+    /// installed is another's, one an import did not make: asked about first, unless the player
+    /// said to replace it (`replace`). The mod is found where the launcher finds mods, looked
+    /// through afresh, and made again where it is.
+    fn start_supcom_import(&mut self, tab: crate::supcom::Tab, replace: bool) {
+        use crate::supcom::Tab;
+        let roots = self.supcom_roots();
+        let place = match tab {
+            Tab::Maps => crate::supcom::pack_place(&roots),
+            Tab::Factions => crate::supcom_factions::mod_place(&roots),
+        };
+        let blocked = match tab {
+            Tab::Maps => self.supcom_blocked(),
+            Tab::Factions => self.factions_blocked(),
+        }.or_else(|| place.copy.as_ref().and_then(|copy| copy.blocks()));
+        if let Some(why) = blocked {
+            if !self.supcom.open {
+                self.notify(why, AMBER);
+            } else if tab == Tab::Maps {
+                self.supcom.outcome = Some(crate::supcom::Outcome { error: Some(why.to_string()), ..Default::default() });
+            } else {
+                self.supcom.factions.outcome = Some(crate::supcom_factions::Outcome { error: Some(why.to_string()), ..Default::default() });
+            }
+            return;
+        }
+        if let Some(copy) = place.copy.as_ref().filter(|copy| !copy.ours && !replace) {
+            self.supcom.confirm_replace = Some((tab, copy.clone()));
+            return;
+        }
+        match tab {
+            Tab::Maps => {
+                if let Some(ta) = self.detection.install().map(|i| i.root.clone()) {
+                    self.supcom.start(ta, self.store.dir(), place);
+                }
+            }
+            Tab::Factions => self.supcom.factions.start(self.store.dir(), place),
         }
     }
 
@@ -1850,7 +1903,11 @@ impl LauncherApp {
             risks.push(n("Supreme Commander maps are still being made: closing keeps the maps made so far, and leaves out the one in hand."));
         }
         if self.supcom.factions.importing() {
-            risks.push(n("Supreme Commander factions are still being made: closing stops them, and the factions stay as they were."));
+            if self.supcom.factions.progress.lock().unwrap().phase == crate::supcom::Phase::Installing {
+                risks.push(n("Supreme Commander factions are being installed: closing waits a moment for that to finish."));
+            } else {
+                risks.push(n("Supreme Commander factions are still being made: closing stops them, and the factions stay as they were."));
+            }
         }
         if self.pretend_at_risk && risks.is_empty() {
             risks.push(n("A mod is still downloading or installing: it would start over."));
@@ -1937,9 +1994,10 @@ impl LauncherApp {
             self.close_after_import = true;
             self.notify("Closing once the Supreme Commander maps made so far are installed.", AMBER);
         } else if self.supcom.factions.importing() {
+            let installing = self.supcom.factions.progress.lock().unwrap().phase == crate::supcom::Phase::Installing;
             self.supcom.factions.stop();
             self.close_after_import = true;
-            self.notify("Closing once the Supreme Commander factions have stopped.", AMBER);
+            self.notify(if installing { ta_ui::i18n::n("Closing once the Supreme Commander factions are installed.") } else { ta_ui::i18n::n("Closing once the Supreme Commander factions have stopped.") }, AMBER);
         } else {
             self.close_confirmed = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1995,10 +2053,13 @@ impl LauncherApp {
                 if broken > 0 {
                     return (Some(("!".to_owned(), RED)), Some(t("A mod that is on has errors: its MOD INFO lists them").to_string()));
                 }
-                // (A hidden mod's update waits in HIDDEN, uncounted, as UPDATE ALL leaves it.)
+                // (A hidden mod's update waits in HIDDEN, uncounted, as UPDATE ALL leaves it. The
+                // Supreme Commander imports' mods made by an older converter count: they are made
+                // again in their dialog.)
                 let updates = self.mods.mods.iter()
                     .filter(|m| !self.config.mods.is_hidden(m.id()))
-                    .filter(|m| crate::catalogue::get(m.id()).is_some_and(|entry| crate::mod_library::waiting_update(entry, self.mods.updatable_version(m.id())).is_some()))
+                    .filter(|m| crate::catalogue::get(m.id()).is_some_and(|entry| crate::mod_library::waiting_update(entry, self.mods.updatable_version(m.id())).is_some())
+                        || crate::supcom::update_tab(&self.mods, m.id()).is_some())
                     .count();
                 if updates > 0 {
                     (Some((updates.to_string(), AMBER)), Some(tf("Updates waiting: {n}", &[("n", &updates)])))
@@ -2029,6 +2090,7 @@ impl LauncherApp {
     /// check, the game starting. (The idle animations never settle meanwhile.)
     fn working(&self) -> bool {
         self.installer.busy() || self.maps.busy() || self.skins.busy() || self.mod_validation.busy() || self.launching.is_some()
+            || self.supcom.importing() || self.supcom.factions.importing()
             || self.download.as_ref().is_some_and(|download| matches!(download.step, Step::Downloading { .. } | Step::Checking))
     }
 
@@ -2607,6 +2669,7 @@ fn sweep_working_folders(cache: &Path, mods_dir: &Path, extra: Option<&Path>, ag
     crate::getmods::sweep_stale(&cache.join("moddb").join("catalogue"), "install", age);
     crate::getmods::sweep_stale(&cache.join("moddb").join("unpack"), "install", age);
     crate::getmods::sweep_stale(&cache.join("map-imports"), ".maps", age);
+    crate::getmods::sweep_stale(&cache.join("faction-imports"), ".maps", age);
     for done in ta_vfs::package::recover(mods_dir) { log::info!("mods folder: {done}"); }
     if let Some(extra) = extra {
         for done in ta_vfs::package::recover(extra) { log::info!("extra mods folder: {done}"); }
@@ -2614,7 +2677,7 @@ fn sweep_working_folders(cache: &Path, mods_dir: &Path, extra: Option<&Path>, ag
     crate::getmods::sweep_stale_imports(mods_dir, age);
 }
 
-fn mod_folders(config: &Config, store: &ConfigStore) -> Vec<ModFolder> {
+pub(crate) fn mod_folders(config: &Config, store: &ConfigStore) -> Vec<ModFolder> {
     modlist::mod_folders(launch::app_dir().as_deref(), &store.dir(), config.mods.extra_dir.as_deref())
 }
 
@@ -2724,7 +2787,7 @@ impl eframe::App for LauncherApp {
         // logic runs even with the window minimized: completed installs must stop blocking
         // a ready update and make their results available when the launcher comes back.
         self.installs(ctx);
-        self.mod_validation.set_paused(self.game_running() || self.installer.busy() || self.maps.busy());
+        self.mod_validation.set_paused(self.game_running() || self.installer.busy() || self.maps.busy() || self.supcom.importing() || self.supcom.factions.importing());
         // (Nothing of the launcher's holds a mod's archives open while an install may replace
         // them: Windows would refuse the new version its place.)
         if self.installer.busy() { self.maps.release(); }
@@ -2743,12 +2806,17 @@ impl eframe::App for LauncherApp {
                 self.refresh_mods();
                 self.maps.needs_scan = true;
             }
-            // (The dialog says what it came to, and lists its maps again; closed, a notice says
-            // it, failures and all, and the dialog looks again when next opened.)
+            // (The dialog says what it came to, and lists its maps again; shown at the other tab,
+            // that tab says it ended. Closed, a notice says it, failures and all, and the dialog
+            // looks again when next opened.)
             if self.supcom.open {
-                self.supcom.rescan(&self.store.dir().join("mods"));
-            } else if let Some(text) = outcome.notice() {
-                self.notify(text, outcome.went().colour());
+                self.supcom.rescan();
+                self.supcom.unseen = self.supcom.tab != crate::supcom::Tab::Maps;
+            } else {
+                self.supcom.look.outdate();
+                if let Some(text) = outcome.notice() {
+                    self.notify(text, outcome.went().colour());
+                }
             }
         }
         if let Some(outcome) = self.supcom.factions.poll(ctx, self.supcom.open) {
@@ -2756,12 +2824,21 @@ impl eframe::App for LauncherApp {
                 modlist::set_enabled(&mut self.config.mods.enabled, crate::supcom_factions::MOD_ID, true);
                 self.refresh_mods();
             }
-            // (The dialog says what it came to and looks again; closed, a notice says it.)
             if self.supcom.open {
-                self.supcom.factions.rescan(self.supcom.picked.clone(), &self.store.dir().join("mods"));
-            } else if let Some(text) = outcome.notice() {
-                self.notify(text, outcome.went().colour());
+                self.supcom.factions.rescan(self.supcom.picked.clone(), &self.supcom.roots);
+                self.supcom.factions.unseen = self.supcom.tab != crate::supcom::Tab::Factions;
+            } else {
+                self.supcom.factions.look.outdate();
+                if let Some(text) = outcome.notice() {
+                    self.notify(text, outcome.went().colour());
+                }
             }
+        }
+        // (The game's folder as the player chose it, kept for the next start.)
+        if let Some(choice) = self.supcom.take_choice()
+            && let Err(e) = crate::supcom::save_choice(&self.store.dir(), choice.as_deref())
+        {
+            log::warn!("Supreme Commander's folder could not be kept in the settings: {e}");
         }
         // CLOSE ANYWAY during the import: closed now it has stopped (its maps turned on above).
         if self.close_after_import && !self.supcom.importing() && !self.supcom.factions.importing() {
@@ -2879,6 +2956,7 @@ impl eframe::App for LauncherApp {
         self.battle_dialog(&ctx);
         self.mod_folders_dialog(&ctx);
         self.supcom_dialog(&ctx);
+        self.supcom_replace_dialog(&ctx);
         self.whats_new_dialog(&ctx);
         self.mod_report_dialog(&ctx);
         self.paint_drop_target(&ctx);
@@ -3080,22 +3158,25 @@ mod tests {
     }
 
     /// A map import cut short (the launcher killed, the power gone) leaves its private copy of the
-    /// archive and what it unpacked: the next start sweeps it away, as it does a mod's download.
+    /// archive and what it unpacked, a Supreme Commander factions' import its mod half made (some
+    /// 400 MB): the next start sweeps them away, as it does a mod's download.
     #[test]
-    fn working_folders_left_by_a_map_import_are_swept() {
+    fn working_folders_left_by_a_map_or_factions_import_are_swept() {
         let dir = temp_dir("sweep_map_imports");
-        let imports = dir.join("cache").join("map-imports");
-        let left = imports.join(".maps-1-1793000000000000000-0");
-        let ours = imports.join(format!(".maps-{}-1793000000000000000-0", std::process::id()));
-        let unrelated = imports.join("notes");
-        for folder in [&left, &ours, &unrelated] {
-            std::fs::create_dir_all(folder.join("unpacked")).unwrap();
-            std::fs::write(folder.join("unpacked").join("big.ufo"), b"HAPI").unwrap();
+        for kind in ["map-imports", "faction-imports"] {
+            let imports = dir.join("cache").join(kind);
+            let left = imports.join(".maps-1-1793000000000000000-0");
+            let ours = imports.join(format!(".maps-{}-1793000000000000000-0", std::process::id()));
+            let unrelated = imports.join("notes");
+            for folder in [&left, &ours, &unrelated] {
+                std::fs::create_dir_all(folder.join("payload")).unwrap();
+                std::fs::write(folder.join("payload").join("big.ufo"), b"HAPI").unwrap();
+            }
+            sweep_working_folders(&dir.join("cache"), &dir.join("mods"), None, Duration::ZERO);
+            assert!(!left.exists(), "{kind}: another run's import workspace is removed");
+            assert!(ours.exists(), "{kind}: an import under way in this run is left alone");
+            assert!(unrelated.exists(), "{kind}: only the imports' own folders are touched");
         }
-        sweep_working_folders(&dir.join("cache"), &dir.join("mods"), None, Duration::ZERO);
-        assert!(!left.exists(), "another run's import workspace is removed");
-        assert!(ours.exists(), "an import under way in this run is left alone");
-        assert!(unrelated.exists(), "only the imports' own folders are touched");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -4382,6 +4463,95 @@ name = \"{}\"
         assert!(sent(&output, &egui::ViewportCommand::Close), "closed once the making stopped");
         assert!(app.close_confirmed && !app.supcom.factions.importing());
         assert!(!app.config.mods.enabled.iter().any(|id| id == crate::supcom_factions::MOD_ID), "nothing was installed, nothing turned on");
+        drop(app);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An update asked for waits for a Supreme Commander import (Setup would close the launcher and
+    /// cut it short): UPDATE NOW says why, the update installs nothing and closes nothing meanwhile.
+    #[test]
+    fn an_update_waits_for_a_supreme_commander_import() {
+        let dir = temp_dir("update_waits_supcom");
+        let (ctx, mut app) = launcher(&dir.join("config.toml"), &["--pretend-missing"]);
+        app.skins.shutdown();
+        app.download = Some(crate::update::Download::shown("2.2.0", Step::Ready(dir.join("setup.exe"))));
+        app.update_go = true;
+        for maps in [true, false] {
+            if maps { app.supcom.pretend_importing(&[]) } else { app.supcom.factions.pretend_importing() }
+            let waits = if maps { UpdateWait::SupcomMaps } else { UpdateWait::SupcomFactions };
+            assert_eq!(app.update_blocked(), Some(waits));
+            assert!(waits.why().contains("Supreme Commander") && waits.queued().contains("SUPREME COMMANDER"));
+            for _ in 0..3 {
+                frame(&ctx, &mut app, RawInput::default());
+            }
+            assert!(app.update_go && !app.close_confirmed && app.update_error.is_none(), "the update waits: nothing run, nothing closed");
+            if maps { app.supcom.stop() } else { app.supcom.factions.stop() }
+            let until = Instant::now() + Duration::from_secs(10);
+            while (app.supcom.importing() || app.supcom.factions.importing()) && Instant::now() < until {
+                app.supcom.poll(&ctx);
+                app.supcom.factions.poll(&ctx, false);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+        assert_eq!(app.update_blocked(), None);
+        app.download = None;
+        drop(app);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An import over another mod of its id (not one an import made) asks first, as installing a
+    /// package over a mod does; REPLACE AND IMPORT goes ahead, KEEP does not.
+    #[test]
+    fn an_import_over_another_mod_of_its_id_asks_first() {
+        let dir = temp_dir("supcom_replace");
+        let theirs = dir.join("mods").join(crate::supcom_factions::MOD_ID);
+        std::fs::create_dir_all(&theirs).unwrap();
+        std::fs::write(theirs.join("mod.toml"), format!("id = \"{}\"\nname = \"Bob's factions\"\nversion = \"2\"\n", crate::supcom_factions::MOD_ID)).unwrap();
+        let (ctx, mut app) = launcher(&dir.join("config.toml"), &["--pretend-missing"]);
+        app.skins.shutdown();
+        app.refresh_mods();
+        app.supcom.open = true;
+        app.supcom.tab = crate::supcom::Tab::Factions;
+        // (A copy of the game nowhere: the import, let go, fails as it reads it, nothing made.)
+        let install = ta_supcom::install::Install { root: dir.join("no game here"), store: ta_supcom::install::Store::Folder };
+        let factions = ta_supcom::unit::Faction::PLAYABLE.into_iter().map(|faction| crate::supcom_factions::Entry { faction, buildings: 1, land: 1, air: 1, naval: 1, state: crate::supcom::State::New }).collect();
+        app.supcom.factions.pretend_found(crate::supcom_factions::Found { install: Some(install), factions, ..Default::default() }, Default::default());
+        app.supcom.factions.poll(&ctx, true);
+        app.apply(Action::SupcomFactionsImport, &eframe::Frame::_new_kittest());
+        let (tab, copy) = app.supcom.confirm_replace.clone().expect("asked first");
+        assert!(tab == crate::supcom::Tab::Factions && copy.name == "Bob's factions" && !copy.ours);
+        assert!(!app.supcom.factions.importing(), "nothing started before the answer");
+        // KEEP: nothing.
+        app.supcom.confirm_replace = None;
+        assert!(!app.supcom.factions.importing());
+        // REPLACE AND IMPORT: it goes ahead (and fails here, reading no game: their mod is left).
+        app.apply(Action::SupcomFactionsImport, &eframe::Frame::_new_kittest());
+        app.apply(Action::SupcomReplace, &eframe::Frame::_new_kittest());
+        assert!(app.supcom.confirm_replace.is_none() && app.supcom.factions.importing(), "started as the player agreed");
+        let until = Instant::now() + Duration::from_secs(10);
+        while app.supcom.factions.importing() && Instant::now() < until {
+            app.supcom.factions.poll(&ctx, true);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(app.supcom.factions.outcome.as_ref().is_some_and(|o| o.error.is_some()));
+        assert!(theirs.join("mod.toml").exists(), "nothing replaced when nothing was made");
+        drop(app);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The close question late in a factions import says what closing does then: the mod being
+    /// installed is waited for (it cannot be stopped), not that the factions stay as they were.
+    #[test]
+    fn the_close_question_says_an_install_under_way_is_waited_for() {
+        let dir = temp_dir("close_factions_installing");
+        let (_ctx, mut app) = launcher(&dir.join("config.toml"), &["--pretend-missing"]);
+        app.skins.shutdown();
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        app.supcom.factions.pretend_installing(done.clone());
+        let risks = app.work_at_risk();
+        assert!(risks.len() == 1 && risks[0].contains("being installed") && !risks[0].contains("stay as they were"), "{risks:?}");
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        app.supcom.factions.finish_on_exit();
         drop(app);
         let _ = std::fs::remove_dir_all(dir);
     }

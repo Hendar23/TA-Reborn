@@ -666,3 +666,6 @@ importées : {n} ; non créées : {failed}.", "Aucune des cartes choisies n'a pu
 | hue / saturation / brightness (colour picker) | Teinte / Saturation / Luminosité |
 | screen-reader marks OK / Not present / Error; {content}: found / not found | OK / Absent / Erreur; trouvé / introuvable |
 | LEGAL / THE PROJECT (About page headings) | MENTIONS LÉGALES / LE PROJET |
+| Supreme Commander's (still to come): the commanders' enhancements / upgrading buildings in place / shields / stealth fields / teleporting | les améliorations des commandants / la mise à niveau des bâtiments sur place (never amélioration twice) / boucliers / champs de furtivité / téléportation |
+| the launcher's footer (its activity chips and save status) / the Mods page | la barre d'état du lanceur (as "Réessayer dans la barre d'état") / la page MODS (as la page CARTES) |
+| Held until the import ends (beside greyed controls) / then import these (the maps or factions chosen; one string serves both tabs) / Update: import it again | Indisponible pendant l'importation / puis importez votre sélection / Mise à jour : à réimporter |

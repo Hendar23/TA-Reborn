@@ -614,3 +614,19 @@ create: {failed}.", "Non è stato possibile creare nessuna delle mappe scelte ({
 | hue / saturation / brightness (colour picker) | Tonalità / Saturazione / Luminosità |
 | screen-reader marks OK / Not present / Error; {content}: found / not found | OK / Assente / Errore; presente / assente (no gender to agree) |
 | LEGAL / THE PROJECT (About page headings) | NOTE LEGALI / IL PROGETTO |
+
+## Supreme Commander: importare mappe e fazioni (`pages/supcom.rs`, `supcom.rs`, `supcom_factions.rs`)
+
+Counts that can be 1 as labels ("Mappe scelte: {n} su {total}", "Mappe tra cui scegliere: {total}");
+one map in a natural singular ("Importata 1 mappa: …", "Non è stato possibile creare 1 mappa").
+A faction made playable is "uno schieramento da giocare in schermaglia". Straight apostrophes.
+
+| English | Italiano |
+|---|---|
+| Held until the import ends (note and tip beside greyed controls) | Non disponibile durante l'importazione |
+| STOPPING… (the stop button) / Stopping… (progress words) | INTERRUZIONE… / Interruzione… |
+| the launcher's footer | la barra di stato del launcher |
+| Looking through {folder}… | Analisi di {folder}… |
+| UPDATE… / Update: import it again (a mod made by an older TA Reborn) | AGGIORNA… / Aggiornamento: reimportala |
+| the commanders' enhancements / upgrading buildings in place | i potenziamenti dei comandanti / gli edifici che salgono di livello sul posto |
+| shields / stealth fields / teleporting | scudi / campi di furtività (as "Furtiva: invisibile al radar") / teletrasporto |

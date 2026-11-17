@@ -38,10 +38,11 @@ fn either(one: String, other: String) -> String {
     format!("{one} / {other}")
 }
 
-/// Something going on, for the footer: where it is (`page`, `mods_tab`), what it is, how far
-/// it has got when that is known, its colour, whether it is the update, and whether it is work
-/// under way (a construction rail) rather than a state (an update waiting, the game running).
-struct Activity { mods_tab: Option<ModsTab>, page: Page, text: String, progress: Option<f32>, color: Color32, update: bool, work: bool }
+/// Something going on, for the footer: where it is (`page`, `mods_tab`; a Supreme Commander
+/// import's dialog at its tab, `dialog`), what it is, how far it has got when that is known, its
+/// colour, whether it is the update, and whether it is work under way (a construction rail)
+/// rather than a state (an update waiting, the game running).
+struct Activity { mods_tab: Option<ModsTab>, page: Page, dialog: Option<crate::supcom::Tab>, text: String, progress: Option<f32>, color: Color32, update: bool, work: bool }
 fn fraction(got: u64, total: u64) -> Option<f32> {
     (total > 0).then(|| (got as f64 / total as f64).clamp(0.0, 1.0) as f32)
 }
@@ -170,31 +171,41 @@ impl LauncherApp {
                 else if waiting { tf("UPDATE v{version}", &[("version", &download.version)]) }
                 else { tf("UPDATING TO v{version}", &[("version", &download.version)]) };
             let work = !failed && !waiting;
-            items.push(Activity { mods_tab: None, page: Page::Play, text, progress, color, update: true, work });
+            items.push(Activity { mods_tab: None, page: Page::Play, dialog: None, text, progress, color, update: true, work });
         }
         if self.download.is_none() && let crate::update::UpdateState::Available(release) = &self.update {
-            items.push(Activity { mods_tab: None, page: Page::Play, text: tf("UPDATE v{version}", &[("version", &release.number())]),
+            items.push(Activity { mods_tab: None, page: Page::Play, dialog: None, text: tf("UPDATE v{version}", &[("version", &release.number())]),
                 progress: None, color: SKY, update: true, work: false });
         }
         let active: Vec<_> = self.installer.stages.iter().filter(|(_, stage)| stage.active()).collect();
         if !active.is_empty() {
             let (_, stage) = active.iter().copied().find(|(_, stage)| !matches!(stage, Stage::Queued)).unwrap_or(active[0]);
             let progress = match stage { Stage::Downloading { got, total, .. } | Stage::Copying { got, total } => fraction(*got, *total), _ => None };
-            items.push(Activity { mods_tab: Some(ModsTab::Library), page: Page::Mods, text: tf("MODS · {count} active", &[("count", &active.len())]), progress, color: AMBER, update: false, work: true });
+            items.push(Activity { mods_tab: Some(ModsTab::Library), page: Page::Mods, dialog: None, text: tf("MODS · {count} active", &[("count", &active.len())]), progress, color: AMBER, update: false, work: true });
         }
         if let Some(status) = self.maps.status() {
-            items.push(Activity { mods_tab: None, page: Page::Maps, text: t(status).to_string(), progress: None, color: AMBER, update: false, work: true });
+            items.push(Activity { mods_tab: None, page: Page::Maps, dialog: None, text: t(status).to_string(), progress: None, color: AMBER, update: false, work: true });
         }
-        if self.mod_validation.busy() && !self.game_running() && !self.installer.busy() && !self.maps.busy() {
-            items.push(Activity { mods_tab: Some(ModsTab::Library), page: Page::Mods,
+        // A Supreme Commander import, whether its dialog is shown or not: a click opens it at its tab.
+        for (tab, importing, progress, text) in [
+            (crate::supcom::Tab::Maps, self.supcom.importing(), &self.supcom.progress, n("SUPREME COMMANDER MAPS")),
+            (crate::supcom::Tab::Factions, self.supcom.factions.importing(), &self.supcom.factions.progress, n("SUPREME COMMANDER FACTIONS")),
+        ] {
+            if importing {
+                let page = if tab == crate::supcom::Tab::Maps { Page::Maps } else { Page::Mods };
+                items.push(Activity { mods_tab: None, page, dialog: Some(tab), text: t(text).to_string(), progress: progress.lock().unwrap().fraction(), color: AMBER, update: false, work: true });
+            }
+        }
+        if self.mod_validation.busy() && !self.game_running() && !self.installer.busy() && !self.maps.busy() && !self.supcom.importing() && !self.supcom.factions.importing() {
+            items.push(Activity { mods_tab: Some(ModsTab::Library), page: Page::Mods, dialog: None,
                 text: t("VALIDATING MODS…").to_string(), progress: self.mod_validation.fraction(), color: SKY, update: false, work: true });
         }
         if let Some(status) = self.skins.status() {
-            items.push(Activity { mods_tab: None, page: Page::Skins, text: t(status).to_string(), progress: None, color: AMBER, update: false, work: true });
+            items.push(Activity { mods_tab: None, page: Page::Skins, dialog: None, text: t(status).to_string(), progress: None, color: AMBER, update: false, work: true });
         }
         if self.game_running() {
             let benchmark = self.benchmarks.running.is_some();
-            items.push(Activity { mods_tab: None, page: if benchmark { Page::Benchmark } else { Page::Play },
+            items.push(Activity { mods_tab: None, page: if benchmark { Page::Benchmark } else { Page::Play }, dialog: None,
                 text: t(if benchmark { "BENCHMARK RUNNING" } else { "GAME RUNNING" }).to_string(), progress: None, color: AMBER, update: false, work: false });
         }
         items
@@ -222,6 +233,11 @@ impl LauncherApp {
         for item in items.into_iter().take(shown) {
             if activity_chip(ui, &item).clicked() {
                 if item.update { self.push(Action::ShowUpdate); }
+                // (An import's dialog, over the page it was opened from.)
+                else if let Some(tab) = item.dialog {
+                    self.open_page(item.page);
+                    self.push(Action::SupcomOpen(tab));
+                }
                 else {
                     // As the rail opens it (a page's scan or refresh with it); a page that scrolls
                     // as a whole is shown from its top (the libraries scroll within, and would
@@ -363,6 +379,38 @@ mod tests {
         app.show("update");
         app.update_hidden = true;
         assert!(app.activities().iter().any(|item| item.update && item.text.contains("2.2.0")));
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A Supreme Commander import shows in the footer, its dialog open or not: how far it has got,
+    /// and a click opens the dialog at its tab, over its page.
+    #[test]
+    fn a_supreme_commander_import_has_its_chip_in_the_footer() {
+        let root = std::env::temp_dir().join(format!("ta_activity_supcom_{}", std::process::id()));
+        let config = root.join("config.toml");
+        let ctx = egui::Context::default();
+        let mut app = LauncherApp::new(&eframe::CreationContext::_new_kittest(ctx.clone()),
+            crate::Args::parse_from(["ta-launcher", "--offline", "--pretend-missing", "--config", config.to_str().unwrap()]));
+        app.skins.shutdown();
+        app.supcom.look.canned = Some(std::sync::Arc::new(|| (crate::supcom::Found::default(), Default::default())));
+        app.supcom.pretend_importing(&[]);
+        {
+            let mut p = app.supcom.progress.lock().unwrap();
+            (p.phase, p.done, p.total) = (crate::supcom::Phase::Making, 3, 12);
+        }
+        let item = app.activities().into_iter().find(|item| item.dialog.is_some()).expect("its chip");
+        assert_eq!((item.dialog, item.page, item.text.as_str(), item.progress), (Some(crate::supcom::Tab::Maps), Page::Maps, "SUPREME COMMANDER MAPS", Some(0.25)));
+        assert!(item.work && !app.supcom.open);
+        app.apply(Action::SupcomOpen(crate::supcom::Tab::Factions), &eframe::Frame::_new_kittest());
+        assert!(app.supcom.open && app.supcom.tab == crate::supcom::Tab::Maps, "at the tab whose import is under way");
+        app.supcom.stop();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while app.supcom.importing() && std::time::Instant::now() < until {
+            app.supcom.poll(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(app.activities().iter().all(|item| item.dialog.is_none()));
         drop(app);
         let _ = std::fs::remove_dir_all(root);
     }
