@@ -491,6 +491,12 @@ impl World {
         self.components.get(spec).map_or(0, |c| c[self.idx(anchor.0, anchor.1)])
     }
 
+    /// Every anchor cell's region for a spec, row by row (as [`World::component`] gives them one
+    /// at a time), when they have been worked out for it.
+    pub(crate) fn components_of(&self, spec: &MoveSpec) -> Option<&[Region]> {
+        self.components.get(spec).map(|c| &c[..])
+    }
+
     /// Whether a cell of `region` lies within `slack` cells (Chebyshev) of `anchor`: the anchor
     /// first, then ring by ring.
     pub fn region_within(&self, spec: &MoveSpec, region: Region, anchor: (i32, i32), slack: i32) -> bool {

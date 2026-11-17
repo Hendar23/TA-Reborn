@@ -229,13 +229,32 @@ enum Doing {
 }
 
 /// A wave's unit on the hunt: where it was at the last look, and for how many looks it has
-/// hardly moved though it had somewhere to go (wedged in a crowd).
+/// hardly moved though it had somewhere to go (wedged in a crowd); and the wreckage it is
+/// firing on to open its way (a feature), if any.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hunter {
     pub id: UnitId,
     pub mark: FxVec3,
     pub still: u8,
+    pub clearing: Option<usize>,
 }
+
+impl Hunter {
+    /// A unit just come with its wave.
+    pub fn new(id: UnitId) -> Hunter {
+        Hunter { id, mark: FxVec3::ZERO, still: 0, clearing: None }
+    }
+}
+
+/// Wedged hunters of one look whose way is searched for wreckage at most (each search finds it
+/// for those wedged round the same place and going the same way, too).
+const CLEARING_SEARCHES: usize = 3;
+/// A wedged hunter takes the wreckage found for another as its own when it stands this near
+/// where that one stood, and is going this near where it was going (px).
+const CLEARING_SHARE: i64 = 640;
+/// Wedged hunters this near wreckage that closes their way fire on it (px); those further back
+/// wait for the way to open.
+const CLEARING_REACH: i64 = 900;
 
 /// A group of units that arrives on schedule: a scenario's attack.
 #[derive(Clone, Debug, PartialEq)]
@@ -329,7 +348,7 @@ impl MissionRules {
             for &(unit, count) in &wave.units { mix(unit as i64); mix(count as i64); }
         }
         mix(self.hunters.len() as i64);
-        for hunter in &self.hunters { id(mix, hunter.id); pos(mix, hunter.mark); mix(hunter.still as i64); }
+        for hunter in &self.hunters { id(mix, hunter.id); pos(mix, hunter.mark); mix(hunter.still as i64); mix(hunter.clearing.map_or(-1, |f| f as i64)); }
         mix(self.scripts.len() as i64);
         for script in &self.scripts {
             id(mix, script.unit); mix(script.owner as i64); mix(script.since as i64);
@@ -502,7 +521,7 @@ impl Sim {
                 && wave.hunt
                 && !wave.friendly
             {
-                rules.hunters.extend(arrived.iter().map(|&id| Hunter { id, mark: FxVec3::ZERO, still: 0 }));
+                rules.hunters.extend(arrived.iter().map(|&id| Hunter::new(id)));
             }
         }
     }
@@ -531,6 +550,9 @@ impl Sim {
         // Hardly moving for three looks in a row (six seconds) with somewhere to go: wedged.
         const STILL_LOOKS: u8 = 3;
         let still_px = Fx::from_int(24);
+        // The wreckage found closing the ways of the wedged this look (movement class, where
+        // the one searched for stood and was going, the wreckage), and the searches made.
+        let mut shut: Vec<(crate::world::MoveSpec, FxVec3, FxVec3, Vec<usize>)> = Vec::new();
         for h in &mut hunters {
             let Some(u) = self.unit(h.id).filter(|u| u.is_complete() && u.carried_by.is_none() && types.get(u.type_id).locomotion != Locomotion::Static) else { continue };
             let pos = u.pos;
@@ -564,13 +586,82 @@ impl Sim {
                 }
             }
             let Some(u) = self.unit(h.id) else { continue };
+            // Firing on wreckage that closes its way: on with it while the wreck stands, then on
+            // with the hunt (the attack-move queued behind the shooting).
+            if let Some(f) = h.clearing {
+                let at = self.features.get(f).filter(|f| f.alive).map(|f| f.pos);
+                let shooting = |u: &Unit| matches!(u.orders.front(), Some(&Order::Attack(Target::Ground(p))) if Some(p) == at);
+                if at.is_some() && shooting(u) {
+                    (h.still, h.mark) = (0, pos);
+                    continue;
+                }
+                h.clearing = None;
+                if let Some(u) = self.unit_mut(h.id)
+                    && let Some(&Order::Attack(Target::Ground(p))) = u.orders.front()
+                {
+                    u.orders.pop_front();
+                    for slot in 0..u.weapons.len() {
+                        if u.weapons[slot].target == Some(Target::Ground(p)) {
+                            u.retarget(slot, None);
+                        }
+                    }
+                }
+                (h.still, h.mark) = (0, pos);
+                continue;
+            }
             let busy = !u.orders.is_empty();
             h.still = if busy && pos.within_xz(h.mark, still_px) { h.still.saturating_add(1) } else { 0 };
             h.mark = pos;
-            if busy && h.still < STILL_LOOKS {
+            let wedged = busy && h.still >= STILL_LOOKS;
+            // (On a way that stops short of where it is going: something closes it.)
+            let short = busy && !u.path_partial && matches!((u.path_goal, u.move_request), (Some(g), Some(m)) if !g.within_xz(m, Fx::from_int(96)));
+            if busy && !wedged && !short {
                 continue;
             }
             let Some(&target) = prey.iter().min_by_key(|p| (**p - pos).xz().length_sq_raw()) else { break };
+            // Wedged, on a way that stops short, or with nothing to do short of its prey: where
+            // wreckage closes the way the ground leads (not merely the crowd), those near it fire
+            // on it till it falls (to a heap, which blocks nothing), and the hunt goes on. (As a
+            // player clears a pass: the waves bring no constructors to reclaim it.)
+            let goal = match u.orders.front() {
+                Some(&Order::Fight(p)) => p,
+                _ => target,
+            };
+            let t = types.get(u.type_id);
+            if matches!(t.locomotion, Locomotion::Ground | Locomotion::Hover | Locomotion::Naval) && self.fires_on_ground(t) {
+                let spec = self.move_spec(u.type_id);
+                let share = Fx::from_int(CLEARING_SHARE);
+                let known = shut.iter().find(|(s, from, to, _)| *s == spec && from.within_xz(pos, share) && to.within_xz(goal, share)).map(|e| e.3.clone());
+                let wrecks = match known {
+                    Some(w) => w,
+                    None if shut.len() < CLEARING_SEARCHES => {
+                        let w: Vec<usize> = self
+                            .way_blockers(&spec, pos, goal)
+                            .into_iter()
+                            .filter(|&f| self.is_wreckage(self.features[f].def) && !self.data.features[self.features[f].def].indestructible)
+                            .collect();
+                        shut.push((spec, pos, goal, w.clone()));
+                        w
+                    }
+                    None => Vec::new(),
+                };
+                if let Some(at) = wrecks.iter().filter_map(|&f| self.features.get(f).filter(|f| f.alive).map(|w| (f, w.pos))).find(|&(_, p)| p.within_xz(pos, Fx::from_int(CLEARING_REACH))) {
+                    h.clearing = Some(at.0);
+                    h.still = 0;
+                    if let Some(u) = self.unit_mut(h.id) {
+                        u.orders.clear();
+                        u.path.clear();
+                        u.path_goal = None;
+                        u.orders.push_back(Order::Attack(Target::Ground(at.1)));
+                        u.orders.push_back(Order::Fight(goal));
+                    }
+                    continue;
+                }
+            }
+            // (Nothing to clear on a way that stops short: on as it goes, for now.)
+            if busy && !wedged {
+                continue;
+            }
             // (Wedged units each take a point of their own near it: the same goal would give
             // them the same way, and the same jam.)
             let target = if busy {
@@ -591,6 +682,12 @@ impl Sim {
         if let Some(rules) = &mut self.mission {
             rules.hunters = hunters;
         }
+    }
+
+    /// Whether a unit type has a weapon it fires at a place on the ground (not on order only, no
+    /// stockpiled missile or interceptor): what it can break wreckage up with.
+    fn fires_on_ground(&self, t: &UnitType) -> bool {
+        t.weapons.iter().flatten().map(|&w| self.weapon_types.get(w)).any(|w| w.hits_ground && !w.command_fire && !w.def.stockpile && !w.def.interceptor && w.default_damage > Fx::ZERO)
     }
 
     /// Whether every weapon of a unit type fires on order only (`commandfire`: TA's bombs, the

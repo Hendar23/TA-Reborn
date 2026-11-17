@@ -18,8 +18,9 @@ use crate::vision::{self, Seen, Sensor, Vision};
 use crate::world::{CELL, MoveSpec, Occupant, Region, World};
 
 mod air;
-mod repair_round;
+mod blockers;
 pub mod enhance;
+mod repair_round;
 mod upgrade;
 
 /// Base resource storage every player has regardless of buildings (TA default).
@@ -338,7 +339,11 @@ struct CachedPath {
     path: Vec<(i32, i32)>,
     goal_pos: FxVec3,
     tick: u64,
+    /// The world's `blocking_version` it was planned at; for one stopping short of its goal
+    /// (`short`), its `occupancy_version`: whatever opens up on the ground (wreckage cleared out
+    /// of a pass) may let it through, and it is planned again.
     occupancy_version: u64,
+    short: bool,
 }
 
 /// Cached paths expire after this many ticks.
@@ -3365,7 +3370,7 @@ impl Sim {
         let cached = self
             .path_cache
             .get(&key)
-            .filter(|c| c.occupancy_version == version && self.tick < c.tick + PATH_CACHE_TICKS && unit_factory.is_none())
+            .filter(|c| c.occupancy_version == if c.short { self.world.occupancy_version } else { version } && self.tick < c.tick + PATH_CACHE_TICKS && unit_factory.is_none())
             .filter(|c| c.path.first().map_or(start == goal, |&w| crate::path::line_clear(&self.world, &spec, start, w, None)));
         let path = if let Some(route) = flow_route {
             route
@@ -3433,7 +3438,9 @@ impl Sim {
                 self.path_cache.retain(|_, c| now < c.tick + PATH_CACHE_TICKS);
                 self.path_cache_limit = (self.path_cache.len() * 2).max(PATH_CACHE_PURGE);
             }
-            self.path_cache.insert(key, CachedPath { path: path.clone(), goal_pos, tick: self.tick, occupancy_version: version });
+            let short = !reached;
+            let occupancy_version = if short { self.world.occupancy_version } else { version };
+            self.path_cache.insert(key, CachedPath { path: path.clone(), goal_pos, tick: self.tick, occupancy_version, short });
             path
         };
         if radius > 0 && let Some(&c) = path.last() {

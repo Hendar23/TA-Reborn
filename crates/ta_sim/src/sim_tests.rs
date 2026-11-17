@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use ta_data::{GameData, MapInfo};
-use ta_formats::tnt::{FEATURE_NONE, TntMap};
+use ta_formats::tnt::{FEATURE_NONE, FEATURE_VOID, TntMap};
 
 use super::*;
 use crate::unit::{PlayerSetup, Target};
@@ -49,6 +49,8 @@ mod scenarios;
 mod upgrades;
 #[path = "enhance_tests.rs"]
 mod enhancements;
+#[path = "blocker_tests.rs"]
+mod blockers;
 
 /// Game data from TDF files (path, text), loaded as a mod's folder is.
 fn data_of(files: &[(String, String)]) -> GameData {

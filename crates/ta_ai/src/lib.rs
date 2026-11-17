@@ -25,6 +25,7 @@
 
 mod ally;
 mod army;
+mod clear;
 mod duty;
 mod economy;
 mod enhance;
@@ -36,6 +37,8 @@ mod upgrade;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod clear_tests;
 
 use std::cmp::Reverse;
 
@@ -440,6 +443,12 @@ pub struct SkirmishAi {
     /// called off (surface transports are preferred for a while after).
     scouted: u64,
     air_lift_failed: u64,
+    /// Wreckage (or another feature) closing our units' way, and the work on it; where our
+    /// units stood at the last looks and since when (stalls); and where ways were searched
+    /// lately, until when not again (`clear.rs`).
+    blockers: Vec<clear::Blocker>,
+    marks: Vec<(UnitId, FxVec3, u64)>,
+    way_searched: Vec<(FxVec3, u64)>,
 }
 
 /// One think's view of our forces and the enemy's.
@@ -840,6 +849,9 @@ impl SkirmishAi {
             last_lift: 0,
             scouted: 0,
             air_lift_failed: 0,
+            blockers: Vec::new(),
+            marks: Vec::new(),
+            way_searched: Vec::new(),
         }
     }
 
@@ -871,12 +883,17 @@ impl SkirmishAi {
         self.arm_defenses(sim, &s, &mut out);
         self.run_commander(sim, &s, &mut out);
         self.plan_navy(sim, &s);
+        // Wreckage closing our units' way: constructors to reclaim it (before the builders' own
+        // jobs), the army to fire on it (after its own orders).
+        self.find_blockers(sim, &s, &mut out);
+        self.send_clearers(sim, &s, &mut out);
         self.run_builders(sim, &s, &mut out);
         self.run_upgrades_in_place(sim, &s, &mut out);
         self.run_enhancements(sim, &s, &mut out);
         self.run_factories(sim, &s, &mut out);
         self.run_scouting(sim, &s, &mut out);
         self.run_army(sim, &s, &mut out);
+        self.fire_on_blockers(sim, &s, &mut out);
         self.run_transports(sim, &s, &mut out);
         self.run_navy(sim, &s, &mut out);
         self.run_air(sim, &s, &mut out);
