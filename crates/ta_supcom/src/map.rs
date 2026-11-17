@@ -232,15 +232,12 @@ fn collect_units(group: &Table, wreck: bool, depth: usize, out: &mut Vec<Civilia
     }
 }
 
-/// The area a map's script limits the battle to (`ScenarioFramework.SetPlayableArea('AREA_1')`).
+/// The area a map's script limits the battle to (`ScenarioFramework.SetPlayableArea('AREA_1')`):
+/// the first such call's, in what the script runs (a call commented out, as 25 of the game's
+/// own scripts have one, limits nothing).
 fn playable_area_named(script: &str) -> Option<String> {
-    let at = script.find("SetPlayableArea")?;
-    let rest = &script[at..];
-    let open = rest.find(['\'', '"'])?;
-    let quote = rest.as_bytes()[open] as char;
-    let end = rest[open + 1..].find(quote)?;
-    let name = &rest[open + 1..open + 1 + end];
-    (!name.is_empty() && name.len() < 64).then(|| name.to_string())
+    let name = lua::call_string(script, "SetPlayableArea")?;
+    (!name.is_empty() && name.len() < 64).then_some(name)
 }
 
 #[cfg(test)]
@@ -285,5 +282,25 @@ pub(crate) mod tests {
         assert_eq!(map.playable, Some([1.0, 0.0, 15.0, 8.0]));
         assert_eq!(map.scmap.width, 16);
         assert_eq!(strip_loc("Plain"), "Plain");
+    }
+
+    /// A script whose call to limit the battle is commented out (as 25 of the game's own are)
+    /// leaves the map whole, though its save names the area.
+    #[test]
+    fn a_commented_out_play_area_limits_nothing() {
+        let dir = crate::tests::Temp::new("map-area");
+        let maps = dir.0.join("maps");
+        let folder = write_map(&maps);
+        let files = Files::of(vec![maps], Vec::new());
+        for script in [
+            "--ScenarioFramework.SetPlayableArea('AREA_1', false)\n",
+            "#ScenarioFramework.SetPlayableArea('AREA_1', false)\n",
+            "--[==[\nScenarioFramework.SetPlayableArea('AREA_1', false)\n]==]\nLOG('no area')\n",
+        ] {
+            std::fs::write(folder.join("TEST_001_script.lua"), script).unwrap();
+            let map = Map::read(&files, &folder).unwrap();
+            assert_eq!(map.playable, None, "{script}");
+            assert_eq!(map.starts, [[2.5, 4.5], [13.5, 4.5]]);
+        }
     }
 }

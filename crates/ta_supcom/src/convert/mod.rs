@@ -19,16 +19,20 @@ use ta_formats::tnt::{CELL_CLIFF, TntMap};
 
 use crate::files::Files;
 use crate::map::{Map, Scenario};
-use crate::Result;
+use crate::{Error, Result};
 
 /// The converter's version: written in each map's OTA (`supcomversion`), so a map made by an
-/// older one can be told and made again.
-pub const VERSION: u32 = 1;
+/// older one can be told and made again. 2: lit as the game's terrain shader lights the ground,
+/// matched to letterboxed previews, cities' props left out, what features leave held to what
+/// they were, deposits made buildable, walls of every faction.
+pub const VERSION: u32 = 2;
 /// The version of the maps' own features, in their names (`SC1_Green_T1`): definitions of
 /// another version are other features.
 pub const FEATURES_VERSION: u32 = 1;
 /// The most players a TA map holds.
 pub const MAX_PLAYERS: usize = 10;
+/// The most tiles a map's art may have: a place names its tile in 16 bits.
+pub const MAX_TILES: usize = 65_536;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
@@ -111,8 +115,16 @@ fn fnv1a(bytes: &[u8]) -> u32 {
 }
 
 /// Converts `map` (read from `files`), its features drawn from TA's own (`templates`) and its art
-/// dithered into `palette`. `players_own`: a map from a player's own folder, not the game's.
+/// dithered into `palette`. `players_own`: a map from a player's own folder, not the game's (its
+/// textures and props are looked for in Forged Alliance Forever's archives before the game's, where
+/// FAF is installed; the game's own maps take the game's own first, so that they come out the same
+/// on every computer, FAF or not). A map with fewer than two starts is refused: no battle is
+/// fought on it.
 pub fn convert(map: &Map, files: &Files, templates: &kit::Templates, palette: &Palette, players_own: bool, options: &Options, stage: &(dyn Fn(Stage) + Sync)) -> Result<Converted> {
+    if map.starts.len() < 2 {
+        return Err(Error::Format(format!("{}: {} start position{} (a battle needs two)", map.scenario.folder, map.starts.len(), if map.starts.len() == 1 { "" } else { "s" })));
+    }
+    let files = &files.for_map(players_own);
     let m = &map.scmap;
     let area = map.playable.map_or([0.0, 0.0, m.width as f64, m.height as f64], |a| a.map(|v| v as f64));
     let frame = land::Frame::within(area, options.max_cells);
@@ -121,8 +133,10 @@ pub fn convert(map: &Map, files: &Files, templates: &kit::Templates, palette: &P
     let kit = kit::choose(m, templates);
     stage(Stage::Features);
     let placed = place::place(map, &mut land, kit, templates, files)?;
-    let painter = paint::Painter::new(m, files, frame)?;
-    let art = art::paint(&painter, &land, options.budget, &palette.colors, &|share| stage(Stage::Painting(share)));
+    let mut painter = paint::Painter::new(m, files, frame)?;
+    painter.open_ways(&placed.ways, &land.cliff);
+    let budget = options.budget.clamp(1, MAX_TILES);
+    let art = art::paint(&painter, &land, budget, &palette.colors, &|share| stage(Stage::Painting(share)));
     stage(Stage::Writing);
     let flags: Vec<u8> = land.cliff.iter().map(|&c| if c { CELL_CLIFF } else { 0 }).collect();
     let mut tnt = TntMap {
@@ -158,13 +172,23 @@ pub fn convert(map: &Map, files: &Files, templates: &kit::Templates, palette: &P
     })
 }
 
+/// A map's size as TA's menus give it: in 512-pixel squares, rounded (Winter Duel's 7.75 by 4.5
+/// is "8 x 5").
+fn size(f: land::Frame) -> (usize, usize) {
+    ((f.w * 16 + 256) / 512, (f.h * 16 + 256) / 512)
+}
+
 /// The map's OTA, laid out as TA's skirmish maps' are, with what TA Reborn reads of a map made
 /// by its own tools (`rebornart`: no TA painter's hatching to clean) and where it came from.
 fn ota(map: &Map, land: &land::Land, kit: kit::Kit, starts: &[(f64, f64)]) -> TdfDocument {
     let f = land.frame;
     let mut head = TdfSection::new("GlobalHeader");
     let counts: Vec<String> = (2..=starts.len().max(2)).map(|p| p.to_string()).collect();
-    let description = format!("{} x {} {} (Supreme Commander: Forged Alliance)", f.w * 16 / 512, f.h * 16 / 512, map.scenario.description.trim());
+    let (w, h) = size(f);
+    // (Its size first, as TA's maps' descriptions open, two spaces after: the menus show the map's
+    // own size in its place.)
+    let text = map.scenario.description.trim();
+    let description = if text.is_empty() { format!("{w} X {h}  (Supreme Commander: Forged Alliance)") } else { format!("{w} X {h}  {text} (Supreme Commander: Forged Alliance)") };
     for (k, v) in [
         ("missionname", map.scenario.name.clone()),
         ("missiondescription", description.replace(['\r', '\n', ';', '{', '}', '[', ']'], " ")),
@@ -184,7 +208,7 @@ fn ota(map: &Map, land: &land::Land, kit: kit::Kit, starts: &[(f64, f64)]) -> Td
         ("maxwindspeed", "2500".into()),
         ("gravity", "112".into()),
         ("numplayers", counts.join(", ")),
-        ("size", format!("{} x {}", f.w * 16 / 512, f.h * 16 / 512)),
+        ("size", format!("{w} x {h}")),
         ("memory", "32 mb".into()),
         ("DestroyAllUnits", "1".into()),
         ("AllUnitsKilled", "1".into()),
@@ -280,6 +304,7 @@ mod tests {
         let b = convert(&map, &files, &templates, &palette, false, &options, &|_| {}).unwrap();
         assert_eq!(a.tnt, b.tnt);
         assert_eq!(a.ota, b.ota);
+        assert_eq!(a.features, b.features);
         assert_eq!(a.stem, "Test Ridge (SC)");
         let tnt = TntMap::parse(&a.tnt).unwrap();
         assert_eq!((tnt.width, tnt.height), (32, 32));
@@ -288,6 +313,23 @@ mod tests {
         assert_eq!(info.len(), 2);
         assert_eq!(ota.section_path("GlobalHeader").and_then(|h| h.get("rebornart")), Some("1"));
         assert_eq!(ota.section_path("GlobalHeader").and_then(|h| h.get("supcommap")), Some("TEST_001"));
+        assert_eq!(ota.section_path("GlobalHeader").and_then(|h| h.get("supcomversion")), Some(VERSION.to_string().as_str()));
+        // A map of 14 x 8 world units (its area): 224 by 128 pixels, a 512-pixel square and less.
+        assert_eq!(ota.section_path("GlobalHeader").and_then(|h| h.get("size")), Some("1 x 1"));
+        assert!(ota.section_path("GlobalHeader").and_then(|h| h.get("missiondescription")).is_some_and(|d| d.starts_with("1 X 1  Two bases")), "{:?}", ota.section_path("GlobalHeader").and_then(|h| h.get("missiondescription")));
+        // One start: no battle there.
+        let mut alone = map.clone();
+        alone.starts.truncate(1);
+        assert!(convert(&alone, &files, &templates, &palette, false, &options, &|_| {}).is_err());
+    }
+
+    /// Sizes are rounded as TA's menus round them (Winter Duel's 7.75 by 4.5 is "8 x 5").
+    #[test]
+    fn sizes_round_as_tas_do() {
+        let f = |w: usize, h: usize| land::Frame { x0: 0.0, z0: 0.0, s: 16.0, w, h };
+        assert_eq!(size(f(248, 144)), (8, 5));
+        assert_eq!(size(f(1024, 1024)), (32, 32));
+        assert_eq!(size(f(32, 32)), (1, 1));
     }
 
     /// The start positions an OTA lists (`XPos`, `ZPos` of `StartPos<n>`).

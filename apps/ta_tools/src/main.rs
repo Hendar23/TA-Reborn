@@ -125,7 +125,7 @@ enum Cmd {
         game: Option<PathBuf>,
         #[arg(long)]
         preview: Option<PathBuf>,
-        /// The most tiles a map's art may have.
+        /// The most tiles a map's art may have (1 to 65,536).
         #[arg(long, default_value_t = 28_000)]
         budget: usize,
         /// The most cells a side of a map may have.
@@ -467,7 +467,22 @@ fn mod_install(package: &Path, mods_dir: &Path, id: Option<String>, name: Option
     Ok(())
 }
 
+/// What the libraries report (`log`) on stderr beside the tools' own lines: their warnings, and
+/// what the map tools tell of their tiles (`RUST_LOG` as ever; `TA_SUPCOM_TIMES=1` adds how long
+/// the Supreme Commander converter's steps took).
+fn logger() {
+    use std::io::Write;
+    let default = if std::env::var_os("TA_SUPCOM_TIMES").is_some() { "warn,ta_mapart=info,ta_supcom=debug" } else { "warn,ta_mapart=info" };
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default))
+        .format(|buf, r| match r.level() {
+            log::Level::Error | log::Level::Warn => writeln!(buf, "  {}: {}", r.level().as_str().to_ascii_lowercase(), r.args()),
+            _ => writeln!(buf, "  {}", r.args()),
+        })
+        .init();
+}
+
 fn main() -> Result<()> {
+    logger();
     let cli = Cli::parse();
     let _ = MODS.set(cli.mods);
     match cli.cmd {

@@ -20,6 +20,9 @@ ta_config.workspace = true
 ta_mapart.workspace = true
 ta_supcom.workspace = true
 anyhow.workspace = true
+# What the libraries report (`log`), on stderr.
+env_logger.workspace = true
+log.workspace = true
 # Language files (`i18n`).
 toml.workspace = true
 # `cargo metadata` (`notices`).

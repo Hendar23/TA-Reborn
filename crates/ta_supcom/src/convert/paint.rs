@@ -1,7 +1,9 @@
 //! The ground painted as Supreme Commander paints it, seen from above: the lower stratum, the
 //! eight strata over it by their masks (`clamp(2m - 1, 0, 1)` each, later over earlier), the
-//! upper stratum by its own alpha, the albedo decals by theirs, lit by the map's sun over the
-//! heightmap's slopes, and under the water tinted by the water's ramp of colours by depth.
+//! upper stratum by its own alpha, the albedo decals by theirs, lit as the game's terrain shader
+//! lights them (the sun over the heightmap's slopes, the ambience, the multiplier and the
+//! shadows' fill: [`Painter::light`]), and under the water tinted by the water's ramp of colours
+//! by depth; then matched to the game's own picture of the map ([`Painter::calibrate`]).
 //!
 //! Colours are sRGB (0 to 1) as the game's textures hold them; nothing here uses a platform's
 //! powers, roots or trigonometry ([`super::trig`]), so the picture is the same everywhere.
@@ -37,9 +39,37 @@ const GRID: f64 = 8.0;
 /// pixels, and one texel a pixel averaged its grain away.
 const SHARPEN: f64 = 2.0;
 /// How far the calibration to the game's own picture of the map may brighten or darken it, and
-/// how far it may change one channel against the others.
-const GAIN: (f64, f64) = (0.75, 1.6);
+/// how far it may change one channel against the others. (The game's pictures of its maps are
+/// brighter than its terrain shader lights them, most by a quarter to two fifths, one by four
+/// fifths: `how_each_map_matches_its_preview` in the tests of the installed game.)
+const GAIN: (f64, f64) = (0.75, 2.0);
 const TINT: f64 = 0.12;
+/// The fewest places of land the calibration compares (a twentieth of its first grid's).
+const MATCH_PLACES: usize = 115;
+
+/// Where the game's own picture of a map (its preview) shows a place: the map fitted into the
+/// picture whole, its longer side across it, in the middle (a map twice as wide as it is deep
+/// fills the middle half of a square picture, black above and below).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PreviewFit {
+    /// The picture's pixels a world unit, and where the map's corner lies in it.
+    scale: f64,
+    x0: f64,
+    y0: f64,
+}
+
+impl PreviewFit {
+    /// A map `w × h` world units in a picture `pw × ph` pixels.
+    fn of(w: f64, h: f64, pw: f64, ph: f64) -> PreviewFit {
+        let scale = (pw / w).min(ph / h);
+        PreviewFit { scale, x0: (pw - w * scale) / 2.0, y0: (ph - h * scale) / 2.0 }
+    }
+
+    /// The picture's position (pixels) of world position (u, v).
+    fn at(&self, u: f64, v: f64) -> (f64, f64) {
+        (self.x0 + u * self.scale, self.y0 + v * self.scale)
+    }
+}
 
 pub struct Painter<'a> {
     map: &'a ScMap,
@@ -54,16 +84,35 @@ pub struct Painter<'a> {
     grid: Vec<Vec<u32>>,
     grid_w: usize,
     grid_h: usize,
+    /// The map's light, as the game's terrain shader takes it ([`Painter::light`]): towards the
+    /// sun, the sun's colour, the ambience, the multiplier and the shadows' fill.
     sun: [f64; 3],
     sun_colour: [f64; 3],
     ambience: [f64; 3],
-    /// The light flat ground takes, by which every place's is divided: the textures' colours
-    /// on level ground, shaded by the slopes.
-    flat: f64,
+    multiplier: f64,
+    shadow_fill: [f64; 3],
     /// The water's surface and abyss elevations, and its ramp of colours by depth.
     water: Option<(f64, f64, Option<Image>)>,
     /// What every colour is multiplied by: the map as the game shows it ([`Painter::calibrate`]).
     gain: [f64; 3],
+    /// How the colours were matched to the game's picture of the map, if they were.
+    matched: Option<Matched>,
+    /// For each TA cell of cliff a way for tanks was opened through, the cells to the ground it
+    /// is painted as ([`Painter::open_ways`]); empty where there are none.
+    ways: Vec<Option<(i8, i8)>>,
+}
+
+/// How a map's colours were matched to the game's own picture of it ([`Painter::calibrate`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Matched {
+    /// The places of land compared.
+    pub places: usize,
+    /// The mean colour there (sRGB, 0 to 1) of the painting, lit, and of the picture.
+    pub ours: [f64; 3],
+    pub theirs: [f64; 3],
+    /// The gain that would have matched them, and the one applied (within [`GAIN`] and [`TINT`]).
+    pub wanted: [f64; 3],
+    pub gain: [f64; 3],
 }
 
 /// Decodes texture `path` at the mip level whose larger side is about `side` texels (none when
@@ -193,11 +242,13 @@ impl<'a> Painter<'a> {
         let l = &map.lighting;
         let sun = normalise(l.sun_direction.map(|v| v as f64));
         let sun = if sun[1] > 0.05 { sun } else { normalise([0.4, 0.8, 0.45]) };
-        let sane = |c: [f32; 3], d: [f64; 3]| { let c = c.map(|v| v as f64); if c.iter().all(|v| v.is_finite() && *v >= 0.0 && *v < 16.0) && c.iter().any(|&v| v > 0.0) { c } else { d } };
+        // (A map's light as it is written, zeros and all: most of the game's maps have no
+        // ambience, their shadows lit by the fill alone. Only what no map could mean is replaced.)
+        let sane = |c: [f32; 3], d: [f64; 3]| { let c = c.map(|v| v as f64); if c.iter().all(|v| v.is_finite() && *v >= 0.0 && *v < 16.0) { c } else { d } };
         let sun_colour = sane(l.sun_colour, [1.0, 1.0, 1.0]);
-        let ambience = sane(l.ambience, [0.25, 0.25, 0.25]);
-        let flat_light = [ambience[0] + sun_colour[0] * sun[1], ambience[1] + sun_colour[1] * sun[1], ambience[2] + sun_colour[2] * sun[1]];
-        let flat = (0.2126 * flat_light[0] + 0.7152 * flat_light[1] + 0.0722 * flat_light[2]).max(1e-3);
+        let ambience = sane(l.ambience, [0.0, 0.0, 0.0]);
+        let shadow_fill = sane(l.shadow_fill, [0.3, 0.3, 0.3]);
+        let multiplier = if l.multiplier.is_finite() && l.multiplier > 0.0 && l.multiplier < 16.0 { l.multiplier as f64 } else { 1.0 };
         let water = match &map.water {
             Some(w) => {
                 let ramp = texture(files, &w.ramp, 256.0)?;
@@ -208,7 +259,7 @@ impl<'a> Painter<'a> {
         if lower.is_none() && strata.is_empty() {
             return Err(Error::Missing(format!("the ground's textures ({})", albedo.first().map_or("", |l| l.path.as_str()))));
         }
-        let mut painter = Painter { map, frame, lower, strata, upper, masks, decals, grid, grid_w, grid_h, sun, sun_colour, ambience, flat, water, gain: [1.0; 3] };
+        let mut painter = Painter { map, frame, lower, strata, upper, masks, decals, grid, grid_w, grid_h, sun, sun_colour, ambience, multiplier, shadow_fill, water, gain: [1.0; 3], matched: None, ways: Vec::new() };
         painter.calibrate();
         Ok(painter)
     }
@@ -265,18 +316,80 @@ impl<'a> Painter<'a> {
         c
     }
 
+    /// The light ground takes whose normal is `ndl` (its dot product with the way to the sun), as
+    /// the game's terrain shader lights it: the sun's colour by how squarely the ground faces it,
+    /// and the ambience; then the multiplier, and the shadows' fill for what light falls short of
+    /// one (`multiplier × l + fill × (1 − l)`). Ground facing away from the sun takes the fill: on
+    /// the many maps without ambience, its only light.
+    fn light(&self, ndl: f64) -> [f64; 3] {
+        let ndl = ndl.max(0.0);
+        std::array::from_fn(|k| {
+            let l = self.sun_colour[k] * ndl + self.ambience[k];
+            self.multiplier * l + self.shadow_fill[k] * (1.0 - l)
+        })
+    }
+
+    /// Paints the TA cells of cliff a way for tanks was opened through (`ways`; `cliff`, the cells
+    /// of cliff left) as the ground nearest each (a cell's whole texture taken from the nearest
+    /// cell neither cliff nor way, within 12), lit as level ground: the cliff's rock and its
+    /// shading no longer stand where tanks now drive.
+    pub fn open_ways(&mut self, ways: &[bool], cliff: &[bool]) {
+        const REACH: i32 = 12;
+        let (w, h) = (self.frame.w, self.frame.h);
+        if !ways.iter().any(|&b| b) || ways.len() != w * h || cliff.len() != w * h {
+            return;
+        }
+        let mut spiral: Vec<(i32, i32)> = (-REACH..=REACH).flat_map(|dz| (-REACH..=REACH).map(move |dx| (dx, dz))).filter(|&(dx, dz)| dx * dx + dz * dz <= REACH * REACH).collect();
+        spiral.sort_by_key(|&(dx, dz)| (dx * dx + dz * dz, dz, dx));
+        self.ways = (0..w * h)
+            .map(|i| {
+                if !ways[i] {
+                    return None;
+                }
+                let (x, z) = ((i % w) as i32, (i / w) as i32);
+                let ground = spiral.iter().copied().find(|&(dx, dz)| {
+                    let (nx, nz) = (x + dx, z + dz);
+                    nx >= 0 && nz >= 0 && (nx as usize) < w && (nz as usize) < h && !ways[nz as usize * w + nx as usize] && !cliff[nz as usize * w + nx as usize]
+                });
+                Some(ground.map_or((0, 0), |(dx, dz)| (dx as i8, dz as i8)))
+            })
+            .collect();
+    }
+
+    /// The cells to the ground a place of a way is painted as, if (u, v) is on one.
+    fn way_at(&self, u: f64, v: f64) -> Option<(i8, i8)> {
+        if self.ways.is_empty() {
+            return None;
+        }
+        let (x, z) = self.frame.pixels(u, v);
+        let (cx, cz) = ((x / 16.0).floor(), (z / 16.0).floor());
+        if cx < 0.0 || cz < 0.0 || cx >= self.frame.w as f64 || cz >= self.frame.h as f64 {
+            return None;
+        }
+        self.ways[cz as usize * self.frame.w + cx as usize]
+    }
+
     /// The ground's colour (sRGB, 0 to 1) at world position (u, v): painted, lit, and under the
     /// water tinted by its depth.
     pub fn colour(&self, u: f64, v: f64) -> [f32; 3] {
-        let albedo = self.albedo(u, v);
-        // The slope from the heights a cell apart (a world unit at the game's own scale).
-        let d = self.frame.cell().max(1.0);
         let m = self.map;
-        let (hx0, hx1) = (height(m, u - d, v), height(m, u + d, v));
-        let (hz0, hz1) = (height(m, u, v - d), height(m, u, v + d));
-        let n = normalise([-(hx1 - hx0) / (2.0 * d), 1.0, -(hz1 - hz0) / (2.0 * d)]);
-        let ndl = (n[0] * self.sun[0] + n[1] * self.sun[1] + n[2] * self.sun[2]).max(0.0);
-        let mut c: [f64; 3] = std::array::from_fn(|k| albedo[k] * (self.ambience[k] + self.sun_colour[k] * ndl) / self.flat);
+        let (albedo, ndl) = match self.way_at(u, v) {
+            // A way for tanks through a cliff: the ground nearest it, level.
+            Some((dx, dz)) => {
+                let cell = self.frame.cell();
+                (self.albedo(u + dx as f64 * cell, v + dz as f64 * cell), self.sun[1])
+            }
+            None => {
+                // The slope from the heights a cell apart (a world unit at the game's own scale).
+                let d = self.frame.cell().max(1.0);
+                let (hx0, hx1) = (height(m, u - d, v), height(m, u + d, v));
+                let (hz0, hz1) = (height(m, u, v - d), height(m, u, v + d));
+                let n = normalise([-(hx1 - hx0) / (2.0 * d), 1.0, -(hz1 - hz0) / (2.0 * d)]);
+                (self.albedo(u, v), n[0] * self.sun[0] + n[1] * self.sun[1] + n[2] * self.sun[2])
+            }
+        };
+        let light = self.light(ndl);
+        let mut c: [f64; 3] = std::array::from_fn(|k| albedo[k] * light[k]);
         if let Some((surface, abyss, ramp)) = &self.water {
             let h = height(m, u, v);
             if h < *surface {
@@ -299,46 +412,74 @@ impl<'a> Painter<'a> {
     /// on a grid, scaled to the picture's, within [`GAIN`] and [`TINT`]. A map whose picture is
     /// missing or blank keeps its colours.
     fn calibrate(&mut self) {
-        let Ok(preview) = dds::decode(&self.map.preview, 0) else { return };
-        if preview.width < 16 || preview.height < 16 {
-            return;
-        }
+        let preview = match dds::decode(&self.map.preview, 0) {
+            Ok(p) if p.width >= 16 && p.height >= 16 => p,
+            Ok(p) => {
+                log::debug!("not matched to its preview: the picture is {}x{}", p.width, p.height);
+                return;
+            }
+            Err(e) => {
+                log::debug!("not matched to its preview: {e}");
+                return;
+            }
+        };
         let m = self.map;
         let (w, h) = (m.width as f64, m.height as f64);
+        let fit = PreviewFit::of(w, h, preview.width as f64, preview.height as f64);
         let surface = m.water.as_ref().map_or(f64::MIN, |w| w.surface as f64 + 1.0);
-        let (mut ours, mut theirs, mut n) = ([0.0f64; 3], [0.0f64; 3], 0usize);
-        const N: usize = 48;
-        for j in 0..N {
-            for i in 0..N {
-                let (u, v) = ((i as f64 + 0.5) / N as f64 * w, (j as f64 + 0.5) / N as f64 * h);
-                if height(m, u, v) < surface {
-                    continue;
-                }
-                // The picture's pixel there, and ours over the ground it covers.
-                let p = sample(&preview, u / w * preview.width as f64, v / h * preview.height as f64, false);
-                let span = w / preview.width as f64;
-                let mut c = [0.0f64; 3];
-                for (du, dv) in [(-0.25, -0.25), (0.25, -0.25), (-0.25, 0.25), (0.25, 0.25)] {
-                    let q = self.colour(u + du * span, v + dv * span);
-                    for k in 0..3 {
-                        c[k] += q[k] as f64 / 4.0;
+        // The land on a grid of places, 48 a side, or four times as fine where that finds too
+        // little (a map mostly sea: its islands, its plateaus).
+        let mut found = ([0.0f64; 3], [0.0f64; 3], 0usize);
+        for n in [48usize, 192] {
+            let (mut ours, mut theirs, mut count) = ([0.0f64; 3], [0.0f64; 3], 0usize);
+            for j in 0..n {
+                for i in 0..n {
+                    let (u, v) = ((i as f64 + 0.5) / n as f64 * w, (j as f64 + 0.5) / n as f64 * h);
+                    if height(m, u, v) < surface {
+                        continue;
                     }
+                    // The picture's pixel there, and ours over the ground it covers.
+                    let (px, py) = fit.at(u, v);
+                    let p = sample(&preview, px, py, false);
+                    let span = 1.0 / fit.scale;
+                    let mut c = [0.0f64; 3];
+                    for (du, dv) in [(-0.25, -0.25), (0.25, -0.25), (-0.25, 0.25), (0.25, 0.25)] {
+                        let q = self.colour(u + du * span, v + dv * span);
+                        for k in 0..3 {
+                            c[k] += q[k] as f64 / 4.0;
+                        }
+                    }
+                    for k in 0..3 {
+                        ours[k] += c[k];
+                        theirs[k] += p[k];
+                    }
+                    count += 1;
                 }
-                for k in 0..3 {
-                    ours[k] += c[k];
-                    theirs[k] += p[k];
-                }
-                n += 1;
+            }
+            found = (ours, theirs, count);
+            if count >= MATCH_PLACES {
+                break;
             }
         }
+        let (ours, theirs, n) = found;
         // (Too little land to tell, or a blank picture.)
-        if n < N * N / 20 || theirs.iter().all(|&t| t < 0.02 * n as f64) {
+        if n < MATCH_PLACES || theirs.iter().all(|&t| t < 0.02 * n as f64) {
+            log::debug!("not matched to its preview: land at {n} places, the picture's mean there {:?}", theirs.map(|v| (v / n.max(1) as f64 * 255.0).round()));
             return;
         }
-        let gain: [f64; 3] = std::array::from_fn(|k| if ours[k] > 1e-6 { theirs[k] / ours[k] } else { 1.0 });
-        let mean = (gain[0] + gain[1] + gain[2]) / 3.0;
+        let wanted: [f64; 3] = std::array::from_fn(|k| if ours[k] > 1e-6 { theirs[k] / ours[k] } else { 1.0 });
+        let mean = (wanted[0] + wanted[1] + wanted[2]) / 3.0;
         let level = mean.clamp(GAIN.0, GAIN.1);
-        self.gain = gain.map(|g| level * (g / mean).clamp(1.0 - TINT, 1.0 + TINT));
+        self.gain = wanted.map(|g| level * (g / mean).clamp(1.0 - TINT, 1.0 + TINT));
+        let matched = Matched { places: n, ours: ours.map(|v| v / n as f64), theirs: theirs.map(|v| v / n as f64), wanted, gain: self.gain };
+        log::debug!("matched to its preview: {matched:?}");
+        self.matched = Some(matched);
+    }
+
+    /// How the colours were matched to the game's picture of the map ([`Painter::calibrate`]), if
+    /// they were.
+    pub fn matched(&self) -> Option<Matched> {
+        self.matched
     }
 }
 
@@ -384,7 +525,8 @@ mod tests {
             albedo,
             masks: [mask, Vec::new()],
             decals: vec![crate::scmap::Decal { kind: 1, textures: vec!["/env/x/blue.dds".into()], scale: [4.0, 4.0, 4.0], position: [20.0, 10.0, 20.0], rotation: [0.0; 3] }],
-            lighting: Lighting { multiplier: 1.0, sun_direction: [0.0, 1.0, 0.0], ambience: [0.2; 3], sun_colour: [1.0; 3], ..Default::default() },
+            // (Light of one: the sun overhead, white, nothing else.)
+            lighting: Lighting { multiplier: 1.0, sun_direction: [0.0, 1.0, 0.0], ambience: [0.0; 3], sun_colour: [1.0; 3], ..Default::default() },
             ..Default::default()
         };
         let frame = Frame::of([0.0, 0.0, 32.0, 32.0]);
@@ -395,5 +537,108 @@ mod tests {
         assert!(near(p.colour(28.0, 4.0), [g, 0.0, 0.0]), "{:?}", p.colour(28.0, 4.0));
         assert!(near(p.colour(22.0, 22.0), [0.0, 0.0, g]), "{:?}", p.colour(22.0, 22.0));
         assert!(near(p.colour(25.0, 25.0), [g, 0.0, 0.0]), "past the decal: {:?}", p.colour(25.0, 25.0));
+    }
+
+    /// A map of grey ground (`albedo`, 0 to 255), `w × h` world units, its heights `f(x, z)` (world
+    /// units), lit by `lighting`, its preview `preview` (when not empty).
+    fn grey_map(w: u32, h: u32, f: impl Fn(u32, u32) -> f32, lighting: Lighting, preview: Vec<u8>) -> (crate::tests::Temp, Files, ScMap) {
+        let dir = crate::tests::Temp::new("paint-light");
+        let archive = dir.0.join("env.scd");
+        let grey = plain(4, [128, 128, 128, 255]);
+        std::fs::write(&archive, crate::scd::tests::zip(&[("env/x/grey.dds", &grey, false)])).unwrap();
+        let files = Files::of(Vec::new(), vec![crate::scd::Scd::open(&archive).unwrap()]);
+        let mut albedo = vec![Layer { path: "/env/x/grey.dds".into(), scale: 4.0 }];
+        albedo.resize(10, Layer::default());
+        let map = ScMap {
+            width: w,
+            height: h,
+            height_scale: 1.0 / 128.0,
+            heights: (0..=h).flat_map(|z| (0..=w).map(move |x| (x, z))).map(|(x, z)| (f(x, z) * 128.0) as u16).collect(),
+            shader: "TTerrainXP".into(),
+            albedo,
+            lighting,
+            preview,
+            ..Default::default()
+        };
+        (dir, files, map)
+    }
+
+    /// Ground lit as the game's terrain shader lights it: the sun's colour by how squarely it
+    /// faces it, the ambience, the multiplier, and the shadows' fill where light falls short. A
+    /// slope facing away from the sun, on a map without ambience, takes the fill: never black.
+    /// A sun of one colour and a fill of another tint the ground as the game does.
+    #[test]
+    fn ground_is_lit_as_the_game_lights_it_and_slopes_away_from_the_sun_take_the_fill() {
+        // The sun to the east, 45° up; a ramp rising eastwards (facing away) between x 16 and 24.
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        let lighting = Lighting { multiplier: 1.2, sun_direction: [s, s, 0.0], ambience: [0.0; 3], sun_colour: [0.72, 0.71, 0.27], shadow_fill: [0.70, 0.70, 1.04], ..Default::default() };
+        let ramp = |x: u32, _z: u32| if x <= 16 { 10.0 } else if x >= 24 { 50.0 } else { 10.0 + (x - 16) as f32 * 5.0 };
+        let (_dir, files, map) = grey_map(32, 32, ramp, lighting, Vec::new());
+        let p = Painter::new(&map, &files, Frame::of([0.0, 0.0, 32.0, 32.0])).unwrap();
+        let albedo = 128.0 / 255.0;
+        // Flat ground: l = sun colour × cos 45°; 1.2 l + fill (1 - l).
+        let flat = p.colour(6.0, 6.0);
+        for k in 0..3 {
+            let l = [0.72, 0.71, 0.27][k] * std::f64::consts::FRAC_1_SQRT_2;
+            let want = (albedo * (1.2 * l + [0.70, 0.70, 1.04][k] * (1.0 - l))) as f32;
+            assert!((flat[k] - want).abs() < 0.01, "channel {k}: {} against {want}", flat[k]);
+        }
+        // Lavender (blue the most), as the game shows Seraphim Glaciers: not cream.
+        assert!(flat[2] > flat[0] && flat[2] > flat[1], "{flat:?}");
+        // The slope facing away from the sun: the fill alone.
+        let away = p.colour(20.0, 16.0);
+        for k in 0..3 {
+            let want = (albedo * [0.70, 0.70, 1.04][k]).min(1.0) as f32;
+            assert!((away[k] - want).abs() < 0.01, "channel {k}: {} against {want}", away[k]);
+        }
+    }
+
+    /// A way for tanks opened through a cliff is painted as the ground beside it, level: not as
+    /// the cliff's face, dark where it faced away from the sun.
+    #[test]
+    fn a_way_through_a_cliff_is_painted_as_level_ground() {
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        let lighting = Lighting { multiplier: 1.2, sun_direction: [-s, s, 0.0], ambience: [0.0; 3], sun_colour: [1.0; 3], shadow_fill: [0.3; 3], ..Default::default() };
+        // A cliff 20 units high at x 16, its face to the east (away from a western sun).
+        let (_dir, files, map) = grey_map(32, 32, |x, _| if x <= 16 { 30.0 } else { 10.0 }, lighting, Vec::new());
+        let mut p = Painter::new(&map, &files, Frame::of([0.0, 0.0, 32.0, 32.0])).unwrap();
+        let level = p.colour(6.0, 10.5);
+        let face = p.colour(16.5, 10.5);
+        assert!(face[0] < level[0] * 0.6, "the face is in shadow: {face:?} against {level:?}");
+        let mut ways = vec![false; 32 * 32];
+        let mut cliff = vec![false; 32 * 32];
+        for z in 0..32 {
+            cliff[z * 32 + 16] = true;
+        }
+        ways[10 * 32 + 16] = true;
+        cliff[10 * 32 + 16] = false;
+        p.open_ways(&ways, &cliff);
+        let way = p.colour(16.5, 10.5);
+        assert!((0..3).all(|k| (way[k] - level[k]).abs() < 0.01), "the way: {way:?} against level ground {level:?}");
+        assert_eq!(p.colour(16.5, 20.5), face, "the cliff elsewhere as it was");
+    }
+
+    /// A map wider than it is deep shows in the middle of its square preview, black above and
+    /// below: matched to the picture where the map is, not to the black (a 2:1 map's snow came
+    /// out khaki when the whole picture was stretched over it).
+    #[test]
+    fn a_wide_maps_colours_match_its_letterboxed_preview() {
+        assert_eq!(PreviewFit::of(512.0, 256.0, 256.0, 256.0), PreviewFit { scale: 0.5, x0: 0.0, y0: 64.0 });
+        assert_eq!(PreviewFit::of(256.0, 256.0, 256.0, 256.0).at(128.0, 64.0), (128.0, 64.0));
+        assert_eq!(PreviewFit::of(256.0, 512.0, 256.0, 256.0).at(0.0, 512.0), (64.0, 256.0));
+        // A 64 x 32 map whose picture is grey 153 in its middle half, black elsewhere.
+        let mut preview = crate::dds::header(32, 32, 1, None);
+        for y in 0..32 {
+            for _x in 0..32 {
+                let v = if (8..24).contains(&y) { 153 } else { 0 };
+                preview.extend_from_slice(&[v, v, v, 255]);
+            }
+        }
+        let lighting = Lighting { multiplier: 1.0, sun_direction: [0.0, 1.0, 0.0], ambience: [0.0; 3], sun_colour: [1.0; 3], ..Default::default() };
+        let (_dir, files, map) = grey_map(64, 32, |_, _| 10.0, lighting, preview);
+        let p = Painter::new(&map, &files, Frame::of([0.0, 0.0, 64.0, 32.0])).unwrap();
+        let c = p.colour(20.0, 10.0);
+        // (The picture's pixels at the band's edges blend into the black a little.)
+        assert!(c.iter().all(|&v| (v - 0.6).abs() < 0.02), "matched to the picture's grey: {c:?}");
     }
 }

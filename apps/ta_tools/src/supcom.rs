@@ -14,6 +14,9 @@ use ta_supcom::install::{self, Install, Store};
 use ta_supcom::map::{self, Map};
 
 pub fn run(out: &Path, only: Option<&str>, game: Option<&Path>, preview: Option<&Path>, budget: usize, max_cells: usize) -> Result<()> {
+    if !(1..=convert::MAX_TILES).contains(&budget) {
+        anyhow::bail!("--budget {budget}: 1 to {} tiles (a place names its tile in 16 bits)", convert::MAX_TILES);
+    }
     // TA's own features and palette: the original game alone, as every player has it.
     let ta = ta_vfs::install::discover(None)?;
     let mut vfs = ta_vfs::Vfs::new();
@@ -59,8 +62,8 @@ pub fn run(out: &Path, only: Option<&str>, game: Option<&Path>, preview: Option<
         }
         let t = Instant::now();
         let result = Map::read(&files, &folder).map_err(anyhow::Error::from).and_then(|m| {
-            // How long each stage took (`TA_SUPCOM_TIMES=1` prints them).
-            let marks = std::sync::Mutex::new(vec![("read", t.elapsed().as_secs_f32())]);
+            // When each stage began (`TA_SUPCOM_TIMES=1` prints how long each took).
+            let marks = std::sync::Mutex::new(vec![("read", 0.0f32)]);
             let c = convert::convert(&m, &files, &templates, &palette, players_own, &options, &|s| {
                 let name = match s { Stage::Land => "land", Stage::Features => "features", Stage::Painting(_) => "painting", Stage::Writing => "writing" };
                 let mut marks = marks.lock().unwrap();
@@ -69,8 +72,9 @@ pub fn run(out: &Path, only: Option<&str>, game: Option<&Path>, preview: Option<
                 }
             })?;
             if std::env::var_os("TA_SUPCOM_TIMES").is_some() {
-                let marks = marks.into_inner().unwrap();
-                eprintln!("  {}", marks.iter().map(|(n, at)| format!("{n} {at:.1}s")).collect::<Vec<_>>().join(", "));
+                let mut marks = marks.into_inner().unwrap();
+                marks.push(("", t.elapsed().as_secs_f32()));
+                eprintln!("  {}", marks.windows(2).map(|w| format!("{} {:.1}s", w[0].0, w[1].1 - w[0].1)).collect::<Vec<_>>().join(", "));
             }
             Ok((m, c))
         });
@@ -87,8 +91,8 @@ pub fn run(out: &Path, only: Option<&str>, game: Option<&Path>, preview: Option<
                 let tnt = TntMap::parse(&c.tnt)?;
                 let [bl, ba, bb] = ta_mapart::tiles::blockiness(&tnt.tile_map, &tnt.tiles, &palette.colors, tnt.width as usize / 2);
                 eprintln!(
-                    "{:<10} {:<34} {:>4}x{:<4} {:<7} tiles {:>5} steps {bl:.2} {ba:.2} {bb:.2} players {} deposits {:>3} vents {} rocks {:>4} trees {:>5} walls {:>3} opened {:>4}{} {:.1} MB [{:.1}s]",
-                    m.scenario.folder, c.stem, c.cells.0, c.cells.1, c.kit, c.tiles, c.players, k.deposits, k.vents, k.rocks, k.trees, k.walls, k.opened,
+                    "{:<10} {:<34} {:>4}x{:<4} {:<7} tiles {:>5} steps {bl:.2} {ba:.2} {bb:.2} players {} deposits {:>3} vents {} rocks {:>4} trees {:>5} walls {:>3} opened {:>4} levelled {:>2}{} {:.1} MB [{:.1}s]",
+                    m.scenario.folder, c.stem, c.cells.0, c.cells.1, c.kit, c.tiles, c.players, k.deposits, k.vents, k.rocks, k.trees, k.walls, k.opened, k.levelled,
                     if c.cut_off.is_empty() { String::new() } else { format!(" CUT OFF {:?}", c.cut_off) },
                     c.tnt.len() as f64 / 1e6, t.elapsed().as_secs_f32()
                 );

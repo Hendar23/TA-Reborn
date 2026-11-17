@@ -8,5 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# What the tiles came to (`tiles::group`), for the tools to show.
+log.workspace = true
 rayon.workspace = true
 rustc-hash.workspace = true
