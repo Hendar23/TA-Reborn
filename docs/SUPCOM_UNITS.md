@@ -154,13 +154,31 @@ Each unit's first level of detail becomes `objects3d/<id>.3do` with its surface
   map's alpha (their specular map's empty), which the converter moves into the specular map's, as
   the others have it. Their dark paint mirrors the sky over most of it (the specular map's red):
   TA Reborn draws strong mirroring as polished metal. The normal maps are Direct3D's (x along u, y
-  along v, down the picture), as the panel seams of a factory's roof show under a low sun.
+  along v, down the picture): across the meshes' seams, where the two sides' texture coordinates
+  run different ways, the normals they give agree best read so (the meshes' own tangents and
+  binormals run against u and v).
+- **Light:** Forged Alliance lights its paint in its texels' own (gamma) space, by its map's
+  lighting multiplier and sun (about 1.3 each on its maps): a lit face of the UEF's (`Unit`, the
+  sky its specular map's red mirrors on top) some 1.6 times as bright as its texel, of the Cybran's
+  (`Insect`, the sun taken twice) 2.3 times, of the Aeon's (`Aeon`, six tenths of the sun, the
+  mirrored sky on top) and the Seraphim's (`Seraphim`, their look the sky they mirror) about as
+  bright as it. TA Reborn lights a colour map as the colour of what is painted (a lit face about 1.3
+  times it, in light's own measure), so the converter brightens each by its shader
+  (`textures::paint_gain`: the UEF's 1.45 times, the Cybran's twice, the others as they are) by
+  multiplying each block's two colour ends, Forged Alliance's blocks otherwise as they were made:
+  drawn as they were, the UEF's and the Cybran's units were half as bright as in their game. The
+  specular map's green is how strongly a broad, cool sheen shines over the paint where the sun
+  glances off it towards the eye (Forged Alliance's highlights on its units' metal, a power of 2 or
+  3 broad: what makes that paint read as metal), the player's colour is laid on as the game lays
+  it (the paint blended into the player's own colour as far as the alpha says), and a model's
+  rim light, and its highlight when selected, go by its faces' own normals: lit by every turn of
+  its normal map, a selected Commander was a pale haze, the ground seeming to show through it.
 - **Texture coordinates** run 0 to 1 (TA Reborn keeps them in 16 bits, and a texture's edge
   clamps): a triangle the mesh paints from a repeat of its texture is moved by whole textures to
   lie within it (the same texels), its corners copied where other triangles share them: 229 of
   them (4 in the far models). A triangle straddling the texture's edge cannot be, and is left as
   it is: 162 (59 in the far models), at most a few hundredths of a model's surface.
-- **Pictures:** a unit's build picture (`unitpics/<id>.pcx`, 64 × 64, 24-bit) is its icon (`textures/ui/common/icons/units/<id>_icon.dds`, every unit has one) laid over the frame of its kind (`land_up.dds`, `amph_`, `air_`, `sea_`, by `General.Icon`), as Forged Alliance's build buttons show it. `--preview <dir>` draws a sheet of them a faction.
+- **Pictures:** a unit's build picture (`unitpics/<id>.pcx`, 64 × 64, 24-bit) is its icon (`textures/ui/common/icons/units/<id>_icon.dds`, every unit has one) laid over the frame of its kind (`land_up.dds`, `amph_`, `air_`, `sea_`, by `General.Icon`), both over the dark grey of a build menu's panel as their alphas say (the frame's rounded corners and rim are see-through, white in its texels), as Forged Alliance's build buttons show it: all 357 within a step of the game's own icon over its frame. `--preview <dir>` draws a sheet of them a faction. Both interfaces show these pictures for these units (the modern one draws TA's units' portraits from their models instead): a portrait drawn before its model's paint was read stayed a dark silhouette in the build menu, and portraits drawn elsewhere (the unit viewer, a cockpit's screen) now wait for their paint.
 - **Far off:** the second level of detail (332 units; 717,000 vertices in all against 107,000)
   keeps a few bones of the first's skeleton, its root renamed `lod1_<id>`: it is laid onto the
   first's pieces (a bone the piece of its name, or of the nearest of its parents with one), painted
@@ -190,7 +208,16 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
   area (a frigate's 2 by 6 ogrids, 4 by 12 cells, 7 by 7; a battleship 18; TA's ships stand on
   squares less than their length), its wreck blocking nothing, as TA's sea wrecks don't.
   Structures stand where their build layers let them: on land, afloat (`Floater`), or on the
-  sea bed (extractors and hydrocarbon plants on deposits under water as well as on land).
+  sea bed (extractors and hydrocarbon plants on deposits under water as well as on land). A
+  structure on land stands on a footprint as wide as what of its model stands on the ground
+  (`model::ground_extent`: what lies from a quarter of an ogrid under its foot to half an ogrid
+  over it) where that is wider than its blueprint's (`units::fitted_footprint`; walls keep theirs,
+  to stand in line): Forged Alliance's footprints are what its units may not cross, often smaller
+  than the building (a point defence's 0.6 ogrids under a turret of a whole one), the ground round
+  them levelled for them and kept clear (their skirts), while TA Reborn levels the ground drawn
+  under a footprint alone, so a model reaching past its footprint ran into the hillside beside
+  it, and its neighbours could be built into it. They stand on slopes as steep as TA's buildings
+  do (`MaxSlope=10`), the ground drawn under them levelled and the slope taken up round them.
 - **Aircraft** fly as FA flies them, at TA's scale (`Air`): their top speed `MaxAirspeed`; to it
   in a second and a half times their `KMoveDamping` over their `KMove` (an interceptor 1.5 s,
   0.36 px a tick², TA's Freedom Fighter's 0.35; a bomber 3, TA's Thunder 3.8; a transport 3.2),
@@ -308,7 +335,11 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
   first, economy, factories, defences, then the rest; the same lists are the computer players'
   (`[CANBUILD]`).
 - **Sides:** `gamedata/sidedata_supcom.tdf` adds UEF, CYBRAN, AEON and SERAPHIM to the game's
-  sides (a side add-on: docs/MODDING.md), each with its commander.
+  sides (a side add-on: docs/MODDING.md), each with its commander, drawn in Arm's panels (the UEF
+  and the Aeon) or Core's (the Cybran and the Seraphim). They have no interface pages of their
+  own: the classic interface lays their build menus out as the pages of the side whose panels they
+  wear (its Commander's first build page, six pictures to a page, the page arrows under them), and
+  takes its orders and main pages from that side too.
 - **Wrecks** (`features/corpses/supcom_<faction>.tdf`): the unit's own model where it fell,
   worth its `Wreckage` share of its mass (`MassMult`), in metal alone (`energy=0`), as TA's wrecks
   are: TA Reborn pays a wreck's metal alone whatever its file says (docs/FORMATS.md), and none of

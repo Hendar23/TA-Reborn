@@ -165,6 +165,9 @@ struct Style {
     prefix: String,
     /// Every side's prefix: captured builders bring their own side's GUIs.
     prefixes: Vec<String>,
+    /// The prefix of the orders and main pages the side uses (`<pages>gen.gui`), lower case: its
+    /// own, or those of the side it borrows them from.
+    pages: String,
     /// `anims/<intgaf>.gaf`: the bars and the side panel.
     intgaf: String,
     metal: u8,
@@ -175,7 +178,8 @@ struct Style {
     /// Lettering for the buttons drawn without art: the condensed bold face of TA's order
     /// buttons (`hatt12`).
     font_button: Option<Arc<TaFont>>,
-    /// The commander's first build page, the layout of pages that have no GUI.
+    /// The commander's first build page, the layout of pages that have no GUI (a side without
+    /// pages of its own: the page of the side it borrows them from).
     template: String,
     /// How tall a screen the side panel is laid out for (TA pixels): TA's 480, or as tall as
     /// the side's pages reach (TA: Escalation's and Total Mayhem's, 768).
@@ -437,6 +441,24 @@ fn cycle(v: u8, n: u8, back: bool) -> u8 {
 
 /// A unit's resource flows per second as the unit bar shows them (metal made, metal used,
 /// energy made, energy used): see [`ta_sim::Sim::unit_flows`].
+/// The pages a side's interface is laid out on: the layout of its build pages that have no GUI
+/// of their own (a Commander's first build page, `<commander>1`: [`Style::template`]) and the
+/// prefix of its orders and main pages ([`Style::pages`]), each the side's own where it has them
+/// (`exists`: whether `guis/<name>.gui` is there). A side without them (a mod's side add-on: the
+/// Supreme Commander factions' name their art alone) borrows them from a side drawn in the same
+/// panels (its `intgaf`), else from the first that has them: with none, its build menus were
+/// laid out on a page that is not there, and its BUILD tab showed nothing.
+fn side_pages(sides: &[ta_data::SideDef], side: Option<&ta_data::SideDef>, exists: &mut dyn FnMut(&str) -> bool) -> (String, String) {
+    let lenders: Vec<&ta_data::SideDef> = side
+        .into_iter()
+        .chain(sides.iter().filter(|o| side.is_some_and(|s| !s.interface_gaf.is_empty() && o.interface_gaf.eq_ignore_ascii_case(&s.interface_gaf))))
+        .chain(sides.iter())
+        .collect();
+    let template = lenders.iter().map(|s| format!("{}1", s.commander.to_ascii_lowercase())).find(|page| exists(page)).unwrap_or_else(|| "armcom1".to_string());
+    let pages = lenders.iter().map(|s| s.name_prefix.to_ascii_lowercase()).find(|p| !p.is_empty() && exists(&format!("{p}gen"))).unwrap_or_else(|| "arm".to_string());
+    (template, pages)
+}
+
 fn flows(sim: &ta_sim::Sim, u: &ta_sim::Unit) -> [f32; 4] {
     let f = sim.unit_flows(u);
     [f.metal_make.to_f32(), f.metal_use.to_f32(), f.energy_make.to_f32(), f.energy_use.to_f32()]
@@ -458,10 +480,11 @@ impl ClassicHud {
         let font = layout.as_ref().and_then(|l| self.art.font(ctx, vfs, &l.font));
         let font_gui = layout.as_ref().and_then(|l| self.art.font(ctx, vfs, &l.font_gui)).or_else(|| font.clone());
         let font_button = self.art.font(ctx, vfs, "hatt12").or_else(|| font_gui.clone());
-        let template = side.map_or("armcom1".to_string(), |s| format!("{}1", s.commander.to_ascii_lowercase()));
-        let height = self.art.layout_height(vfs, &prefix, &template);
+        let (template, pages) = side_pages(sides, side, &mut |page| self.art.gui(vfs, page).is_some());
+        let height = self.art.layout_height(vfs, &pages, &template);
         Style {
             prefixes: sides.iter().map(|s| s.name_prefix.to_ascii_uppercase()).filter(|p| !p.is_empty()).collect(),
+            pages,
             intgaf,
             metal: side.map_or(224, |s| s.metal_color),
             energy: side.map_or(208, |s| s.energy_color),
@@ -573,9 +596,10 @@ impl ClassicHud {
         }
     }
 
-    /// The side's `gen` (orders) or `main` page; sides without their own use Arm's.
+    /// The side's `gen` (orders) or `main` page; sides without their own use those of the side
+    /// they borrow them from ([`Style::pages`]), else Arm's.
     fn side_gui(&mut self, env: &Env, page: &str) -> Option<Arc<Gui>> {
-        let own = format!("{}{page}", env.st.prefix.to_ascii_lowercase());
+        let own = format!("{}{page}", env.st.pages);
         self.art.gui(env.vfs, &own).or_else(|| self.art.gui(env.vfs, &format!("arm{page}")))
     }
 
@@ -634,10 +658,10 @@ impl ClassicHud {
                 let page = pages.get(p).cloned();
                 match page {
                     Some(page) => (page.gui.clone(), Some(MenuAt { builder: b, page: p, pages: pages.len() }), Some(page)),
-                    None => (format!("{}gen", env.st.prefix.to_ascii_lowercase()), None, None),
+                    None => (format!("{}gen", env.st.pages), None, None),
                 }
             }
-            None => (format!("{}gen", env.st.prefix.to_ascii_lowercase()), None, None),
+            None => (format!("{}gen", env.st.pages), None, None),
         };
         let Some(gui) = self.art.gui(env.vfs, &gui_name).or_else(|| self.side_gui(env, "gen")) else { return };
         self.page(ui, env, game, &gui, &gui_name, menu_at.zip(page.as_ref()));
@@ -988,7 +1012,8 @@ impl ClassicHud {
     /// A two-state toggle in a state button's place, on the side's ON/OFF art: its blank
     /// face, the light of the state and our label.
     fn wide_toggle(&mut self, ui: &egui::Ui, env: &Env, rect: Rect, id: egui::Id, labels: &[&str], on: bool) -> egui::Response {
-        let Some(f) = self.art(env, "commongui", &format!("{}ONOFF", env.st.prefix)).filter(|f| f.len() >= 4) else {
+        let art = [env.st.prefix.clone(), env.st.pages.to_ascii_uppercase()].into_iter().find_map(|p| self.art(env, "commongui", &format!("{p}ONOFF")).filter(|f| f.len() >= 4));
+        let Some(f) = art else {
             return self.plate_button(ui, env, rect, id, labels, on, true);
         };
         let painter = ui.painter().clone();
@@ -1431,4 +1456,35 @@ fn action_tip(action: Action, game: &Game, menu: Option<MenuAt>) -> Tip {
         Action::Cloak => (n("CLOAK").into(), format!("{} ({})", t("Cloak or decloak; cloaking costs energy"), key("cloak"))),
     };
     Tip::Text(name, what)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn side(name: &str, prefix: &str, commander: &str, art: &str) -> ta_data::SideDef {
+        ta_data::SideDef { name: name.into(), name_prefix: prefix.into(), commander: commander.into(), interface_gaf: art.into(), ..Default::default() }
+    }
+
+    /// A side's own pages where it has them; a side without (the Supreme Commander factions')
+    /// those of the side drawn in the same panels, else of the first side with pages.
+    #[test]
+    fn a_side_without_pages_borrows_those_of_its_panels() {
+        let sides = [
+            side("ARM", "ARM", "ARMCOM", "ARMINT"),
+            side("CORE", "COR", "CORCOM", "CORINT"),
+            side("UEF", "UE", "UEL0001", "ARMINT"),
+            side("CYBRAN", "UR", "URL0001", "CORINT"),
+            side("MOD", "MD", "MDCOM", "MDINT"),
+            side("ODD", "OD", "ODCOM", "ODINT"),
+        ];
+        let guis = ["armcom1", "corcom1", "armgen", "corgen", "mdcom1", "mdgen"];
+        let pages_of = |i: usize| side_pages(&sides, Some(&sides[i]), &mut |page| guis.contains(&page));
+        assert_eq!(pages_of(0), ("armcom1".to_string(), "arm".to_string()));
+        assert_eq!(pages_of(1), ("corcom1".to_string(), "cor".to_string()));
+        assert_eq!(pages_of(2), ("armcom1".to_string(), "arm".to_string()), "the UEF in Arm's panels");
+        assert_eq!(pages_of(3), ("corcom1".to_string(), "cor".to_string()), "the Cybran in Core's");
+        assert_eq!(pages_of(4), ("mdcom1".to_string(), "md".to_string()), "a mod's side with pages of its own");
+        assert_eq!(pages_of(5), ("armcom1".to_string(), "arm".to_string()), "in panels nobody else's: the first side's");
+    }
 }

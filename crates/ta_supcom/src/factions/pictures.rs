@@ -23,18 +23,25 @@ pub fn frame_path(unit: &UnitBlueprint) -> Option<String> {
     (!kind.is_empty() && kind.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then(|| format!("textures/ui/common/icons/units/{kind}_up.dds"))
 }
 
-/// The picture: `icon` (a DDS) over `frame` (a DDS; without one, a dark grey), at 64 by 64.
+/// What the pictures are laid on: a dark grey, as the build menus' panels behind Forged
+/// Alliance's buttons.
+pub const GROUND: [u8; 3] = [40, 42, 44];
+
+/// The picture: `icon` (a DDS) over `frame` (a DDS), both over [`GROUND`] as their alphas say (the
+/// frame's rounded corners and rim see-through: white in its texels, a white edge round every
+/// picture when laid on as they were), at 64 by 64.
 pub fn picture(icon: &[u8], frame: Option<&[u8]>) -> Result<Vec<u8>> {
     let fit = |image: dds::Image| if (image.width, image.height) == (SIDE, SIDE) { image } else { dds::resize(&image, SIDE, SIDE) };
     let icon = fit(dds::decode(icon, 0)?);
     let frame = frame.and_then(|f| dds::decode(f, 0).ok()).map(fit);
-    let mut rgb = Vec::with_capacity((SIDE * SIDE * 3) as usize);
-    for (i, top) in icon.rgba.iter().enumerate() {
-        let under = frame.as_ref().map_or([40, 42, 44, 255], |f| f.rgba[i]);
+    let over = |top: [u8; 4], under: [u8; 3]| -> [u8; 3] {
         let a = top[3] as u32;
-        for c in 0..3 {
-            rgb.push(((top[c] as u32 * a + under[c] as u32 * (255 - a) + 127) / 255) as u8);
-        }
+        std::array::from_fn(|c| ((top[c] as u32 * a + under[c] as u32 * (255 - a) + 127) / 255) as u8)
+    };
+    let mut rgb = Vec::with_capacity((SIDE * SIDE * 3) as usize);
+    for (i, &top) in icon.rgba.iter().enumerate() {
+        let under = frame.as_ref().map_or(GROUND, |f| over(f.rgba[i], GROUND));
+        rgb.extend_from_slice(&over(top, under));
     }
     Ok(pcx::write_rgb(SIDE, SIDE, &rgb))
 }
@@ -63,5 +70,11 @@ mod tests {
         // Without a frame, over dark grey.
         let alone = pcx::PcxImage::parse(&picture(&plain(64, [0, 255, 0, 0]), None).unwrap()).unwrap().to_rgba();
         assert_eq!(&alone[..3], &[40, 42, 44]);
+        // Where the frame is see-through (white in its texels, as Forged Alliance's corners and
+        // rims are), the dark grey under it; a frame half there, half over it.
+        let clear = pcx::PcxImage::parse(&picture(&plain(64, [0, 255, 0, 0]), Some(&plain(64, [255, 255, 255, 0]))).unwrap()).unwrap().to_rgba();
+        assert_eq!(&clear[..3], &GROUND);
+        let half = pcx::PcxImage::parse(&picture(&plain(64, [0, 255, 0, 0]), Some(&plain(64, [240, 240, 240, 128]))).unwrap()).unwrap().to_rgba();
+        assert_eq!(&half[..3], &[140, 141, 142]);
     }
 }

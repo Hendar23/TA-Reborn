@@ -175,6 +175,8 @@ impl PortraitStudio {
             None,
             false,
         );
+        // (Drawn once and kept: in its paint, not in its colours on average for want of it yet.)
+        models.wait_for_paint(device, queue);
         if self.targets.as_ref().is_none_or(|t| t.0 != inner) {
             let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
             let color = Target::new(device, "portrait colour", inner, inner, util::HDR_FORMAT, samples, usage);

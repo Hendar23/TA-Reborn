@@ -231,6 +231,12 @@ impl SurfaceTextures {
     /// most, making room for it; whether the bind group must be made again (the array or the table
     /// replaced).
     pub(super) fn update(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> bool {
+        self.update_waiting(device, queue, WAITS.load(Ordering::Relaxed))
+    }
+
+    /// [`SurfaceTextures::update`], with `waits`: waiting for every material asked for and putting
+    /// all of it in the array whatever it takes.
+    fn update_waiting(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, waits: bool) -> bool {
         let mut rebind = std::mem::take(&mut self.rebind);
         if self.entries.len() as u32 > self.table_slots {
             let slots = (self.entries.len() as u32).next_power_of_two();
@@ -241,7 +247,6 @@ impl SurfaceTextures {
             rebind = true;
         }
         let generation = self.generation.load(Ordering::Relaxed);
-        let waits = WAITS.load(Ordering::Relaxed);
         if let Some(workers) = &self.workers {
             // (What the workers made, as much as there is room for here: a few materials, the
             // workers waiting meanwhile; all of it when the frame waits for it.)
@@ -439,6 +444,18 @@ fn make_paint(loader: &Loader, paths: &[String; 3], compressed: bool) -> Result<
 /// A layer's bytes with its mip levels.
 fn layer_bytes(compressed: bool) -> u64 {
     (0..LEVELS).map(|l| ((SIDE >> l).max(1) as u64).pow(2) * if compressed { 1 } else { 4 }).sum()
+}
+
+impl super::ModelRenderer {
+    /// Puts the paint asked for so far in the array, waiting for what the workers are still making
+    /// of it (at most [`WAIT_AT_MOST`] a material): for a picture drawn once and kept (a portrait),
+    /// whose models would otherwise stay in their colours on average (the build menu showed Forged
+    /// Alliance's units' portraits as dark silhouettes, their paint not read yet as they were drawn).
+    pub fn wait_for_paint(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        if self.surfaces.update_waiting(device, queue, true) {
+            self.bind_group = Self::make_bind_group(device, &self.layout, &self.matrix_buffer, &self.textures, &self.surfaces, &self.sampler);
+        }
+    }
 }
 
 impl ModelLibrary {
