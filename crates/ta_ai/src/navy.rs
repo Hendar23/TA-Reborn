@@ -179,7 +179,7 @@ impl SkirmishAi {
     pub(crate) fn shipyard_task(&mut self, sim: &Sim, s: &Survey, b: &Unit, plan: &Plan) -> Option<Task> {
         let n = self.naval.clone()?;
         let yards = s.kinds.iter().filter(|&&k| k == Locomotion::Naval).count();
-        if !n.reaches || yards >= 3 || plan.pending[Role::Factory as usize] > 0 || !sim.unit_type(b).ai_build_options.contains(&n.yard) {
+        if !n.reaches || yards >= 3 || plan.pending[Role::Factory as usize] > 0 || !b.ai_build_options(sim.unit_type(b)).contains(&n.yard) {
             return None;
         }
         let types = s.factory_types.clone();

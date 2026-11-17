@@ -597,3 +597,25 @@ Supreme Commander and Forged Alliance stay as written, feminine as игра ("о
 | a side to play in skirmish / a side each | отдельная сторона в схватке / каждая фракция — отдельная сторона |
 | stealth fields / shields / teleporting / upgrading buildings in place | поля скрытности (as Скрытный: не виден на радаре; not маскировка, the cloak) / щиты / телепортация / модернизация зданий на месте |
 | experimental features / EXPERIMENTAL (tag) | экспериментальные функции / ЭКСПЕРИМЕНТАЛЬНО |
+
+## Upgrades in place and enhancements (`orders.rs`, `hud/deck.rs`, `hud/enhance.rs`, `hud/info.rs`, `hud_classic.rs`)
+
+Two features from Forged Alliance: a building upgrades itself in place into its higher-tech version, and a
+Commander installs enhancements on itself, one a slot. Widths measured in Bahnschrift SemiBold.
+
+| English | Русский |
+|---|---|
+| upgrade (in place) / Upgrade (the order, as Атака, Ремонт) / Upgrading into {name} | модернизация (на месте), модернизироваться до {name} (до, not в) / Модернизация / Модернизируется до {name}: {pct}% |
+| UPGRADE / UPGR (TA's 1997 panel: the tip's title; the button's short form) | МОДЕРНИЗАЦИЯ (a noun, as SELF-DESTRUCT: САМОУНИЧТОЖЕНИЕ) / МОДЕРН. (between ПОДРЫВ and ОЖИВИТЬ in width) |
+| enhancement, enhancements / ENHANCEMENTS (the info page's section) | улучшение, улучшения (as "улучшения командиров" on the Supreme Commander page) / УЛУЧШЕНИЯ |
+| ENHANCE (the build menu's tab beside РЕСУРСЫ…ПРОЧЕЕ; the classic panel's button) / ENH | УЛУЧШИТЬ (a verb, as the English: УЛУЧШЕНИЯ measures 1.3× СЕНСОРЫ and would shrink the whole row of tabs) / УЛУЧШ. |
+| parts (enhancements as installed) / slot (LCH, RCH, Back: the data's names, kept) | модули / слот ("Слот {slot}", "по одному на слот") |
+| install / take out (an enhancement) | установить, установка, устанавливается, установлено (neuter: улучшение) / снять ("Щелчок ПКМ: снять", "Снимает {name}") |
+| About to upgrade into / About to install | Приступает к модернизации до {name} / Приступает к установке {name} |
+| {duration} on its own build power | {duration} своими силами |
+| Stop calls it off, its metal back | «Стоп» отменяет её (установку) с возвратом металла |
+| Shift: queued / queued after the upgrade under way | Shift: в очередь / в очередь после текущей модернизации |
+| refusals (after "Невозможно выполнить: ") | нет мощности строительства / нет такой модернизации / сначала нужно другое улучшение |
+| hit points / a weapon stronger / range from … to | ед. здоровья ("Восстанавливает {n} ед. здоровья в секунду") / мощнее (no gender to agree with {weapon}) / дальность с {from} до {to} |
+| Builds {n} more kinds | Новые варианты постройки ({n}): {names} и ещё {more} |
+| {n} of the selection upgrade (shown for two or more) | Из выбранных модернизируются: {n} |

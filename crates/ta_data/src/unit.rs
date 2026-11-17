@@ -199,6 +199,9 @@ pub struct UnitDef {
     /// power (`WorkerTime`), paying the unit's cost over its build time as construction does, and
     /// is that unit when done, where it stood. Upper case; empty: none (TA's own units have none).
     pub upgrades_to: String,
+    /// What it may install on itself (`[ENHANCEMENTS]` within its `[UNITINFO]`, in the file's
+    /// order: [`crate::EnhancementDef`]): Supreme Commander's commander enhancements. None of TA's.
+    pub enhancements: Vec<crate::EnhancementDef>,
     /// What the computer players build with it besides: the 3.1 patch's `[CANBUILD]` list for it
     /// (`gamedata/sidedata.tdf`), its entries not on its menu. TA's computer players went by
     /// these lists, its players by the menus: mods list units of their AI there that players are
@@ -368,6 +371,7 @@ impl UnitDef {
             steering_mode: s.get_i64_or("SteeringMode", 1).clamp(0, u32::MAX as i64) as u32,
             unit_number: count("UnitNumber", 0),
             upgrades_to: st("UpgradesTo").to_ascii_uppercase(),
+            enhancements: crate::EnhancementDef::of_unit(s),
             build_options: Vec::new(),
             ai_build_options: Vec::new(),
             name,

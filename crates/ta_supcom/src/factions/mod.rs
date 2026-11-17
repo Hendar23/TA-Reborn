@@ -6,6 +6,7 @@
 //! - [`pictures`]: its build picture;
 //! - [`script`]: its script;
 //! - [`units`]: its unit file and its weapons';
+//! - [`enhance`]: a commander's enhancements;
 //! - [`faction`]: its faction's side, build menus, wrecks and weapons;
 //! - [`make`]: the mod made whole.
 //!
@@ -14,6 +15,7 @@
 //! order.
 
 pub mod anims;
+pub mod enhance;
 pub mod faction;
 pub mod make;
 pub mod model;

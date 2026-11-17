@@ -469,6 +469,19 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   `SimEvent::UnitUpgraded` lets the game carry its selection and control groups over
   (`Game::carry_over`). `UnitTypes::upgrade_chain` lists a type's steps; orders may name a step past
   the next (queued after it), which fails if it reaches the front first.
+* **Enhancements** (`sim/enhance.rs`; a unit type's `[ENHANCEMENTS]`, Supreme Commander's
+  commanders'): `Order::Enhance { index, remove }` at the front of a unit's orders installs one as
+  an upgrade is built (`SelfJob::Enhance`, the same `self_work`, helpers, payment, stall and refund),
+  the unit standing; a removal is done at once. `Sim::enhancement_fit` says whether one may be
+  installed (its prerequisite installed, not already there). Installed (`set_enhancement`), it
+  takes its slot in place of the one there, and the unit's figures are made again from its type's
+  and every enhancement installed (`Unit::boost`, a `Boost`: most health, mending, build power,
+  sight, radar, sonar, weapon slots, menu, cloak, stealth; none for a unit with none, so TA's units
+  read their type's). Whatever reads those reads them through the unit (`Unit::max_health`,
+  `weapon_slots`, `work_rate`, `build_options`, `ai_build_options`, `sight`, `radar`, `sonar`,
+  `heal_ticks`, `cloak_costs`, `stealthy`), never the type's alone. Health rises with the most and
+  falls to it; a slot whose weapon changed starts afresh; the script's `SetEnhancement(index, on)`
+  is called; `SimEvent::UnitEnhanced` follows. `Unit::enhancements` is in the checksum.
 * **Standing orders** (`Command::SetStates`, never touching the queue): fire (hold, return,
   at will) and movement. Idle armed units hit from beyond their reach answer by movement
   state: Maneuver advances on the attacker within a 420 px leash and walks back afterwards,
@@ -1622,6 +1635,12 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   home first, a few at a time as the income allows and while power holds (the reclaim and rebuild of
   `upgrade_task` leaves those alone). Builders that help factories help one upgrading
   (`factory_to_help`). With no unit of ours that upgrades (TA's games), nothing of it runs.
+* Enhancements (`enhance.rs`, `run_enhancements`): the commander, near home and with no enemy
+  close, installs an engineering suite once the economy reaches the tech climb's (the next suite
+  once a factory of tech 2 stands, or metal piles up), a gun upgrade some minutes into the game
+  and more armour when rich, one at a time, only into an empty slot or over its prerequisite, when
+  it can afford it. Its builders' menus are their own (`Unit::ai_build_options`), the suites' units
+  among them. With no unit of ours with enhancements, nothing of it runs.
 * Allies (`ally.rs`): players signal their team with `Command::Signal` (a ping with a
   meaning: look, attack, defend, on my way, need metal or energy; the sim keeps the last 32
   for 90 s in `Sim::signals`, the same on every machine, and emits `SimEvent::Signal`). A

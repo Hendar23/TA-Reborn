@@ -1002,7 +1002,7 @@ impl Scene {
                 v.hit = (0, 0.0);
             } else if u.is_complete() && u.health < v.health {
                 // A flash as bright as the blow was hard (building up doesn't count).
-                let lost = ((v.health - u.health) / t.max_health.max(ta_sim::Fx::ONE)).to_f32();
+                let lost = ((v.health - u.health) / u.max_health(t).max(ta_sim::Fx::ONE)).to_f32();
                 v.hit = (tick, (lost * 10.0).clamp(0.35, 1.0));
             }
             v.health = u.health;
@@ -1228,7 +1228,7 @@ impl Scene {
             let color = sim.players.get(u.owner as usize).map_or(0, |p| p.color as u32);
             // Battle damage shows on finished units (a frame's health follows its progress).
             let t = sim.types.get(u.type_id);
-            let mut damage = if u.is_complete() && !t.max_health.is_zero() { (1.0 - (u.health / t.max_health).to_f32()).clamp(0.0, 1.0) } else { 0.0 };
+            let mut damage = if u.is_complete() && !t.max_health.is_zero() { (1.0 - (u.health / u.max_health(t)).to_f32()).clamp(0.0, 1.0) } else { 0.0 };
             // Captures: `TA_TEST_DAMAGE=<0..1>` shows every unit that damaged.
             if let Some(d) = test_damage() {
                 damage = d;

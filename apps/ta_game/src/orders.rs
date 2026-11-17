@@ -61,12 +61,30 @@ impl Def {
 
 /// UPGRADE's words: into what, its cost and how long it takes on the unit's own build power,
 /// what it does meanwhile, and how many of the selection upgrade.
+/// What a unit of type `from` upgrades into, by name: the new type's, with its tech level where
+/// the two share a name (Supreme Commander's factories are all "Land Factory": "Land Factory T2").
+pub fn upgrade_name(sim: &ta_sim::Sim, from: usize, to: usize) -> String {
+    let name = crate::chat::unit_label(sim, to);
+    if name != crate::chat::unit_label(sim, from) {
+        return name;
+    }
+    // (Its tech level by its category's LEVELn or LEVn, as the computer players read it.)
+    let level = sim.types.get(to).def.category.split_whitespace().filter_map(|token| {
+        let token = token.to_ascii_uppercase();
+        token.strip_prefix("LEVEL").or_else(|| token.strip_prefix("LEV"))?.parse::<u8>().ok()
+    }).max();
+    match level {
+        Some(n) => tf("{name} T{n}", &[("name", &name), ("n", &n)]),
+        None => name,
+    }
+}
+
 pub fn upgrade_tip(game: &Game, key: &str) -> String {
     let Some((to, count)) = game.upgrade_offer() else { return format!("{} ({key})", t("Upgrade")) };
     let sim = &game.sim;
     let kind = sim.types.get(to);
-    let name = crate::chat::unit_label(sim, to);
     let from = game.selection.iter().filter_map(|&id| sim.unit(id)).find(|u| game.upgrade_step(u, false) == Some(to)).map(|u| sim.unit_type(u));
+    let name = upgrade_name(sim, from.map_or(to, |f| f.id), to);
     let secs = from.filter(|f| f.worker_rate > ta_sim::Fx::ZERO).map_or(0.0, |f| (kind.build_time / f.worker_rate).to_f32() / 30.0);
     let mut lines = vec![tf("Upgrade ({key}): into {name}", &[("key", &key), ("name", &name)])];
     lines.push(tf(
@@ -82,8 +100,7 @@ pub fn upgrade_tip(game: &Game, key: &str) -> String {
         lines.push(tf("{n} of the selection upgrade", &[("n", &count)]));
     }
     lines.push(t("Shift: queued after the upgrade under way").to_string());
-    lines.join("
-")
+    lines.join("\n")
 }
 
 /// The orders the selection can give, in the order the plate sets them: every group's in turn

@@ -12,6 +12,18 @@
   groups. The computer players climb the tiers by upgrading their factories, and upgrade their
   extractors. Any mod can use it (`UpgradesTo`, see [docs/MODDING.md](docs/MODDING.md#units-that-upgrade-in-place));
   make the factions' mod again (UPDATE) to have it.
+- Commander enhancements: the Supreme Commander factions' commanders and support commanders
+  install Forged Alliance's enhancements on themselves: the engineering suites (tech 2 and 3
+  buildings on their menu, more build power and health), the gun upgrades (farther, faster or
+  harder), the missile launchers, more armour and mending, sensors, and the Cybran's stealth and
+  cloak. The build menu's ENHANCE tab lists them, a slot each, with their price and what they need
+  first (the classic interface: an ENHANCE button); a click installs one, built on the commander
+  with its own build power as an upgrade is, a right-click takes one out. The information page
+  (F1) shows them, those installed marked. The computer players install engineering suites and a
+  gun upgrade. Any mod can use them (`[ENHANCEMENTS]`, see
+  [docs/MODDING.md](docs/MODDING.md#enhancements)); make the factions' mod again (UPDATE) to have
+  them. Shields, teleporting, drones, resource allocation and the other enhancements TA Reborn
+  does not play yet are left out.
 - Models can be painted beyond TA's palette and textures: a 3DO with a surface beside it
   (`objects3d/<name>.surface`) takes texture coordinates and smooth normals for its vertices and
   materials for its polygons, each a colour map, a specular map (gloss, mirroring, lights and where

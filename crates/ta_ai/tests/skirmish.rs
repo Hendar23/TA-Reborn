@@ -161,6 +161,10 @@ fn ai_vs_ai_plays_a_game() {
     let mut dead_ids = HashSet::new();
     let mut dead_types: BTreeMap<String, u32> = Default::default();
     let mut firsts: BTreeMap<String, (u64, u8)> = Default::default();
+    // Upgrades in place (player, what into: how many, the first's minute) and enhancements
+    // installed (a mod's: TA's units have neither).
+    let mut upgraded: BTreeMap<(u8, String), (u32, u64)> = Default::default();
+    let mut enhanced: Vec<(u64, u8, String, String)> = Vec::new();
     let mut owners: HashMap<UnitId, u8> = Default::default();
     let mut extractor_losses = vec![0u32; n];
     let mut commander_lost: Vec<Option<u64>> = vec![None; n];
@@ -257,6 +261,16 @@ fn ai_vs_ai_plays_a_game() {
                     if t.def.is_commander && commander_lost[o as usize].is_none() {
                         commander_lost[o as usize] = Some(tick / 1800);
                     }
+                }
+                SimEvent::UnitUpgraded { to, type_id, .. } => {
+                    let Some(u) = sim.unit(to) else { continue };
+                    let e = upgraded.entry((u.owner, sim.types.get(type_id).name.clone())).or_insert((0, tick / 1800));
+                    e.0 += 1;
+                }
+                SimEvent::UnitEnhanced { id, index, on: true } => {
+                    let Some(u) = sim.unit(id) else { continue };
+                    let t = sim.unit_type(u);
+                    enhanced.push((tick / 1800, u.owner, t.name.clone(), t.def.enhancements.get(index as usize).map_or_else(String::new, |e| e.name.clone())));
                 }
                 SimEvent::UnitCompleted { id, .. } => {
                     in_yard.remove(&id);
@@ -405,6 +419,12 @@ fn ai_vs_ai_plays_a_game() {
     }
     println!("strategic launches {launches}, interceptions {interceptions}");
     println!("first advanced/strategic builds (minute, player): {firsts:?}");
+    if !upgraded.is_empty() {
+        println!("upgrades in place ((player, into): (how many, first minute)): {upgraded:?}");
+    }
+    for (minute, p, unit, name) in &enhanced {
+        println!("enhancement at {minute:2} min: P{p} {unit} installs {name}");
+    }
     println!("{:?}", sim.stats);
     // (The same game ends in the same state: a change to the simulation or the AI that keeps
     // their rules keeps this.)

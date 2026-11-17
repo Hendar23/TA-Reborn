@@ -562,3 +562,25 @@ them (Alt, Ctrl, Shift, Cmd, Option, Enter, Esc, Tab, Home, End).
 | Held until the import ends (beside greyed controls) / the launcher's footer (its status bar) / UPDATE… (an imported mod made again) | 导入结束前不可更改 / 启动器底部的状态栏 (as 状态栏) / 更新… |
 | proxy / redirect / the launcher crashed | 代理服务器 / 重定向 / 启动器崩溃 |
 | experimental features / EXPERIMENTAL (tag) | 实验性功能 / 实验性 |
+
+## Upgrades and enhancements (Forged Alliance's: `orders.rs`, `hud/enhance.rs`, `hud/deck.rs`, `hud/info.rs`, `hud_classic.rs`)
+
+A building upgrades itself in place (原地升级, as 建筑原地升级 above); a commander installs
+enhancements (强化, as 指挥官强化 above; measure word 项), one to each slot of its body. Unit,
+enhancement and slot names (LCH, RCH, Back) come from the data in English: a space against Chinese
+characters, none against full-width punctuation.
+
+| English | 简体中文 |
+|---|---|
+| upgrade, UPGRADE / UPGR (the classic panel's short form) / Upgrade in place | 升级 / 升级 / 原地升级 |
+| Upgrading into {name} / About to upgrade into {name} / Upgrades in place into {name} / cannot upgrade into that | 正在升级为 {name} / 即将升级为 {name} / 可原地升级为 {name} / 无法升级为该单位 |
+| enhancement(s): ENHANCE (tab, button) / ENH (classic short form) / ENHANCEMENTS (info page section) | 强化 / 强化 / 强化 |
+| slot (an enhancement's place: left arm, right arm, back) / Slot {slot} | 槽位 / 槽位 {slot} |
+| install / installing / installed / take out (an enhancement) | 安装 / 安装中（正在安装）/ 已安装 / 拆除（正在拆除） |
+| needs another enhancement first / Needs {name} first | 需要先安装另一项强化 / 需先安装 {name} |
+| {duration} on its own build power | 以自身建造力耗时 {duration} |
+| Stop calls it off, its metal back | “停止”可取消安装（升级）并返还金属 |
+| Shift: queued / queued after the upgrade under way | Shift：加入队列 / 排在进行中的升级之后 |
+| the unit stands meanwhile | 期间单位原地不动 |
+| Mends {n} hit points a second / {weapon}: stronger | 每秒恢复 {n} 点生命值 / {weapon}：威力增强 |
+| Builds {n} more kinds | 可额外建造 {n} 种 |

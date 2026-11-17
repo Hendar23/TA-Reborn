@@ -37,17 +37,21 @@ impl Sim {
     /// What a unit builds on itself, and how far along (0 to 1).
     pub fn self_work_progress(&self, u: &Unit) -> Option<(SelfJob, Fx)> {
         let w = u.self_work?;
-        let (_, _, total) = self.self_job_price(w.job);
+        let (_, _, total) = self.self_job_price(u.type_id, w.job);
         Some((w.job, Fx::fraction(w.work.min(total), total.max(1))))
     }
 
-    /// What a job costs (metal, energy) and the work it takes.
-    pub(crate) fn self_job_price(&self, job: SelfJob) -> (Fx, Fx, u64) {
+    /// What a job of a unit of type `of` costs (metal, energy) and the work it takes.
+    pub fn self_job_price(&self, of: usize, job: SelfJob) -> (Fx, Fx, u64) {
         match job {
             SelfJob::Upgrade(to) => {
                 let t = self.types.get(to);
                 (t.cost_metal, t.cost_energy, t.build_work)
             }
+            SelfJob::Enhance(i) => match self.types.get(of).enhancements.get(i as usize) {
+                Some(e) => (e.cost_metal, e.cost_energy, e.build_work),
+                None => (Fx::ZERO, Fx::ZERO, 1),
+            },
         }
     }
 
@@ -88,7 +92,7 @@ impl Sim {
         if owner >= self.players.len() {
             return;
         }
-        let (metal, energy, total) = self.self_job_price(w.job);
+        let (metal, energy, total) = self.self_job_price(u.type_id, w.job);
         let done = w.work.min(total);
         let work = if self.players.get(owner).is_some_and(|p| p.cheats.instant_build) {
             // (The instant-build cheat: done at once, for nothing.)
@@ -108,6 +112,7 @@ impl Sim {
         if done + work >= total {
             match w.job {
                 SelfJob::Upgrade(to) => self.finish_upgrade(id, to),
+                SelfJob::Enhance(index) => self.finish_enhancement(id, index),
             }
         }
     }
@@ -115,11 +120,11 @@ impl Sim {
     /// Calls off what a unit builds on itself: with `refund`, the metal paid for it so far comes
     /// back (its energy is spent), as a frame given up gives its metal back.
     pub(crate) fn cancel_self_work(&mut self, id: UnitId, refund: bool) {
-        let Some(w) = self.unit_mut(id).and_then(|u| u.self_work.take()) else { return };
+        let Some((w, of)) = self.unit_mut(id).and_then(|u| u.self_work.take().map(|w| (w, u.type_id))) else { return };
         if !refund {
             return;
         }
-        let (metal, _, total) = self.self_job_price(w.job);
+        let (metal, _, total) = self.self_job_price(of, w.job);
         let back = metal.share(w.work.min(total), total.max(1));
         if let Some(owner) = self.unit(id).map(|u| u.owner as usize)
             && let Some(p) = self.players.get_mut(owner)

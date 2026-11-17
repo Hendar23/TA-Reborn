@@ -937,6 +937,17 @@ take up to all 32 bits of a texel.
   finished, with its share of health, its queued orders, a factory's queue and route, its fire and
   move orders and experience; the old one is taken off the map without a wreck or a loss. Called
   off, its metal comes back (not its energy). A factory makes nothing while it upgrades.
+* **`[ENHANCEMENTS]`** (TA Reborn's, for mods; Supreme Commander's `Enhancements`), a section
+  within `[UNITINFO]`, one section an enhancement named by its id, in the menus' order: parts a
+  unit installs on itself (`Order::Enhance`), one a `Slot`, a `Prerequisite` first, at a unit's
+  price and work (`BuildCostMetal`, `BuildCostEnergy`, `BuildTime`) with its own build power, as an
+  upgrade in place is built. Installed, its `MaxDamage`, `HealRate` (hit points a second),
+  `WorkerTime`, `SightDistance`, `RadarDistance`, `SonarDistance` and `BuildOptions` add to the
+  unit's (`Boost`, `ta_sim::unit`), its `WeaponN` takes the unit's slot N, its `CloakCost`,
+  `CloakCostMoving`, `MinCloakDistance` and `Stealth` give it a cloak and stealth. The unit's
+  health rises with its most and falls to it, no further, when one is taken out (at once, for
+  nothing). The script's `SetEnhancement(index, on)` hears of each (the index in the file's order).
+  None of TA's units has any; the state is in the checksum (`Unit::enhancements`).
 * Build menus: `guis/<BUILDER><page>.gui` + `download/*.tdf`. The 3.1 patch's `[CANBUILD]` in
   sidedata is the computer players' list, never a player's menu: mods list units of their AI
   there (TA: The Final Frontier's AI Boost: `AAISOLAR` beside the `ARMSOLAR` a player builds,

@@ -47,6 +47,8 @@ mod scenarios;
 
 #[path = "upgrade_tests.rs"]
 mod upgrades;
+#[path = "enhance_tests.rs"]
+mod enhancements;
 
 /// Game data from TDF files (path, text), loaded as a mod's folder is.
 fn data_of(files: &[(String, String)]) -> GameData {

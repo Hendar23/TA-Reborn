@@ -666,3 +666,27 @@ como etiqueta válida para cualquier número: "sin crear: {failed}", "unidades s
 | import it again (un mod hecho por un TA Reborn anterior) / UPDATE… | importar de nuevo, vuelve a importarlo / ACTUALIZAR… |
 | the commanders' enhancements / upgrading buildings in place / stealth fields / teleporting | las mejoras de los comandantes / la mejora de edificios in situ / los campos de sigilo / el teletransporte |
 | experimental features / EXPERIMENTAL (tag) | funciones experimentales / EXPERIMENTAL |
+
+## Mejora in situ y mejoras del Comandante (Forged Alliance: `game.rs`, `hud/deck.rs`, `hud/enhance.rs`, `hud/info.rs`, `hud_classic.rs`, `orders.rs`)
+
+Dos funciones con la misma raíz, como en los juegos de Supreme Commander: un edificio (fábrica,
+extractor, radar) se mejora in situ a su versión de nivel superior (verbo: MEJORAR, "Mejorando a
+{name}", "a punto de mejorar a {name}"); un Comandante se instala mejoras (sustantivo: la pestaña y
+el botón ENHANCE son MEJORAS, como el rótulo ENHANCEMENTS). Las mejoras son femeninas: instalada,
+quitarla, esta. "Stop" en las frases: Parar, con mayúscula (el nombre de la orden).
+
+| English | Español |
+|---|---|
+| upgrade in place / UPGRADE / Upgrade (order) / the upgrade under way | mejorar in situ / MEJORAR / Mejorar / la mejora en curso |
+| Upgrades in place into {name} (ficha de la unidad) | Se mejora in situ a {name} |
+| UPGR / ENH (panel clásico, lo más corto posible) | MEJ. / MEJS. |
+| enhancement(s) / ENHANCE (pestaña y botón) / ENHANCEMENTS | mejora(s) / MEJORAS / MEJORAS |
+| slot (brazo izquierdo, brazo derecho, espalda; {slot}: LCH, RCH, Back de los datos) | ranura ("una por ranura", "Ranura {slot}") |
+| install / take out / installed / being installed | instalar / quitar / instalada / en instalación |
+| Stop calls it off, its metal back | Parar la cancela y devuelve su metal |
+| on its own build power | con su propia potencia de construcción |
+| the unit stands meanwhile | la unidad se queda quieta mientras tanto |
+| needs {name} (first) / needs another enhancement first | requiere (antes) {name} / requiere antes otra mejora |
+| Mends {n} hit points a second | Regenera {n} de vida por segundo (como "{rate} de energía") |
+| Builds {n} more kinds | Construye más tipos ({n}) |
+| {weapon}: stronger | {weapon}: más potente |

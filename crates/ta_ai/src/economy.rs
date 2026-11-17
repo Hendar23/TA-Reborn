@@ -328,7 +328,7 @@ impl SkirmishAi {
             if s.now > at && b.orders.is_empty() && b.build.is_none() {
                 // (One being taken apart has nothing more for it once mended: no sign of a
                 // place it cannot get to.)
-                if sim.unit(target).is_some_and(|t| !t.dead && !sim.being_taken_apart(t) && (!t.is_complete() || t.health < sim.unit_type(t).max_health)) {
+                if sim.unit(target).is_some_and(|t| !t.dead && !sim.being_taken_apart(t) && (!t.is_complete() || t.health < t.max_health(sim.unit_type(t)))) {
                     out_of_reach.push((id, b.pos, target));
                 }
                 return false;
@@ -447,7 +447,7 @@ impl SkirmishAi {
         // Buildings for where the builder works (land, or water for ships); extractors and
         // power may be either, whichever suits the site (underwater deposits, tides).
         let naval = bi.kind == Locomotion::Naval;
-        let all_opts: Vec<usize> = sim.unit_type(b).ai_build_options.iter().copied().filter(|&o| sim.is_allowed(o)).collect();
+        let all_opts: Vec<usize> = b.ai_build_options(sim.unit_type(b)).iter().copied().filter(|&o| sim.is_allowed(o)).collect();
         let opts: Vec<usize> = all_opts.iter().copied().filter(|&o| self.info[o].land != naval).collect();
         let commander = bi.commander;
         let t2 = bi.tech >= 2;
@@ -840,7 +840,7 @@ impl SkirmishAi {
                 continue;
             }
             let Some(sp) = i.spec else { continue };
-            let ext = sim.unit_type(b).ai_build_options.iter().copied().find(|&o| self.info[o].role == Role::Extractor && self.info[o].land && !sim.types.get(o).needs_geo);
+            let ext = b.ai_build_options(sim.unit_type(b)).iter().copied().find(|&o| self.info[o].role == Role::Extractor && self.info[o].land && !sim.types.get(o).needs_geo);
             let Some(ext) = ext else { continue };
             let w = (sp, map::region_at(&sim.world, &sp, b.pos), Self::build_slack(sim, b, ext));
             if !walkers.contains(&w) {
@@ -951,7 +951,7 @@ impl SkirmishAi {
         if s.count[Role::Defense as usize] + plan.pending[Role::Defense as usize] >= 2 + s.minutes as usize / 2 {
             return None;
         }
-        let opts: Vec<usize> = sim.unit_type(b).ai_build_options.iter().copied().filter(|&o| self.info[o].land && sim.is_allowed(o)).collect();
+        let opts: Vec<usize> = b.ai_build_options(sim.unit_type(b)).iter().copied().filter(|&o| self.info[o].land && sim.is_allowed(o)).collect();
         let tower = opts.iter().copied().filter(|&o| self.info[o].role == Role::Defense && self.info[o].cost <= 800).max_by_key(|&o| (self.info[o].value, Reverse(o)))?;
         let toward = self.nearest_enemy_base(mex).map_or(FxVec3::ZERO, |e| (e - mex).xz().normalize());
         let site = self.find_site(sim, tower, mex + toward.scale(fx(56)), 5, &|_| true)?;

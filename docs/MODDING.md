@@ -1077,6 +1077,74 @@ next tier's factory wherever a factory of theirs upgrades into it. A unit of a t
 not allow (a mission's, the mutators') is no upgrade. `ta-tools data --unit <name>` shows a unit's
 `upgrades_to`.
 
+#### Enhancements
+
+A unit may install parts on itself, as Supreme Commander's commanders do: an `[ENHANCEMENTS]`
+section within its `[UNITINFO]` holds one section for each, named by its id. The order of the
+sections is the order the menus show them in.
+
+```
+[UNITINFO]
+	{
+	UnitName=UEL0001;
+	...
+	[ENHANCEMENTS]
+		{
+		[AdvancedEngineering]
+			{
+			Name=Tech 2 Engineering Suite;
+			Description=Builds tech 2 structures, builds faster;
+			Slot=LCH;
+			BuildCostMetal=720;
+			BuildCostEnergy=18000;
+			BuildTime=9000;
+			WorkerTime=200;
+			MaxDamage=3000;
+			HealRate=20;
+			BuildOptions=UEB0201 UEB0202 UEB1202;
+			Picture=uel0001_advancedengineering;
+			}
+		[T3Engineering]
+			{
+			Prerequisite=AdvancedEngineering;
+			Slot=LCH;
+			...
+			}
+		}
+	}
+```
+
+- **`Slot`**: one enhancement a slot (any name; the menus show it). One installed in a taken slot
+  takes the place of the one there.
+- **`Prerequisite`**: the id of one that must be installed first. Installed, this one takes its
+  slot (give them the same slot, as Supreme Commander's suites do, so that its numbers stand in
+  place of the other's).
+- **`BuildCostMetal`, `BuildCostEnergy`, `BuildTime`**: its price and work, as a unit's. The unit
+  stands and builds it on itself with its own build power, as an upgrade in place is built:
+  paid as construction pays, slowed by the economy, helped by builders guarding or repairing it;
+  called off by Stop or another order, its metal comes back.
+- **What it changes** while installed, added to the unit's own: `MaxDamage` (its health rises by as
+  much), `HealRate` (hit points a second it mends), `WorkerTime` (build power), `SightDistance`,
+  `RadarDistance`, `SonarDistance`, `BuildOptions` (units added to its menu, and to what the
+  computer players may build with it), `CloakCost`, `CloakCostMoving` and `MinCloakDistance` (a
+  cloak it may switch on), `Stealth=1` (radar does not show it).
+- **`Weapon1`** to **`Weapon8`**: the weapon a slot fires while it is installed, in place of the
+  unit's own there; give the unit's file an empty slot (no `WeaponN`) for a weapon an
+  enhancement adds.
+- **`Name`**, **`Description`** and **`Picture`** (`unitpics/<Picture>.pcx`, shown as a unit's) for
+  the menus.
+
+The modern interface shows them in the build menu's ENHANCE tab (a click installs one, Shift
+queues it, one whose prerequisite is missing comes after it; a right-click takes an installed one
+out, at once and for nothing, its health falling to its most); the classic interface, behind an
+ENHANCE button among the buttons TA has no gadget for. The information page (F1) lists them, those
+installed marked. A unit's script with a function `SetEnhancement(index, on)` is called with an
+enhancement's index (in the file's order) as it is installed (`on` 1) or taken out (`on` 0), to show
+or hide its parts. The computer players install on their Commander the engineering suites (those
+adding units to its menu) and one improving a weapon (reaching farther, hitting harder or firing
+faster, or arming an empty slot), near their base and when they can afford it; more health when
+rich.
+
 #### What TA Reborn does not run
 
 TA Reborn runs no code from a mod: patched executables (`TotalA.exe` and the like), DLLs and

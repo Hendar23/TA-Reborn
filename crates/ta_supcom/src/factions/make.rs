@@ -4,7 +4,7 @@
 
 use ta_formats::surface::Material;
 
-use super::{anims, faction, model, pictures, script, textures, units, UNIT_SCALE};
+use super::{anims, enhance, faction, model, pictures, script, textures, units, UNIT_SCALE};
 use crate::files::Files;
 use crate::scm::{self, Mesh};
 use crate::sca;
@@ -63,12 +63,35 @@ pub fn make(files: &Files, units: &[UnitBlueprint], reborn: &str, write: &mut dy
             made.units = done.len();
             return Ok(made);
         }
-        // (What it upgrades into in place: of its faction, among those made.)
+        // (What it upgrades into in place, and the units its enhancements add: of its faction,
+        // among those made. An enhancement's picture where the game has it.)
         let faction: Vec<&UnitBlueprint> = units.iter().filter(|o| o.faction == u.faction).collect();
-        let extra = units::Extra { upgrades_to: faction::upgrade_of(u, &faction).map(|t| t.id.as_str()) };
-        match unit(files, u, &extra, &mut |path, bytes| put(path, bytes, &mut made))? {
-            Ok(None) => done.push(std::borrow::Cow::Borrowed(u)),
-            Ok(Some(footprint)) => done.push(std::borrow::Cow::Owned(UnitBlueprint { footprint: Some(footprint), ..u.clone() })),
+        let own = units::weapons(u);
+        let extra_weapons = enhance::extra_weapons(u, &own);
+        let (mut list, _) = enhance::enhancements(u, &faction, &own, &extra_weapons);
+        let mut icons: Vec<(String, Vec<u8>)> = Vec::new();
+        for e in &mut list {
+            let icon = match &e.icon {
+                Some(path) => files.read(path)?,
+                None => None,
+            };
+            match icon.and_then(|bytes| pictures::picture(&bytes, None).ok()) {
+                Some(picture) => icons.push((format!("unitpics/{}.pcx", enhance::picture_name(u, e)), picture)),
+                None => e.icon = None,
+            }
+        }
+        let extra = units::Extra { upgrades_to: faction::upgrade_of(u, &faction).map(|t| t.id.as_str()), enhancements: enhance::section(u, &list) };
+        let shown: Vec<Vec<String>> = list.iter().map(|e| enhance::shown_bones(u, e)).collect();
+        match unit(files, u, &extra, &extra_weapons, shown, &mut |path, bytes| put(path, bytes, &mut made))? {
+            Ok(footprint) => {
+                for (path, picture) in &icons {
+                    put(path, picture, &mut made)?;
+                }
+                done.push(match footprint {
+                    None => std::borrow::Cow::Borrowed(u),
+                    Some(footprint) => std::borrow::Cow::Owned(UnitBlueprint { footprint: Some(footprint), ..u.clone() }),
+                });
+            }
             Err(why) => made.skipped.push((u.id.clone(), why)),
         }
     }
@@ -135,7 +158,7 @@ fn read(files: &Files, u: &UnitBlueprint) -> std::result::Result<Read, String> {
 /// not its blueprint's (`units::fitted_footprint`). `Err(why)` (inside the Ok) when it is left
 /// out: what it is made of does not read, or its model cannot be written (nothing of it written
 /// then).
-fn unit(files: &Files, u: &UnitBlueprint, extra: &units::Extra, put: &mut dyn FnMut(&str, &[u8]) -> Result<()>) -> Result<std::result::Result<Option<[f64; 2]>, String>> {
+fn unit(files: &Files, u: &UnitBlueprint, extra: &units::Extra, extra_weapons: &[&crate::unit::WeaponBlueprint], shown: Vec<Vec<String>>, put: &mut dyn FnMut(&str, &[u8]) -> Result<()>) -> Result<std::result::Result<Option<[f64; 2]>, String>> {
     let read = match read(files, u) {
         Ok(r) => r,
         Err(why) => return Ok(Err(why)),
@@ -202,11 +225,13 @@ fn unit(files: &Files, u: &UnitBlueprint, extra: &units::Extra, put: &mut dyn Fn
         unit: u,
         mesh,
         pieces: near.model.pieces.iter().map(|p| p.name.clone()).collect(),
-        weapons: weapons.slots.clone(),
+        // (Its own weapons, then those its enhancements switch on, in the slots after them.)
+        weapons: weapons.slots.iter().copied().chain(extra_weapons.iter().copied()).take(units::MAX_WEAPONS).collect(),
         factory: builds == units::Builds::Factory,
         // (An air staging platform's repair work sprays as a builder's does.)
         builder: builds != units::Builds::No || u.is("AIRSTAGINGPLATFORM"),
         pixels: u.display.uniform_scale * UNIT_SCALE,
+        enhancements: shown,
     };
     put(&format!("scripts/{name}.cob"), &script::script(&plan).to_bytes())?;
     Ok(Ok(footprint))
@@ -244,7 +269,13 @@ mod tests {
                 "Defense = {{ MaxHealth = 12000, RegenRate = 10 }}, Economy = {{ BuildCostMass = 18000, BuildCostEnergy = 5000000, BuildTime = 6000000, BuildRate = 10, BuildableCategory = {{ 'BUILTBYCOMMANDER UEF' }} }}, \
                  General = {{ FactionName = 'UEF', BuildBones = {{ YawBone = 'Turret', BuildEffectBones = {{ 'Turret_Barrel' }} }} }}, Intel = {{ VisionRadius = 26, SonarRadius = 60 }}, \
                  Physics = {{ MotionType = 'RULEUMT_Amphibious', MaxSpeed = 1.7, TurnRate = 90 }}, \
-                 Weapon = {{ {}, {{ Label = 'Missile', WeaponCategory = 'Missile', Damage = 3000, MaxRadius = 60, RateOfFire = 1, CountedProjectile = true, ProjectileId = '/projectiles/Tactical/Tactical_proj.bp' }} }}",
+                 Weapon = {{ {}, {{ Label = 'Missile', WeaponCategory = 'Missile', Damage = 3000, MaxRadius = 60, RateOfFire = 1, CountedProjectile = true, ProjectileId = '/projectiles/Tactical/Tactical_proj.bp' }} }}, \
+                 Enhancements = {{ Slots = {{ Back = {{ name = 'Back' }} }}, \
+                   AdvancedEngineering = {{ BuildCostMass = 720, BuildCostEnergy = 18000, BuildTime = 900, BuildableCategoryAdds = 'BUILTBYTIER2COMMANDER UEF', Name = '<LOC e_1>Tech 2 Engineering Suite', NewBuildRate = 30, NewHealth = 3000, NewRegenRate = 20, Slot = 'LCH', Icon = 'aes' }}, \
+                   AdvancedEngineeringRemove = {{ BuildCostMass = 1, Slot = 'LCH', Prerequisite = 'AdvancedEngineering' }}, \
+                   HeavyAntiMatterCannon = {{ BuildCostMass = 800, BuildCostEnergy = 24000, BuildTime = 800, Name = 'Zephyr Amplifier', NewMaxRadius = 30, ZephyrDamageMod = 100, Slot = 'RCH', ShowBones = {{ 'Turret_Barrel' }} }}, \
+                   Missile = {{ BuildCostMass = 1000, BuildCostEnergy = 50000, BuildTime = 1000, Name = 'Tactical Missile Launcher', Slot = 'Back' }}, \
+                   Shield = {{ BuildCostMass = 1500, BuildCostEnergy = 112500, BuildTime = 1500, Name = 'Personal Shield Generator', ShieldMaxHealth = 24000, Slot = 'Back' }} }}",
                 gun("RightZephyr", "", "/projectiles/Shell/Shell_proj.bp")
             ))),
             ("UEB0101", blueprint("'STRUCTURE', 'FACTORY', 'LAND', 'TECH1', 'BUILTBYCOMMANDER', 'BUILTBYTIER1ENGINEER'",
@@ -253,6 +284,7 @@ mod tests {
             ("UEB0201", blueprint("'STRUCTURE', 'FACTORY', 'LAND', 'TECH2', 'BUILTBYTIER1FACTORY'",
                 "Economy = { BuildCostMass = 1040, BuildCostEnergy = 12000, BuildTime = 2400, BuildRate = 40, BuildableCategory = { 'BUILTBYTIER2FACTORY UEF MOBILE' } }, \
                  General = { FactionName = 'UEF', UpgradesFrom = 'ueb0101' }, Footprint = { SizeX = 4, SizeZ = 4 }")),
+            ("UEB0104", blueprint("'STRUCTURE', 'TECH2', 'BUILTBYTIER2COMMANDER'", "Economy = { BuildCostMass = 300, BuildCostEnergy = 3000, BuildTime = 600 }")),
             ("UEL0105", blueprint("'MOBILE', 'LAND', 'TECH1', 'ENGINEER', 'BUILTBYTIER1FACTORY', 'BUILTBYTIER2FACTORY'",
                 "Economy = { BuildCostMass = 52, BuildCostEnergy = 260, BuildTime = 260, BuildRate = 5, BuildableCategory = { 'BUILTBYTIER1ENGINEER UEF' } }, \
                  Physics = { MotionType = 'RULEUMT_Land', MaxSpeed = 1.9, TurnRate = 120 }")),
@@ -277,7 +309,12 @@ mod tests {
             files.push((format!("units/{id}/{id}_lod0.scm"), mesh.clone()));
         }
         files.push(("units/UEL0001/UEL0001_script.lua".into(), b"Unit = Class(Base) { Weapons = { Missile = Class(Launcher) { OnCreate = function(self) self:SetWeaponEnabled(false) end, }, }, \
-            OnStopBeingBuilt = function(self, builder, layer) self:DisableUnitIntel('Sonar') end, }".to_vec()));
+            OnStopBeingBuilt = function(self, builder, layer) self:DisableUnitIntel('Sonar') end, \
+            CreateEnhancement = function(self, enh) if enh == 'Missile' then self:SetWeaponEnabledByLabel('Missile', true) elseif enh == 'MissileRemove' then self:SetWeaponEnabledByLabel('Missile', false) end end, }".to_vec()));
+        // The engineering suite's button.
+        let mut icon = ta_formats::dds::header(8, 8, 1, None);
+        icon.extend(std::iter::repeat_n([40u8, 80, 160, 255], 64).flatten());
+        files.push(("textures/ui/common/game/uef-enhancements/aes_btn_up.dds".into(), icon));
         files.push(("projectiles/Shell/Shell_proj.bp".into(), projectile("'DIRECTFIRE'", "Physics = { InitialSpeed = 30 }").into_bytes()));
         files.push(("projectiles/Frag/Frag_proj.bp".into(), projectile("'INDIRECTFIRE'", "Physics = { InitialSpeed = 30 }").into_bytes()));
         files.push(("projectiles/Frag/Frag_script.lua".into(), b"Frag = Class(Base) { OnImpact = function(self, t, e) local ChildProjectileBP = '/projectiles/Shell/Shell_proj.bp' \
@@ -299,7 +336,7 @@ mod tests {
         std::fs::write(dir.0.join("units.scd"), archive()).unwrap();
         let files = Files::of(Vec::new(), vec![crate::scd::Scd::open(&dir.0.join("units.scd")).unwrap()]);
         let units: Vec<UnitBlueprint> = crate::unit::catalogue(&files).unwrap().into_iter().filter(|u| u.playable()).collect();
-        assert_eq!(units.len(), 7);
+        assert_eq!(units.len(), 8);
         let run = || {
             let mut hash = Sha256::new();
             let mut paths: Vec<String> = Vec::new();
@@ -314,7 +351,7 @@ mod tests {
             (made, paths, hex)
         };
         let (made, paths, first) = run();
-        assert_eq!((made.units, made.skipped.len()), (7, 0), "{:?}", made.skipped);
+        assert_eq!((made.units, made.skipped.len()), (8, 0), "{:?}", made.skipped);
         // The tech 1 factory upgrades into the tech 2 one, which no builder builds.
         let mut texts: std::collections::BTreeMap<String, String> = Default::default();
         make(&files, &units, "test", &mut |path, bytes| {
@@ -326,13 +363,34 @@ mod tests {
         assert!(texts["units/ueb0101.fbi"].contains("	UpgradesTo=UEB0201;"), "{}", texts["units/ueb0101.fbi"]);
         assert!(!texts["units/ueb0201.fbi"].contains("UpgradesTo"));
         assert!(!texts["download/supcom_uef.tdf"].contains("UNITNAME=UEB0201;"), "on no menu");
+        // The commander's enhancements, each as the engine plays it; the shield left out.
+        let acu = ta_formats::tdf::parse(&texts["units/uel0001.fbi"]);
+        let list = acu.section("UNITINFO").and_then(|u| u.sections.iter().find(|s| s.name == "ENHANCEMENTS")).expect("its enhancements");
+        let names: Vec<&str> = list.sections.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["AdvancedEngineering", "HeavyAntiMatterCannon", "Missile"], "the shield and the removal left out");
+        let suite = &list.sections[0];
+        assert_eq!((suite.get("Name"), suite.get("Slot"), suite.get("BuildTime"), suite.get("WorkerTime")), (Some("Tech 2 Engineering Suite"), Some("LCH"), Some("9000"), Some("200")));
+        assert_eq!((suite.get("MaxDamage"), suite.get("HealRate"), suite.get("BuildOptions"), suite.get("Picture")), (Some("3000"), Some("20"), Some("UEB0104"), Some("uel0001_advancedengineering")));
+        assert!(paths.iter().any(|p| p == "unitpics/uel0001_advancedengineering.pcx"), "its picture");
+        let gun = &list.sections[1];
+        assert_eq!(gun.get("Weapon1"), Some("UEL0001_RIGHTZEPHYR_HEAVYANTIMATTERCANNON"));
+        assert_eq!(list.sections[2].get("Weapon2"), Some("UEL0001_MISSILE"), "the missile in the slot after the gun's");
+        let fbi = acu.section("UNITINFO").unwrap();
+        assert_eq!((fbi.get("Weapon1"), fbi.get("Weapon2")), (Some("UEL0001_RIGHTZEPHYR"), None), "a fresh commander without the missile");
+        let weapons = ta_formats::tdf::parse(&texts["weapons/supcom_uef.tdf"]);
+        let amplified = weapons.section("UEL0001_RIGHTZEPHYR_HEAVYANTIMATTERCANNON").expect("the gun as amplified");
+        assert_eq!(amplified.get("range"), Some("960"), "30 ogrids");
+        assert!(weapons.section("UEL0001_MISSILE").is_some());
+        // Its script shows the gun's barrel once amplified.
+        let menus = &texts["download/supcom_uef.tdf"];
+        assert!(!menus.contains("UNITNAME=UEB0104;"), "the station not on its menu: its suite's");
         assert!(paths.iter().any(|p| p == "units/ueb0201.fbi") && paths.iter().any(|p| p == "weapons/supcom_uef.tdf"), "{paths:?}");
         assert_eq!(run().2, first, "made twice, the same bytes");
         assert_eq!(first, EXPECTED, "the converter's bytes changed: if it was meant to, put the new hash here");
     }
 
     /// The hash of the test faction's mod (see the test above).
-    const EXPECTED: &str = "05bd5b2674b0390c0193f11c83e7fac5ccfd6ae6dde58161776736e86f5bff1a";
+    const EXPECTED: &str = "8daeab8613d5b572b939b2bf84cfed4798f198af7b033203c3620fdcdd94dbc6";
 
     /// A unit whose mesh does not read is left out, with its reason; the rest are made.
     #[test]

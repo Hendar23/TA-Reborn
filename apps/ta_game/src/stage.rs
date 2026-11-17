@@ -106,7 +106,9 @@
 //!                            #   `move` to a factory sends what it makes there), on, off (TA's
 //!                            #   on/off order: metal makers, radar, jammers, solar collectors),
 //!                            #   upgrade (into the next step of its type's `UpgradesTo`, or
-//!                            #   `type`; a label follows the unit it becomes)
+//!                            #   `type`; a label follows the unit it becomes), enhance (installs
+//!                            #   the enhancement `type`, by its id or name, what it needs first
+//!                            #   before it)
 //! at = [1900, 1200]          # where: world px, or rel = [dx, dz] from the middle of the map,
 //!                            #   or by = [dx, dz] from where each unit stands (move, fight,
 //!                            #   patrol, build, attack and dgun on the ground)
@@ -570,6 +572,8 @@ pub enum Action {
     Off,
     /// Upgraded in place (`Order::Upgrade`): into `type`, else its type's next step.
     Upgrade,
+    /// The enhancement `type` installed (`Order::Enhance`; its prerequisite first where missing).
+    Enhance,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1065,6 +1069,7 @@ impl Stage {
                 Action::Stop | Action::SelfDestruct | Action::On | Action::Off => !placed && o.target.is_none(),
                 Action::Produce => o.kind.is_some() && !placed && o.target.is_none(),
                 Action::Upgrade => !placed && o.target.is_none(),
+                Action::Enhance => o.kind.is_some() && !placed && o.target.is_none(),
             };
             if !ok {
                 bail!(
@@ -1078,6 +1083,7 @@ impl Stage {
                         Action::Stop | Action::SelfDestruct | Action::On | Action::Off => "takes no place or target",
                         Action::Produce => "needs a `type` (no place or target)",
                         Action::Upgrade => "takes no place or target (a `type` at most)",
+                        Action::Enhance => "needs a `type`, the enhancement (no place or target)",
                     }
                 );
             }
@@ -1191,14 +1197,16 @@ impl Stage {
         if self.missing != Missing::Skip {
             return Vec::new();
         }
-        let mut gone: Vec<String> = self.units.iter().map(|u| u.kind.clone()).chain(self.orders.iter().filter_map(|o| o.kind.clone())).filter(|k| !installed(k)).map(|k| k.to_ascii_uppercase()).collect();
+        // (An enhancement's `type` is no unit's.)
+        let kinds = self.orders.iter().filter(|o| o.action != Action::Enhance).filter_map(|o| o.kind.clone());
+        let mut gone: Vec<String> = self.units.iter().map(|u| u.kind.clone()).chain(kinds).filter(|k| !installed(k)).map(|k| k.to_ascii_uppercase()).collect();
         gone.sort();
         gone.dedup();
         if gone.is_empty() {
             return gone;
         }
         self.units.retain(|u| installed(&u.kind));
-        self.orders.retain(|o| o.kind.as_deref().is_none_or(&installed));
+        self.orders.retain(|o| o.action == Action::Enhance || o.kind.as_deref().is_none_or(&installed));
         // (The labels the builds of such types would have given went with them.)
         let known = self.known_names();
         let keep = |names: &mut Names| -> bool {
@@ -1243,6 +1251,7 @@ impl Stage {
         }
         for o in &self.orders {
             if let Some(kind) = &o.kind
+                && o.action != Action::Enhance
                 && assets.types.id(kind).is_none()
             {
                 bail!("order at {} s: no unit {kind} to build", o.t);
@@ -2132,6 +2141,26 @@ impl StageRun {
                 let to = o.kind.as_deref().and_then(|k| sim.types.id(k));
                 units.iter().filter_map(|&id| Some((id, Order::Upgrade(to.or_else(|| sim.unit(id).and_then(|u| sim.next_upgrade(u)))?)))).collect()
             }
+            Action::Enhance => {
+                let Some(name) = o.kind.as_deref() else { return };
+                let mut sends = Vec::new();
+                for &id in &units {
+                    let Some(u) = sim.unit(id) else { continue };
+                    let ty = sim.unit_type(u);
+                    let Some(index) = ty.def.enhancements.iter().position(|e| e.id.eq_ignore_ascii_case(name) || e.name.eq_ignore_ascii_case(name)) else {
+                        log::warn!("stage: {} has no enhancement {name}", ty.name);
+                        continue;
+                    };
+                    if let Some(p) = ty.enhancements[index].prerequisite.filter(|p| !u.enhancements.contains(p)) {
+                        sends.push((u.owner, id, Order::Enhance { index: p, remove: false }, o.queue));
+                    }
+                    sends.push((u.owner, id, Order::Enhance { index: index as u16, remove: false }, o.queue || sends.last().is_some_and(|s| s.1 == id)));
+                }
+                for (owner, id, order, queue) in sends {
+                    self.send(tick, Command::Order { player: owner, units: vec![id], order, queue }, sim);
+                }
+                Vec::new()
+            }
             Action::Produce => {
                 let Some(type_id) = o.kind.as_deref().and_then(|k| sim.types.id(k)) else { return };
                 let count = o.count.unwrap_or(1).min(i32::MAX as u32);
@@ -2692,6 +2721,9 @@ follow = "com"
             "[[order]]\nt = 1\nunits = \"a\"\ndo = \"build\"\nat = [1, 2]",
             "[[order]]\nt = 1\nunits = \"a\"\ndo = \"off\"\nat = [1, 2]",
             "[[order]]\nt = 1\nunits = \"a\"\ndo = \"on\"\ntarget = \"b\"",
+            "[[order]]\nt = 1\nunits = \"a\"\ndo = \"enhance\"",
+            "[[order]]\nt = 1\nunits = \"a\"\ndo = \"enhance\"\ntype = \"Suite\"\nat = [1, 2]",
+            "[[order]]\nt = 1\nunits = \"a\"\ndo = \"upgrade\"\nat = [1, 2]",
             "[[event]]\nt = 1\ndo = \"explosion\"",
             "[[event]]\nt = 1\ndo = \"kill\"",
             "[[event]]\nt = 1\ndo = \"nuke\"\nat = [1, 2]",
@@ -2709,6 +2741,18 @@ follow = "com"
         ] {
             assert!(Stage::parse(bad).is_err(), "{bad:?} was taken");
         }
+    }
+
+    /// Upgrades in place and enhancements: an upgrade into the next step (or `type`), an
+    /// enhancement by its id or name (its `type` names no unit: left alone by `missing = "skip"`).
+    #[test]
+    fn upgrades_and_enhances() {
+        let s = Stage::parse("[[order]]\nt = 1\nunits = \"lab\"\ndo = \"upgrade\"\n[[order]]\nt = 2\nunits = \"acu\"\ndo = \"enhance\"\ntype = \"AdvancedEngineering\"\nqueue = true").unwrap();
+        assert_eq!(s.orders.iter().map(|o| o.action).collect::<Vec<_>>(), [Action::Upgrade, Action::Enhance]);
+        assert_eq!(s.orders[1].kind.as_deref(), Some("AdvancedEngineering"));
+        let mut pruned = Stage::parse("missing = \"skip\"\n[[unit]]\ntype = \"ARMCOM\"\nat = [1, 2]\nlabel = \"acu\"\n[[order]]\nt = 2\nunits = \"acu\"\ndo = \"enhance\"\ntype = \"Suite\"").unwrap();
+        assert!(pruned.prune_missing(|k| k.eq_ignore_ascii_case("ARMCOM")).is_empty());
+        assert_eq!(pruned.orders.len(), 1);
     }
 
     /// TA's on/off order: switched off and on again, as the player switches them.

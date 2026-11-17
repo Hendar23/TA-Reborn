@@ -279,24 +279,27 @@ fn power(w: &WeaponBlueprint) -> f64 {
     fa_dps(w) + w.nuke.as_ref().map_or(0.0, |n| n.inner_damage)
 }
 
+/// Whether a weapon of `u`'s takes a slot: not its death or its kamikaze blast, a dummy, an
+/// anti-torpedo defence or a weapon of a point a shot (the Galactic Colossus's tractor claws); nor,
+/// unless `enhanced` (one its enhancements switch on, `factions::enhance`), one an enhancement
+/// switches on or its script switches off as it is made (a toggled second gun; the Overcharge, off
+/// until ordered, is TA's D-gun).
+pub fn usable(u: &UnitBlueprint, w: &WeaponBlueprint, enhanced: bool) -> bool {
+    let k = kind(w);
+    !w.category.eq_ignore_ascii_case("death")
+        && !w.category.eq_ignore_ascii_case("kamikaze")
+        && (enhanced || w.table.get_ci("EnabledByEnhancement").is_none())
+        && (enhanced || k == Kind::Overcharge || !u.birth.weapon_off(&w.label))
+        && !w.label.to_ascii_lowercase().contains("dummy")
+        && !w.label.to_ascii_lowercase().contains("antitorpedo")
+        && !w.projectile.as_deref().unwrap_or("").to_ascii_lowercase().contains("antitorpedo")
+        && !restricts_to(w, "TORPEDO")
+        && (w.damage > 1.0 || w.nuke.is_some() || k == Kind::AntiMissile || k == Kind::Overcharge)
+}
+
 /// The weapons that take its slots (eight at most), the death weapon and its kamikaze blast.
 pub fn weapons(u: &UnitBlueprint) -> Weapons<'_> {
-    let usable = |w: &&WeaponBlueprint| {
-        let k = kind(w);
-        !w.category.eq_ignore_ascii_case("death")
-            && !w.category.eq_ignore_ascii_case("kamikaze")
-            && w.table.get_ci("EnabledByEnhancement").is_none()
-            // (What its script switches off as it is made: a toggled second gun, a missile an
-            // enhancement switches on. The Overcharge, off until ordered, is TA's D-gun.)
-            && (k == Kind::Overcharge || !u.birth.weapon_off(&w.label))
-            && !w.label.to_ascii_lowercase().contains("dummy")
-            && !w.label.to_ascii_lowercase().contains("antitorpedo")
-            && !w.projectile.as_deref().unwrap_or("").to_ascii_lowercase().contains("antitorpedo")
-            && !restricts_to(w, "TORPEDO")
-            // (A weapon dealing a point a shot at most is no gun: the Galactic Colossus's tractor
-            // claws.)
-            && (w.damage > 1.0 || w.nuke.is_some() || k == Kind::AntiMissile || k == Kind::Overcharge)
-    };
+    let usable = |w: &&WeaponBlueprint| usable(u, w, false);
     let death = u.weapons.iter().find(|w| w.category.eq_ignore_ascii_case("death") || w.label.eq_ignore_ascii_case("DeathWeapon"));
     let kamikaze = u.weapons.iter().find(|w| w.category.eq_ignore_ascii_case("kamikaze") && w.damage > 0.0);
     let mut armed: Vec<&WeaponBlueprint> = u.weapons.iter().filter(usable).collect();
@@ -452,6 +455,11 @@ pub fn missile_price(u: &UnitBlueprint, w: &WeaponBlueprint) -> (f64, f64, f64) 
 /// A weapon's section: its range, reload, speed, blast and damage Forged Alliance's at TA's
 /// scale; how it flies and looks as TA's weapons of its kind.
 pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
+    weapon_section_named(u, w, &weapon_name(u, w))
+}
+
+/// A weapon's section under `name` (an enhancement's changed gun: `factions::enhance`).
+pub fn weapon_section_named(u: &UnitBlueprint, w: &WeaponBlueprint, name: &str) -> String {
     let k = kind(w);
     let px = |ogrids: f64| (ogrids * UNIT_SCALE).round() as i64;
     let mut s = String::new();
@@ -666,7 +674,7 @@ pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
         None if stock => cycle(w).per_shot,
         None => fire.damage,
     };
-    format!("[{}]\n\t{{\n{s}\t[DAMAGE]\n\t\t{{\n\t\tdefault={};\n\t\t}}\n\t}}\n", weapon_name(u, w), number(damage.max(1.0)))
+    format!("[{}]\n\t{{\n{s}\t[DAMAGE]\n\t\t{{\n\t\tdefault={};\n\t\t}}\n\t}}\n", name, number(damage.max(1.0)))
 }
 
 /// A unit's death: its death weapon's section (a blast where it falls), or none.
@@ -862,10 +870,12 @@ fn winged(u: &UnitBlueprint) -> bool {
 }
 
 /// What a unit's file says that its own blueprint does not tell alone: what it upgrades into in
-/// place (the unit its `General.UpgradesTo` names, of its faction and made).
+/// place (the unit its `General.UpgradesTo` names, of its faction and made), and its enhancements'
+/// section (`factions::enhance::section`).
 #[derive(Clone, Debug, Default)]
 pub struct Extra<'a> {
     pub upgrades_to: Option<&'a str>,
+    pub enhancements: String,
 }
 
 /// The unit's file.
@@ -1176,7 +1186,7 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
             }
         }
     }
-    format!("[UNITINFO]\n\t{{\n{f}\t}}\n")
+    format!("[UNITINFO]\n\t{{\n{f}{}\t}}\n", extra.enhancements)
 }
 
 /// TA's sound category for the unit's kind (TA's own sounds, `gamedata/sound.tdf`'s: Forged

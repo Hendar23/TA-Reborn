@@ -750,6 +750,8 @@ pub struct Art {
     sides: Option<Vec<(String, Arc<SideLayout>)>>,
     downloads: Option<Vec<MenuEntry>>,
     menus: HashMap<usize, Arc<Vec<MenuPage>>>,
+    /// Menus with what a unit's enhancements add (`own_menu`), by builder type and those.
+    own_menus: HashMap<(usize, Vec<usize>), Arc<Vec<MenuPage>>>,
     plates: HashMap<(u32, u32), Arc<Sprite>>,
 }
 
@@ -993,6 +995,41 @@ impl Art {
         }
         let pages = Arc::new(pages);
         self.menus.insert(builder, pages.clone());
+        pages
+    }
+
+    /// The pages of a unit's own build menu (`options`: its type's, with what its enhancements
+    /// add): its type's ([`Art::menu`]), the rest in the free places from its last page on, on
+    /// pages of `template`'s layout where those run out.
+    pub fn own_menu(&mut self, vfs: &Vfs, types: &ta_sim::UnitTypes, builder: usize, options: &[usize], template: &str) -> Arc<Vec<MenuPage>> {
+        let base = self.menu(vfs, types, builder, template);
+        let extra: Vec<usize> = options.iter().copied().filter(|o| !types.get(builder).build_options.contains(o)).collect();
+        if extra.is_empty() {
+            return base;
+        }
+        let key = (builder, extra);
+        if let Some(m) = self.own_menus.get(&key) {
+            return m.clone();
+        }
+        let mut pages: Vec<MenuPage> = (*base).clone();
+        let layout_shown = self.gui(vfs, template).map_or_else(|| vec![true; Grid::TA.places()], |g| g.shown_places());
+        let mut at = pages.len().saturating_sub(1);
+        for &id in &key.1 {
+            loop {
+                if pages.len() <= at {
+                    pages.push(MenuPage { gui: template.to_string(), slots: vec![None; layout_shown.len()], odd: Vec::new() });
+                }
+                let shown = self.gui(vfs, &pages[at].gui).map_or_else(|| layout_shown.clone(), |g| g.shown_places());
+                let page = &mut pages[at];
+                if let Some(slot) = (0..page.slots.len()).find(|&k| page.slots[k].is_none() && shown.get(k).copied().unwrap_or(true)) {
+                    page.slots[slot] = Some(id);
+                    break;
+                }
+                at += 1;
+            }
+        }
+        let pages = Arc::new(pages);
+        self.own_menus.insert(key, pages.clone());
         pages
     }
 }

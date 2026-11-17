@@ -180,7 +180,9 @@ pub const RECORD_VERSION: u32 = 46;
 /// with `UpgradesTo` upgrades in place (`Order::Upgrade`: built on itself with its build power and
 /// its helpers', paid and stalled as construction, a factory making nothing meanwhile; called off,
 /// its metal back), and the computer players upgrade their factories up the tiers and their
-/// extractors.
+/// extractors; a unit's `[ENHANCEMENTS]` are installed on it (`Order::Enhance`: one a slot, built and
+/// paid as an upgrade, its numbers, weapons, menu, sensors and cloak added to the unit's), and the
+/// computer players install engineering suites and gun upgrades on their commanders.
 pub const SIMULATION_VERSION: u32 = 104;
 /// Records shorter than one year of simulated time are supported. Shared with the
 /// launcher's metadata reader so impossible durations cannot start endless save catch-up.

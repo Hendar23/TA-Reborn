@@ -353,7 +353,7 @@ impl SkirmishAi {
         let now = s.now;
         let me = self.player;
         let rally = self.rally;
-        self.repairing.retain(|&(id, since)| now < since + 3 * MINUTE && sim.unit(id).is_some_and(|u| !u.dead && u.owner == me && u.health * 10 < sim.unit_type(u).max_health * 9));
+        self.repairing.retain(|&(id, since)| now < since + 3 * MINUTE && sim.unit(id).is_some_and(|u| !u.dead && u.owner == me && u.health * 10 < u.max_health(sim.unit_type(u)) * 9));
         // Ships go back to the naval post (off the shipyard), the rest to the rally point.
         let post = self.naval.as_ref().map(|n| n.post);
         let home_of = |u: &Unit| if self.info[u.type_id].kind == Locomotion::Naval { post } else { Some(rally) };
@@ -362,7 +362,7 @@ impl SkirmishAi {
         let repairing: FxHashSet<UnitId> = self.repairing.iter().map(|r| r.0).collect();
         for u in &s.army {
             let Some(home) = home_of(u) else { continue };
-            if self.info[u.type_id].kind == Locomotion::Air || u.health * 100 >= sim.unit_type(u).max_health * 35 || u.pos.within_xz(home, fx(500)) {
+            if self.info[u.type_id].kind == Locomotion::Air || u.health * 100 >= u.max_health(sim.unit_type(u)) * 35 || u.pos.within_xz(home, fx(500)) {
                 continue;
             }
             if carried.contains(&u.id) {
@@ -989,7 +989,7 @@ impl SkirmishAi {
         let me = self.player;
         let ct = sim.unit_type(c);
         // Fall back when badly hurt with enemies close.
-        if c.health * 2 < ct.max_health && s.now >= self.retreat_until && self.enemies_near(s, c.pos, 450) > 0 && !c.pos.within_xz(self.base, fx(150)) {
+        if c.health * 2 < c.max_health(ct) && s.now >= self.retreat_until && self.enemies_near(s, c.pos, 450) > 0 && !c.pos.within_xz(self.base, fx(150)) {
             self.retreat_until = s.now + 20 * SECOND;
             out.push(Command::Order { player: me, units: vec![c.id], order: Order::Move(self.base), queue: false });
             return;

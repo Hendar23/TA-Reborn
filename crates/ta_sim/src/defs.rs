@@ -98,6 +98,9 @@ pub struct Callins {
     pub target_cleared: bool,
     /// Builders: the piece the nano spray leaves from (factories alternate between two).
     pub query_nano_piece: bool,
+    /// Told an enhancement installed or removed (`SetEnhancement(index, on)`: TA Reborn's own, for
+    /// the parts it shows).
+    pub set_enhancement: bool,
     /// The names its script gives its weapons' functions, by slot and [`WeaponFunction`]: TA's
     /// (`AimPrimary`) or Spring's (`AimWeapon1`), whichever it defines (TA's where neither).
     pub weapon_functions: [[&'static str; 4]; MAX_WEAPONS],
@@ -120,6 +123,7 @@ impl Callins {
             set_sfx_occupy: has("SetSFXoccupy"),
             target_cleared: has("TargetCleared"),
             query_nano_piece: has("QueryNanoPiece"),
+            set_enhancement: has("SetEnhancement"),
         }
     }
 }
@@ -278,6 +282,83 @@ pub struct UnitType {
     /// The type it becomes when upgraded in place (`UnitDef::upgrades_to`: Supreme Commander's
     /// factories, extractors, radars), if one of that name is in the game (never itself).
     pub upgrades_to: Option<usize>,
+    /// What it may install on itself (`UnitDef::enhancements`, in their order), compiled.
+    pub enhancements: Vec<Enhancement>,
+    /// The slots they take, by name, in the order first named (an [`Enhancement::slot`] indexes it).
+    pub enhancement_slots: Vec<String>,
+}
+
+/// One of a unit type's enhancements (`ta_data::EnhancementDef`, its `def` beside it in the unit
+/// type's), compiled: its slot, prerequisite, price and work, and what it adds to the unit while
+/// installed (`crate::unit::Boost` sums them).
+#[derive(Clone, Debug)]
+pub struct Enhancement {
+    pub slot: u8,
+    /// The one it needs installed first (an index of the type's), if any it names is there.
+    pub prerequisite: Option<u16>,
+    pub cost_metal: Fx,
+    pub cost_energy: Fx,
+    /// The work it takes, as a unit's build work: `BuildTime` in worker-time ticks (raw 16.16).
+    pub build_work: u64,
+    pub max_health: Fx,
+    /// Hit points a second it mends.
+    pub heal_rate: Fx,
+    /// Build power added: work a tick (raw 16.16), and points a tick.
+    pub work_rate: u64,
+    pub worker_rate: Fx,
+    pub sight: Fx,
+    pub radar: Fx,
+    pub sonar: Fx,
+    /// Units added to its menu (and what its computer player may build).
+    pub build_options: Vec<usize>,
+    /// The weapon each slot fires while it is installed (none: as it was).
+    pub weapons: [Option<usize>; MAX_WEAPONS],
+    /// One of those weapons builds missiles to launch.
+    pub stockpile: bool,
+    /// It lets the unit cloak: energy a second cloaked, a second cloaked on the move, and how
+    /// near an enemy sees through it.
+    pub cloak: Option<(Fx, Fx, Fx)>,
+    pub stealth: bool,
+}
+
+/// A type's enhancements compiled (with the names of the slots they take).
+fn compile_enhancements(u: &UnitDef, data: &GameData) -> (Vec<Enhancement>, Vec<String>) {
+    let mut slots: Vec<String> = Vec::new();
+    let out = u
+        .enhancements
+        .iter()
+        .map(|e| {
+            let slot = match slots.iter().position(|s| s.eq_ignore_ascii_case(&e.slot)) {
+                Some(k) => k,
+                None => {
+                    slots.push(e.slot.clone());
+                    slots.len() - 1
+                }
+            };
+            let weapons: [Option<usize>; MAX_WEAPONS] = std::array::from_fn(|k| e.weapons[k].as_deref().and_then(|w| data.weapon_id(w)));
+            let build_time = Fx::from_f64(e.build_time.max(1.0));
+            Enhancement {
+                slot: slot.min(u8::MAX as usize) as u8,
+                prerequisite: (!e.prerequisite.is_empty()).then(|| u.enhancements.iter().position(|o| o.id.eq_ignore_ascii_case(&e.prerequisite))).flatten().map(|i| i as u16),
+                cost_metal: Fx::from_f64(e.build_cost_metal),
+                cost_energy: Fx::from_f64(e.build_cost_energy),
+                build_work: (build_time.0.max(1) as u64).saturating_mul(TICKS_PER_SECOND as u64),
+                max_health: Fx::from_f64(e.max_damage),
+                heal_rate: Fx::from_f64(e.heal_rate),
+                work_rate: Fx::from_f64(e.worker_time).0.max(0) as u64,
+                worker_rate: per_tick(e.worker_time),
+                sight: Fx::from_f64(e.sight_distance),
+                radar: Fx::from_f64(e.radar_distance),
+                sonar: Fx::from_f64(e.sonar_distance),
+                build_options: e.build_options.iter().filter_map(|b| data.unit_id(b)).collect(),
+                weapons,
+                stockpile: weapons.iter().flatten().any(|&w| data.weapons[w].stockpile),
+                cloak: e.cloaks().then(|| (Fx::from_f64(e.cloak_cost), Fx::from_f64(e.cloak_cost_moving.max(e.cloak_cost)), Fx::from_f64(e.min_cloak_distance.max(8.0)))),
+                stealth: e.stealth,
+            }
+        })
+        .collect();
+    (out, slots)
 }
 
 /// What a unit that mends itself regains every `HealTime` seconds (its [`UnitType::heal_ticks`]):
@@ -451,6 +532,7 @@ impl UnitTypes {
             // TA: The Final Frontier's `AAILAB`, have nothing on a menu.)
             let is_builder = can_build && (u.builder || !ai_build_options.is_empty());
             let is_factory = is_builder && locomotion == Locomotion::Static && !ai_build_options.is_empty();
+            let (enhancements, enhancement_slots) = compile_enhancements(u, data);
             types.push(UnitType {
                 id,
                 name: u.name.clone(),
@@ -514,6 +596,8 @@ impl UnitTypes {
                 // (`HealTime` seconds, in ticks: at least one; none, or none given, no mending.)
                 heal_ticks: if u.heal_time > 0.0 { ((u.heal_time * TICKS_PER_SECOND as f64).round() as u64).max(1) } else { 0 },
                 upgrades_to: data.unit_id(&u.upgrades_to).filter(|&to| to != id),
+                enhancements,
+                enhancement_slots,
                 def: u.clone(),
             });
         }
@@ -522,7 +606,8 @@ impl UnitTypes {
         let airbase_reach = types.iter().filter(|t| t.def.is_airbase).map(|t| t.radius + Fx::from_int(24)).max().unwrap_or(Fx::ZERO);
         let collision_reach = types.iter().map(UnitType::collision_radius).max().unwrap_or(Fx::ZERO);
         let target_reach = types.iter().map(|t| t.radius).max().unwrap_or(Fx::ZERO);
-        let heals = types.iter().any(|t| t.heal_ticks > 0);
+        // (A unit mends itself by its type's `HealTime`, or by an enhancement's `HealRate`.)
+        let heals = types.iter().any(|t| t.heal_ticks > 0 || t.enhancements.iter().any(|e| e.heal_rate > Fx::ZERO));
         UnitTypes { types, by_name, categories, airbase_reach, collision_reach, target_reach, heals }
     }
 
@@ -742,8 +827,9 @@ fn fieldable(types: &[UnitType], data: &GameData) -> Vec<bool> {
         }
         queue.extend(types[i].ai_build_options.iter().copied().filter(|&o| !seen[o]));
         // (And what it upgrades into in place: Supreme Commander's tech 2 and 3 factories,
-        // which nothing builds outright.)
+        // which nothing builds outright; and what its enhancements add to its menu.)
         queue.extend(types[i].upgrades_to.filter(|&o| !seen[o]));
+        queue.extend(types[i].enhancements.iter().flat_map(|e| e.build_options.iter().copied()).filter(|&o| !seen[o]));
     }
     seen
 }

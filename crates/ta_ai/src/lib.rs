@@ -27,6 +27,7 @@ mod ally;
 mod army;
 mod duty;
 mod economy;
+mod enhance;
 mod info;
 mod map;
 mod navy;
@@ -872,6 +873,7 @@ impl SkirmishAi {
         self.plan_navy(sim, &s);
         self.run_builders(sim, &s, &mut out);
         self.run_upgrades_in_place(sim, &s, &mut out);
+        self.run_enhancements(sim, &s, &mut out);
         self.run_factories(sim, &s, &mut out);
         self.run_scouting(sim, &s, &mut out);
         self.run_army(sim, &s, &mut out);

@@ -669,7 +669,7 @@ impl Chatter {
             SimEvent::UnderAttack { player, unit, .. } if *player == self.human => {
                 let Some(u) = sim.unit(*unit) else { return };
                 let t = sim.unit_type(u);
-                if !t.def.is_commander || u.health.to_f32() > t.max_health.to_f32() * 0.5 {
+                if !t.def.is_commander || u.health.to_f32() > u.max_health(t).to_f32() * 0.5 {
                     return;
                 }
                 if let Some(v) = u.killer.or(u.last_attacker).and_then(|k| sim.unit(k)).and_then(|k| voice_of(k.owner, &self.voices)).or_else(|| self.pick(sim, None))

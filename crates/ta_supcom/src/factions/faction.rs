@@ -179,13 +179,22 @@ pub fn wrecks(units: &[&UnitBlueprint]) -> String {
     s
 }
 
-/// The faction's weapons: each unit's in its slots, and its death's.
+/// The faction's weapons: each unit's in its slots, those its enhancements switch on and change,
+/// and its death's.
 pub fn weapons(units: &[&UnitBlueprint]) -> String {
     let mut s = String::new();
     for u in units {
         let w = units::weapons(u);
         for weapon in &w.slots {
             s.push_str(&units::weapon_section(u, weapon));
+        }
+        let extra = super::enhance::extra_weapons(u, &w);
+        for weapon in &extra {
+            s.push_str(&units::weapon_section(u, weapon));
+        }
+        let (_, variants) = super::enhance::enhancements(u, units, &w, &extra);
+        for (name, weapon, owner) in &variants.sections {
+            s.push_str(&units::weapon_section_named(owner, weapon, name));
         }
         if let Some(death) = w.death.and_then(|d| units::death_section(u, d)) {
             s.push_str(&death);
