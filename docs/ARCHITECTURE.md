@@ -578,6 +578,14 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   missions and look again a second later. Mended, or its deck lost or switched off, it takes
   off and carries on with its orders (`Sim::end_repair_trip`); a new order (not one queued)
   calls the trip off. Idle aircraft, and those only moved somewhere, don't go looking for a pad.
+* **Repair patrols** (`sim/repair_round.rs`): a builder whose `DefaultMissionType` is
+  `RepairPatrol` (TA: Escalation's repair tower upgrades, which its air repair pads make) mends,
+  whenever it has no orders, the nearest damaged unit of its side or an ally's whose footprint is
+  within its reach (finished, not carried, not being taken apart; aircraft too), looked for every
+  half second, an `Order::Repair` put first, standing where it is. A module its pad has taken on (a
+  unit carried by one that carries none, `Sim::module_at_work`) works where it rides: its orders and
+  its nano-lathe's piece go on, where a transport's passengers' don't. (The mission was read and
+  never acted on: the towers, which can neither move, patrol nor guard, stood idle.)
 * **Cheats** (`cheats.rs`): `Command::Cheat { player, cheat }`, taken only when
   `Sim::cheats_allowed` (the client sets it for games with at most one human, so replays of
   them agree). Standing cheats live in `Player::cheats`: double or half damage from the
@@ -1914,7 +1922,13 @@ only sense, the building being placed and a unit the pointer rests on: a radar's
 with a beam sweeping round, a sonar's with pings, a jammer's dashed rim, the unit's own sight thin and
 dashed beside them, each captioned, out of the view's reach beside the unit; the colours are the sight
 overlay's, and the minimap shows the same discs, a radar's whole coverage at a glance; a unit switched
-off dims them and says OFF; `--demo radar`, `TA_RADAR_UNIT`, `TA_RADAR_OFF`), the
+off dims them and says OFF; `--demo radar`, `TA_RADAR_UNIT`, `TA_RADAR_OFF`; the player's RANGES,
+`gameplay.range_overlays`, Alt+O, shows them all, the radar, sonar and jammers' alone or none; every
+rim and ring on the ground, a weapon's reach too, is laid by `hud/ground_line.rs`: only what is in
+front of the eye and in the view, a point every few screen points there, a few thousand at most
+however far it reaches: a rim of a fixed number of points, cut where the eye's plane met it, ran
+millions of points off the screen and was dashed all along, TA: Escalation's Shaper 245,000 dashes a
+frame, 13 ms), the
 acknowledgements of orders (`Game::order_marks`, pushed by
 `Game::mark_order` where orders are given by clicks) and the minimap (fog overlay, alert
 pings). The top bar's economy (`hud/economy.rs`) reads each store as a `Store` with its
@@ -2344,11 +2358,14 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   F4 (metal) and Alt+L (sight). N looks at the next of our units off the screen, in turn (of
   the selection, if any); Delete clears the messages and the chat (TA's F12, which here takes
   a screenshot). Dragging while placing a building lays
-  out a row of them. While a building is placed, the ground it will take shows as TA's grid of the
-  16 px cells it snaps to, under the ghost and each site of a row (`hud::footprint_on_ground`: lines
-  through every cell's corner over the ground or the sea, edged dark, in the ghost's colour from
-  `palette::allowed_rgba`/`blocked_rgba`; far out, the outline alone); Shift's squares round the
-  plans are its outline. T follows a unit, Alt+click pings.
+  out a row of them. While a building is placed, the cells of the ground it will take show as TA
+  showed them, under the ghost and each site of a row and nothing round them (`hud::footprint_cells`:
+  each 16 px cell a square on the ground or the sea, a little in from its edges and edged dark, green
+  where the building may have it and red where it may not, `palette::allowed_rgba`/`blocked_rgba`;
+  which cells will do is `Sim::placement_cells`, `World::cell_placement_error` for each, none where
+  the site will not do as a whole, a geothermal plant off a vent, and the game takes out those of
+  other constructors' plans: `Placement::cells`); Shift's squares round the plans are their outlines
+  (`hud::plan_on_ground`). T follows a unit, Alt+click pings.
 * **Models** are drawn with back faces culled, as TA did (its 3DO models are consistently
   wound; drawn double-sided, the undersides of ground plates and the insides of shells
   showed as black or wrongly textured faces). Shadows and ambient occlusion still use both
@@ -2789,8 +2806,12 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   (factories hollow, armed ones hexagons), land units circles (constructors hollow),
   aircraft triangles, ships and hovercraft diamonds, bigger for costlier units; unfinished
   buildings are paler, the selection wears white rings (the HUD's selection circles give
-  way to them). Clicks that miss every unit's sphere pick the icon under the pointer
-  (`Game::unit_at_screen`). The player can turn the icons off (STRATEGIC ICONS, Interface,
+  way to them). A click picks the unit whose sphere (round its model) the pointer's ray meets
+  first, unless a smaller finished unit the ray meets lies inside that one's sphere, resting on it or
+  in it (an aircraft landed on a carrier's deck, which the carrier's sphere takes in): the smaller,
+  the big one being picked anywhere else on it (`game::pick_hit`; not a unit being built in a
+  factory, whose click stays the factory's). Clicks that miss every unit's sphere pick the icon
+  under the pointer (`Game::unit_at_screen`). The player can turn the icons off (STRATEGIC ICONS, Interface,
   `gameplay.strategic_icons`): `strategic::shown` is then nothing, and what the icons stood in
   for comes back at every height (the selection's bars and circles, the markers over the units),
   while what follows the zoom alone (the pick of a unit a pixel wide, the build times' fade) keeps
@@ -3512,7 +3533,9 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   units, kills, what they build) in place of production. Its key
   (`companion`, Alt+C) or the pause menu opens and closes it (`Game::companion_toggle`); the
   `gameplay.companion` setting opens it with every battle when there is a second display, and
-  otherwise a battle with one says once that it can be had. Captures: `TA_COMPANION=1` (or
+  otherwise a battle with one says once that it can be had; changed in the options, it is followed
+  at once (`companion::follows_setting`: off closes it however it was opened, on opens it in a
+  battle as the battle's start would). Captures: `TA_COMPANION=1` (or
   `--open companion`, a battle `TA_RESULT_MINUTES` in) open it hidden and
   `TA_COMPANION_SIZE` large (1920x1080), and `TA_COMPANION_SHOT=<file>` at
   `TA_COMPANION_AT=<frame>` saves its picture (drawn again offscreen: a window's surface

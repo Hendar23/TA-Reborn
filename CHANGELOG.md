@@ -39,6 +39,11 @@
   with more than three weapons now fire them all: the Fatboy, the CZAR, the Monkeylord and the
   battleships among them (make the factions again in the launcher: it offers UPDATE). See
   [docs/MODDING.md](docs/MODDING.md#units-weapons-and-features).
+- **RANGES** (Interface, in the game's options and the launcher's settings) chooses what the
+  selected units, the building being placed and the unit under the pointer show of their reach,
+  on the battlefield and the minimap: everything (weapons, sight, radar, sonar, jammers and
+  missile defence), their radar, sonar and jammers only, or nothing. Alt+O steps through them in
+  battle (the key can be changed under Controls).
 - The launcher's Settings have **ENABLE EXPERIMENTAL FEATURES** (under LAUNCHER, off by default).
   Features still being tested ship with it off, so testers can try them before they become a
   normal part of the game. With it on, they show in the launcher, each with an EXPERIMENTAL tag.
@@ -52,11 +57,13 @@
   second, as the classic interface's unit bar does: a metal extractor the metal it mines, a power
   plant its energy, the Commander both, a factory at work what it spends; several selected, all of
   them together. A factory with a queue or a constructor with plans shows them under its queue.
-- While a building is being placed, the ground it will take shows as TA's grid of the cells it
-  snaps to, under its ghost and under each site of a row or block being dragged out: green where it
-  can go and red where it cannot (blue and orange with the colour-blind marks), in both interfaces
-  and both cameras, laid over the ground and the sea, and gone once the building is put down. The
-  squares round the plans that Shift shows follow the ground the same way.
+- While a building is being placed, the cells of the ground it will take show as in TA, under its
+  ghost and under each site of a row or block being dragged out: each cell green where the building
+  can stand and red where it cannot (a tree, a rock, another building, water, a slope too steep),
+  blue and orange with the colour-blind marks, in both interfaces and both cameras, laid over the
+  ground and the sea, and gone once the building is put down. No grid is drawn over the cells or
+  the ground round them. The squares round the plans that Shift shows follow the ground the same
+  way.
 - Over the minimap the cursor says what an order given there would do: over an enemy's mark that
   the selection would attack with a right-click, or that the order waiting for its click would aim
   at, it turns into the attack sight (the air-strike sight for bombers), as over the battlefield,
@@ -64,6 +71,21 @@
   repair or load.
 
 ### Fixed
+- Selecting a unit that reaches far, such as TA: Escalation's Shaper (radar 13,440, jammer
+  2,688) or a mod's long-range radar, slowed the game down, froze it for a while or crashed it,
+  worse the closer the camera: its rims were laid out far beyond the screen and dashed all along,
+  up to hundreds of thousands of dashes a frame. Only the part of a rim in view is drawn
+  now, whatever its reach (the Shaper's ranges from 13 ms of a frame to 0.1 ms), and the rims follow
+  the ground more closely.
+- In TA: Escalation, construction planes landed on a flying carrier (or any unit resting on a
+  bigger one) were hard to click: the carrier took the click. A click on the plane now selects
+  the plane; anywhere else on the carrier, the carrier.
+- TA: Escalation's repair tower upgrades, which its air repair pads make ("Automatically repairs
+  all nearby units"), did nothing. They now mend the damaged units of their side and its allies in
+  their reach by themselves, the nearest first, aircraft too, whether their pad took them on or
+  they stand beside it.
+- Turning COMPANION SCREEN off in the options did nothing while the companion screen was open: it
+  now closes at once, and turning it back on in a battle opens it again on your second display.
 - The Supreme Commander factions play as Forged Alliance's (make the factions again in the
   launcher: it offers UPDATE). Their tech 2 and 3 factories, which the game makes only by
   upgrading the one below, are on their engineers' menus, so every unit can now be built, and the

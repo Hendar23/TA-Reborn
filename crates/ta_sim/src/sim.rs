@@ -18,6 +18,7 @@ use crate::vision::{self, Seen, Sensor, Vision};
 use crate::world::{CELL, MoveSpec, Occupant, Region, World};
 
 mod air;
+mod repair_round;
 
 /// Base resource storage every player has regardless of buildings (TA default).
 const BASE_STORAGE: i64 = 1000;
@@ -2315,8 +2316,8 @@ impl Sim {
         let Some(u) = self.unit(id) else { return };
         let t = types.get(u.type_id);
         // Passengers ride along; paralyzed units are frozen: no orders, movement, weapons or
-        // animation.
-        if u.carried_by.is_some() || self.tick < u.paralyzed_until {
+        // animation. (A module that repairs round itself works on the building that took it on.)
+        if u.carried_by.is_some() && !self.module_at_work(u, t) || self.tick < u.paralyzed_until {
             return;
         }
         if u.is_complete() && !u.dead && t.def.kamikaze && (self.tick + id.slot as u64).is_multiple_of(3) {
@@ -2358,6 +2359,10 @@ impl Sim {
         let t = types.get(u.type_id);
         if u.carried_by.is_some() {
             self.follow_transport(id);
+            // (A module at work on its building aims its nano-lathe from its own piece.)
+            if self.unit(id).is_some_and(|u| self.module_at_work(u, t)) {
+                self.feed_script(id, t);
+            }
             return;
         }
         if t.locomotion == Locomotion::Air {
@@ -2585,6 +2590,9 @@ impl Sim {
 
     fn update_orders(&mut self, id: UnitId, t: &UnitType) {
         let Some(order) = self.unit(id).and_then(|u| u.orders.front().cloned()) else {
+            if Self::repairs_round(t) {
+                self.repair_round(id, t);
+            }
             self.idle_response(id, t);
             return;
         };
@@ -2921,8 +2929,11 @@ impl Sim {
     /// Records an unreachable work target; explicit orders report the failure, automatic
     /// work picked up while patrolling or guarding fails silently.
     fn give_up(&mut self, id: UnitId, key: u64) {
+        // (A repair round's own work, its only order, is as automatic: a unit walking out of a
+        // repair tower's reach is no refusal.)
+        let round = self.unit(id).is_some_and(|u| u.orders.len() == 1 && Self::repairs_round(self.types.get(u.type_id)));
         let Some(u) = self.unit_mut(id) else { return };
-        let automatic = matches!(u.orders.get(1), Some(Order::Patrol(_) | Order::Guard(_)));
+        let automatic = round || matches!(u.orders.get(1), Some(Order::Patrol(_) | Order::Guard(_)));
         if u.unreachable.len() >= 8 {
             u.unreachable.remove(0);
         }
@@ -5658,6 +5669,23 @@ impl Sim {
         let anchor = World::pos_to_anchor(pos, t.footprint);
         let origin = World::footprint_origin(anchor, t.footprint);
         self.world.placement_error(t, self.move_specs[type_id].max_slope.max(t.def.max_slope as i32), origin)
+    }
+
+    /// Which cells of the footprint of a building of `type_id` centred at `pos` it may have under
+    /// it, row by row from its north-west corner (a building being placed shows them, green and
+    /// red): those taken, off the map, too steep, too deep or dry where it needs water may not;
+    /// where the site will not do as a whole (a geothermal plant off a vent, an extractor off
+    /// metal), none may.
+    pub fn placement_cells(&self, type_id: usize, pos: FxVec3) -> Vec<bool> {
+        let t = self.types.get(type_id);
+        let origin = World::footprint_origin(World::pos_to_anchor(pos, t.footprint), t.footprint);
+        let slope = self.move_specs[type_id].max_slope.max(t.def.max_slope as i32);
+        let (fx, fz) = (t.footprint.0 as i32, t.footprint.1 as i32);
+        let mut cells: Vec<bool> = (0..fz).flat_map(|dz| (0..fx).map(move |dx| (dx, dz))).map(|(dx, dz)| self.world.cell_placement_error(t, slope, origin.0 + dx, origin.1 + dz).is_none()).collect();
+        if cells.iter().all(|&ok| ok) && self.world.placement_error(t, slope, origin).is_some() {
+            cells.fill(false);
+        }
+        cells
     }
 
     /// Sets a unit's experience (scenario set-up: veterans brought into a battle).

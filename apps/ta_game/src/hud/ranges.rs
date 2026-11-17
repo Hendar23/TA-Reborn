@@ -88,6 +88,23 @@ pub(crate) fn display_ranges(t: &ta_sim::UnitType, weapons: &ta_sim::WeaponTypes
     ranges
 }
 
+/// Whether the player's choice of ranges (`gameplay.range_overlays`, Alt+O) shows ranges of this
+/// kind: all of them, the sensors' (radar, sonar, jammers) only, or none.
+pub(crate) fn shown(mode: ta_config::RangeOverlays, reach: Reach) -> bool {
+    match mode {
+        ta_config::RangeOverlays::All => true,
+        ta_config::RangeOverlays::Sensors => matches!(reach, Reach::Radar | Reach::Sonar | Reach::RadarJam | Reach::SonarJam),
+        ta_config::RangeOverlays::Off => false,
+    }
+}
+
+/// The ranges of a unit type the player's choice shows (see [`shown`] and [`display_ranges`]).
+pub(crate) fn shown_ranges(t: &ta_sim::UnitType, weapons: &ta_sim::WeaponTypes, mode: ta_config::RangeOverlays) -> Vec<Range> {
+    let mut ranges = display_ranges(t, weapons);
+    ranges.retain(|r| shown(mode, r.reach));
+    ranges
+}
+
 /// Whether selecting a unit of this type shows its sensors: a building, or one that does not
 /// fight (a radar vehicle, a jammer). Not the Commander and other fighters that happen to sense a
 /// little (pointing at one of those shows them).
@@ -109,6 +126,10 @@ pub(crate) struct Ranged {
 /// when it has sensors (the Commander's, an enemy's tower: how far they reach). The Commander
 /// and the fighters that sense a little show nothing selected: they are selected all the time.
 pub(crate) fn collect(game: &Game, alpha: f32, hovered: Option<UnitId>) -> Vec<Ranged> {
+    // (The player chose to see none.)
+    if game.range_overlays == ta_config::RangeOverlays::Off {
+        return Vec::new();
+    }
     let mut ranged: Vec<Ranged> = game
         .placement
         .as_ref()
@@ -133,7 +154,7 @@ pub(crate) fn collect(game: &Game, alpha: f32, hovered: Option<UnitId>) -> Vec<R
     if let Some(u) = hovered
         .and_then(|h| game.sim.unit(h))
         .filter(|u| u.is_complete() && hover_adds(&shown, u.id) && game.seen(u) == ta_sim::Seen::Visible)
-        && !display_ranges(game.sim.unit_type(u), &game.sim.weapon_types).is_empty()
+        && !shown_ranges(game.sim.unit_type(u), &game.sim.weapon_types, game.range_overlays).is_empty()
     {
         ranged.push(Ranged { type_id: u.type_id, at: at_of(u), weapons: false, power: power_of(u) });
     }
@@ -151,7 +172,7 @@ fn hover_adds(shown: &[UnitId], hovered: UnitId) -> bool {
 /// it is, where a caption may stand.
 pub(super) struct Canvas<'a> {
     pub painter: &'a Painter,
-    pub project: &'a dyn Fn(Vec3) -> Option<Pos2>,
+    pub lens: super::ground_line::Lens,
     pub ground: &'a dyn Fn(f32, f32) -> f32,
     pub free: Rect,
     /// The interface clock (seconds), and whether motion is held still (nothing moves).
@@ -176,33 +197,35 @@ pub(crate) fn tint(c: Color32, a: f32) -> Color32 {
 }
 
 /// Draws `range` round `centre`: the ground it covers, shaded up to its rim, the rim, what moves in
-/// it, and its caption at the rim's upper right.
+/// it, and its caption at the rim's upper right. Whatever its reach, only what is in view is made
+/// into points ([`super::ground_line`]): a few thousand at most.
 pub(super) fn draw(c: &Canvas, centre: Vec3, range: Range, power: Power) {
+    use super::ground_line;
     let colour = range.reach.colour();
     // (A unit that is off still sees: only what it senses is dimmed.)
     let off = power == Power::Off && range.reach != Reach::Sight;
     let dim = if off { 0.4 } else { 1.0 };
     let at = |a: f32, r: f32| {
         let (x, z) = (centre.x + a.cos() * r, centre.z + a.sin() * r);
-        (c.project)(Vec3::new(x, (c.ground)(x, z) + 2.0, z))
+        c.lens.project(Vec3::new(x, (c.ground)(x, z) + 2.0, z))
     };
     let Some(middle) = at(0.0, 0.0) else { return };
-    // Sides by how big it is on the screen (one every few points).
-    let across = [0.0f32, std::f32::consts::FRAC_PI_2].iter().filter_map(|&a| Some(at(a, range.radius)?.distance(middle))).fold(0.0f32, f32::max);
-    let sides = (std::f32::consts::TAU * across / 5.0).clamp(64.0, 360.0) as usize;
-    let rim: Vec<Option<Pos2>> = (0..=sides).map(|k| at(k as f32 / sides as f32 * std::f32::consts::TAU, range.radius)).collect();
-    // The ground it covers: clear in the middle, shaded towards the rim.
+    let rim = ground_line::circle(&c.lens, c.ground, centre, range.radius, 2.0);
+    // The ground it covers: clear in the middle, shaded towards the rim (a fan of triangles out to
+    // the rim, those reaching behind the eye left out).
     if range.reach != Reach::Sight {
+        const FAN: usize = 128;
+        let edge = ground_line::fan(&c.lens, c.ground, centre, range.radius, 2.0, FAN);
         let mut mesh = Mesh::default();
         mesh.colored_vertex(middle, tint(colour, 0.12 * dim));
-        for p in &rim {
+        for p in &edge {
             match p {
                 Some(p) => mesh.colored_vertex(*p, tint(colour, 0.28 * dim)),
                 None => mesh.colored_vertex(middle, Color32::TRANSPARENT),
             }
         }
-        for k in 1..=sides as u32 {
-            if rim[k as usize - 1].is_some() && rim[k as usize].is_some() {
+        for k in 1..=FAN as u32 {
+            if edge[k as usize - 1].is_some() && edge[k as usize].is_some() {
                 mesh.add_triangle(0, k, k + 1);
             }
         }
@@ -244,8 +267,8 @@ pub(super) fn draw(c: &Canvas, centre: Vec3, range: Range, power: Power) {
             Reach::Sonar => {
                 for k in 0..3 {
                     let phase = (c.clock * 0.3 + k as f32 / 3.0) % 1.0;
-                    let ring: Vec<Pos2> = (0..=sides / 2).filter_map(|j| at(j as f32 / (sides / 2) as f32 * std::f32::consts::TAU, range.radius * phase)).collect();
-                    c.painter.add(Shape::line(ring, Stroke::new(1.6, tint(colour, 0.55 * (1.0 - phase)))));
+                    let ring = ground_line::circle(&c.lens, c.ground, centre, range.radius * phase, 2.0);
+                    ground_line::stroke(c.painter, &ring, Stroke::new(1.6, tint(colour, 0.55 * (1.0 - phase))));
                 }
             }
             _ => {}
@@ -253,21 +276,20 @@ pub(super) fn draw(c: &Canvas, centre: Vec3, range: Range, power: Power) {
     }
     // The rim, edged dark so that it reads on pale ground: sight thin and dashed, a jammer's dashed,
     // the sensors' solid.
-    let points: Vec<Pos2> = rim.iter().flatten().copied().collect();
     let sight = range.reach == Reach::Sight;
-    c.painter.add(Shape::line(points.clone(), Stroke::new(if sight { 2.6 } else { 3.6 }, Color32::from_black_alpha((70.0 * dim) as u8))));
+    ground_line::stroke(c.painter, &rim, Stroke::new(if sight { 2.6 } else { 3.6 }, Color32::from_black_alpha((70.0 * dim) as u8)));
     let stroke = Stroke::new(if sight { 1.2 } else { 2.0 }, tint(colour, 0.95 * dim));
     if matches!(range.reach, Reach::Sight | Reach::RadarJam | Reach::SonarJam) {
         let (dash, gap) = if sight { (4.0, 5.0) } else { (10.0, 6.0) };
         let crawl = if c.still { 0.0 } else { (c.clock * 14.0) % (dash + gap) };
-        c.painter.extend(Shape::dashed_line_with_offset(&points, stroke, &[dash], &[gap], crawl));
+        ground_line::dashes(c.painter, &rim, stroke, dash, gap, crawl);
     } else {
-        c.painter.add(Shape::line(points, stroke));
+        ground_line::stroke(c.painter, &rim, stroke);
     }
     // Its caption at the rim's upper right, or, where the rim is out of the view (a radar reaches
     // further than the screen shows), beside the unit; and OFF where it covers nothing.
     let room = c.free.shrink(30.0);
-    let on_screen = rim.iter().flatten().copied().filter(|p| room.contains(*p));
+    let on_screen = rim.iter().flat_map(|run| run.points.iter().copied()).filter(|p| room.contains(*p));
     let anchor = on_screen.max_by(|a, b| (a.x - a.y).total_cmp(&(b.x - b.y))).unwrap_or(middle + EVec2::new(0.0, -34.0));
     let mut text = range.reach.caption(range.radius);
     if off {
@@ -367,6 +389,25 @@ mod tests {
         assert!(!hover_adds(&shown, id(3)), "a selected radar tower shows them already");
         assert!(hover_adds(&shown, id(7)), "the selected Commander, not among those shown, shows them pointed at");
         assert!(hover_adds(&[], id(7)));
+    }
+
+    /// The player's choice: everything, the sensors alone (no sight, weapons nor missile
+    /// defence), or nothing.
+    #[test]
+    fn the_choice_of_ranges_shows_all_sensors_or_none() {
+        use ta_config::RangeOverlays as R;
+        let all = [Reach::Sight, Reach::Radar, Reach::Sonar, Reach::RadarJam, Reach::SonarJam, Reach::Interceptor];
+        assert!(all.iter().all(|&r| shown(R::All, r)));
+        assert!(!all.iter().any(|&r| shown(R::Off, r)));
+        let sensors: Vec<Reach> = all.iter().copied().filter(|&r| shown(R::Sensors, r)).collect();
+        assert_eq!(sensors, [Reach::Radar, Reach::Sonar, Reach::RadarJam, Reach::SonarJam]);
+        let yard = yard();
+        let tower = yard.by_name("TOWER").unwrap();
+        let weapons = ta_sim::WeaponTypes::compile(&ta_data::GameData::load(&ta_vfs::Vfs::new()));
+        let reaches = |mode| shown_ranges(tower, &weapons, mode).into_iter().map(|r| r.reach).collect::<Vec<_>>();
+        assert_eq!(reaches(R::All), [Reach::Radar, Reach::Sight]);
+        assert_eq!(reaches(R::Sensors), [Reach::Radar]);
+        assert!(reaches(R::Off).is_empty());
     }
 
     #[test]

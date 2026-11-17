@@ -5800,7 +5800,20 @@ impl State {
             self.game.message(ta_ui::i18n::t(say));
             self.save_settings();
         }
+        // (Alt+O steps through the ranges shown, and keeps the choice.)
+        if self.screen == Screen::Playing && !self.egui.ctx.egui_wants_keyboard_input() && self.game.keys.pressed(&self.input, "range_overlays") {
+            use ta_config::RangeOverlays as R;
+            let (next, say) = match self.settings.gameplay.range_overlays {
+                R::All => (R::Sensors, ta_ui::i18n::n("Ranges: radar, sonar and jammers only")),
+                R::Sensors => (R::Off, ta_ui::i18n::n("Ranges: none")),
+                R::Off => (R::All, ta_ui::i18n::n("Ranges: weapons, sight and sensors")),
+            };
+            self.settings.gameplay.range_overlays = next;
+            self.game.message(ta_ui::i18n::t(say));
+            self.save_settings();
+        }
         self.game.health_bars = self.settings.gameplay.health_bars;
+        self.game.range_overlays = self.settings.gameplay.range_overlays;
         self.game.ta_cursors = self.settings.gameplay.ta_cursors;
         self.game.team_markers = self.settings.gameplay.team_markers;
         // (A benchmark's scenes have their icons or not as each was staged, whatever the player's.)
@@ -6305,6 +6318,10 @@ impl State {
             _ => {}
         }
         self.apply_settings(&before, changes);
+        // The companion screen's setting changed in the options: it follows at once.
+        if before.gameplay.companion != self.settings.gameplay.companion {
+            self.companion_setting(event_loop);
+        }
         if let Some(action) = film_action {
             self.film_page_action(action);
         }
@@ -7777,6 +7794,27 @@ impl State {
                 self.game.trouble(ta_ui::i18n::tf("The companion screen could not be opened: {error}", &[("error", &format!("{e:#}"))]));
             }
         }
+    }
+
+    /// The companion screen's setting was changed (the options): turned off, an open companion
+    /// screen closes at once, however it was opened; turned on in a battle, it opens as a battle's
+    /// start opens it, on a second display (captures: `TA_COMPANION=1`).
+    fn companion_setting(&mut self, event_loop: &ActiveEventLoop) {
+        let capture = std::env::var("TA_COMPANION").is_ok_and(|v| v == "1") || self.companion_capture;
+        let second = || !self.exit_after_screenshot && crate::companion::other_display(event_loop, &self.window).is_some();
+        let battle = self.screen == Screen::Playing && self.benchmark.is_none();
+        match crate::companion::follows_setting(self.settings.gameplay.companion, self.companion.is_some(), battle, || capture || second()) {
+            Some(true) => {
+                self.toggle_companion(event_loop);
+                log::info!("companion screen opened (its setting turned on)");
+            }
+            Some(false) => {
+                self.companion = None;
+                log::info!("companion screen closed (its setting turned off)");
+            }
+            None => {}
+        }
+        self.game.companion_open = self.companion.is_some();
     }
 
     /// A battle begins: the companion screen opens on a second display when the settings say
