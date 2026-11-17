@@ -4,7 +4,7 @@
 //! and the starts kept clear. Then the ways: where the game's land units could drive from one
 //! start to another, a TA tank can too ([`connect`]).
 
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use ta_formats::tnt::FEATURE_NONE;
 
@@ -147,17 +147,39 @@ impl Grid<'_> {
         }))
     }
 
-    /// Makes the cells `fp` square at (x, z) buildable ([`Grid::buildable`]), moving their corners'
-    /// heights as little as that takes: on land each corner kept within 5 of their mean (a slope of
-    /// 10 at most) and out of the water, the cells' cliff marks taken away; under water each
-    /// corner made deep enough.
-    fn make_buildable(&mut self, x: i32, z: i32, fp: i32, wet: bool) {
+    /// Makes the deposit's cells ([`Pad`]) buildable ([`Grid::buildable`]), moving their corners'
+    /// heights as little as that takes, the deposits placed before it (`placed`) left buildable:
+    /// - On land, each corner is kept within 5 of their mean (a slope of 10 at most) and out of the
+    ///   water, and the cells' cliff marks are taken away. The deposits on land that share corners
+    ///   with it, and those that share corners with them, are levelled with it as one: levelled
+    ///   alone, it would tilt their cells along the corners they share.
+    /// - Under water, each corner is made deep enough.
+    /// - Either way, the corners a deposit of the other kind stands on are left as they are: one
+    ///   under water is never raised, and one on land never sunk, by levelling its neighbour.
+    fn make_buildable(&mut self, pad: Pad, placed: &[Pad]) {
         let (w, h) = (self.w as i32, self.h as i32);
-        let corners: Vec<usize> = (z..=z + fp).flat_map(|cz| (x..=x + fp).map(move |cx| (cx, cz))).filter(|&(cx, cz)| cx < w && cz < h).map(|(cx, cz)| cz as usize * self.w + cx as usize).collect();
+        let index = |(cx, cz): (i32, i32)| cz as usize * self.w + cx as usize;
         let sea = self.land.sea;
-        if wet {
+        // The deposits levelled together: under water this one alone (sinking a corner leaves the
+        // deposits under water around it buildable); on land, it and the others it touches.
+        let mut group = vec![pad];
+        if !pad.wet {
+            let mut next = 0;
+            while next < group.len() {
+                let reached = group[next];
+                for p in placed {
+                    if !p.wet && p.touches(&reached) && !group.contains(p) {
+                        group.push(*p);
+                    }
+                }
+                next += 1;
+            }
+        }
+        let corners: BTreeSet<usize> = group.iter().flat_map(|p| p.corners(w, h)).map(index).collect();
+        let kept: BTreeSet<usize> = placed.iter().filter(|p| p.wet != pad.wet && group.iter().any(|g| p.touches(g))).flat_map(|p| p.corners(w, h)).map(index).collect();
+        if pad.wet {
             let floor = (sea - EXTRACTOR_DEPTH).max(0);
-            for &i in &corners {
+            for &i in corners.difference(&kept) {
                 self.land.heights[i] = (self.land.heights[i] as i32).min(floor) as u8;
             }
             return;
@@ -166,15 +188,40 @@ impl Grid<'_> {
         // (The mean, rounded half up: whole numbers alone.)
         let n = corners.len().max(1) as i64;
         let mean = ((2 * sum + n) / (2 * n)) as i32;
-        for &i in &corners {
+        for &i in corners.difference(&kept) {
             let v = (self.land.heights[i] as i32).clamp(mean - EXTRACTOR_SLOPE / 2, mean + EXTRACTOR_SLOPE / 2).max(sea);
             self.land.heights[i] = v.clamp(0, 255) as u8;
         }
-        for cz in z..z + fp {
-            for cx in x..x + fp {
-                self.land.cliff[cz as usize * self.w + cx as usize] = false;
+        for p in &group {
+            for cz in p.z..p.z + p.fp {
+                for cx in p.x..p.x + p.fp {
+                    self.land.cliff[cz as usize * self.w + cx as usize] = false;
+                }
             }
         }
+    }
+}
+
+/// A deposit's square as placed: its first cell, its side (cells), and whether it is under water.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Pad {
+    x: i32,
+    z: i32,
+    fp: i32,
+    wet: bool,
+}
+
+impl Pad {
+    /// Whether the two squares share a corner, a height both stand on: side by side, or corner to
+    /// corner.
+    fn touches(&self, other: &Pad) -> bool {
+        self.x <= other.x + other.fp && other.x <= self.x + self.fp && self.z <= other.z + other.fp && other.z <= self.z + self.fp
+    }
+
+    /// The corners of its cells (the heights they stand on) within a map `w` x `h`.
+    fn corners(&self, w: i32, h: i32) -> impl Iterator<Item = (i32, i32)> {
+        let Pad { x, z, fp, .. } = *self;
+        (z..=z + fp).flat_map(move |cz| (x..=x + fp).map(move |cx| (cx, cz))).filter(move |&(cx, cz)| cx < w && cz < h)
     }
 }
 
@@ -228,6 +275,7 @@ pub fn place(map: &Map, land: &mut Land, kit: Kit, templates: &Templates, files:
         s.sort_by_key(|&(x, z)| (x * x + z * z, z, x));
         s
     };
+    let mut pads: Vec<Pad> = Vec::new();
     for p in &map.mass {
         let (cx, cz) = cell_of(*p);
         let wet = g.depth(cx, cz) > SHALLOW;
@@ -237,12 +285,13 @@ pub fn place(map: &Map, land: &mut Land, kit: Kit, templates: &Templates, files:
         }
         let fp = templates.footprint(name) as i32;
         if let Some(&(dx, dz)) = spiral.iter().find(|&&(dx, dz)| g.fits(cx - fp / 2 + dx, cz - fp / 2 + dz, fp, true)) {
-            let (x, z) = (cx - fp / 2 + dx, cz - fp / 2 + dz);
-            if !g.buildable(x, z, fp, wet) {
-                g.make_buildable(x, z, fp, wet);
+            let pad = Pad { x: cx - fp / 2 + dx, z: cz - fp / 2 + dz, fp, wet };
+            if !g.buildable(pad.x, pad.z, fp, wet) {
+                g.make_buildable(pad, &pads);
                 counts.levelled += 1;
             }
-            g.put(name, x, z, fp, false);
+            g.put(name, pad.x, pad.z, fp, false);
+            pads.push(pad);
             counts.deposits += 1;
         }
     }
@@ -760,5 +809,49 @@ mod tests {
         }
         // The flat one's ground as it was.
         assert!((19..22).all(|z| (55..58).all(|x| land.heights[z * 64 + x] == before[z * 64 + x])));
+    }
+
+    /// Two deposits side by side share the corners along their common side: levelling the second
+    /// (its ground stepping up 60 past that side) levels the first with it, so both still take an
+    /// extractor; levelled alone, it raised their common corners to 140 and tilted the first's
+    /// cells by 40.
+    #[test]
+    fn levelling_a_deposit_leaves_its_neighbours_buildable() {
+        let scmap = crate::convert::land::tests::map(64, 64, |_, _| 10 * 128, None);
+        let m = Map { scmap, starts: vec![[4.0, 4.0], [60.0, 60.0]], mass: vec![[16.5, 16.5], [19.5, 16.5]], ..Default::default() };
+        let files = Files::of(Vec::new(), Vec::new());
+        let mut land = land::build(&m.scmap, Frame::of([0.0, 0.0, 64.0, 64.0]));
+        // The first deposit's ground flat at 100, the second's corners past their common side at 160.
+        for z in 0..64 {
+            for x in 0..64 {
+                land.heights[z * 64 + x] = if x >= 19 { 160 } else { 100 };
+            }
+        }
+        let placed = place(&m, &mut land, GREEN, &templates(), &files).unwrap();
+        assert_eq!(placed.counts.deposits, 2);
+        assert_eq!(placed.counts.levelled, 1, "the second alone needed it");
+        let mut found = Vec::new();
+        for z in 0..64 {
+            for x in 0..64 {
+                if placed.names.get(placed.cells[z * 64 + x] as usize).is_some_and(|n| n == "RockMetal3") {
+                    found.push((x, z));
+                    for (cx, cz) in (z..z + 3).flat_map(|cz| (x..x + 3).map(move |cx| (cx, cz))) {
+                        assert!(land.depth(cx, cz) <= 0 && !land.cliff[cz * 64 + cx] && land.slope(cx, cz) <= 10, "deposit at ({x}, {z}): ({cx}, {cz}) slope {}", land.slope(cx, cz));
+                    }
+                }
+            }
+        }
+        assert_eq!(found, [(15, 15), (18, 15)], "side by side, sharing a side");
+    }
+
+    /// What a deposit's square shares: a side or a corner with its neighbours, nothing with one a
+    /// cell apart.
+    #[test]
+    fn deposits_touch_along_a_side_or_at_a_corner() {
+        let pad = |x, z| Pad { x, z, fp: 3, wet: false };
+        assert!(pad(15, 15).touches(&pad(18, 15)) && pad(18, 15).touches(&pad(15, 15)));
+        assert!(pad(15, 15).touches(&pad(18, 18)), "corner to corner");
+        assert!(!pad(15, 15).touches(&pad(19, 15)) && !pad(15, 15).touches(&pad(15, 19)));
+        assert_eq!(pad(62, 62).corners(64, 64).count(), 4, "cut at the map's edge");
     }
 }
