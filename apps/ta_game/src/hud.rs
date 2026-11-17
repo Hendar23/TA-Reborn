@@ -21,6 +21,7 @@ mod cheats;
 mod comms;
 mod companion;
 mod conquest;
+pub(crate) mod domain;
 mod economy;
 mod eta;
 mod idle;
@@ -212,7 +213,14 @@ pub(crate) struct UnitPic {
 impl UnitPic {
     /// Paints the picture over `rect` (a portrait on its backdrop), tinted.
     pub fn paint(&self, painter: &egui::Painter, rect: Rect, tint: Color32) {
-        if self.portrait {
+        self.paint_on(painter, rect, tint, None);
+    }
+
+    /// [`UnitPic::paint`] as a build menu shows it: a portrait on the ground where the unit goes
+    /// (`ground`: grass, water, both, sky; `domain`), in place of the gunmetal. A picture with a
+    /// ground of its own (TA's, the Supreme Commander factions') keeps it.
+    pub fn paint_on(&self, painter: &egui::Painter, rect: Rect, tint: Color32, ground: Option<domain::Domain>) {
+        if self.portrait && !ground.is_some_and(|g| domain::paint(painter, rect, g, tint)) {
             portrait_backdrop(painter, rect, tint);
         }
         painter.image(self.id, rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), tint);
@@ -3045,12 +3053,18 @@ fn idle_chip(ui: &mut egui::Ui, text: &str) -> egui::Response {
 /// A unit's picture as a button: set in the panel with a dark rim, lit brass under the
 /// pointer, pressed in when clicked.
 fn pic_button(ui: &mut egui::Ui, picture: &UnitPic, size: EVec2) -> egui::Response {
+    pic_button_on(ui, picture, size, None)
+}
+
+/// [`pic_button`] for a build menu's picture: a portrait on the ground where the unit goes
+/// (`UnitPic::paint_on`).
+fn pic_button_on(ui: &mut egui::Ui, picture: &UnitPic, size: EVec2, ground: Option<domain::Domain>) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     if ui.is_rect_visible(rect) {
         let down = response.is_pointer_button_down_on();
         let shown = if down { rect.shrink(1.0).translate(EVec2::new(0.0, 1.0)) } else { rect };
         let tint = if response.hovered() { Color32::WHITE } else { Color32::from_gray(228) };
-        picture.paint(ui.painter(), shown, tint);
+        picture.paint_on(ui.painter(), shown, tint, ground);
         ui.painter().add(pic_frame(rect, response.hovered()));
     }
     if response.clicked() || response.secondary_clicked() {

@@ -25,7 +25,8 @@ use ta_ui::i18n::{n, t, tf};
 use ta_ui::metal::{self, Slab};
 use ta_vfs::Vfs;
 
-use super::{Hud, count, duration, pic_button, pic_frame, unit_facts};
+use super::domain::{self, Domain};
+use super::{Hud, count, duration, pic_button, pic_button_on, pic_frame, unit_facts};
 use crate::game::Game;
 use crate::hud_skin;
 use crate::theme::*;
@@ -1303,10 +1304,11 @@ impl Hud {
         }
     }
 
-    /// The build menu: a factory's units in TA's order, a constructor's buildings by purpose on
-    /// tabs; each picture with its costs along the foot, in whole rows as large as the room lets
-    /// them be (see [`BuildGrid::fit`]), a page at a time when they do not all fit. Returns a
-    /// click.
+    /// The build menu: a factory's units, a constructor's buildings by purpose on tabs, each list
+    /// land first, then what goes on both, then the sea's, then aircraft, otherwise in TA's order
+    /// (`domain::menu_order`); each picture on its ground (`domain`) with its costs along the foot,
+    /// in whole rows as large as the room lets them be (see [`BuildGrid::fit`]), a page at a time
+    /// when they do not all fit. Returns a click.
     #[allow(clippy::too_many_arguments)]
     fn build_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, vfs: &Vfs, game: &Game, builder: &UnitType, queued: &HashMap<usize, usize>, producing: Option<(usize, f32)>) -> Option<BuildClick> {
         let allowed = |o: usize| game.sim.is_allowed(o);
@@ -1315,12 +1317,13 @@ impl Hud {
         // sea) go as one picture, the plain one's, with the place's zones (`build_tile`).
         let shared = self.shared_places.entry(builder.id).or_insert_with(|| std::sync::Arc::new(crate::hud_classic_art::shared_places(vfs, &game.sim.types, builder))).clone();
         let place_of = |o: usize| shared.iter().find(|place| place.iter().any(|&(u, _)| u == o)).filter(|place| place.iter().filter(|&&(u, _)| allowed(u)).count() > 1);
-        let options: Vec<usize> = builder
+        let mut options: Vec<usize> = builder
             .build_options
             .iter()
             .copied()
             .filter(|&o| allowed(o) && place_of(o).is_none_or(|place| crate::hud_classic_art::plain_of(&game.sim.types, place, allowed) == Some(o)))
             .collect();
+        domain::menu_order(&game.sim.types, &game.sim.data.move_classes, &mut options);
         let groups: Vec<(Option<Purpose>, Vec<usize>)> = if builder.is_factory {
             vec![(None, options)]
         } else {
@@ -1448,8 +1451,10 @@ impl Hud {
     #[allow(clippy::too_many_arguments)]
     fn build_tile(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, vfs: &Vfs, game: &Game, builder: &UnitType, opt: usize, place: Option<&[(usize, Rect)]>, queued: &HashMap<usize, usize>, producing: Option<(usize, f32)>, placing: Option<usize>, tile: f32, cost_size: f32) -> Option<BuildClick> {
         let size = EVec2::splat(tile);
+        // (Each picture on the ground where its unit goes.)
+        let ground = |o: usize| Some(Domain::of(game.sim.types.get(o), &game.sim.data.move_classes));
         let resp = match self.unit_pic(ctx, vfs, game, opt, tile) {
-            Some(p) => pic_button(ui, &p, size),
+            Some(p) => pic_button_on(ui, &p, size, ground(opt)),
             None => ui.add_sized(size, egui::Button::new(RichText::new(crate::chat::unit_label(&game.sim, opt)).size(10.0)).wrap()),
         };
         let rect = resp.rect;
@@ -1475,7 +1480,7 @@ impl Hud {
                 // each zone.
                 if let Some(k) = pointed {
                     if let Some(p) = self.unit_pic(ctx, vfs, game, opt, tile) {
-                        p.paint(painter, rect, Color32::WHITE);
+                        p.paint_on(painter, rect, Color32::WHITE, ground(opt));
                         painter.add(pic_frame(rect, true));
                     }
                     let cell = rect.size() / 8.0;

@@ -51,6 +51,13 @@
   pages, and the Mods page's UPDATE… for what it made, show only with the setting on. Maps and
   factions imported before stay installed and play as any mod, and an import already under way
   can still be watched to its end.
+- The modern interface's build menus tell where each unit goes by the ground behind its picture,
+  as Supreme Commander: Forged Alliance's do: grass for land, water for the sea, the two split on
+  the diagonal for hovercraft, amphibians and what can stand on land or out in the water, sky for
+  aircraft (the plants that make them stand on grass). Each tab, and a factory's list, now puts land first, then
+  what goes on both, then the sea's, then aircraft, keeping TA's order within each; so do the
+  radial menu's rings of buildings and units. The classic interface keeps TA's pages and pictures,
+  and the Supreme Commander factions' pictures keep their own game's frames.
 
 ### Changed
 - The modern interface's DETAILS tell what the selection makes and uses of metal and energy a
