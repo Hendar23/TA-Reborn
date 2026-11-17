@@ -114,11 +114,13 @@ impl SkirmishAi {
                     plan.reserved.push((*pos, fx(sim.types.get(*type_id).radius.to_int() + 16)));
                     plan.pending[self.info[*type_id].role as usize] += 1;
                     plan.tech |= self.advanced_factory(sim, *type_id);
+                    plan.tier = plan.tier.max(self.factory_tier(sim, *type_id));
                 }
             }
         }
         for n in &s.nanoframes {
             plan.tech |= self.advanced_factory(sim, n.type_id);
+            plan.tier = plan.tier.max(self.factory_tier(sim, n.type_id));
         }
         self.stuck.retain(|e| sim.unit(e.0).is_some());
         self.note_refused_builds(sim, s);
@@ -539,8 +541,17 @@ impl SkirmishAi {
             }
         }
         // Tech up.
-        if !t2 && !s.adv_factory && !plan.tech && s.minutes >= self.p.tech_minute && (s.m_inc >= fx(self.p.tech_income) || s.metal >= fx(1200)) && let Some(t) = self.adv_factory_task(sim, s, b, &opts, plan) {
+        let tech_economy = s.minutes >= self.p.tech_minute && (s.m_inc >= fx(self.p.tech_income) || s.metal >= fx(1200));
+        if !t2 && !s.adv_factory && !plan.tech && tech_economy && let Some(t) = self.adv_factory_task(sim, s, b, &opts, plan) {
             plan.tech = true;
+            return Some(t);
+        }
+        // And on up the tiers, one factory at a time: a constructor of our factories' top tier
+        // puts up one of the next tier its options hold, on the same economy (the Supreme
+        // Commander factions' tech 3 plants; TA's factories make no constructor past tech 2, so
+        // its games go as before).
+        if t2 && s.factory_tier == bi.tech && plan.tier <= bi.tech && tech_economy && let Some(t) = self.next_tier_task(sim, s, b, &opts, bi.tech, plan) {
+            plan.tier = bi.tech + 1;
             return Some(t);
         }
         // Geothermal vents are the best power there is (when power is what we need).
@@ -1126,8 +1137,21 @@ impl SkirmishAi {
     }
 
     pub(crate) fn adv_factory_task(&mut self, sim: &Sim, s: &Survey, b: &Unit, opts: &[usize], plan: &Plan) -> Option<Task> {
-        let mut keyed = Vec::new();
         let cands: Vec<usize> = opts.iter().copied().filter(|&o| self.advanced_factory(sim, o)).collect();
+        self.tech_factory_task(sim, s, b, cands, plan)
+    }
+
+    /// A factory of the next tier past `tier` the builder's options hold (`factory_tier`: the
+    /// lowest above it), chosen and sited as the first advanced factory is.
+    pub(crate) fn next_tier_task(&mut self, sim: &Sim, s: &Survey, b: &Unit, opts: &[usize], tier: u8, plan: &Plan) -> Option<Task> {
+        let next = opts.iter().map(|&o| self.factory_tier(sim, o)).filter(|&t| t > tier).min()?;
+        let cands: Vec<usize> = opts.iter().copied().filter(|&o| self.factory_tier(sim, o) == next).collect();
+        self.tech_factory_task(sim, s, b, cands, plan)
+    }
+
+    /// Which of `cands` to put up as a step up in tech, and where.
+    fn tech_factory_task(&mut self, sim: &Sim, s: &Survey, b: &Unit, cands: Vec<usize>, plan: &Plan) -> Option<Task> {
+        let mut keyed = Vec::new();
         // Across water: a plant for units that get over by themselves (amphibians) first.
         let types = s.factory_types.clone();
         let stranded = !types.iter().any(|&f| matches!(self.info[f].kind, Locomotion::Ground | Locomotion::Hover) && self.factory_reaches(sim, f));

@@ -323,9 +323,12 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
 The computer players play them (`cargo test --release -p ta_ai --test skirmish` with
 `TA_TEST_MOD` and `TA_TEST_SIDES=UEF,CYBRAN`): each builds an economy, land, air and naval
 factories, engineers, tanks, artillery, anti-air, bombers, interceptors and frigates and fights,
-and with the tech 2 and 3 factories on their engineers' lists climbs the tiers. They fire a
-tactical launcher's missiles at what is worth one in reach (never a wall, nor what a tactical
-defence covers), and build anti-nukes against strategic silos alone.
+and with the tech 2 and 3 factories on their engineers' lists climbs the tiers: a factory's tier
+is the highest tech of the engineers it makes, and an engineer of the top tier puts up one
+factory of the next (`SkirmishAi::factory_tier`; on Sherwood the tech 2 plants come at 9 to 15
+minutes, the tech 3 at 18 to 28, where a side lasts that long). They fire a tactical launcher's
+missiles at what is worth one in reach (never a wall, nor what a tactical defence covers), and
+build anti-nukes against strategic silos alone. Experimentals they do not build yet.
 
 Not yet in TA Reborn: Forged Alliance's own sounds and weapon effects (TA's of their kinds play),
 the commanders' enhancements, upgrading buildings in place, shields, stealth fields and

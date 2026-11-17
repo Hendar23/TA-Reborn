@@ -470,6 +470,8 @@ struct Survey<'a> {
     aa_units: usize,
     adv_factory: bool,
     adv_factory_done: bool,
+    /// The highest tier of our factories, finished or not (`SkirmishAi::factory_tier`).
+    factory_tier: u8,
     factory_types: Vec<usize>,
     kinds: Vec<Locomotion>,
     commander: Option<&'a Unit>,
@@ -504,6 +506,9 @@ struct Plan {
     /// Build orders in progress per role.
     pending: [usize; ROLES],
     tech: bool,
+    /// The highest tier of the factories builders are sent to put up or are putting up
+    /// (`SkirmishAi::factory_tier`): a step up the tiers one at a time.
+    tier: u8,
     /// (The player's helper only.) What each builder is at or was sent to this think, of the
     /// jobs that two are not sent at: a hurt unit to mend, a feature to take apart.
     claims: Vec<(UnitId, Claim)>,
@@ -929,6 +934,7 @@ impl SkirmishAi {
             aa_units: 0,
             adv_factory: false,
             adv_factory_done: false,
+            factory_tier: 0,
             factory_types: Vec::new(),
             kinds: Vec::new(),
             commander: None,
@@ -993,6 +999,7 @@ impl SkirmishAi {
                     let adv = self.advanced_factory(sim, u.type_id);
                     s.adv_factory |= adv;
                     s.adv_factory_done |= adv && done;
+                    s.factory_tier = s.factory_tier.max(self.factory_tier(sim, u.type_id));
                     s.factory_types.push(u.type_id);
                     s.kinds.push(i.kind);
                     if done {
@@ -1056,6 +1063,25 @@ impl SkirmishAi {
                 let i = &self.info[o];
                 i.role == Role::Builder && i.tech >= 2 && (i.builds_energy || i.builds_mex)
             })
+    }
+
+    /// A factory's tier: the highest tech of the constructors it turns out (those that put up
+    /// extractors or power, as for `advanced_factory`: 2 and up is an advanced factory), 1 for
+    /// one that turns out none, 0 for what is no factory. TA's factories come in two tiers
+    /// (no factory of TA's makes a constructor past tech 2), the Supreme Commander factions'
+    /// in three.
+    fn factory_tier(&self, sim: &Sim, type_id: usize) -> u8 {
+        if self.info[type_id].role != Role::Factory {
+            return 0;
+        }
+        sim.types.get(type_id).ai_build_options.iter()
+            .filter(|&&o| {
+                let i = &self.info[o];
+                i.role == Role::Builder && (i.builds_energy || i.builds_mex)
+            })
+            .map(|&o| self.info[o].tech)
+            .max()
+            .unwrap_or(1)
     }
 
     fn remember(&mut self, sim: &Sim, s: &Survey) {
