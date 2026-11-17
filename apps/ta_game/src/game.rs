@@ -1751,7 +1751,7 @@ impl Game {
                 }
                 if let SimEvent::WeaponFired { unit, weapon, target, .. } = &e {
                     let w = self.sim.weapon_types.get(*weapon);
-                    if w.def.stockpile && !w.def.interceptor {
+                    if nuclear::nuclear_missile(w) {
                         let owner = nuclear::launch_owner(&self.sim, *unit, *weapon)
                             .or_else(|| self.sim.unit(*unit).map(|u| u.owner)).or_else(|| departed_owners.get(unit).copied());
                         let known = owner.is_some_and(|owner| nuclear::destination_known(&self.sim, self.viewer(), owner));
