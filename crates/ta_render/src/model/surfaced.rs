@@ -4,14 +4,21 @@
 //! nothing of Reborn's kit, caps or rounding (they are whole already).
 //!
 //! A material's paint is three layers of an array of BC3 textures of [`SIDE`] by [`SIDE`] texels
-//! (its colour; its specular and team colour; its normals), read the first time a model of its
-//! is drawn and kept: a battle holds the paint of the units in it, not of every unit there is.
-//! Where to find a material's layers is a table the shaders read (`surface_slots`); until they
-//! are read, its faces are drawn in its colour on average. Without block-compressed textures on
+//! (its colour; its specular and team colour; its normals), asked for the first time a model of
+//! its is drawn: a battle holds the paint of the units in it, not of every unit there is, and lets
+//! it go when the next battle starts ([`SurfaceTextures::release`]). Where to find a material's
+//! layers is a table the shaders read (`surface_slots`); until they are in the array, its faces
+//! are drawn in its colour on average. The files are read and made BC3 levels on workers of their
+//! own (a texture of another size, or uncompressed, is decoded and encoded again, which takes tens
+//! of milliseconds); the frame puts what they made in the array for [`FRAME_SHARE`] of its time
+//! at most. The array grows [`GROWTH`] materials at a time; when the card has no memory for more,
+//! the materials not in it stay in their colours on average. Without block-compressed textures on
 //! the graphics card, the layers are decoded and held as plain colour instead.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 use glam::Vec3;
 use ta_formats::dds;
@@ -24,26 +31,76 @@ use crate::occlusion::Footprint;
 /// The side of a material's layers.
 pub const SIDE: u32 = 512;
 /// A model with a lighter one for far off (its surface's `far`) is drawn as itself from this
-/// many pixels across on screen.
+/// many pixels across on screen, and as its lighter one under [`FAR_PIXELS_BACK`]: between the
+/// two it stays as it was drawn the frame before (first seen there, the lighter one), so a model
+/// small on the screen does not swap back and forth as the camera shakes or a walker bobs.
 pub const FAR_PIXELS: f32 = 48.0;
+pub const FAR_PIXELS_BACK: f32 = 42.0;
+/// [`ModelLibrary::far_role`]s: a model with a lighter one for far off, and such a lighter one.
+pub(super) const FAR_HAS: u8 = 1;
+pub(super) const FAR_IS: u8 = 2;
 /// Their mip levels (512 down to 1).
 const LEVELS: u32 = SIDE.ilog2() + 1;
 /// A material's layers: colour, specular and team colour, normals.
 pub const LAYERS: u32 = 3;
 /// A table entry for a material whose layers are not read.
 const NOT_READ: u32 = u32::MAX;
-/// The most materials read in a frame (the rest the next).
-const READ_PER_FRAME: usize = 6;
+/// The most of a frame's time spent putting the paint the workers made in the array (at least one
+/// material a frame; the rest the next).
+pub const FRAME_SHARE: Duration = Duration::from_millis(2);
+/// How many materials the array grows by (about 32 MB of BC3).
+pub const GROWTH: u32 = 32;
+/// Materials made and waiting for the frames, on the way from the workers and taken from them
+/// (twice this all told) at most: the workers wait for room (a material's levels are about a
+/// megabyte, four as plain colour).
+const WAITING: usize = 16;
 
 /// Reads a file of the game's (a texture a surface names), or none.
 pub type Loader = Arc<dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync>;
+
+/// Whether each frame waits for the paint it asks for ([`set_paint_waits`]).
+static WAITS: AtomicBool = AtomicBool::new(false);
+/// The longest a frame waits for a material's paint ([`set_paint_waits`]).
+const WAIT_AT_MOST: Duration = Duration::from_secs(10);
+
+/// With `waits`, each frame waits for the paint its models ask for, and puts all of it in the
+/// array whatever it takes: a capture (`--screenshot`, a film) shows a unit in its paint from the
+/// first frame it is in, whatever the workers' pace. Otherwise the paint comes as it is made.
+pub fn set_paint_waits(waits: bool) {
+    WAITS.store(waits, Ordering::Relaxed);
+}
 
 struct Entry {
     material: Material,
     /// Its place in the array (its layers from three times it), once read.
     group: Option<u32>,
-    /// Reading it failed: drawn in its colour on average from then on.
+    /// Asked of the workers (its paint on the way).
+    asked: bool,
+    /// Reading it failed, or the array had no room for it: drawn in its colour on average from
+    /// then on (until the paint is let go).
     failed: bool,
+}
+
+/// A material's paint to read and make: its three textures' paths.
+struct Job {
+    slot: u32,
+    generation: u32,
+    paths: [String; 3],
+    loader: Loader,
+}
+
+/// A material's paint as the workers made it: each layer's levels, as the array holds them (BC3
+/// blocks, or plain colour), or why it could not be made.
+struct Made {
+    slot: u32,
+    generation: u32,
+    layers: Result<Vec<Vec<Vec<u8>>>, String>,
+}
+
+/// The workers reading and making paint, and the way to them and back.
+struct Workers {
+    jobs: mpsc::Sender<Job>,
+    made: mpsc::Receiver<Made>,
 }
 
 /// The materials of the models with surfaces, and their paint as far as it is read.
@@ -51,16 +108,25 @@ pub struct SurfaceTextures {
     entries: Vec<Entry>,
     by_textures: HashMap<(String, String, String), u32>,
     loader: Option<Loader>,
-    /// Materials drawn this frame and not read yet.
-    wanted: Vec<u32>,
+    workers: Option<Workers>,
+    /// What the workers made, waiting for room in a frame.
+    ready: VecDeque<Made>,
+    /// The paint's generation: what was asked before it was last let go is not wanted.
+    generation: Arc<AtomicU32>,
     compressed: bool,
     texture: wgpu::Texture,
     pub(super) view: wgpu::TextureView,
     /// Materials the array has room for, and has.
     capacity: u32,
     groups: u32,
+    /// The most materials the array may hold (the card's limit on its layers).
+    most: u32,
+    /// The card refused the memory to grow it: no more materials go in until the paint is let go.
+    full: bool,
     pub(super) table: wgpu::Buffer,
     table_slots: u32,
+    /// The bind group must be made again (the array or the table replaced since the last frame).
+    rebind: bool,
 }
 
 impl SurfaceTextures {
@@ -68,7 +134,25 @@ impl SurfaceTextures {
         let compressed = device.features().contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
         let (texture, view) = Self::array(device, compressed, 1, 4, 1);
         let table = Self::make_table(device, 16);
-        SurfaceTextures { entries: Vec::new(), by_textures: HashMap::new(), loader: None, wanted: Vec::new(), compressed, texture, view, capacity: 0, groups: 0, table, table_slots: 16 }
+        let most = device.limits().max_texture_array_layers / LAYERS;
+        SurfaceTextures {
+            entries: Vec::new(),
+            by_textures: HashMap::new(),
+            loader: None,
+            workers: None,
+            ready: VecDeque::new(),
+            generation: Arc::new(AtomicU32::new(0)),
+            compressed,
+            texture,
+            view,
+            capacity: 0,
+            groups: 0,
+            most,
+            full: false,
+            table,
+            table_slots: 16,
+            rebind: false,
+        }
     }
 
     /// What reads the textures the materials name (the game's files).
@@ -84,26 +168,70 @@ impl SurfaceTextures {
             return slot;
         }
         let slot = self.entries.len() as u32;
-        self.entries.push(Entry { material: material.clone(), group: None, failed: false });
+        self.entries.push(Entry { material: material.clone(), group: None, asked: false, failed: false });
         self.by_textures.insert(key, slot);
         slot
     }
 
-    /// Asks for `slot`'s paint (a model of its drawn this frame).
+    /// Asks for `slot`'s paint (a model of its drawn this frame): the workers read and make it,
+    /// once.
     pub(super) fn want(&mut self, slot: u32) {
-        if let Some(e) = self.entries.get(slot as usize)
-            && e.group.is_none()
-            && !e.failed
-            && !self.wanted.contains(&slot)
-        {
-            self.wanted.push(slot);
+        let Some(e) = self.entries.get_mut(slot as usize) else { return };
+        if e.asked || e.failed || e.group.is_some() {
+            return;
         }
+        let Some(loader) = self.loader.clone() else { return };
+        if self.full {
+            e.failed = true;
+            return;
+        }
+        e.asked = true;
+        let paths = [e.material.albedo.clone(), e.material.specular.clone(), e.material.normals.clone()];
+        let job = Job { slot, generation: self.generation.load(Ordering::Relaxed), paths, loader };
+        let compressed = self.compressed;
+        let generation = &self.generation;
+        let workers = self.workers.get_or_insert_with(|| Self::start_workers(compressed, generation.clone()));
+        let _ = workers.jobs.send(job);
     }
 
-    /// Reads the paint asked for (some of it, a frame), making room for it; whether the bind group
-    /// must be made again (the array or the table replaced).
+    /// The workers: a few threads of their own (a texture to decode and encode again keeps one
+    /// busy for tens of milliseconds), reading and making what they are asked in turn.
+    fn start_workers(compressed: bool, generation: Arc<AtomicU32>) -> Workers {
+        let (jobs, asked) = mpsc::channel::<Job>();
+        let (done, made) = mpsc::sync_channel::<Made>(WAITING);
+        let asked = Arc::new(Mutex::new(asked));
+        let count = std::thread::available_parallelism().map_or(1, |n| (n.get() / 4).clamp(1, 3));
+        for k in 0..count {
+            let (asked, done, generation) = (asked.clone(), done.clone(), generation.clone());
+            let spawned = std::thread::Builder::new().name(format!("surface paint {k}")).spawn(move || {
+                loop {
+                    let job = match asked.lock() {
+                        Ok(rx) => rx.recv(),
+                        Err(_) => return,
+                    };
+                    let Ok(job) = job else { return };
+                    // (Paint let go since it was asked: not wanted.)
+                    if job.generation != generation.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    let layers = make_paint(&job.loader, &job.paths, compressed);
+                    if done.send(Made { slot: job.slot, generation: job.generation, layers }).is_err() {
+                        return;
+                    }
+                }
+            });
+            if let Err(e) = spawned {
+                log::warn!("surface paint: no worker ({e})");
+            }
+        }
+        Workers { jobs, made }
+    }
+
+    /// Puts the paint the workers made in the array, for [`FRAME_SHARE`] of the frame's time at
+    /// most, making room for it; whether the bind group must be made again (the array or the table
+    /// replaced).
     pub(super) fn update(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> bool {
-        let mut rebind = false;
+        let mut rebind = std::mem::take(&mut self.rebind);
         if self.entries.len() as u32 > self.table_slots {
             let slots = (self.entries.len() as u32).next_power_of_two();
             self.table = Self::make_table(device, slots);
@@ -112,54 +240,109 @@ impl SurfaceTextures {
             queue.write_buffer(&self.table, 0, bytemuck::cast_slice(&table));
             rebind = true;
         }
-        if self.wanted.is_empty() {
-            return rebind;
-        }
-        let Some(loader) = self.loader.clone() else {
-            self.wanted.clear();
-            return rebind;
-        };
-        // (Those past the frame's few are asked for again by the next frame's models.)
-        let wanted: Vec<u32> = std::mem::take(&mut self.wanted).into_iter().take(READ_PER_FRAME).collect();
-        let most = device.limits().max_texture_array_layers / LAYERS;
-        for slot in wanted {
-            let entry = &self.entries[slot as usize];
-            let paths = [entry.material.albedo.clone(), entry.material.specular.clone(), entry.material.normals.clone()];
-            let mut levels: Vec<Vec<Vec<u8>>> = Vec::with_capacity(3);
-            for path in &paths {
-                match loader(path).map(|bytes| dds::to_bc3_levels(&bytes, SIDE)) {
-                    Some(Ok(l)) if l.len() == LEVELS as usize => levels.push(l),
-                    Some(Err(e)) => log::warn!("{path}: {e}"),
-                    _ => log::warn!("{path}: not in the game's files"),
+        let generation = self.generation.load(Ordering::Relaxed);
+        let waits = WAITS.load(Ordering::Relaxed);
+        if let Some(workers) = &self.workers {
+            // (What the workers made, as much as there is room for here: a few materials, the
+            // workers waiting meanwhile; all of it when the frame waits for it.)
+            while waits || self.ready.len() < WAITING {
+                match workers.made.try_recv() {
+                    Ok(m) => self.ready.push_back(m),
+                    Err(_) => break,
                 }
             }
-            if levels.len() != 3 {
-                self.entries[slot as usize].failed = true;
+            // (Waiting: for every material asked for and not made yet.)
+            while waits {
+                let made = self.ready.iter().filter(|m| m.generation == generation).count();
+                let on_the_way = self.entries.iter().filter(|e| e.asked && e.group.is_none() && !e.failed).count();
+                if made >= on_the_way {
+                    break;
+                }
+                match workers.made.recv_timeout(WAIT_AT_MOST) {
+                    Ok(m) => self.ready.push_back(m),
+                    Err(_) => break,
+                }
+            }
+        }
+        let started = Instant::now();
+        while let Some(made) = self.ready.pop_front() {
+            if made.generation != generation {
                 continue;
             }
-            if self.groups == self.capacity {
-                if self.capacity >= most {
-                    log::warn!("surface paint: no room for more than {most} materials");
-                    self.entries[slot as usize].failed = true;
+            let slot = made.slot as usize;
+            let layers = match made.layers {
+                Ok(layers) => layers,
+                Err(e) => {
+                    log::warn!("{e}");
+                    self.entries[slot].failed = true;
                     continue;
                 }
-                self.grow(device, queue, (self.capacity * 2).clamp(8, most));
-                rebind = true;
+            };
+            if self.groups == self.capacity && !self.full {
+                if self.capacity >= self.most {
+                    log::warn!("surface paint: no room for more than {} materials; the rest are drawn in their colours on average", self.most);
+                    self.full = true;
+                } else if self.grow(device, queue, (self.capacity + GROWTH).min(self.most)) {
+                    rebind = true;
+                } else {
+                    self.full = true;
+                }
+            }
+            if self.groups == self.capacity {
+                self.entries[slot].failed = true;
+                continue;
             }
             let group = self.groups;
             self.groups += 1;
-            for (k, maps) in levels.iter().enumerate() {
+            for (k, maps) in layers.iter().enumerate() {
                 self.write_layer(queue, group * LAYERS + k as u32, maps);
             }
-            self.entries[slot as usize].group = Some(group);
+            self.entries[slot].group = Some(group);
             queue.write_buffer(&self.table, slot as u64 * 4, bytemuck::bytes_of(&group));
+            if !waits && started.elapsed() >= FRAME_SHARE {
+                break;
+            }
         }
         rebind
     }
 
-    /// The array made `capacity` materials large, what it held copied over.
-    fn grow(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, capacity: u32) {
+    /// Lets the paint go (a battle over, the next starting): the array back to nothing, every
+    /// material drawn in its colour on average until a model of its is drawn again; what the
+    /// workers are making now is not wanted.
+    pub fn release(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        self.generation.fetch_add(1, Ordering::Relaxed);
+        self.ready.clear();
+        for e in &mut self.entries {
+            e.group = None;
+            e.asked = false;
+            e.failed = false;
+        }
+        let held = self.capacity;
+        let (texture, view) = Self::array(device, self.compressed, 1, 4, 1);
+        self.texture = texture;
+        self.view = view;
+        self.capacity = 0;
+        self.groups = 0;
+        self.full = false;
+        queue.write_buffer(&self.table, 0, bytemuck::cast_slice(&vec![NOT_READ; self.table_slots as usize]));
+        self.rebind = true;
+        if held > 0 {
+            log::info!("surface paint: let go of room for {held} materials");
+        }
+    }
+
+    /// The array made `capacity` materials large, what it held copied over; false when the card
+    /// refused the memory (the array as it was).
+    fn grow(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, capacity: u32) -> bool {
+        let scopes = [wgpu::ErrorFilter::OutOfMemory, wgpu::ErrorFilter::Validation, wgpu::ErrorFilter::Internal].map(|f| device.push_error_scope(f));
         let (texture, view) = Self::array(device, self.compressed, capacity * LAYERS, SIDE, LEVELS);
+        // (Popped innermost first, every one; the cause told, the outermost: a texture refused
+        // for want of memory is then invalid to view as well.)
+        let errors: Vec<wgpu::Error> = scopes.into_iter().rev().filter_map(|s| pollster::block_on(s.pop())).collect();
+        if let Some(e) = errors.last() {
+            log::warn!("surface paint: no graphics memory for room for {capacity} materials ({e}); the rest are drawn in their colours on average");
+            return false;
+        }
         if self.groups > 0 {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("surface paint grown") });
             for level in 0..LEVELS {
@@ -178,9 +361,10 @@ impl SurfaceTextures {
         self.view = view;
         self.capacity = capacity;
         log::info!("surface paint: room for {capacity} materials ({} MB)", capacity as u64 * LAYERS as u64 * layer_bytes(self.compressed) / (1 << 20));
+        true
     }
 
-    /// One layer's levels (BC3 blocks), written as the array holds them.
+    /// One layer's levels (BC3 blocks, or plain colour), written as the array holds them.
     fn write_layer(&self, queue: &wgpu::Queue, layer: u32, levels: &[Vec<u8>]) {
         for (level, data) in levels.iter().enumerate() {
             let side = (SIDE >> level).max(1);
@@ -190,9 +374,8 @@ impl SurfaceTextures {
                 let extent = wgpu::Extent3d { width: blocks * 4, height: blocks * 4, depth_or_array_layers: 1 };
                 queue.write_texture(target, data, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(blocks * 16), rows_per_image: Some(blocks) }, extent);
             } else {
-                let rgba: Vec<u8> = dds::decode_bc3(data, side, side).into_iter().flatten().collect();
                 let extent = wgpu::Extent3d { width: side, height: side, depth_or_array_layers: 1 };
-                queue.write_texture(target, &rgba, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(side * 4), rows_per_image: Some(side) }, extent);
+                queue.write_texture(target, data, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(side * 4), rows_per_image: Some(side) }, extent);
             }
         }
     }
@@ -222,6 +405,35 @@ impl SurfaceTextures {
     pub fn counts(&self) -> (usize, u32) {
         (self.entries.len(), self.groups)
     }
+
+    /// Whether every material asked for is in the array or given up (none on the way).
+    pub fn settled(&self) -> bool {
+        self.ready.is_empty() && self.entries.iter().all(|e| !e.asked || e.group.is_some() || e.failed)
+    }
+}
+
+/// A material's paint read and made as the array holds it (on a worker): each of its three
+/// textures (`paths`, read by `loader`) as BC3 levels of [`SIDE`] (`dds::to_bc3_levels`), decoded
+/// to plain colour where the card reads no BC3 (`compressed` false); or why not, in words for the
+/// log.
+fn make_paint(loader: &Loader, paths: &[String; 3], compressed: bool) -> Result<Vec<Vec<Vec<u8>>>, String> {
+    let mut layers = Vec::with_capacity(3);
+    for path in paths {
+        let bytes = loader(path).ok_or_else(|| format!("{path}: not in the game's files"))?;
+        let levels = dds::to_bc3_levels(&bytes, SIDE).map_err(|e| format!("{path}: {e}"))?;
+        if levels.len() != LEVELS as usize {
+            return Err(format!("{path}: {} mip levels made of {LEVELS}", levels.len()));
+        }
+        layers.push(if compressed {
+            levels
+        } else {
+            levels.iter().enumerate().map(|(level, data)| {
+                let side = (SIDE >> level).max(1);
+                dds::decode_bc3(data, side, side).into_iter().flatten().collect()
+            }).collect()
+        });
+    }
+    Ok(layers)
 }
 
 /// A layer's bytes with its mip levels.
@@ -341,13 +553,30 @@ impl ModelLibrary {
         let same = a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.name.eq_ignore_ascii_case(&y.name) && x.parent == y.parent);
         if same {
             self.far.insert(near, far);
+            let most = near.max(far) as usize + 1;
+            if self.far_roles.len() < most {
+                self.far_roles.resize(most, 0);
+            }
+            self.far_roles[near as usize] = FAR_HAS;
+            self.far_roles[far as usize] = FAR_IS;
         }
         same
+    }
+
+    /// Whether a model has a lighter one drawn in its place far off ([`FAR_HAS`]), is such a
+    /// lighter one ([`FAR_IS`]), or neither (0).
+    pub(super) fn far_role(&self, id: ModelId) -> u8 {
+        self.far_roles.get(id as usize).copied().unwrap_or(0)
     }
 
     /// The material slots a model with a surface paints with (none for any other).
     pub(super) fn surface_slots(&self, id: ModelId) -> &[u32] {
         self.surfaced.get(&id).map_or(&[], Vec::as_slice)
+    }
+
+    /// Whether a model is painted with a surface of its own (`add_surfaced`).
+    pub fn is_surfaced(&self, id: ModelId) -> bool {
+        self.surfaced.contains_key(&id)
     }
 }
 
@@ -356,6 +585,103 @@ mod tests {
     use super::*;
     use ta_formats::model3do::{Piece, Primitive};
     use ta_formats::surface;
+
+    /// A DXT5 of 512 x 512 with all its levels (read as it is), as bytes.
+    fn whole_paint() -> Vec<u8> {
+        let mut file = dds::header(SIDE, SIDE, LEVELS, Some(b"DXT5"));
+        file.extend(std::iter::repeat_n(0u8, (0..LEVELS).map(|l| ((SIDE >> l).max(1).div_ceil(4).pow(2) * 16) as usize).sum()));
+        file
+    }
+
+    /// An uncompressed texture of 64 x 64 (decoded, grown and encoded again).
+    fn small_paint() -> Vec<u8> {
+        let mut file = dds::header(64, 64, 1, None);
+        file.extend(std::iter::repeat_n(90u8, 64 * 64 * 4));
+        file
+    }
+
+    fn loader() -> Loader {
+        let files: HashMap<String, Vec<u8>> = [("whole.dds".to_string(), whole_paint()), ("small.dds".to_string(), small_paint())].into();
+        Arc::new(move |path: &str| files.get(path).cloned())
+    }
+
+    fn material(albedo: &str, specular: &str, normals: &str) -> Material {
+        Material { name: "paint".into(), albedo: albedo.into(), specular: specular.into(), normals: normals.into(), mean: [10, 20, 30] }
+    }
+
+    /// What the workers make of a material: its three textures as the array holds them, every
+    /// level (BC3 blocks; plain colour for a card that reads none), or why not.
+    #[test]
+    fn paint_is_made_as_the_array_holds_it() {
+        let paths = ["whole.dds".to_string(), "small.dds".to_string(), "whole.dds".to_string()];
+        let made = make_paint(&loader(), &paths, true).unwrap();
+        assert_eq!(made.len(), 3);
+        for layer in &made {
+            assert_eq!(layer.iter().map(Vec::len).collect::<Vec<_>>(), (0..LEVELS).map(|l| ((SIDE >> l).max(1).div_ceil(4).pow(2) * 16) as usize).collect::<Vec<_>>());
+        }
+        let plain = make_paint(&loader(), &paths, false).unwrap();
+        assert_eq!(plain[1].iter().map(Vec::len).collect::<Vec<_>>(), (0..LEVELS).map(|l| ((SIDE >> l).max(1).pow(2) * 4) as usize).collect::<Vec<_>>());
+        let missing = make_paint(&loader(), &["whole.dds".into(), "gone.dds".into(), "whole.dds".into()], true).unwrap_err();
+        assert!(missing.contains("gone.dds"), "{missing}");
+    }
+
+    /// A material's paint is made on the workers and put in the array within the frame's share of
+    /// time, room made a step at a time; one whose textures are not there stays in its colour on
+    /// average; the paint is let go between battles and asked for again; and the card refusing
+    /// the room leaves the array as it was.
+    #[test]
+    #[ignore = "requires a GPU; run with --ignored"]
+    fn paint_is_made_on_workers_and_let_go() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("GPU adapter");
+        let features = adapter.features() & wgpu::Features::TEXTURE_COMPRESSION_BC;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor { required_features: features, ..Default::default() })).expect("GPU device");
+        let mut paint = SurfaceTextures::new(&device);
+        let a = paint.register(&material("whole.dds", "small.dds", "whole.dds"));
+        let b = paint.register(&material("whole.dds", "gone.dds", "whole.dds"));
+        assert_eq!(paint.register(&material("WHOLE.dds", "small.dds", "whole.dds")), a, "one slot for the same textures");
+        paint.want(a);
+        assert!(paint.workers.is_none(), "nothing read without the game's files");
+        paint.set_loader(loader());
+        let settle = |paint: &mut SurfaceTextures| {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !paint.settled() {
+                paint.update(&device, &queue);
+                assert!(Instant::now() < deadline, "the paint was never made");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
+        paint.want(a);
+        paint.want(b);
+        settle(&mut paint);
+        assert_eq!(paint.counts(), (2, 1));
+        assert_eq!((paint.entries[a as usize].group, paint.entries[b as usize].failed), (Some(0), true));
+        assert_eq!(paint.capacity, GROWTH, "room for a step of materials");
+        // Asked again: read once.
+        paint.want(a);
+        assert!(paint.settled());
+        // Let go: nothing held, the bind group made again, read again when drawn.
+        paint.release(&device, &queue);
+        assert_eq!((paint.capacity, paint.groups, paint.entries[b as usize].failed), (0, 0, false));
+        assert!(paint.update(&device, &queue), "the bind group is made again");
+        paint.want(a);
+        settle(&mut paint);
+        assert_eq!(paint.entries[a as usize].group, Some(0));
+        // Room the card cannot give (more layers than it has): refused, the array as it was.
+        assert!(!paint.grow(&device, &queue, device.limits().max_texture_array_layers));
+        assert_eq!(paint.capacity, GROWTH);
+        // Room for one material at most: what is asked for past it is drawn in its colours on
+        // average.
+        paint.release(&device, &queue);
+        paint.most = 1;
+        paint.want(a);
+        settle(&mut paint);
+        assert_eq!((paint.capacity, paint.entries[a as usize].group), (1, Some(0)));
+        let c = paint.register(&material("small.dds", "small.dds", "small.dds"));
+        paint.want(c);
+        settle(&mut paint);
+        assert!(paint.entries[c as usize].failed && paint.full);
+    }
 
     /// A hull and a turret on it, a triangle each: the turret's painted with the surface's
     /// material, the hull's in its palette colour (it names no material).
@@ -404,16 +730,29 @@ mod tests {
         let far = library.add_surfaced("tank_lod1", &model, &surface, &[5], none, &palette);
         assert!(library.set_far(near, far));
         let root = glam::Mat4::IDENTITY;
-        assert_eq!(library.detail_for(near, root, None, true), near, "no camera: as itself");
+        assert_eq!(library.detail_for(near, root, None, true, None), near, "no camera: as itself");
         let mut camera = crate::camera::Camera::new(glam::Vec2::new(1920.0, 1080.0));
         camera.zoom = 0.2;
-        assert_eq!(library.detail_for(near, root, Some(&camera), false), far, "small on screen");
+        assert_eq!(library.detail_for(near, root, Some(&camera), false, None), far, "small on screen");
         camera.zoom = 40.0;
-        assert_eq!(library.detail_for(near, root, Some(&camera), false), near, "large on screen");
+        assert_eq!(library.detail_for(near, root, Some(&camera), false, None), near, "large on screen");
+        assert_eq!((library.far_role(near), library.far_role(far), library.far_role(near + 7)), (FAR_HAS, FAR_IS, 0));
         let mut other = model.clone();
         other.pieces[1].name = "gun".into();
         let stranger = library.add_surfaced("other", &other, &surface, &[5], none, &palette);
         assert!(!library.set_far(near, stranger));
+        // Between the two thresholds (45 pixels across, the classic camera's 2 x radius x zoom),
+        // as it was drawn the frame before: as itself when it was, else its lighter one.
+        let info = library.info(near).clone();
+        camera.mode = crate::camera::CameraMode::Classic;
+        camera.zoom = 45.0 / (2.0 * info.radius.max(info.height * 0.5));
+        assert_eq!(library.detail_for(near, root, Some(&camera), false, Some(false)), near, "drawn as itself: it stays so");
+        assert_eq!(library.detail_for(near, root, Some(&camera), false, Some(true)), far, "drawn far off: it stays so");
+        assert_eq!(library.detail_for(near, root, Some(&camera), false, None), far, "first seen: under 48, far off");
+        camera.zoom = 40.0 / (2.0 * info.radius.max(info.height * 0.5));
+        assert_eq!(library.detail_for(near, root, Some(&camera), false, Some(false)), far, "under 42: far off");
+        camera.zoom = 50.0 / (2.0 * info.radius.max(info.height * 0.5));
+        assert_eq!(library.detail_for(near, root, Some(&camera), false, Some(true)), near, "over 48: as itself");
     }
 
     /// Polygons naming no material: one naming a TA texture painted with it, laid on as TA lays

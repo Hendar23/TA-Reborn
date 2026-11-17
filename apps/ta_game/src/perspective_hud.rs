@@ -401,16 +401,16 @@ fn glass_status(painter: &Painter, r: Rect, p: &Perspective, game: &Game, now: f
     }
     painter.line_segment([pos2(g.left(), top), pos2(g.right(), top)], Stroke::new(mm(0.35), fade(PHOSPHOR_DIM, 0.9)));
     top += mm(3.0);
-    // The weapons, a row each (four at most: a mod's units carry up to eight).
+    // The weapons, a row each (those that read the same in one: a mod's units carry up to eight).
     let rows = Rect::from_min_max(pos2(g.left(), top), g.max);
-    let n = weapons.len().clamp(1, 4);
+    let n = weapons.len().max(1);
     let row_h = rows.height() / n as f32;
     let name_px = (row_h * if n == 1 { 0.3 } else { 0.36 }).min(mm(12.5));
-    for (i, w) in weapons.iter().take(4).enumerate() {
+    for (i, w) in weapons.iter().enumerate() {
         let y = rows.top() + i as f32 * row_h;
         let cost = ty.weapons.iter().flatten().map(|&w| game.sim.weapon_types.get(w)).find(|wt| wt.command_fire && w.manual).map_or(0.0, |wt| game.sim.shot_energy(u.id, wt).to_f32());
         let starved = w.manual && cost > energy;
-        let fired = now - p.hud.last_shot[w.slot] < 0.12;
+        let fired = now - w.latest(&p.hud.last_shot) < 0.12;
         let colour = if starved { RED } else if w.ready { GREEN } else { AMBER };
         let mid = y + name_px * 0.55;
         // Its number on a tag, lit while it is ready (and as it fires).
@@ -1424,7 +1424,7 @@ fn status_panel(painter: &Painter, r: Rect, p: &Perspective, game: &Game, on: f3
         // The D-gun wants energy.
         let cost = ty.weapons.iter().flatten().map(|&w| game.sim.weapon_types.get(w)).find(|wt| wt.command_fire && w.manual).map_or(0.0, |wt| game.sim.shot_energy(u.id, wt).to_f32());
         let starved = w.manual && cost > energy;
-        let fired = now - p.hud.last_shot[w.slot] < 0.12;
+        let fired = now - w.latest(&p.hud.last_shot) < 0.12;
         let colour = if starved { RED } else if w.ready { GREEN } else { AMBER };
         // Its number on a tag (the one beside its arc round the reticle), lit while it is ready.
         let tag = Rect::from_center_size(pos2(glass.left() + 10.0 * k, y + 9.0 * k), vec2(14.0 * k, 16.0 * k));

@@ -422,6 +422,8 @@ pub struct Effects {
     /// Wrecks left in the pose their unit's death ended in, by feature: their pieces' matrices
     /// from where the wreck stands, facing its heading (see [`Effects::posed_wrecks`]).
     posed: rustc_hash::FxHashMap<usize, Vec<glam::Mat4>>,
+    /// What posing the dying by their clips works in (`scene::clip_pose`).
+    clip_scratch: crate::scene::ClipScratch,
     /// Big units' later blasts, due.
     pops: Vec<remains::Pop>,
     /// Fireworks for the New Year (`effects_fireworks.rs`): the shells in flight, when each rack
@@ -477,6 +479,8 @@ impl Effects {
         self.wake_points.clear();
         self.wake_trails.clear();
         self.remains.clear();
+        // (The wrecks lying as their deaths left them: a battle sought back or on has others.)
+        self.posed.clear();
         self.pops.clear();
         self.due_blasts.clear();
     }
@@ -693,6 +697,7 @@ impl Effects {
             lava_world: false,
             remains: Vec::new(),
             posed: Default::default(),
+            clip_scratch: Default::default(),
             pops: Vec::new(),
             sounds: Vec::new(),
             shells: Vec::new(),
@@ -1735,8 +1740,8 @@ impl Effects {
         self.model_ids
             .iter()
             .zip(&self.model_matrices)
-            .map(|(&model, m)| DrawInstance { model, pieces: m, team: 0, flags: 0, build: 1.0, damage: 0.0, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL })
-            .chain(self.debris.iter().filter(|d| in_view(d.pos)).map(|d| DrawInstance { model: d.model, pieces: std::slice::from_ref(&d.matrix), team: d.team, flags: DEAD_LIGHTS, build: 1.0, damage: d.damage, travel: [0.0; 2], piece: Some(d.piece as u32), playing: 0 }))
+            .map(|(&model, m)| DrawInstance { model, pieces: m, team: 0, flags: 0, build: 1.0, damage: 0.0, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL, key: 0 })
+            .chain(self.debris.iter().filter(|d| in_view(d.pos)).map(|d| DrawInstance { model: d.model, pieces: std::slice::from_ref(&d.matrix), team: d.team, flags: DEAD_LIGHTS, build: 1.0, damage: d.damage, travel: [0.0; 2], piece: Some(d.piece as u32), playing: 0, key: 0 }))
             .chain(self.remains_instances())
             .collect()
     }

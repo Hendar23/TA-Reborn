@@ -1510,6 +1510,15 @@ impl Renderer {
         building.done("the units' pipelines");
     }
 
+    /// Lets go of the paint of the models with surfaces of their own (`model::surfaced`): a
+    /// battle's units' paint is held for that battle, and read again for the next one's as its
+    /// models are first drawn.
+    pub fn release_surface_paint(&mut self) {
+        if let Some(m) = &mut self.models {
+            m.surfaces.release(&self.gpu.device, &self.gpu.queue);
+        }
+    }
+
     /// Submits this frame's model instances. Their contact occlusion (perspective camera) is
     /// derived from them: every whole model that is not cloaked occludes the ground around its
     /// footprint, units under construction in proportion to their progress (placement ghosts,

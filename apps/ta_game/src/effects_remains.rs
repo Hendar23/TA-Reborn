@@ -35,6 +35,9 @@ pub struct Death {
     pub wreck: Option<usize>,
     /// It was finished: a frame still being built leaves its blast and nothing more.
     pub complete: bool,
+    /// Its wreck is drawn burnt out (its unit's own model, with a surface of its own: features.rs's
+    /// `burnt_out`): its death clip's last pose fades to that look as it holds.
+    pub burnt: bool,
 }
 
 /// How what is left of a unit goes.
@@ -111,6 +114,11 @@ pub(super) struct Remains {
     duration: f32,
     next_puff: f32,
     done: bool,
+    /// Its wreck is drawn burnt out ([`Death::burnt`]).
+    burnt: bool,
+    /// How it is drawn now: its player's colour (with how far it has gone to the burnt-out grey,
+    /// `ta_render::model::TEAM_BURNT_SHIFT`) and its battle damage (see [`clip_look`]).
+    look: (u32, f32),
 }
 
 /// A blast set off a moment after a big unit's death.
@@ -124,8 +132,27 @@ pub(super) struct Pop {
 /// airframes glide a while).
 const FALL: f32 = 240.0;
 
-/// Seconds a death clip's last pose holds before its wreck takes its place.
+/// Seconds a death clip's last pose holds before its wreck takes its place (fading to the wreck's
+/// look meanwhile: [`clip_look`]).
 const CLIP_HOLD: f32 = 0.2;
+
+/// How a unit dying as its clip has it is drawn `age` seconds into its death, its clip `seconds`
+/// long (`team`: its player's colour slot; `burnt`: its wreck is drawn burnt out): scorched, and in
+/// the last pose's hold fading to how its wreck is drawn when it takes its place (its embers and
+/// soot, as hot as the wreck made with the death is then, and its player's colour gone to the
+/// burnt-out grey): the change was one frame's (a unit's own colours to a dark wreck, its embers
+/// lit at once).
+fn clip_look(team: u32, burnt: bool, age: f32, seconds: f32) -> (u32, f32) {
+    let held = ((age - seconds) / CLIP_HOLD).clamp(0.0, 1.0);
+    let wreck = crate::features::wreck_damage(age, burnt);
+    let damage = CLIP_DAMAGE + (wreck - CLIP_DAMAGE) * held;
+    let burn = if burnt { ((held * 255.0).round() as u32) << ta_render::model::TEAM_BURNT_SHIFT } else { 0 };
+    (team | burn, damage)
+}
+
+/// How scorched a unit dying as its clip has it is drawn (the shader's battle damage: no embers
+/// below 0.6).
+const CLIP_DAMAGE: f32 = 0.6;
 
 /// The most wrecks kept in their deaths' poses (older ones lie as their models stand).
 const MAX_POSED: usize = 512;
@@ -249,6 +276,8 @@ impl Effects {
             duration,
             next_puff: now,
             done: false,
+            burnt: death.burnt,
+            look: (r.team, if fate == Fate::Clip { CLIP_DAMAGE } else { 1.0 }),
         };
         match fate {
             Fate::Collapse => self.collapse_dust(pos, ground, size),
@@ -273,6 +302,7 @@ impl Effects {
         }
         let sea = sim.world.sea_level.to_f32();
         let mut remains = std::mem::take(&mut self.remains);
+        let mut scratch = std::mem::take(&mut self.clip_scratch);
         for r in &mut remains {
             let age = now - r.start;
             let k = (age / r.duration).clamp(0.0, 1.0);
@@ -334,7 +364,8 @@ impl Effects {
                 Fate::Clip => {
                     // Posed by its clip about where it stood (what it threw clear, or hid, gone).
                     if let Some((clips, k)) = &r.clip {
-                        crate::scene::clip_pose(sim.types.get(r.type_id), &clips[*k], age, r.root, &mut r.matrices);
+                        r.look = clip_look(r.team, r.burnt && r.wreck.is_some(), age, clips[*k].seconds);
+                        crate::scene::clip_pose(sim.types.get(r.type_id), &clips[*k], age, r.root, &mut r.matrices, &mut scratch);
                         for (out, &d) in r.matrices.iter_mut().zip(&r.at_death) {
                             if d == Mat4::ZERO {
                                 *out = Mat4::ZERO;
@@ -368,6 +399,7 @@ impl Effects {
         }
         remains.retain(|r| !r.done);
         self.remains = remains;
+        self.clip_scratch = scratch;
     }
 
     /// Wrecks lying in the pose their unit's death clip ended in, by feature: their pieces'
@@ -394,8 +426,9 @@ impl Effects {
         self.remains
             .iter()
             .filter(move |r| in_view(r.pos, r.size + 60.0))
-            // (A death clip plays on the unit as it was, scorched; the rest are charred.)
-            .map(|r| DrawInstance { model: r.model, pieces: &r.matrices, team: r.team, flags: super::DEAD_LIGHTS, build: 1.0, damage: if r.fate == Fate::Clip { 0.6 } else { 1.0 }, travel: [0.0; 2], piece: None, playing: 0 })
+            // (A death clip plays on the unit as it was, scorched, fading to its wreck's look at the
+            // end; the rest are charred.)
+            .map(|r| DrawInstance { model: r.model, pieces: &r.matrices, team: r.look.0, flags: super::DEAD_LIGHTS, build: 1.0, damage: r.look.1, travel: [0.0; 2], piece: None, playing: 0, key: 0 })
     }
 
     /// Falling wrecks light the ground under them.
@@ -516,8 +549,8 @@ const MAX_REMAINS: usize = 120;
 mod tests {
     use super::*;
 
-    const SHOT: Death = Death { wreck: Some(7), complete: true };
-    const BLOWN_UP: Death = Death { wreck: None, complete: true };
+    const SHOT: Death = Death { wreck: Some(7), complete: true, burnt: false };
+    const BLOWN_UP: Death = Death { wreck: None, complete: true, burnt: false };
 
     #[test]
     fn a_dead_unit_is_shown_once() {
@@ -527,8 +560,8 @@ mod tests {
         // Blown to nothing, it comes down into its dust.
         assert_eq!(fate_of(Locomotion::Static, false, false, BLOWN_UP), Some(Fate::Collapse));
         // A frame shot before it was finished leaves no whole building to come down.
-        assert_eq!(fate_of(Locomotion::Static, false, false, Death { wreck: None, complete: false }), None);
-        assert_eq!(fate_of(Locomotion::Naval, false, true, Death { wreck: None, complete: false }), None);
+        assert_eq!(fate_of(Locomotion::Static, false, false, Death { wreck: None, complete: false, burnt: false }), None);
+        assert_eq!(fate_of(Locomotion::Naval, false, true, Death { wreck: None, complete: false, burnt: false }), None);
         // Hulls sink and aircraft fall either way (their wrecks wait unseen until they settle).
         for death in [SHOT, BLOWN_UP] {
             assert_eq!(fate_of(Locomotion::Naval, false, true, death), Some(Fate::Sink));
@@ -552,6 +585,25 @@ mod tests {
         assert!((0..=10).all(|i| sunk(i as f32 / 10.0, 30.0, Some(12.0)) <= 12.0));
         assert!((1..=10).all(|i| sunk(i as f32 / 10.0, 30.0, Some(12.0)) >= sunk((i - 1) as f32 / 10.0, 30.0, Some(12.0))), "it never rises again");
         assert_eq!(sunk(0.5, 30.0, Some(-3.0)), 0.0, "a hull aground stays where it is");
+    }
+
+    /// A death clip's last pose fades to its wreck's look as it holds: scorched in its player's
+    /// colour while it plays; by the end of the hold as sooted and as hot as the wreck it gives
+    /// way to, its colour the burnt-out grey's (when the wreck is drawn burnt out).
+    #[test]
+    fn a_death_fades_into_its_wreck() {
+        let shift = ta_render::model::TEAM_BURNT_SHIFT;
+        assert_eq!(clip_look(3, true, 1.0, 2.0), (3, CLIP_DAMAGE), "playing: as it was");
+        assert_eq!(clip_look(3, true, 2.0, 2.0), (3, CLIP_DAMAGE), "the hold begins");
+        let (team, damage) = clip_look(3, true, 2.0 + CLIP_HOLD * 0.5, 2.0);
+        assert!(team & 255 == 3 && (team >> shift).abs_diff(128) <= 1, "half way to the grey: {}", team >> shift);
+        assert!(damage > CLIP_DAMAGE && damage < crate::features::wreck_damage(2.1, true));
+        let end = 2.0 + CLIP_HOLD;
+        assert_eq!(clip_look(3, true, end, 2.0), (3 | 255 << shift, crate::features::wreck_damage(end, true)), "as its wreck appears");
+        // A wreck drawn as its own model's paint has it: its colour kept, its embers coming up.
+        assert_eq!(clip_look(3, false, end, 2.0), (3, crate::features::wreck_damage(end, false)));
+        // (Hot: the embers glow, above 0.6.)
+        assert!(crate::features::wreck_damage(end, false) > 0.9);
     }
 }
 

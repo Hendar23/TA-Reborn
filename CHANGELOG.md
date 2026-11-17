@@ -94,8 +94,6 @@
   or solar collectors) some on and some off. It now says ON/OFF, its lamp half lit, as the classic
   interface shows both, and a press turns them all off when the first is on and all on otherwise,
   as the classic button and the X key do.
-
-### Fixed
 - A unit being built in a factory stood still while the factory's pad turned under it. As in TA,
   it now turns with the pad (the plants, labs and aircraft plants spin it while they build) and
   is finished facing the way the pad left it.
@@ -105,8 +103,21 @@
   as its unit faced when it died, in every view.
 - Reclaiming a wreck gives metal only, as in TA, even where a mod's wreck says it holds energy;
   rocks and trees give what their files say.
-
-### Fixed
+- The Supreme Commander factions, and any mod's models with paint or animations of their own: the
+  classic interface showed their sides no metal or energy bars, figures or logo (a side that lays
+  out nothing takes the boxes of a side in the same panels, else the first side's); a wreck left
+  in its death's last pose dropped into the ground as it appeared, and the dying unit turned into
+  its dark wreck in one frame (it now fades into it); a texture claiming endless mip levels froze
+  the game for seconds, and paint that is not 512 × 512 block-compressed was decoded on the frame,
+  stalling it (it is now made on workers, the model in its colours on average meanwhile); the
+  paint grows in steps of 32 materials, is let go when the next battle starts, and where the
+  graphics card has no room left the rest is drawn in its colours on average; a surface that does
+  not fit its model leaves it drawn as TA draws it, without seams along every triangle; a broken
+  animation file is told in the log and a clip that does not fit is left out alone; a far model
+  no longer swaps back and forth at the edge of its distance; the cockpit shows every weapon, those
+  alike as one ("Gauss Cannon x4"); the map editor draws their wrecks in their paint. The mod check
+  now reads DDS textures' mip levels and texels, notes paint that is made again as it is read, and
+  checks far models' pieces, that surfaces name DDS textures, and each clip.
 - The launcher's Supreme Commander dialog, opened again from the Mods page, showed its MAPS tab's
   maps as dark squares, still marked as they were (IMPORTED after REMOVE MAP PACK). Each tab now
   looks for the game again whenever it is shown after the dialog was closed, the factions' too

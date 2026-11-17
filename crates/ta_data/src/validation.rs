@@ -35,8 +35,11 @@ use crate::words::{en, enf, Fill, Words};
 /// and previews read by their content as the launcher and the game read them, a preview's length
 /// by the launcher's budget, a theme's contrast on every side and on what it is drawn over, a mod
 /// of its manifest alone complete, `validation.manifest_only`;
-/// a manifest's keys read otherwise than written, `manifest.*`).
-pub const SCHEMA_VERSION: u32 = 18;
+/// a manifest's keys read otherwise than written, `manifest.*`; 19: DDS textures read as a model's
+/// paint is, their mip levels and texels (`texture.levels`, `texture.paint`), a far model's pieces
+/// (`model.far`), a surface's textures that are no DDS (`model.surface_texture`), animations clip
+/// by clip).
+pub const SCHEMA_VERSION: u32 = 19;
 
 /// The keys of `gamedata/sound.tdf`'s categories the game plays (`ta_audio`'s sound events), each
 /// with or without a variant number (`select1`, `select2`…), with `count0` to `count9`; the
@@ -738,11 +741,16 @@ enum Failure { Read(String), Invalid(String), TooLarge }
 enum Content {
     Model { pieces: BTreeSet<String>, textures: BTreeSet<String> },
     /// A model's surface (ta_formats::surface): its materials' names, the textures they name, the
-    /// model it names for far off, and whether it fits the model beside it (none: there is none).
-    Surface { materials: Vec<String>, textures: Vec<String>, far: String, fits: Option<bool> },
-    /// A model's animations (ta_formats::anims), and whether they fit the model beside it (none:
-    /// there is none).
-    Anims { fits: Option<bool> },
+    /// model it names for far off, whether it fits the model beside it (none: there is none), and
+    /// whether the far model has that model's pieces in their order (none: no far model to compare).
+    Surface { materials: Vec<String>, textures: Vec<String>, far: String, fits: Option<bool>, far_fits: Option<bool> },
+    /// A model's animations (ta_formats::anims), and the clips that do not fit the model beside it
+    /// (none: there is none).
+    Anims { unfit: Option<Vec<String>> },
+    /// A DDS texture (a model's paint: ta_formats::dds): the mip levels it claims, those its size
+    /// has at most and those its file holds, and whether the game reads its blocks as they are (as
+    /// a surface's paint, 512 x 512 block-compressed with every level) or makes them again.
+    Texture { claimed: u32, most: u32, held: u32, as_is: bool },
     /// `patch_values`: those of [`PATCH_VALUES`] it asks or sets.
     Script { pieces: BTreeSet<String>, functions: BTreeSet<String>, problems: Vec<Problem>, patch_values: BTreeSet<i32> },
     /// A GAF's entries; `whole`: the game could decode it all at once (as it does every GAF but
@@ -795,20 +803,32 @@ fn parse(vfs: &Vfs, path: &str, options: &Options) -> Parsed {
         }).map_err(|e| Failure::Invalid(e.to_string())),
         "pcx" => ta_formats::pcx::PcxImage::parse(&bytes).map(|_| Content::Plain).map_err(|e| Failure::Invalid(e.to_string())),
         "surface" => ta_formats::surface::Surface::parse(&bytes).map(|surface| {
-            let model = format!("{}.3do", path.trim_end_matches(".surface"));
-            let fits = vfs.read(&model).ok().map(|b| Model3do::parse(&b).is_ok_and(|m| surface.fits(&m)));
+            let model = vfs.read(&format!("{}.3do", path.trim_end_matches(".surface"))).ok().map(|b| Model3do::parse(&b).ok());
+            let fits = model.as_ref().map(|m| m.as_ref().is_some_and(|m| surface.fits(m)));
+            // (Its far model, drawn in its place far off: the same pieces in the same order, as the
+            // game asks of it.)
+            let far = surface.far.trim();
+            let far_fits = match (&model, far.is_empty()) {
+                (Some(Some(m)), false) => vfs.read(&asset("objects3d", far, "3do")).ok().map(|b| Model3do::parse(&b).is_ok_and(|f| same_pieces(m, &f))),
+                _ => None,
+            };
             Content::Surface {
                 materials: surface.materials.iter().map(|m| m.name.clone()).collect(),
                 textures: surface.materials.iter().flat_map(|m| [m.albedo.clone(), m.specular.clone(), m.normals.clone()]).collect(),
                 far: surface.far.clone(),
                 fits,
+                far_fits,
             }
         }).map_err(|e| Failure::Invalid(e.to_string())),
         "anims" => ta_formats::anims::Anims::parse(&bytes).map(|anims| {
             let model = format!("{}.3do", path.trim_end_matches(".anims"));
-            Content::Anims { fits: vfs.read(&model).ok().map(|b| Model3do::parse(&b).is_ok_and(|m| anims.fits(m.pieces.len()))) }
+            let unfit = vfs.read(&model).ok().map(|b| match Model3do::parse(&b) {
+                Ok(m) => anims.clips.iter().filter(|c| !c.fits(m.pieces.len())).map(|c| c.name.clone()).collect(),
+                Err(_) => anims.clips.iter().map(|c| c.name.clone()).collect(),
+            });
+            Content::Anims { unfit }
         }).map_err(|e| Failure::Invalid(e.to_string())),
-        "dds" => ta_formats::dds::Header::parse(&bytes).map(|_| Content::Plain).map_err(|e| Failure::Invalid(e.to_string())),
+        "dds" => dds_content(&bytes),
         "fnt" => ta_formats::fnt::Font::parse(&bytes).map(|_| Content::Plain).map_err(|e| Failure::Invalid(e.to_string())),
         "pal" => ta_formats::image::Palette::parse(&bytes).map(|_| Content::Plain).map_err(|e| Failure::Invalid(e.to_string())),
         "wav" => Ok(Content::Sound(sound_problem(&bytes))),
@@ -817,6 +837,31 @@ fn parse(vfs: &Vfs, path: &str, options: &Options) -> Parsed {
         _ => Ok(Content::Text { doc: tdf::parse_bytes(&bytes), syntax: if bytes.contains(&0) { Vec::new() } else { tdf::lint(&bytes) } }),
     };
     Parsed { bytes: size, content }
+}
+
+/// A DDS texture as the game reads it for a model's paint (`ta_formats::dds`, at 512 x 512): its
+/// header; its levels' texels, those it takes as they are there, or else the level it makes its
+/// paint from decoded, as the game decodes it (a file without its first level's texels does not
+/// read); and how many of the mip levels it claims its file holds.
+fn dds_content(bytes: &[u8]) -> Result<Content, Failure> {
+    use ta_formats::dds;
+    let invalid = |e: ta_formats::FormatError| Failure::Invalid(e.to_string());
+    let header = dds::Header::parse(bytes).map_err(invalid)?;
+    let as_is = header.read_as_is(bytes, PAINT_SIDE);
+    if !as_is || header.level_data(bytes, 0).is_none() {
+        dds::decode(bytes, header.level_for(PAINT_SIDE)).map_err(invalid)?;
+    }
+    let most = header.width.max(header.height).ilog2() + 1;
+    Ok(Content::Texture { claimed: header.claimed, most, held: header.levels_held(bytes), as_is })
+}
+
+/// The side the paint of models with surfaces is drawn at (ta_render's `model::surfaced::SIDE`).
+const PAINT_SIDE: u32 = 512;
+
+/// Whether `far` has `model`'s pieces in their order (their names, any case, and parents): what a
+/// far model drawn in a model's place must have (ta_render's `ModelLibrary::set_far`).
+fn same_pieces(model: &Model3do, far: &Model3do) -> bool {
+    model.pieces.len() == far.pieces.len() && model.pieces.iter().zip(&far.pieces).all(|(a, b)| a.name.eq_ignore_ascii_case(&b.name) && a.parent == b.parent)
 }
 
 /// A GAF read a frame at a time (`GafReader`), nothing of it kept: its entries, every frame
@@ -1282,7 +1327,7 @@ impl<'a> Scan<'a> {
                 let ota = format!("{}.ota", path.trim_end_matches(".tnt"));
                 if !self.vfs.exists(&ota) { self.issue(Severity::Warning, "map.metadata", path, Words::text(en("The terrain has no matching OTA metadata and cannot appear as a normal selectable map.")), en("Include a matching maps/<name>.ota with a GlobalHeader and playable schemas.")); }
             }
-            Content::Surface { materials, textures, far, fits } => {
+            Content::Surface { materials, textures, far, fits, far_fits } => {
                 // Its materials are what its model's polygons name in place of TA's textures.
                 for name in &materials {
                     if !self.retain(160 + 2 * name.len() + path.len(), path) { return; }
@@ -1298,12 +1343,34 @@ impl<'a> Scan<'a> {
                     Some(false) => self.issue(Severity::Warning, "model.surface", path, Words::text(en("This surface does not fit the model beside it (their pieces or the pieces' vertices differ), so the model is drawn without it, as TA draws it.")), en("Make the surface again from the model as it is now.")),
                     None => self.issue(Severity::Warning, "model.surface", path, Words::text(en("This surface has no model of its name beside it in objects3d, so nothing is drawn with it.")), en("Name it as its model, with .surface for .3do.")),
                 }
+                if far_fits == Some(false) {
+                    self.issue(Severity::Warning, "model.far", path, enf("The far model {far} does not have this model's pieces in their order, so it is not drawn in its place far off.", [("far", Fill::name(far.trim()))]), en("Make the far model from the same pieces, in the same order, as the model it stands in for."));
+                }
+                // (The game reads the paint of a surface from DDS textures alone.)
+                let mut not_dds: Vec<&str> = textures.iter().map(|t| t.trim()).filter(|t| !t.is_empty() && !t.to_ascii_lowercase().ends_with(".dds")).collect();
+                not_dds.sort_unstable();
+                not_dds.dedup();
+                if !not_dds.is_empty() {
+                    let list = Fill::List(not_dds.iter().map(|t| Fill::name(*t)).collect());
+                    self.issue(Severity::Warning, "model.surface_texture", path, enf("This surface names textures that are no DDS ({textures}): the materials painted with them are drawn in their colours on average.", [("textures", list)]), en("Save the surface's textures as DDS and name them so."));
+                }
             }
-            Content::Anims { fits } => match fits {
-                Some(true) => {}
-                Some(false) => self.issue(Severity::Warning, "model.anims", path, Words::text(en("These animations do not fit the model beside it (they move pieces it has not, or their keys are out of order), so they are not played.")), en("Make the animations again from the model as it is now.")),
+            Content::Anims { unfit } => match unfit {
+                Some(clips) if clips.is_empty() => {}
+                Some(clips) => {
+                    let list = Fill::List(clips.iter().map(|c| Fill::name(c.clone())).collect());
+                    self.issue(Severity::Warning, "model.anims", path, enf("The clips of these animations that do not fit the model beside them are not played: {clips} (they move pieces it has not, or their keys are out of order or past the clip's end).", [("clips", list)]), en("Make the animations again from the model as it is now."));
+                }
                 None => self.issue(Severity::Warning, "model.anims", path, Words::text(en("These animations have no model of their name beside them in objects3d, so they are not played.")), en("Name them as their model, with .anims for .3do.")),
             },
+            Content::Texture { claimed, most, held, as_is } => {
+                if held < claimed.min(most) || claimed > most {
+                    self.issue(Severity::Warning, "texture.levels", path, enf("This texture claims {claimed} mip levels; its size has {most} at most, and its file holds {held}. The game reads those it holds and makes the rest again.", [("claimed", Fill::number(claimed)), ("most", Fill::number(most)), ("held", Fill::number(held))]), en("Save the texture again with its mip levels, as many as its size halves into."));
+                }
+                if !as_is {
+                    self.issue(Severity::Info, "texture.paint", path, Words::text(en("As a model's paint, this texture is decoded and encoded again the first time it is drawn (it is not 512 x 512 block-compressed with every mip level), which takes tens of milliseconds.")), en("Save it as DXT5 (BC3) of 512 x 512 with all ten mip levels: then it is read as it is."));
+                }
+            }
             Content::Plain => {
                 if path.ends_with(".pcx") { self.report.counts.pcx += 1; }
             }
@@ -2486,6 +2553,59 @@ mod tests {
         let told: Vec<&str> = report.issues.iter().filter(|i| i.code == "model.anims").map(|i| i.path.as_str()).collect();
         assert_eq!(told, ["objects3d/stray.anims", "objects3d/walker.anims"], "{}", report.to_text());
         assert!(report.issues.iter().any(|i| i.path == "objects3d/broken.anims" && i.code == "format.invalid"), "{}", report.to_text());
+        // Clip by clip, as the game plays them: the walk that does not fit is named.
+        let walker = report.issues.iter().find(|i| i.path == "objects3d/walker.anims").unwrap();
+        assert!(walker.message.contains("are not played: walk (they move"), "{}", walker.message);
+    }
+
+    /// A surface's paint and far model as the game reads them: a DDS claiming more mip levels than
+    /// its size has and holding one (the review's 300 x 300 claiming four billion, which froze the
+    /// game) is told, and so is a texture not 512 x 512 block-compressed with every level (noted:
+    /// it is made again the first time it is drawn), not one that is; a texture that is no DDS
+    /// and a far model without its model's pieces are told.
+    #[test]
+    fn a_surfaces_paint_and_far_model_are_checked_as_the_game_reads_them() {
+        use ta_formats::surface::{Material, Piece, Surface, Vertex};
+        let f = Fixture::new(); f.valid("mod");
+        f.put("mod", "objects3d/painted.3do", textured_model(&["hull"]));
+        // (Its piece named otherwise.)
+        let mut stranger = textured_model(&["hull"]);
+        let at = stranger.windows(5).position(|w| w == b"base\0").unwrap();
+        stranger[at..at + 4].copy_from_slice(b"hulk");
+        f.put("mod", "objects3d/painted_far.3do", stranger);
+        let surface = Surface {
+            materials: vec![Material { name: "Hull".into(), albedo: "textures/p/endless.dds".into(), specular: "textures/p/whole.dds".into(), normals: "textures/p/relief.png".into(), mean: [90; 3] }],
+            pieces: vec![Piece { vertices: vec![Vertex { uv: [0.0; 2], normal: [0, 32767, 0] }; 3] }],
+            far: "painted_far".into(),
+        };
+        f.put("mod", "objects3d/painted.surface", surface.to_bytes());
+        let mut endless = ta_formats::dds::header(300, 300, 1, None);
+        endless[28..32].copy_from_slice(&u32::MAX.to_le_bytes());
+        endless.extend(std::iter::repeat_n(7u8, 300 * 300 * 4));
+        f.put("mod", "textures/p/endless.dds", endless);
+        let mut whole = ta_formats::dds::header(512, 512, 10, Some(b"DXT5"));
+        let blocks: usize = (0..10).map(|l| ((512u32 >> l).max(1).div_ceil(4).pow(2) * 16) as usize).sum();
+        whole.extend(std::iter::repeat_n(0u8, blocks));
+        f.put("mod", "textures/p/whole.dds", whole);
+        f.put("mod", "textures/p/relief.png", b"PNG");
+        let report = validate_all(&f.vfs(&["mod"]));
+        let text = report.to_text();
+        let told = |code: &str| report.issues.iter().filter(|i| i.code == code).map(|i| (i.path.clone(), i.severity)).collect::<Vec<_>>();
+        assert_eq!(told("texture.levels"), [("textures/p/endless.dds".to_string(), Severity::Warning)], "{text}");
+        let levels = report.issues.iter().find(|i| i.code == "texture.levels").unwrap();
+        assert!(levels.message.contains("4294967295") && levels.message.contains("9 at most") && levels.message.contains("holds 1."), "{text}");
+        assert_eq!(told("texture.paint"), [("textures/p/endless.dds".to_string(), Severity::Info)], "the whole one is read as it is: {text}");
+        assert_eq!(told("model.surface_texture"), [("objects3d/painted.surface".to_string(), Severity::Warning)], "{text}");
+        assert!(report.issues.iter().any(|i| i.code == "model.surface_texture" && i.message.contains("(textures/p/relief.png)")), "{text}");
+        assert_eq!(told("model.far"), [("objects3d/painted.surface".to_string(), Severity::Warning)], "{text}");
+        assert!(!report.issues.iter().any(|i| i.code == "format.invalid"), "{text}");
+        // A far model of the same pieces is no finding; a DDS cut short before its first level's
+        // texels does not read.
+        f.put("mod", "objects3d/painted_far.3do", textured_model(&["hull"]));
+        f.put("mod", "textures/p/whole.dds", ta_formats::dds::header(512, 512, 10, Some(b"DXT5")));
+        let report = validate_all(&f.vfs(&["mod"]));
+        assert!(!report.issues.iter().any(|i| i.code == "model.far"), "{}", report.to_text());
+        assert!(report.issues.iter().any(|i| i.path == "textures/p/whole.dds" && i.code == "format.invalid"), "{}", report.to_text());
     }
 
     /// Explosions taking more of the atlas than the game gives them are drawn reduced, as the

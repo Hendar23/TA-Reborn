@@ -60,7 +60,8 @@ fn slots(count: usize) -> Vec<Vec<Slot>> {
     let left = Slot { middle: 225.0, sweep: 2.0 * HALF_ARC };
     let right = Slot { middle: 135.0, sweep: -2.0 * HALF_ARC };
     let top = Slot { middle: 0.0, sweep: 2.0 * HALF_ARC };
-    // Four (a mod's units carry up to eight weapons; the first four are shown) on the diagonals,
+    // Four (a mod's units carry up to eight weapons, those that read the same one arc between
+    // them, `Perspective::weapons`; the first four are shown) on the diagonals,
     // clear of the reticle's lines and of each other.
     let upper_left = Slot { middle: 315.0, sweep: 2.0 * HALF_ARC };
     let upper_right = Slot { middle: 45.0, sweep: -2.0 * HALF_ARC };
@@ -106,8 +107,8 @@ pub(super) fn readiness(pen: &Pen, c: Pos2, r: f32, p: &Perspective, game: &Game
         let cost = wt.filter(|wt| wt.command_fire && w.manual).map_or(0.0, |wt| game.sim.shot_energy(u.id, wt).to_f32());
         let starved = w.manual && cost > energy;
         let col = state_colour(w, starved);
-        let fired = (now - p.hud.last_shot[w.slot]) as f32;
-        let came = (now - p.hud.ready_since[w.slot]) as f32;
+        let fired = (now - w.latest(&p.hud.last_shot)) as f32;
+        let came = (now - w.latest(&p.hud.ready_since)) as f32;
         // (A pulse as it comes ready, a flash as it fires.)
         let pulse = if w.ready && (0.0..0.35).contains(&came) { 1.0 - came / 0.35 } else { 0.0 };
         let flash = if (0.0..0.15).contains(&fired) { 1.0 - fired / 0.15 } else { 0.0 };

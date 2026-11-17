@@ -4,6 +4,7 @@
 //! marks (brush, tile outline, start positions) are painted over the 3D view.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use glam::{Mat4, Vec2, Vec3, Vec4Swizzles};
 use ta_data::GameData;
@@ -26,6 +27,9 @@ struct Visual {
     lies: bool,
     translucent: bool,
     model: Option<ModelId>,
+    /// A unit's wreck of its own model and surface: drawn burnt out, as in a battle
+    /// (`features::BURNT_OUT`).
+    burnt_out: bool,
 }
 
 /// A feature on the map: its type and where it stands.
@@ -46,6 +50,8 @@ pub struct View {
     lying: Vec<SpriteInstance>,
     matrices: Vec<Vec<Mat4>>,
     models: Vec<ModelId>,
+    /// Whether each of `models` is drawn burnt out (`Visual::burnt_out`).
+    burnt: Vec<bool>,
     /// Which terrain chunks were under water when the water surface was last built.
     wet: Option<Vec<bool>>,
     planet: String,
@@ -67,6 +73,7 @@ impl View {
             lying: Vec::new(),
             matrices: Vec::new(),
             models: Vec::new(),
+            burnt: Vec::new(),
             wet: None,
             planet: String::new(),
         };
@@ -101,7 +108,7 @@ impl View {
     }
 
     /// Shows what an edit changed: heights and tiles in place, features again.
-    pub fn push(&mut self, renderer: &mut Renderer, doc: &MapDoc, data: &GameData, vfs: &Vfs, palette: &Palette, changes: &Changes) {
+    pub fn push(&mut self, renderer: &mut Renderer, doc: &MapDoc, data: &GameData, vfs: &Arc<Vfs>, palette: &Palette, changes: &Changes) {
         if changes.props && self.planet != doc.props.planet {
             self.set_world(renderer, &doc.props.planet);
         }
@@ -142,7 +149,7 @@ impl View {
     }
 
     /// Lists every feature on the map with its position, loading the art of new types.
-    pub fn place_features(&mut self, renderer: &mut Renderer, doc: &MapDoc, data: &GameData, vfs: &Vfs, palette: &Palette) {
+    pub fn place_features(&mut self, renderer: &mut Renderer, doc: &MapDoc, data: &GameData, vfs: &Arc<Vfs>, palette: &Palette) {
         self.placed.clear();
         self.unknown_features = 0;
         let found: Vec<((u32, u32), usize)> = doc
@@ -164,8 +171,10 @@ impl View {
         }
     }
 
-    /// The art of a feature type: GAF sprite frames and shadow, or its 3DO model.
-    pub fn load_visual(&mut self, renderer: &mut Renderer, data: &GameData, vfs: &Vfs, palette: &Palette, def_id: usize) {
+    /// The art of a feature type: GAF sprite frames and shadow, or its 3DO model (with its surface,
+    /// where it has one of its own: a Supreme Commander unit's wreck, its paint read from `vfs`
+    /// as it is first drawn, as in a battle).
+    pub fn load_visual(&mut self, renderer: &mut Renderer, data: &GameData, vfs: &Arc<Vfs>, palette: &Palette, def_id: usize) {
         if self.visuals.contains_key(&def_id) {
             return;
         }
@@ -177,7 +186,11 @@ impl View {
                 v.model = vfs
                     .read_opt(&format!("objects3d/{name}.3do"))
                     .and_then(|b| ta_formats::model3do::Model3do::parse(&b).ok())
-                    .map(|m| models.library.add(&name, &m, &models.textures, palette));
+                    .map(|m| crate::scene::add_model(models, &|p| vfs.read_opt(p), &name, &m, palette));
+                if v.model.is_some_and(|id| models.library.is_surfaced(id)) {
+                    v.burnt_out = data.units.iter().any(|u| u.corpse.eq_ignore_ascii_case(&def.name));
+                    crate::scene::Scene::read_surfaces_from(renderer, vfs.clone());
+                }
             }
         } else if !def.filename.is_empty() {
             let key = def.filename.to_ascii_lowercase();
@@ -219,6 +232,7 @@ impl View {
         self.lying.clear();
         self.matrices.clear();
         self.models.clear();
+        self.burnt.clear();
         let margin = 128.0;
         let tint = if ghost.is_some_and(|g| g.2) { [0.8, 1.15, 0.8] } else { [1.3, 0.6, 0.55] };
         let ghost = ghost.map(|(def, pos, _)| Placed { def, pos });
@@ -234,6 +248,7 @@ impl View {
                     let root = Mat4::from_translation(p.pos);
                     self.matrices.push(models.library.info(model).rest_pose().into_iter().map(|m| root * m).collect());
                     self.models.push(model);
+                    self.burnt.push(v.burnt_out);
                 }
                 continue;
             }
@@ -257,8 +272,16 @@ impl View {
                 self.decals.push(inst);
             }
         }
-        let instances: Vec<DrawInstance<'_>> =
-            self.models.iter().zip(&self.matrices).map(|(&model, m)| DrawInstance { model, pieces: m, team: 0, flags: 0, build: 1.0, damage: 0.0, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL }).collect();
+        let instances: Vec<DrawInstance<'_>> = self
+            .models
+            .iter()
+            .zip(&self.matrices)
+            .zip(&self.burnt)
+            .map(|((&model, m), &burnt)| {
+                let (team, flags, damage) = if burnt { crate::features::BURNT_OUT } else { (0, 0, 0.0) };
+                DrawInstance { model, pieces: m, team, flags, build: 1.0, damage, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL, key: 0 }
+            })
+            .collect();
         renderer.prepare_models(instances);
         renderer.prepare_sprites(&self.decals, &self.billboards, &[], &[], &self.lying);
         renderer.prepare_beams(&[]);

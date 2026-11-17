@@ -1055,9 +1055,14 @@ impl Hud {
                     more = key_button(ui, game.keys.text("help")).on_hover_text(t("Information on the selected unit (with none, the controls reference)")).clicked();
                 });
                 let about = if many == 1 { t("What it makes and uses a second now") } else { t("What they make and use a second now, all together") };
-                for row in &output {
-                    ui.label(super::figure_job(row)).on_hover_text(about);
-                }
+                // (Side by side where they fit, the metal's then the energy's: in a short plate a
+                // line apiece pushed the figures below out of sight.)
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 18.0;
+                    for row in &output {
+                        ui.label(super::figure_job(row)).on_hover_text(about);
+                    }
+                });
                 if summary {
                     if !output.is_empty() {
                         ui.add_space(3.0);
