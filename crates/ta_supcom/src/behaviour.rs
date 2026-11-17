@@ -136,10 +136,11 @@ fn functions(t: &[Token], name: &str, from: usize, to: usize) -> Vec<(usize, usi
     out
 }
 
-/// The calls `method('<first>', <second>)` in `t[from..to]`, in order: the first argument (a
-/// string) and the second (`true`, `false` or none), and whether the call stands inside an `if`
-/// or loop of that range.
-fn calls(t: &[Token], method: &str, from: usize, to: usize) -> Vec<(String, Option<bool>, bool)> {
+/// The calls `method('<first>', <second>)` of any of `methods` in `t[from..to]`, in the order
+/// they stand in: which of the methods it calls (its index), the first argument (a string) and the
+/// second (`true`, `false` or none), and whether the call stands inside an `if` or loop of that
+/// range.
+fn calls(t: &[Token], methods: &[&str], from: usize, to: usize) -> Vec<(usize, String, Option<bool>, bool)> {
     let mut out = Vec::new();
     let mut depth = 0i32;
     let mut k = from;
@@ -148,14 +149,16 @@ fn calls(t: &[Token], method: &str, from: usize, to: usize) -> Vec<(String, Opti
             match n.as_str() {
                 "if" | "do" | "repeat" | "function" => depth += 1,
                 "end" | "until" => depth -= 1,
-                _ if n == method && t.get(k + 1) == Some(&Token::Mark('(')) => {
-                    if let Some(Token::Str(first)) = t.get(k + 2) {
+                _ if t.get(k + 1) == Some(&Token::Mark('(')) => {
+                    if let Some(which) = methods.iter().position(|m| n == m)
+                        && let Some(Token::Str(first)) = t.get(k + 2)
+                    {
                         let second = match (t.get(k + 3), t.get(k + 4)) {
                             (Some(Token::Mark(',')), Some(Token::Name(v))) if v == "true" => Some(true),
                             (Some(Token::Mark(',')), Some(Token::Name(v))) if v == "false" => Some(false),
                             _ => None,
                         };
-                        out.push((first.clone(), second, depth > 0));
+                        out.push((which, first.clone(), second, depth > 0));
                     }
                 }
                 _ => {}
@@ -211,23 +214,23 @@ pub fn birth(text: &str) -> Birth {
     let outside = |range: &(usize, usize)| weapons_table.is_none_or(|(a, b)| range.0 > b || range.1 < a);
     for name in ["OnCreate", "OnStopBeingBuilt"] {
         let Some(body) = functions(&t, name, 0, t.len()).into_iter().rfind(outside) else { continue };
-        for (label, on, inside) in calls(&t, "SetWeaponEnabledByLabel", body.0, body.1) {
+        for (_, label, on, inside) in calls(&t, &["SetWeaponEnabledByLabel"], body.0, body.1) {
             match (on, inside) {
                 (Some(on), false) => set(&mut off, &label, on),
                 (Some(true), true) if !by_layer.iter().any(|l| l.eq_ignore_ascii_case(&label)) => by_layer.push(label),
                 _ => {}
             }
         }
-        for (method, on) in [("EnableUnitIntel", true), ("DisableUnitIntel", false)] {
-            for (kind, _, inside) in calls(&t, method, body.0, body.1) {
-                if !inside {
-                    set(&mut intel_off, &kind, on);
-                }
+        // (Switched on and off in the order the script does it: the last call of a kind's
+        // standing, an intel switched off and on again on.)
+        for (which, kind, _, inside) in calls(&t, &["EnableUnitIntel", "DisableUnitIntel"], body.0, body.1) {
+            if !inside {
+                set(&mut intel_off, &kind, which == 0);
             }
         }
     }
     for body in functions(&t, "OnLayerChange", 0, t.len()) {
-        for (label, on, _) in calls(&t, "SetWeaponEnabledByLabel", body.0, body.1) {
+        for (_, label, on, _) in calls(&t, &["SetWeaponEnabledByLabel"], body.0, body.1) {
             if on == Some(true) && !by_layer.iter().any(|l| l.eq_ignore_ascii_case(&label)) {
                 by_layer.push(label);
             }
@@ -369,6 +372,18 @@ Thing = Class(Base) {
         assert!(!b.weapon_off("Bolter") && !b.weapon_off("Torpedo"), "by the layer: {b:?}");
         assert!(b.intel_off("radarstealth") && b.intel_off("Sonar") && !b.intel_off("Radar"), "{b:?}");
         assert_eq!(birth("Unit = Class(Base) { OnCreate = function(self) end, }"), Birth::default());
+    }
+
+    /// An intel switched off and then on again as the unit is made stays on, and one switched on
+    /// and then off stays off: the script's last word on it stands, whichever way it switches.
+    #[test]
+    fn intel_switched_off_and_on_again_is_on() {
+        let script = |first: &str, then: &str| format!("Unit = Class(Base) {{\n    OnStopBeingBuilt = function(self, builder, layer)\n        self:{first}UnitIntel('Sonar')\n        self:{then}UnitIntel('Sonar')\n    end,\n}}");
+        assert!(!birth(&script("Disable", "Enable")).intel_off("Sonar"));
+        assert!(birth(&script("Enable", "Disable")).intel_off("Sonar"));
+        // (Across the two: OnCreate's switch off undone by OnStopBeingBuilt's switch on.)
+        let both = "Unit = Class(Base) {\n    OnCreate = function(self) self:DisableUnitIntel('Cloak') end,\n    OnStopBeingBuilt = function(self, builder, layer) self:EnableUnitIntel('Cloak') end,\n}";
+        assert!(!birth(both).intel_off("Cloak"));
     }
 
     #[test]
