@@ -653,3 +653,16 @@ Ctrl, Shift, Cmd, Option, Enter, Esc, Tab, Home, End). Launcher pages are 탭 (�
 | SHOW {count} MORE / SHOW THE LATEST TEN | 나머지 {count}개 보기 / 최근 10개만 보기 |
 | LEGAL / THE PROJECT (About page headings) / MUSIC OPTIONS | 법적 고지 / 프로젝트 / 음악 옵션 |
 | the launcher crashed | 런처가 충돌했습니다 |
+
+## Supreme Commander: Forged Alliance's maps and factions (`pages/supcom.rs`, `supcom.rs`, `supcom_factions.rs`)
+
+Supreme Commander, Forged Alliance and Forged Alliance Forever stay English (the button
+SUPREME COMMANDER… too; in capitals: SUPREME COMMANDER 맵 / 진영); its pages are 맵 탭 / 모드 탭. Faction names (UEF, CYBRAN,
+AEON, SERAPHIM) are followed by 진영 ({faction} 진영을); units count in 기.
+
+| English | 한국어 |
+|---|---|
+| faction / mass points / your own copy of the game / the original Supreme Commander | 진영 / 매스 포인트 / 보유한 게임 / 오리지널 Supreme Commander |
+| Held until the import ends (amber note beside the greyed controls) | 가져오기가 끝날 때까지 변경 불가 |
+| the launcher's footer (its bar of activity chips) | 런처 하단 표시줄 |
+| shields / stealth fields / teleporting / upgrading buildings in place | 방어막 / 스텔스 필드 / 순간이동 / 건물의 제자리 업그레이드 |

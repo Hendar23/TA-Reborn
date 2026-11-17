@@ -652,3 +652,14 @@ te kolory, a także …”, joined by a comma („własną czcionkę, obrazy w t
 | error fragments filling {error}, {why} | lowercase clauses („upłynął limit czasu połączenia”, „jest pusty”) |
 | None of the {n} maps could be made / but {failed} could not be made | „Nie udało się utworzyć żadnej mapy (nieudane: {n})” / „nie udało się utworzyć: {failed}” (count-safe) |
 | Hue / Saturation and brightness (colour picker, spoken) | Odcień / Nasycenie i jasność („nasycenie {s}%, jasność {v}%”) |
+
+## Supreme Commander: Forged Alliance's maps and factions imported (`pages/supcom.rs`, `supcom.rs`, `supcom_factions.rs`, `pages/mods.rs`)
+
+| English | Polski |
+|---|---|
+| SUPREME COMMANDER MAPS / FACTIONS (footer chips) / the launcher's footer | MAPY / FRAKCJE SUPREME COMMANDER / stopka launchera |
+| Held until the import ends (amber note by greyed controls) | Zablokowane do końca importu |
+| then import these (the IMPORT button's wait reasons) | „a potem zaimportuj wybrane”; „…zaimportuj mapy / frakcje” where the sentence names the other tab's work |
+| UPDATE… / Update: import it again / Made by an older TA Reborn (a mod made by the import) | AKTUALIZUJ… / Aktualizacja: ponowny import / Utworzony przez starszą wersję TA Reborn |
+| but {failed} of its units could not be made | „ale nie udało się utworzyć części jej jednostek (nieudane: {failed})” (count-safe) |
+| commanders' enhancements / upgrading buildings in place / shields / stealth fields / teleporting | ulepszenia dowódców / ulepszanie budynków na miejscu / tarcze / pola niewykrywalności (as „Niewykrywalna: nie widać jej na radarze”) / teleportacja |

@@ -8,6 +8,7 @@ use std::time::Duration;
 use egui::{Color32, CornerRadius, Id, Key, LayerId, Modifiers, Order, RichText, Stroke};
 use ta_ui::i18n::{t, tf};
 use ta_ui::panel::{Exit, Panel};
+use ta_ui::tooltip::TooltipExt as _;
 
 use super::{Action, LauncherApp, Page};
 use crate::battles::Battles;
@@ -25,6 +26,10 @@ pub(crate) enum UpdateWait {
     Install,
     /// The map library's work (its status).
     Maps(&'static str),
+    /// Supreme Commander's maps being made, which closing the launcher would cut short.
+    SupcomMaps,
+    /// Supreme Commander's factions being made, likewise.
+    SupcomFactions,
     /// The profile being edited, which closing would lose.
     Profile,
     /// The skin editor's unsaved changes, likewise.
@@ -39,6 +44,8 @@ impl UpdateWait {
             UpdateWait::SkinWork => t("Wait for the current skin operation to finish, then try again."),
             UpdateWait::Install => t("Wait for the mod being installed"),
             UpdateWait::Maps(status) => t(status),
+            UpdateWait::SupcomMaps => t("Wait for the Supreme Commander maps being made, then try again."),
+            UpdateWait::SupcomFactions => t("Wait for the Supreme Commander factions being made, then try again."),
             UpdateWait::Profile | UpdateWait::SkinEdits => self.queued(),
         }
     }
@@ -50,6 +57,8 @@ impl UpdateWait {
             UpdateWait::SkinWork => t("READY · IT INSTALLS AFTER THE SKIN WORK"),
             UpdateWait::Install => t("READY · IT INSTALLS AFTER THE MOD"),
             UpdateWait::Maps(status) => t(status),
+            UpdateWait::SupcomMaps => t("READY · IT INSTALLS AFTER THE SUPREME COMMANDER MAPS"),
+            UpdateWait::SupcomFactions => t("READY · IT INSTALLS AFTER THE SUPREME COMMANDER FACTIONS"),
             UpdateWait::Profile => t("READY · IT INSTALLS WHEN THE PROFILE IS CLOSED"),
             UpdateWait::SkinEdits => t("READY · IT INSTALLS WHEN THE SKIN IS SAVED"),
         }
@@ -105,12 +114,14 @@ impl LauncherApp {
     }
 
     /// What keeps UPDATE NOW and INSTALL NOW from being pressed: Setup replaces the game's files,
-    /// and closing the launcher for it would stop a skin's work, a mod's install or the map
-    /// library's work.
+    /// and closing the launcher for it would stop a skin's work, a mod's install, a Supreme
+    /// Commander import or the map library's work.
     pub(crate) fn update_blocked(&self) -> Option<UpdateWait> {
         if self.game_running() { Some(UpdateWait::Game) }
         else if self.skins.busy() { Some(UpdateWait::SkinWork) }
         else if self.installer.busy() { Some(UpdateWait::Install) }
+        else if self.supcom.importing() { Some(UpdateWait::SupcomMaps) }
+        else if self.supcom.factions.importing() { Some(UpdateWait::SupcomFactions) }
         else { self.maps.status().map(UpdateWait::Maps) }
     }
 
@@ -437,7 +448,8 @@ impl LauncherApp {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
-                remove = ui.add_enabled(!self.game_running() && !self.installer.busy(), ActionButton::danger("REMOVE")).clicked();
+                let blocked = self.removal_blocked();
+                remove = ui.add_enabled(blocked.is_none(), ActionButton::danger("REMOVE")).disabled_tip(blocked.unwrap_or_default()).clicked();
                 if ui.add(ActionButton::secondary("KEEP")).clicked() {
                     self.confirm_uninstall = None;
                 }

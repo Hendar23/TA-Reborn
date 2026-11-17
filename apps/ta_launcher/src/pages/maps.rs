@@ -181,7 +181,7 @@ impl LauncherApp {
             if ui.add_enabled(idle, ActionButton::secondary("SUPREME COMMANDER…").height(height))
                 .hover_tip(t("Import the maps of Supreme Commander: Forged Alliance from your own copy of the game (GOG's or Steam's), to play in skirmish."))
                 .disabled_tip(busy.unwrap_or_default()).clicked() {
-                self.push(Action::SupcomOpen);
+                self.push(Action::SupcomOpen(crate::supcom::Tab::Maps));
             }
             let new_map_why = if !game { Some(t("Find your Total Annihilation install on the Play page first.")) } else { self.map_work_blocked() };
             if ui.add_enabled(idle && new_map_why.is_none(), ActionButton::secondary("NEW MAP").height(height)).hover_tip(t("Open the map editor on a new map."))

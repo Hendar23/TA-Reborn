@@ -176,7 +176,10 @@ pub fn accepts(item: &Item, query: &str, filter: Filter, hidden_view: bool, fact
         Filter::All => true,
         Filter::Installed => item.installed,
         Filter::Enabled => facts.enabled.contains(&item.id),
-        Filter::Updates => item.catalogue.is_some_and(|entry| waiting_update(entry, facts.updatable_version(&item.id)).is_some()),
+        // (The Supreme Commander imports' mods made by an older converter too: made again in
+        // their dialog.)
+        Filter::Updates => item.catalogue.is_some_and(|entry| waiting_update(entry, facts.updatable_version(&item.id)).is_some())
+            || crate::supcom::update_tab(facts.mods, &item.id).is_some(),
         Filter::PlaysWell => item.catalogue.is_some_and(|entry| plays_well(entry, item.installed, &(facts.status)(&item.id))),
     };
     shown && match (item.catalogue, facts.mods.get(&item.id)) {

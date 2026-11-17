@@ -558,4 +558,6 @@ them (Alt, Ctrl, Shift, Cmd, Option, Enter, Esc, Tab, Home, End).
 | SHOW {count} MORE / SHOW THE LATEST TEN | 显示其余 {count} 条 / 只显示最近 10 条 |
 | LEGAL / THE PROJECT (About page headings) / MUSIC OPTIONS | 法律信息 / 本项目 / 音乐选项 |
 | a Supreme Commander map's scenario file | 场景文件 (TA Reborn's scenarios stay 剧本) |
+| the original Supreme Commander (not Forged Alliance) / stealth fields / shields / teleporting / upgrading buildings in place / the commanders' enhancements | 原版 Supreme Commander / 隐身力场 (not 隐形: that is cloak) / 护盾 / 传送 / 建筑原地升级 / 指挥官强化 |
+| Held until the import ends (beside greyed controls) / the launcher's footer (its status bar) / UPDATE… (an imported mod made again) | 导入结束前不可更改 / 启动器底部的状态栏 (as 状态栏) / 更新… |
 | proxy / redirect / the launcher crashed | 代理服务器 / 重定向 / 启动器崩溃 |

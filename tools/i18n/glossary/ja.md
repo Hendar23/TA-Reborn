@@ -108,6 +108,7 @@ Unit, map and planet names stay in English (they appear in English in game).
 | reserve / transport berth (Conquest) | 予備 / 輸送枠（出撃枠） |
 | compatibility playback | 互換再生 |
 | livery / pattern / texture slot / trim (skin editor) | 塗装 / 模様（パターン） / テクスチャスロット / 縁取り |
+| Supreme Commander, Forged Alliance (a space either side in Japanese text) / the original Supreme Commander / import it again (label: 再インポート) / the launcher's footer | Supreme Commander の陣営 / 初代 Supreme Commander / もう一度インポート / ランチャーのステータスバー |
 
 ## Achievements
 

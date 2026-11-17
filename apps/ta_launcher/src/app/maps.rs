@@ -4,11 +4,16 @@ use crate::maps::{Action, Request};
 use crate::theme::*;
 
 impl LauncherApp {
-    /// Reads may overlap other library work; publishing a map pack must finish before
-    /// the same shared mod folder can be replaced or removed through the Mods page.
+    /// Reads may overlap other library work; publishing a map pack (or the Supreme Commander
+    /// factions' mod) must finish before the same shared mod folder can be replaced or removed
+    /// through the Mods page: an import would install it again, and turn it on.
     pub(crate) fn map_import_blocks_mod_changes(&mut self) -> bool {
         if self.supcom.importing() {
             self.notify("Wait for the Supreme Commander maps being made, then try again.", AMBER);
+            return true;
+        }
+        if self.supcom.factions.importing() {
+            self.notify("Wait for the Supreme Commander factions being made, then try again.", AMBER);
             return true;
         }
         if !self.maps.importing() { return false; }
@@ -323,7 +328,7 @@ mod tests {
             app.notice.as_ref().map(|notice| (notice.text.clone(), notice.color))
         };
         let (text, colour) = told(&mut app, Outcome { failed: failed(), ..Default::default() }).expect("told");
-        assert!(text.starts_with("None of the 1 Supreme Commander maps could be made") && colour == RED, "{text}");
+        assert!(text.starts_with("The Supreme Commander map could not be made") && colour == RED, "{text}");
         assert!(!app.config.mods.enabled.iter().any(|id| id == crate::supcom::PACK_ID), "nothing made, nothing turned on");
         let (text, colour) = told(&mut app, Outcome { imported: vec!["Open Palms".into()], made: vec!["scmp_002".into()], failed: failed(), ..Default::default() }).expect("told");
         assert!(text.contains("but 1 could not be made") && colour == AMBER, "{text}");

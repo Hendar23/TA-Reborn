@@ -690,3 +690,22 @@ gewählten Karten konnte erstellt werden ({n})."
 | hue / saturation / brightness (colour picker) | Farbton / Sättigung / Helligkeit |
 | screen-reader marks OK / Not present / Error; {content}: found / not found | OK / Nicht vorhanden / Fehler; gefunden / nicht gefunden |
 | LEGAL / THE PROJECT (About page headings) | RECHTLICHES / DAS PROJEKT |
+
+## Importing Supreme Commander's maps and factions (`pages/supcom.rs`, `supcom.rs`, `supcom_factions.rs`)
+
+The game's name compounds with hyphens: Supreme-Commander-Karten, Supreme-Commander-Fraktionen
+(chips SUPREME-COMMANDER-KARTEN / -FRAKTIONEN), the button SUPREME COMMANDER… kept. A faction's
+name follows its noun: "Fraktion {faction} importiert", "Supreme-Commander-Fraktion {faction}
+importiert". The one-map messages are singular ("1 Karte importiert: Du findest sie …", "1 Karte
+konnte nicht erstellt werden"); other counts read for any number ("nicht erstellte Einheiten:
+{failed}"). "then import these" (the maps or factions chosen) is "importiere dann deine Auswahl":
+"diese" would point back at the mod or the maps just named.
+
+| English | Deutsch |
+|---|---|
+| Held until the import ends (beside greyed controls) | Während des Imports gesperrt |
+| STOPPING… / IMPORT MAPS / REPLACE AND IMPORT | WIRD ANGEHALTEN… / KARTEN IMPORTIEREN / ERSETZEN UND IMPORTIEREN |
+| UPDATE… (a mod made by an older TA Reborn, imported again) | UPDATE… (as UPDATE · {size}) |
+| with this (dialog) closed / the launcher's footer | bei geschlossenem Dialog / die Statusleiste des Launchers |
+| the commanders' enhancements / upgrading buildings in place | die Erweiterungen der Kommandanten / das Aufrüsten von Gebäuden an Ort und Stelle |
+| shields / stealth fields / teleporting | Schilde / Tarnkappenfelder (as Tarnkappe, TA's stealth; tarnen is cloak) / Teleportation |
