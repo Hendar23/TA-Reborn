@@ -118,6 +118,18 @@
   alike as one ("Gauss Cannon x4"); the map editor draws their wrecks in their paint. The mod check
   now reads DDS textures' mip levels and texels, notes paint that is made again as it is read, and
   checks far models' pieces, that surfaces name DDS textures, and each clip.
+- Supreme Commander maps look and play more as in their game (make them again: the launcher
+  offers to update maps made before). The ground is lit as the game's own terrain shader lights
+  it: slopes facing away from the sun were painted black, and maps under a coloured sun took its
+  tint (Seraphim Glaciers came out cream, not lavender); the colours of maps twice as wide as
+  they are deep are matched to the game's picture of them. The cities' fences and street lights
+  no longer stand as palm trees across Flooded Strip Mine and Haven Reef, nor their buses, cars
+  and docks as rocks worth 150 metal, and the Cybran's wall segments are walls. A destroyed rock
+  no longer cracks into a larger, richer one. Every mass point now takes an extractor, a script's
+  call commented out no longer cuts a map down, and a map with a single start is refused. Shared
+  tiles meet more smoothly, and the largest maps are made in about a minute with under 1 GB of
+  memory (Crossfire Canal took 4 minutes and 4.4 GB). A game whose folders are reached through a
+  junction or a link is found.
 - The launcher's Supreme Commander dialog, opened again from the Mods page, showed its MAPS tab's
   maps as dark squares, still marked as they were (IMPORTED after REMOVE MAP PACK). Each tab now
   looks for the game again whenever it is shown after the dialog was closed, the factions' too

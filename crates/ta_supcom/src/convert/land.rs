@@ -194,7 +194,7 @@ fn cliffs(m: &ScMap, frame: Frame) -> Vec<bool> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::scmap::{ScMap, Water};
 

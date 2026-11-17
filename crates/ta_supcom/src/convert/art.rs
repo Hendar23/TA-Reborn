@@ -7,13 +7,18 @@
 use rayon::prelude::*;
 use ta_formats::tnt::TILE_SIZE;
 use ta_mapart::field::Field;
-use ta_mapart::tiles::{self, Desc, PaletteLut, Portable};
+use ta_mapart::tiles::{self, Colour, Desc, PaletteLut, Portable};
 
 use super::land::Land;
 use super::paint::Painter;
 
-/// How many times the places choose their tiles and the tiles settle to the places.
-const SETTLE_ROUNDS: usize = 4;
+/// How many times the places choose their tiles and the tiles settle to the places: each round
+/// brings the tiles' edges nearer those of the places showing them. Four left the tile grid
+/// showing on plain ground and seas; twelve took the steps at tile edges down by up to a sixth
+/// (Ian's Cross's from 1.41 times the steps inside its tiles to 1.19), a second or so a round on
+/// the largest maps, the tiles kept in OKLab through them. (Weighing a tile's likeness to its
+/// place more, or fewer candidates, made them worse.)
+const SETTLE_ROUNDS: usize = 12;
 /// The share of the budget tiles of cliff may keep whole.
 const WHOLE_SHARE: f32 = 0.3;
 
@@ -85,7 +90,6 @@ pub fn paint(p: &Painter, land: &Land, budget: usize, palette: &[[u8; 3]; 256], 
         tick(0.6, 0.0);
         strip
     }).collect();
-    let times = std::env::var_os("TA_SUPCOM_TIMES").is_some();
     let t0 = std::time::Instant::now();
     let mut descs = vec![Desc { mean: [0.0; 3], layout: [0.0; 48], edge: [0.0; 48], phase: 0 }; tw * th];
     let mut rock = vec![0.0f32; tw * th];
@@ -96,9 +100,7 @@ pub fn paint(p: &Painter, land: &Land, budget: usize, palette: &[[u8; 3]; 256], 
         }
     }
     let (mut assign, reps, k) = tiles::group(&descs, &rock, budget, WHOLE_SHARE);
-    if times {
-        eprintln!("    grouped in {:.1}s", t0.elapsed().as_secs_f32());
-    }
+    log::debug!("grouped in {:.1}s", t0.elapsed().as_secs_f32());
     // The tiles kept, painted again in full.
     let mut by_strip: Vec<Vec<(usize, usize)>> = vec![Vec::new(); tw];
     for (g, &t) in reps.iter().enumerate() {
@@ -117,19 +119,18 @@ pub fn paint(p: &Painter, land: &Land, budget: usize, palette: &[[u8; 3]; 256], 
     for (g, px) in repainted.into_iter().flatten() {
         kept[g] = px;
     }
-    if times {
-        eprintln!("    repainted by {:.1}s", t0.elapsed().as_secs_f32());
-    }
+    log::debug!("repainted by {:.1}s", t0.elapsed().as_secs_f32());
     let rock_shown: Vec<f32> = reps.iter().map(|&t| rock[t as usize]).collect();
+    // (The tiles kept in OKLab through the rounds: taken there and back once, not every round.)
+    let mut kept: Vec<Vec<[f32; 3]>> = kept.into_par_iter().map(|px| px.into_iter().map(Portable::oklab).collect()).collect();
     for _ in 0..SETTLE_ROUNDS {
-        let shown: Vec<Desc> = kept.par_iter().zip(&reps).map(|(px, &t)| Desc { phase: descs[t as usize].phase, ..tiles::describe_in::<Portable>(px) }).collect();
+        let shown: Vec<Desc> = kept.par_iter().zip(&reps).map(|(lab, &t)| Desc { phase: descs[t as usize].phase, ..tiles::describe_lab(lab) }).collect();
         tiles::stitch(&descs, &shown, &rock, &rock_shown, &mut assign, tw, k);
         let deltas = tiles::settle(&descs, &shown, &assign);
-        kept.par_iter_mut().zip(&deltas).for_each(|(px, d)| tiles::shift_in::<Portable>(px, d));
+        kept.par_iter_mut().zip(&deltas).for_each(|(lab, d)| tiles::shift_lab(lab, d));
     }
-    if times {
-        eprintln!("    settled by {:.1}s", t0.elapsed().as_secs_f32());
-    }
+    let kept: Vec<Vec<[f32; 3]>> = kept.into_par_iter().map(|lab| lab.into_iter().map(Portable::srgb).collect()).collect();
+    log::debug!("settled by {:.1}s", t0.elapsed().as_secs_f32());
     progress(0.95);
     let order = tiles::compact(&mut assign, kept.len());
     let tiles: Vec<Box<[u8; 1024]>> = order.par_iter().map(|&g| Box::new(lut.dither(&kept[g as usize]))).collect();

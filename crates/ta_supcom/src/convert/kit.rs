@@ -148,11 +148,32 @@ pub enum Class {
     None,
 }
 
+/// The shaders the game draws its factions' units with (team-coloured): props drawn with them
+/// are the cities' clutter, not the land's.
+const UNIT_SHADERS: &[&str] = &["Unit", "Insect", "Aeon", "AeonCZAR", "Seraphim", "Metal"];
+
+/// Whether a prop is a city's or a faction's, not the land's: the factions' props (`/env/uef/`,
+/// `/env/aeon/`, `/env/cybran/`, `/env/seraphim/`: buses, cars, docks, fences, street lights,
+/// adjacency nodes, crystals), wrecks', or one drawn as units are ([`UNIT_SHADERS`]: the
+/// Seraphim's street light in `/env/common/`). The fences and street lights are `Tree`s to the
+/// game (to be knocked down), the rest 300 mass each: neither is what they become in TA.
+fn city_prop(path: &str, bp: Option<&crate::lua::Table>) -> bool {
+    use crate::lua::Value;
+    if matches!(env_of(path).as_deref(), Some("uef" | "aeon" | "cybran" | "seraphim" | "wreckage")) {
+        return true;
+    }
+    let Some(lods) = bp.and_then(|t| t.path(&["Display", "Mesh"])).and_then(|m| m.get_ci("LODs")).and_then(Value::table) else { return false };
+    lods.array.iter().filter_map(Value::table).filter_map(|l| l.get_ci("ShaderName").and_then(Value::str)).any(|s| UNIT_SHADERS.iter().any(|u| s.eq_ignore_ascii_case(u)))
+}
+
 /// What a prop blueprint is, from its path and what the blueprint says (`bp`: its reclaim and
 /// size, when it could be read).
 pub fn classify(path: &str, bp: Option<&crate::lua::Table>) -> Class {
     use crate::lua::Value;
     let p = path.replace('\\', "/").to_ascii_lowercase();
+    if city_prop(&p, bp) {
+        return Class::None;
+    }
     let num = |keys: &[&str]| -> f32 {
         let mut t = match bp { Some(t) => t, None => return 0.0 };
         for k in &keys[..keys.len() - 1] {
@@ -178,7 +199,8 @@ pub fn classify(path: &str, bp: Option<&crate::lua::Table>) -> Class {
         // (A group is worth about as much as the trees in it, each 5 to 15.)
         return Class::Trees(((energy / 10.0).round() as u32).clamp(2, 6));
     }
-    if script == "tree" || p.contains("/trees/") || named(&["tree", "pine", "palm", "oak", "birch", "cypress", "ficus"]) {
+    // (A street light's name holds "tree" too.)
+    if script == "tree" || p.contains("/trees/") || (named(&["tree", "pine", "palm", "oak", "birch", "cypress", "ficus"]) && !file.contains("street")) {
         return Class::Tree;
     }
     let rock_named = named(&["rock", "boulder", "stone", "iceberg", "crystal", "pod", "lavaberg", "cliff"]);
@@ -203,6 +225,47 @@ pub struct Own {
 
 /// What a rock is worth, in tiers (TA's rocks are 25 to 100; the game's 2.5 to 300).
 const ROCK_TIERS: [(f32, &str, u32); 4] = [(10.0, "S", 5), (40.0, "M", 20), (120.0, "L", 60), (f32::MAX, "X", 150)];
+
+/// Whether a feature of TA's blocks nothing and is worth nothing (rubble, a scar, a smudge): a
+/// feature of the map's own may leave it as it is.
+fn harmless(d: &TdfSection) -> bool {
+    !d.get_bool_or("blocking", true) && d.get_f64_or("metal", 0.0) <= 0.0 && d.get_f64_or("energy", 0.0) <= 0.0 && !d.get_bool_or("geothermal", false)
+}
+
+/// What a feature of the map's own is worth and what it blocks: what its remains may not exceed.
+struct Caps {
+    metal: f64,
+    energy: f64,
+    blocking: bool,
+    footprint: (i64, i64),
+}
+
+impl Caps {
+    fn of(s: &TdfSection) -> Caps {
+        Caps {
+            metal: s.get_f64_or("metal", 0.0).max(0.0),
+            energy: s.get_f64_or("energy", 0.0).max(0.0),
+            blocking: s.get_bool_or("blocking", true),
+            footprint: (s.get_i64_or("footprintx", 1).max(1), s.get_i64_or("footprintz", 1).max(1)),
+        }
+    }
+
+    /// Holds remains of TA's (`d`) to them: worth no more, blocking no more (nor more cells).
+    fn hold(&self, d: &mut TdfSection) {
+        let number = |v: f64| if v.fract() == 0.0 { format!("{}", v as i64) } else { format!("{v}") };
+        let metal = d.get_f64_or("metal", 0.0).min(self.metal).max(0.0);
+        let energy = d.get_f64_or("energy", 0.0).min(self.energy).max(0.0);
+        let blocking = self.blocking && d.get_bool_or("blocking", true);
+        d.set("metal", number(metal));
+        d.set("energy", number(energy));
+        d.set("blocking", if blocking { "1" } else { "0" });
+        if blocking {
+            let (fx, fz) = (d.get_i64_or("footprintx", 1).max(1), d.get_i64_or("footprintz", 1).max(1));
+            d.set("footprintx", fx.min(self.footprint.0).to_string());
+            d.set("footprintz", fz.min(self.footprint.1).to_string());
+        }
+    }
+}
 
 impl Own {
     /// The name of the map's own feature standing for a prop of `class` (`variant` choosing
@@ -251,14 +314,67 @@ impl Own {
         let Some((world, t)) = templates.get(template) else { return };
         let mut s = TdfSection::new(name);
         for (k, v) in &t.entries {
-            // (What it burns into, and what reclaiming it leaves, are TA's: kept.)
             s.set(k, v.clone());
         }
         for (k, v) in set {
             s.set(k, *v);
         }
         s.set("rebornworld", world.clone());
-        self.defs.insert(name.to_string(), s);
+        self.remains(s, templates);
+    }
+
+    /// Defines feature `s` (of the map's own), and what it leaves: when destroyed (its
+    /// `featuredead`), TA's remains of the template it was made from, but never worth more than
+    /// it is nor blocking more than it did (TA's rocks crack into rocks as big and as rich as they
+    /// were, a 75-metal rock for a 5-metal pebble, and its Martian rocks into larger ones). Each
+    /// step of TA's that would is taken over under a name of the map's own (`<name>_D1`, `_D2`...),
+    /// its metal, energy and blocking no more than this feature's, nor its footprint where it
+    /// blocks; the first that blocks nothing and is worth nothing (rubble, a scar, a smudge) is
+    /// TA's own, by its name; past what cannot be told, nothing. What reclaiming it leaves, and
+    /// what it burns into, are TA's where they too block nothing and are worth nothing, else
+    /// nothing.
+    fn remains(&mut self, mut s: TdfSection, templates: &Templates) {
+        // (TA's rocks crack twice before they crumble; none goes further.)
+        const STEPS: usize = 4;
+        let caps = Caps::of(&s);
+        let name = s.name.clone();
+        let mut next = s.get("featuredead").unwrap_or("").trim().to_string();
+        let mut chain: Vec<TdfSection> = Vec::new();
+        let mut last = String::new();
+        for step in 1..=STEPS {
+            let Some((world, d)) = (!next.is_empty()).then(|| templates.get(&next)).flatten() else { break };
+            if harmless(d) {
+                last = d.name.clone();
+                break;
+            }
+            let mut copy = TdfSection::new(format!("{name}_D{step}"));
+            for (k, v) in &d.entries {
+                copy.set(k, v.clone());
+            }
+            caps.hold(&mut copy);
+            copy.set("rebornworld", world.clone());
+            next = d.get("featuredead").unwrap_or("").trim().to_string();
+            chain.push(copy);
+        }
+        // Each leaves the next; the last, TA's harmless remains or nothing.
+        let names: Vec<String> = chain.iter().map(|c| c.name.clone()).chain(std::iter::once(last)).collect();
+        for (section, dead) in std::iter::once(&mut s).chain(chain.iter_mut()).zip(&names) {
+            section.set("featuredead", dead.clone());
+            for key in ["featurereclamate", "featureburnt"] {
+                let left = section.get(key).unwrap_or("").trim().to_string();
+                let kept = templates.get(&left).filter(|(_, d)| harmless(d)).map_or(String::new(), |_| left);
+                section.set(key, kept);
+            }
+        }
+        for section in std::iter::once(s).chain(chain) {
+            self.defs.insert(section.name.clone(), section);
+        }
+    }
+
+    /// The footprint (cells across, its larger side) of the map's own feature `name` (1 if there is
+    /// none such).
+    pub fn footprint(&self, name: &str) -> i32 {
+        self.defs.get(name).map_or(1, |s| s.get_i64_or("footprintx", 1).max(s.get_i64_or("footprintz", 1)).clamp(1, 16) as i32)
     }
 
     /// The `maps/<map>.features` file: the definitions, in name order.
@@ -275,17 +391,95 @@ impl Own {
 pub(crate) mod tests {
     use super::*;
 
-    /// TA's templates the tests use: a few of green's and desert's.
+    /// TA's templates the tests use: a few of green's and Mars', with what they leave as TA's
+    /// leave it (a rock cracks into rocks as big and as rich, then crumbles into rubble; a tree
+    /// leaves a smudge, and burns into a dead tree that blocks).
     pub(crate) fn templates() -> Templates {
-        let green = "[Tree1]{world=greenworld;description=Tree;category=trees;footprintx=1;footprintz=1;height=40;filename=trees;seqname=leaf1;energy=250;blocking=1;flamable=1;}\
+        let green = "[Tree1]{world=greenworld;description=Tree;category=trees;footprintx=1;footprintz=1;height=40;filename=trees;seqname=leaf1;energy=250;blocking=1;flamable=1;featuredead=smudge01;featurereclamate=smudge01;featureburnt=Tree1Dead;}\
             [Tree2]{world=greenworld;description=Tree;category=trees;footprintx=1;footprintz=1;height=40;filename=trees;seqname=leaf2;energy=250;blocking=1;}\
+            [Tree1Dead]{description=Dead Tree;category=trees;footprintx=1;footprintz=1;energy=50;blocking=1;featuredead=smudge03;}\
+            [Smudge01]{description=Smudge;category=smudges;footprintx=1;footprintz=1;blocking=0;featuredead=Smudge01;}\
             [Shrub1]{description=Shrub;category=shrubs;footprintx=1;footprintz=1;energy=20;}\
             [Rock2]{description=Rock;category=rocks;footprintx=3;footprintz=3;metal=100;blocking=1;}\
-            [Rock4]{description=Rock;category=rocks;footprintx=2;footprintz=2;metal=75;blocking=1;}\
+            [Rock4]{description=Rock;category=rocks;footprintx=2;footprintz=2;metal=75;blocking=1;featuredead=rock4a;featurereclamate=rock04recscar;}\
+            [Rock4a]{description=Rock;category=rocks;footprintx=2;footprintz=2;metal=75;blocking=1;filename=rockshurt;featuredead=rock4b;featurereclamate=rock04recscar;}\
+            [Rock4b]{description=Rock;category=rocks;footprintx=2;footprintz=2;metal=75;blocking=1;filename=rockshurt2;featuredead=rockgone04;}\
+            [Rockgone04]{description=Rubble;category=rocks;footprintx=3;footprintz=3;blocking=0;}\
+            [Rock04RecScar]{description=Scar;category=rocks;footprintx=2;footprintz=2;blocking=0;}\
             [RockMetal3]{description=Metal;category=rocks;footprintx=3;footprintz=3;metal=223;indestructible=1;}\
             [GreenVent01]{description=Thermal Vent;category=steamvents;footprintx=1;footprintz=1;geothermal=1;}\
             [DragonsTeeth]{description=Dragon's Teeth;category=dragonteeth;footprintx=2;footprintz=2;metal=8;blocking=1;}";
-        Templates::from_documents([("green".to_string(), ta_formats::tdf::parse(green))])
+        let mars = "[MarsRock01]{description=Rock;category=rocks;footprintx=3;footprintz=2;metal=50;blocking=1;featuredead=marsrock03hit;}\
+            [MarsRock03Hit]{description=Rock;category=rocks;footprintx=3;footprintz=3;metal=25;blocking=1;featuredead=marsrock03gone;}\
+            [MarsRock03Gone]{description=Rubble;category=rocks;footprintx=3;footprintz=3;blocking=0;}";
+        Templates::from_documents([("green".to_string(), ta_formats::tdf::parse(green)), ("mars".to_string(), ta_formats::tdf::parse(mars))])
+    }
+
+    /// A destroyed rock of the map's own leaves TA's cracked rocks under names of its own, worth
+    /// no more than it was and blocking no more (cells and all), then TA's rubble; a passable
+    /// rock's remains are passable; a tree leaves TA's smudge, and burns into nothing that blocks.
+    #[test]
+    fn what_features_leave_is_never_worth_more_nor_blocks_more() {
+        let t = templates();
+        let mut own = Own::default();
+        let pebble = own.name(&GREEN, &t, Class::Rock { size: 0.5, mass: 5.0, blocks: true }, 0, 2).unwrap();
+        // (Martian rocks crack into larger ones.)
+        let mars = Kit { rocks: &["MarsRock01"], ..MARS };
+        let rock = own.name(&mars, &t, Class::Rock { size: 3.0, mass: 30.0, blocks: true }, 0, 3).unwrap();
+        let small = own.name(&mars, &t, Class::Rock { size: 0.5, mass: 1.0, blocks: false }, 0, 1).unwrap();
+        let tree = own.name(&GREEN, &t, Class::Tree, 0, 1).unwrap();
+        let doc = own.document();
+        let get = |n: &str, k: &str| doc.section(n).and_then(|s| s.get(k)).map(str::to_string);
+        assert_eq!(get(&pebble, "metal").as_deref(), Some("5"));
+        let d1 = get(&pebble, "featuredead").unwrap();
+        assert_eq!(d1, format!("{pebble}_D1"));
+        assert_eq!((get(&d1, "metal").as_deref(), get(&d1, "blocking").as_deref(), get(&d1, "filename").as_deref()), (Some("5"), Some("1"), Some("rockshurt")));
+        let d2 = get(&d1, "featuredead").unwrap();
+        assert_eq!((get(&d2, "metal").as_deref(), get(&d2, "filename").as_deref()), (Some("5"), Some("rockshurt2")));
+        assert_eq!(get(&d2, "featuredead").as_deref(), Some("Rockgone04"), "TA's rubble, which blocks nothing and is worth nothing");
+        assert_eq!(get(&pebble, "featurereclamate").as_deref(), Some("rock04recscar"));
+        // Martian rocks crack into larger ones: held to the rock's own cells.
+        let hit = get(&rock, "featuredead").unwrap();
+        assert_eq!((get(&hit, "footprintx").as_deref(), get(&hit, "footprintz").as_deref(), get(&hit, "metal").as_deref()), (Some("3"), Some("2"), Some("20")));
+        assert_eq!(get(&hit, "featuredead").as_deref(), Some("MarsRock03Gone"));
+        // A rock the game's units drove over leaves nothing that blocks.
+        assert_eq!(get(&get(&small, "featuredead").unwrap(), "blocking").as_deref(), Some("0"));
+        // Trees: TA's smudge when destroyed; they burn into nothing (TA's dead tree blocks).
+        assert_eq!((get(&tree, "featuredead").as_deref(), get(&tree, "featureburnt").as_deref()), (Some("Smudge01"), Some("")));
+        // Every feature of the map's own, and every remains, by these rules.
+        for s in &doc.sections {
+            let next = s.get("featuredead").unwrap_or("");
+            let Some(n) = doc.section(next) else {
+                assert!(next.is_empty() || t.get(next).is_some_and(|(_, d)| harmless(d)), "{}: {next}", s.name);
+                continue;
+            };
+            assert!(n.get_f64_or("metal", 0.0) <= s.get_f64_or("metal", 0.0) && n.get_f64_or("energy", 0.0) <= s.get_f64_or("energy", 0.0), "{} -> {}", s.name, n.name);
+            assert!(!n.get_bool_or("blocking", true) || (s.get_bool_or("blocking", true) && n.get_i64_or("footprintx", 1) <= s.get_i64_or("footprintx", 1) && n.get_i64_or("footprintz", 1) <= s.get_i64_or("footprintz", 1)), "{} -> {}", s.name, n.name);
+        }
+    }
+
+    /// The cities' props are left out (the fences and street lights the game calls trees, the
+    /// buses, cars, docks and adjacency nodes worth 300 mass), whatever they are worth and
+    /// however they are scripted; the land's own props are what they were.
+    #[test]
+    fn the_cities_props_are_left_out() {
+        let bp = |text: &str| crate::lua::top(&crate::lua::parse(text).unwrap(), "PropBlueprint").and_then(crate::lua::Value::table).cloned();
+        let fence = bp("PropBlueprint { Display = { Mesh = { LODs = { { ShaderName = 'Unit' } } } }, Economy = { ReclaimEnergyMax = 5, ReclaimMassMax = 0.5 }, Physics = { BlockPath = false }, ScriptClass = 'Tree', SizeX = 1.5 }");
+        let bus = bp("PropBlueprint { Display = { Mesh = { LODs = { { ShaderName = 'Unit' } } } }, Economy = { ReclaimMassMax = 300 }, Physics = { BlockPath = true }, SizeX = .5, SizeZ = 1 }");
+        assert_eq!(classify("/env/UEF/Props/UEF_Fence_prop.bp", fence.as_ref()), Class::None);
+        assert_eq!(classify("/env/uef/props/uef_streetlight_01_prop.bp", fence.as_ref()), Class::None);
+        assert_eq!(classify("/env/uef/props/uef_bus_prop.bp", bus.as_ref()), Class::None);
+        assert_eq!(classify("/env/cybran/props/cybranadjacencynodethree_prop.bp", bus.as_ref()), Class::None);
+        assert_eq!(classify("/env/aeon/props/aeon_fence_prop.bp", None), Class::None);
+        assert_eq!(classify("/env/seraphim/props/seraphim_crystal_prop.bp", None), Class::None);
+        // Drawn as units are, wherever it is kept.
+        assert_eq!(classify("/env/common/props/seraphim_streetlight_prop.bp", bus.as_ref()), Class::None);
+        // (A street light's name holds "tree" too.)
+        assert_eq!(classify("/env/evergreen/props/streetlight_prop.bp", None), Class::None);
+        // The land's props, as before.
+        let rock = bp("PropBlueprint { Display = { Mesh = { LODs = { { ShaderName = 'NormalMappedTerrain' } } } }, Economy = { ReclaimMassMax = 10 }, Physics = { BlockPath = true }, SizeX = 1 }");
+        assert_eq!(classify("/env/evergreen/props/rocks/rock01_prop.bp", rock.as_ref()), Class::Rock { size: 1.0, mass: 10.0, blocks: true });
+        assert_eq!(classify("/env/evergreen/props/trees/pine06_prop.bp", None), Class::Tree);
     }
 
     #[test]

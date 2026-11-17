@@ -4,8 +4,9 @@
 //! numbers (`6.75917e-005`), strings in either quote, tables (`name = v`, `['key'] = v`,
 //! `[1] = v` and bare values) and the save files' constructors, read as calls: `STRING('...')`,
 //! `FLOAT(1)`, `BOOLEAN(true)`, `VECTOR3(x, y, z)`, `RECTANGLE(...)`, `GROUP { ... }`, and
-//! a blueprint's `Sound { ... }`. Comments are Lua's (`--`, `--[[ ]]`) and the blueprints'
-//! `#`. Nothing is run.
+//! a blueprint's `Sound { ... }`. Comments are Lua's (`--`, `--[[ ]]`, `--[==[ ]==]`) and the
+//! blueprints' `#`; long strings of any level (`[[ ]]`, `[==[ ]==]`). Nothing is run. Of a
+//! map's script, only what it calls is looked for ([`call_string`]).
 
 use crate::{Error, Result};
 
@@ -186,21 +187,36 @@ impl Parser<'_> {
                 self.i += 1;
             }
             let rest = &self.s[self.i..];
-            if rest.starts_with(b"--[[") || rest.starts_with(b"--[=[") {
-                let close: &[u8] = if rest.starts_with(b"--[[") { b"]]" } else { b"]=]" };
-                self.i += 4;
-                match find(&self.s[self.i..], close) {
-                    Some(at) => self.i += at + close.len(),
-                    None => self.i = self.s.len(),
+            if rest.starts_with(b"--") {
+                self.i += 2;
+                match long_bracket(&self.s[self.i..]) {
+                    // `--[[ ... ]]`, `--[==[ ... ]==]`
+                    Some(level) => self.i = skip_long(self.s, self.i, level),
+                    None => self.line(),
                 }
-            } else if rest.starts_with(b"--") || rest.starts_with(b"#") {
-                while self.peek().is_some_and(|c| c != b'\n') {
-                    self.i += 1;
-                }
+            } else if rest.starts_with(b"#") {
+                self.line();
             } else {
                 return;
             }
         }
+    }
+
+    /// Skips to the end of the line.
+    fn line(&mut self) {
+        while self.peek().is_some_and(|c| c != b'\n') {
+            self.i += 1;
+        }
+    }
+
+    /// Enters a value within others (a table, a call's arguments): an error past [`MAX_DEPTH`]
+    /// (a file nesting them without end would run the reader out of stack).
+    fn enter(&mut self) -> Result<()> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err(self.error("values less deeply nested"));
+        }
+        Ok(())
     }
 
     fn name(&mut self) -> Option<String> {
@@ -221,7 +237,7 @@ impl Parser<'_> {
             None => Err(self.error("a value")),
             Some(b'{') => Ok(Value::Table(self.table()?)),
             Some(b'\'' | b'"') => Ok(Value::Str(self.string()?)),
-            Some(b'[') if self.s[self.i..].starts_with(b"[[") => Ok(Value::Str(self.long_string())),
+            Some(b'[') if long_bracket(&self.s[self.i..]).is_some() => Ok(Value::Str(self.long_string())),
             Some(c) if c == b'-' || c == b'+' || c == b'.' || c.is_ascii_digit() => Ok(Value::Num(self.number()?)),
             Some(_) => {
                 let name = self.name().ok_or_else(|| self.error("a value"))?;
@@ -245,6 +261,7 @@ impl Parser<'_> {
 
     /// The arguments of a call to `name`: `( v, v )`, `{ table }` or `'string'`.
     fn call_args(&mut self, name: String) -> Result<Value> {
+        self.enter()?;
         self.space();
         let args = match self.peek() {
             Some(b'(') => {
@@ -270,14 +287,12 @@ impl Parser<'_> {
             Some(b'\'' | b'"') => vec![Value::Str(self.string()?)],
             _ => return Err(self.error("'=' or a call")),
         };
+        self.depth -= 1;
         Ok(Value::Call(name, args))
     }
 
     fn table(&mut self) -> Result<Table> {
-        self.depth += 1;
-        if self.depth > MAX_DEPTH {
-            return Err(self.error("tables less deeply nested"));
-        }
+        self.enter()?;
         self.space();
         self.i += 1; // '{'
         let mut t = Table::default();
@@ -288,7 +303,7 @@ impl Parser<'_> {
             }
             // `[key] = v`, `name = v` or a bare value.
             let start = self.i;
-            if self.peek() == Some(b'[') && !self.s[self.i..].starts_with(b"[[") {
+            if self.peek() == Some(b'[') && long_bracket(&self.s[self.i..]).is_none() {
                 self.i += 1;
                 let key = self.value()?;
                 if !self.eat(b']') || !self.eat(b'=') {
@@ -358,11 +373,13 @@ impl Parser<'_> {
         Ok(String::from_utf8_lossy(&out).into_owned())
     }
 
+    /// A long string (`[[ ... ]]`, `[==[ ... ]==]`), the parser at its opening bracket.
     fn long_string(&mut self) -> String {
-        self.i += 2;
-        let end = find(&self.s[self.i..], b"]]").map_or(self.s.len(), |at| self.i + at);
-        let text = String::from_utf8_lossy(&self.s[self.i..end]).into_owned();
-        self.i = (end + 2).min(self.s.len());
+        let level = long_bracket(&self.s[self.i..]).unwrap_or(0);
+        let body = (self.i + level + 2).min(self.s.len());
+        let close = closing(self.s, body, level);
+        let text = String::from_utf8_lossy(&self.s[body..close.unwrap_or(self.s.len())]).into_owned();
+        self.i = close.map_or(self.s.len(), |c| c + level + 2);
         text
     }
 
@@ -402,6 +419,120 @@ impl Parser<'_> {
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// The level of the long bracket (`[`, `level` times `=`, `[`) that `s` starts with, if it does.
+fn long_bracket(s: &[u8]) -> Option<usize> {
+    if s.first() != Some(&b'[') {
+        return None;
+    }
+    let level = s[1..].iter().take_while(|&&c| c == b'=').count();
+    (s.get(1 + level) == Some(&b'[')).then_some(level)
+}
+
+/// Where the long bracket of `level` whose body starts at `from` closes: its `]`, `level` times
+/// `=`, `]` (none when it never does).
+fn closing(s: &[u8], from: usize, level: usize) -> Option<usize> {
+    let mut close = vec![b']'];
+    close.extend(std::iter::repeat_n(b'=', level));
+    close.push(b']');
+    find(&s[from.min(s.len())..], &close).map(|at| from + at)
+}
+
+/// Past the long comment or string of `level` opening at `at`: after its closing bracket, or
+/// the text's end.
+fn skip_long(s: &[u8], at: usize, level: usize) -> usize {
+    closing(s, at + level + 2, level).map_or(s.len(), |c| c + level + 2)
+}
+
+/// A script as far as finding calls in it needs: its names, its strings, and its other
+/// characters one by one; white space and comments left out.
+#[derive(Debug, PartialEq)]
+enum Token<'a> {
+    Name(&'a [u8]),
+    Str(String),
+    Other(u8),
+}
+
+fn tokens(s: &[u8]) -> Vec<Token<'_>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    let line_end = |mut i: usize| {
+        while i < s.len() && s[i] != b'\n' {
+            i += 1;
+        }
+        i
+    };
+    while i < s.len() {
+        let c = s[i];
+        if c.is_ascii_whitespace() {
+            i += 1;
+        } else if s[i..].starts_with(b"--") {
+            i += 2;
+            i = match long_bracket(&s[i..]) {
+                Some(level) => skip_long(s, i, level),
+                None => line_end(i),
+            };
+        } else if c == b'#' {
+            i = line_end(i);
+        } else if let Some(level) = long_bracket(&s[i..]) {
+            let body = (i + level + 2).min(s.len());
+            let close = closing(s, body, level);
+            out.push(Token::Str(String::from_utf8_lossy(&s[body..close.unwrap_or(s.len())]).into_owned()));
+            i = close.map_or(s.len(), |c| c + level + 2);
+        } else if c == b'\'' || c == b'"' {
+            let mut text = Vec::new();
+            let mut j = i + 1;
+            while j < s.len() && s[j] != c && s[j] != b'\n' {
+                if s[j] == b'\\' && j + 1 < s.len() {
+                    text.push(s[j + 1]);
+                    j += 2;
+                } else {
+                    text.push(s[j]);
+                    j += 1;
+                }
+            }
+            out.push(Token::Str(String::from_utf8_lossy(&text).into_owned()));
+            i = (j + 1).min(s.len());
+        } else if c.is_ascii_alphabetic() || c == b'_' {
+            let start = i;
+            while i < s.len() && (s[i].is_ascii_alphanumeric() || s[i] == b'_') {
+                i += 1;
+            }
+            out.push(Token::Name(&s[start..i]));
+        } else {
+            out.push(Token::Other(c));
+            i += 1;
+        }
+    }
+    out
+}
+
+/// The first string among the arguments of the first call to `name` in a script that has one
+/// (`ScenarioFramework.SetPlayableArea('AREA_1', false)` gives `AREA_1`), what is commented out
+/// left out (`--`, `--[[ ]]`, `--[==[ ]==]`, `#`), and never a string that only mentions it.
+pub fn call_string(script: &str, name: &str) -> Option<String> {
+    let tokens = tokens(script.as_bytes());
+    for (k, t) in tokens.iter().enumerate() {
+        if *t != Token::Name(name.as_bytes()) || tokens.get(k + 1) != Some(&Token::Other(b'(')) {
+            continue;
+        }
+        let mut depth = 0;
+        for t in &tokens[k + 1..] {
+            match t {
+                Token::Other(b'(') => depth += 1,
+                Token::Other(b')') => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                Token::Str(s) => return Some(s.clone()),
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 fn format_number(n: f64) -> String {
@@ -452,5 +583,38 @@ mod tests {
         assert_eq!(bp.get("SizeX").and_then(Value::num), Some(0.1));
         assert!(parse("Scenario = { ['x'] = ").is_err());
         assert!(parse(&format!("A = {}", "{".repeat(100))).is_err());
+    }
+
+    /// Long comments and strings of any level, and calls nested past all reason refused (not
+    /// read until the stack runs out: a player's map from the vault is anybody's file).
+    #[test]
+    fn long_brackets_of_every_level_and_deep_nesting() {
+        let text = "--[==[ a comment ]] still the comment ]==]\nA = { x = [=[a ]] string]=], y = 2, --[[ c ]] z = [[s]] }\n";
+        let statements = parse(text).unwrap();
+        let a = top(&statements, "A").and_then(Value::table).unwrap();
+        assert_eq!(a.get("x").and_then(Value::str), Some("a ]] string"));
+        assert_eq!(a.get("y").and_then(Value::num), Some(2.0));
+        assert_eq!(a.get("z").and_then(Value::str), Some("s"));
+        let deep = format!("A = {}1{}", "F(".repeat(10_000), ")".repeat(10_000));
+        assert!(parse(&deep).is_err());
+        let fine = format!("A = {}1{}", "F(".repeat(20), ")".repeat(20));
+        assert!(parse(&fine).is_ok());
+    }
+
+    /// A call's first string found in what a script runs: never in a comment of any kind, nor
+    /// in a string that only names the function.
+    #[test]
+    fn a_scripts_calls_are_found_and_its_comments_skipped() {
+        let area = |s: &str| call_string(s, "SetPlayableArea");
+        assert_eq!(area("ScenarioFramework.SetPlayableArea('AREA_1', false)").as_deref(), Some("AREA_1"));
+        assert_eq!(area("--ScenarioFramework.SetPlayableArea('AREA_1', false)\nfoo('x')"), None);
+        assert_eq!(area("# ScenarioFramework.SetPlayableArea('AREA_1')"), None);
+        assert_eq!(area("--[[\nScenarioFramework.SetPlayableArea('AREA_1')\n]]"), None);
+        assert_eq!(area("--[==[\nSetPlayableArea('AREA_1') ]] still a comment\n]==]\nSetPlayableArea(\"AREA_2\")").as_deref(), Some("AREA_2"));
+        assert_eq!(area("LOG('SetPlayableArea(\\'AREA_1\\')')"), None);
+        assert_eq!(area("SetPlayableArea(ScenarioUtils.AreaToRect('AREA_3'), false)").as_deref(), Some("AREA_3"));
+        // A call without a string, then one with.
+        assert_eq!(area("function SetPlayableArea(rect)\nend\nSetPlayableArea('AREA_4')").as_deref(), Some("AREA_4"));
+        assert_eq!(area("SetPlayableAreaLater('AREA_5')"), None);
     }
 }
