@@ -268,6 +268,15 @@ fn portrait_backdrop(painter: &egui::Painter, rect: Rect, tint: Color32) {
     painter.with_clip_rect(rect.intersect(painter.clip_rect())).add(egui::Shape::mesh(mesh));
 }
 
+/// Whether the interface pictures a unit type by its own picture (`unitpics/`) rather than a
+/// portrait drawn from its model: a model painted by a surface of its own, a mod's (the Supreme
+/// Commander factions', whose pictures are their game's own build icons on the ground of their
+/// kind, as its build menus show them), with a picture.
+fn own_picture(vfs: &Vfs, game: &Game, type_id: usize) -> bool {
+    let t = game.sim.types.get(type_id);
+    vfs.exists(&format!("objects3d/{}.surface", t.def.object.to_ascii_lowercase())) && vfs.exists(&format!("unitpics/{}.pcx", t.name.to_ascii_lowercase()))
+}
+
 /// The portrait of a unit type in `player`'s colours to show `px` pixels across: drawn at the
 /// smallest size at least as large (a little smaller will do).
 pub(crate) fn portrait_key(game: &Game, type_id: usize, px: f32, player: u8) -> PortraitKey {
@@ -419,6 +428,7 @@ impl Hud {
     /// [`Hud::unit_pic`] in `player`'s colours.
     pub(crate) fn unit_pic_of(&mut self, ctx: &egui::Context, vfs: &Vfs, game: &Game, type_id: usize, size: f32, player: u8) -> Option<UnitPic> {
         if !self.classic
+            && !own_picture(vfs, game, type_id)
             && let Some(id) = self.model_portrait(ctx, game, type_id, size, player)
         {
             return Some(UnitPic { id, portrait: true, allegiance: None });
