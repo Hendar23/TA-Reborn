@@ -468,6 +468,9 @@ pub struct Game {
     ally_hint_at: Option<f32>,
     /// The camera follows this unit (T) until the view is scrolled.
     pub follow: Option<UnitId>,
+    /// Units upgraded in place lately (the unit, the one it became), newest last: a staged
+    /// scene's labels follow them.
+    pub replaced: Vec<(UnitId, UnitId)>,
     /// Signals from us and our team on the map (see `signals.rs`), and the wheel of meanings
     /// while Alt+drag holds it.
     pub pings: Vec<crate::signals::Ping>,
@@ -933,6 +936,7 @@ impl Game {
             allies_greeted: false,
             ally_hint_at: None,
             follow: None,
+            replaced: Vec::new(),
             pings: Vec::new(),
             signal_wheel: None,
             radial: None,
@@ -1152,6 +1156,37 @@ impl Game {
     /// lines would otherwise be sent off to attack).
     pub fn retire_ai(&mut self, player: u8) {
         self.ais.retain(|ai| ai.player != player);
+    }
+
+    /// What the interface keeps of unit `from` passed on to `to`, which took its place (upgraded
+    /// in place): its place in the selection and the control groups, the camera following it,
+    /// the hover and the information page on it.
+    pub fn carry_over(&mut self, from: UnitId, to: UnitId) {
+        let swap = |list: &mut Vec<UnitId>| {
+            if let Some(slot) = list.iter_mut().find(|id| **id == from) {
+                *slot = to;
+            }
+        };
+        swap(&mut self.selection);
+        for group in &mut self.groups {
+            swap(group);
+        }
+        if self.follow == Some(from) {
+            self.follow = Some(to);
+        }
+        if self.replaced.len() >= 256 {
+            self.replaced.remove(0);
+        }
+        self.replaced.push((from, to));
+        if self.hovered == Some(from) {
+            self.hovered = Some(to);
+        }
+        if let Some(info) = self.unit_info.as_mut()
+            && info.unit == Some(from)
+        {
+            info.unit = Some(to);
+            info.type_id = self.sim.unit(to).map_or(info.type_id, |u| u.type_id);
+        }
     }
 
     pub fn local_commander(&self) -> Option<UnitId> {
@@ -1791,6 +1826,11 @@ impl Game {
                 {
                     self.ui_sounds.push("TREEBURN");
                 }
+                // A unit upgraded in place: the new one takes its place in the selection, the
+                // control groups, the camera's following and the information page.
+                if let SimEvent::UnitUpgraded { from, to, .. } = e {
+                    self.carry_over(from, to);
+                }
                 // A factory in a control group puts what it builds there too (TA 3.1's squads).
                 if let SimEvent::UnitCompleted { id, .. } = e
                     && let Some(factory) = self.sim.unit(id).filter(|u| u.owner == self.local_player).and_then(|u| u.factory)
@@ -2257,6 +2297,10 @@ impl Game {
         }
         if self.keys.pressed(input, "cloak") && !self.selection.is_empty() {
             self.toggle_cloak();
+        }
+        // Upgrade in place (with Shift: the step after those queued).
+        if self.keys.pressed(input, "upgrade") && !self.selection.is_empty() && !self.spectator {
+            self.upgrade_selection(input.modifiers.shift_key() || self.demo_shift);
         }
         // Enter: chat to everyone (Shift+Enter: to our allies); a + line is one of TA's
         // commands or a cheat code.
@@ -3671,6 +3715,57 @@ impl Game {
         if !self.selection.is_empty() {
             let units = self.selection.clone();
             self.issue(Command::Order { player: self.local_player, units, order: Order::Stop, queue: false });
+        }
+    }
+
+    /// The type an UPGRADE click makes of a unit of ours (`queue`: after the upgrades already in
+    /// its orders; else its type's next), where it upgrades in place.
+    pub fn upgrade_step(&self, u: &Unit, queue: bool) -> Option<usize> {
+        if u.owner != self.local_player || self.spectator || !u.is_complete() || u.dead {
+            return None;
+        }
+        let last = if queue { u.orders.iter().rev().find_map(|o| if let Order::Upgrade(t) = o { Some(*t) } else { None }) } else { None };
+        match last {
+            Some(t) => self.sim.types.get(t).upgrades_to.filter(|&to| self.sim.is_allowed(to)),
+            None => self.sim.next_upgrade(u),
+        }
+    }
+
+    /// What UPGRADE offers the selection: the type the first unit that upgrades in place becomes
+    /// next, and how many of the selection upgrade. None when none does.
+    pub fn upgrade_offer(&self) -> Option<(usize, usize)> {
+        let mut first = None;
+        let mut count = 0;
+        for u in self.selection.iter().filter_map(|&id| self.sim.unit(id)) {
+            if let Some(to) = self.upgrade_step(u, false) {
+                first.get_or_insert(to);
+                count += 1;
+            }
+        }
+        first.map(|to| (to, count))
+    }
+
+    /// Upgrades the selected units in place, each into the next step of its type's upgrades
+    /// (`queue`: the step after those already ordered, queued after its other orders). A unit
+    /// already upgrading into that step goes on with it.
+    pub fn upgrade_selection(&mut self, queue: bool) {
+        let mut by_target: Vec<(usize, Vec<UnitId>)> = Vec::new();
+        for u in self.selection.iter().filter_map(|&id| self.sim.unit(id)) {
+            let Some(to) = self.upgrade_step(u, queue) else { continue };
+            if !queue && matches!(u.orders.front(), Some(Order::Upgrade(t)) if *t == to) {
+                continue;
+            }
+            match by_target.iter_mut().find(|(t, _)| *t == to) {
+                Some((_, units)) => units.push(u.id),
+                None => by_target.push((to, vec![u.id])),
+            }
+        }
+        if by_target.is_empty() {
+            return;
+        }
+        self.ui_sounds.push("ADDBUILD");
+        for (to, units) in by_target {
+            self.issue(Command::Order { player: self.local_player, units, order: Order::Upgrade(to), queue });
         }
     }
 

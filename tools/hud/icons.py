@@ -28,7 +28,7 @@ GLYPHS = [
     "stop", "move", "attack", "fight", "patrol", "guard", "capture", "repair", "load", "unload",
     "resurrect", "reclaim", "dgun", "hold_fire", "return_fire", "fire_at_will", "hold_position",
     "maneuver", "roam", "cloaked", "visible", "power", "self_destruct", "area_mex", "perspective",
-    "build", "info", "back", "more", "cancel", "duty", "queue",
+    "build", "info", "back", "more", "cancel", "duty", "queue", "upgrade",
 ]
 # Pixel sizes: hud_icons::SIZES.
 SIZES = [14, 16, 18, 20, 24, 28, 32, 40, 48, 64]
@@ -232,6 +232,9 @@ def glyph(name):
         # A crate on a belt, on its way out: what a factory makes, one after another.
         return (poly([(8, 8), (36, 8), (36, 36), (8, 36)]) + line(41, 22, 49, 22, 6) + head(61, 22, 1, 0, 14, 10)
                 + line(5, 47, 59, 47, 7) + circle(14, 57, 4.2) + circle(32, 57, 4.2) + circle(50, 57, 4.2))
+    if name == "upgrade":
+        # A building raised a tier: its block, and two chevrons over it pointing up.
+        return path("M9,44 H55 V59 H9 Z", 6) + path("M15,33 L32,19 L49,33", 7.5) + path("M15,19 L32,5 L49,19", 7.5)
     raise KeyError(name)
 
 

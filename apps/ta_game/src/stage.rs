@@ -104,7 +104,9 @@
 //!                            #   countdown), dgun (fire a D-gun or launch a missile: manual fire),
 //!                            #   produce (a factory makes `count` of `type`, at its own pace;
 //!                            #   `move` to a factory sends what it makes there), on, off (TA's
-//!                            #   on/off order: metal makers, radar, jammers, solar collectors)
+//!                            #   on/off order: metal makers, radar, jammers, solar collectors),
+//!                            #   upgrade (into the next step of its type's `UpgradesTo`, or
+//!                            #   `type`; a label follows the unit it becomes)
 //! at = [1900, 1200]          # where: world px, or rel = [dx, dz] from the middle of the map,
 //!                            #   or by = [dx, dz] from where each unit stands (move, fight,
 //!                            #   patrol, build, attack and dgun on the ground)
@@ -566,6 +568,8 @@ pub enum Action {
     /// Switched off.
     #[serde(alias = "deactivate")]
     Off,
+    /// Upgraded in place (`Order::Upgrade`): into `type`, else its type's next step.
+    Upgrade,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1060,6 +1064,7 @@ impl Stage {
                 Action::Build => placed && o.kind.is_some(),
                 Action::Stop | Action::SelfDestruct | Action::On | Action::Off => !placed && o.target.is_none(),
                 Action::Produce => o.kind.is_some() && !placed && o.target.is_none(),
+                Action::Upgrade => !placed && o.target.is_none(),
             };
             if !ok {
                 bail!(
@@ -1072,6 +1077,7 @@ impl Stage {
                         Action::Build => "needs a `type` and a place",
                         Action::Stop | Action::SelfDestruct | Action::On | Action::Off => "takes no place or target",
                         Action::Produce => "needs a `type` (no place or target)",
+                        Action::Upgrade => "takes no place or target (a `type` at most)",
                     }
                 );
             }
@@ -2122,6 +2128,10 @@ impl StageRun {
                 }
                 Vec::new()
             }
+            Action::Upgrade => {
+                let to = o.kind.as_deref().and_then(|k| sim.types.id(k));
+                units.iter().filter_map(|&id| Some((id, Order::Upgrade(to.or_else(|| sim.unit(id).and_then(|u| sim.next_upgrade(u)))?)))).collect()
+            }
             Action::Produce => {
                 let Some(type_id) = o.kind.as_deref().and_then(|k| sim.types.id(k)) else { return };
                 let count = o.count.unwrap_or(1).min(i32::MAX as u32);
@@ -2314,6 +2324,15 @@ impl StageRun {
 
     /// Before the frame's ticks: the commands due go in.
     pub fn before_update(&mut self, game: &mut Game) {
+        // (A member upgraded in place is the unit it became, under its label.)
+        for m in &mut self.cast {
+            for _ in 0..8 {
+                match game.replaced.iter().find(|(from, _)| *from == m.id) {
+                    Some(&(_, to)) => m.id = to,
+                    None => break,
+                }
+            }
+        }
         for c in self.commands(&mut game.sim) {
             game.direct(c);
         }

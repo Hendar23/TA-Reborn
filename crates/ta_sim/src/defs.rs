@@ -275,6 +275,9 @@ pub struct UnitType {
     /// It mends itself (TA's `HealTime`, its Commanders' 27): the ticks it takes to regain
     /// [`HEAL_POINTS`] hit points, `HealTime` seconds; 0, it doesn't (`Sim::heal_units`).
     pub heal_ticks: u64,
+    /// The type it becomes when upgraded in place (`UnitDef::upgrades_to`: Supreme Commander's
+    /// factories, extractors, radars), if one of that name is in the game (never itself).
+    pub upgrades_to: Option<usize>,
 }
 
 /// What a unit that mends itself regains every `HealTime` seconds (its [`UnitType::heal_ticks`]):
@@ -510,6 +513,7 @@ impl UnitTypes {
                 big_walker,
                 // (`HealTime` seconds, in ticks: at least one; none, or none given, no mending.)
                 heal_ticks: if u.heal_time > 0.0 { ((u.heal_time * TICKS_PER_SECOND as f64).round() as u64).max(1) } else { 0 },
+                upgrades_to: data.unit_id(&u.upgrades_to).filter(|&to| to != id),
                 def: u.clone(),
             });
         }
@@ -537,6 +541,22 @@ impl UnitTypes {
     /// line; tokens no unit's `Category` names are left out).
     pub fn categories(&self, list: &str) -> CategorySet {
         token_set(&self.categories, list)
+    }
+
+    /// The types a unit of type `from` becomes upgraded in place, step by step (`upgrades_to`,
+    /// then what that upgrades to...), in order: Supreme Commander's tech 1 factory its tech 2 and
+    /// then its tech 3. None for TA's own units.
+    pub fn upgrade_chain(&self, from: usize) -> Vec<usize> {
+        let mut chain = Vec::new();
+        let mut at = from;
+        while let Some(next) = self.types.get(at).and_then(|t| t.upgrades_to) {
+            if next == from || chain.contains(&next) {
+                break;
+            }
+            chain.push(next);
+            at = next;
+        }
+        chain
     }
 
     pub fn by_name(&self, name: &str) -> Option<&UnitType> {
@@ -721,6 +741,9 @@ fn fieldable(types: &[UnitType], data: &GameData) -> Vec<bool> {
             continue;
         }
         queue.extend(types[i].ai_build_options.iter().copied().filter(|&o| !seen[o]));
+        // (And what it upgrades into in place: Supreme Commander's tech 2 and 3 factories,
+        // which nothing builds outright.)
+        queue.extend(types[i].upgrades_to.filter(|&o| !seen[o]));
     }
     seen
 }

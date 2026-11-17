@@ -677,6 +677,7 @@ fn order_entry(game: &Game, def: &orders::Def) -> Entry {
         Kind::Stop => t("Stop").to_string(),
         Kind::Mode(mode) => t(mode.label_for(game)).to_string(),
         Kind::Perspective(_) => t("Perspective").to_string(),
+        Kind::Upgrade => t("Upgrade").to_string(),
     };
     Entry::new(Id::Order(def.kind), def.glyph, label, def.tip(game)).keyed(game, def.action)
 }
@@ -1137,6 +1138,7 @@ impl Game {
                 self.ui_sounds.push("SPECIALORDERS");
             }
             Id::Order(Kind::Perspective(id)) => self.perspective_request = Some(id),
+            Id::Order(Kind::Upgrade) => self.upgrade_selection(false),
             Id::Fire(k) => self.set_states(Some(k), None),
             Id::Movement(k) => self.set_states(None, Some(k)),
             Id::Cloak => self.toggle_cloak(),

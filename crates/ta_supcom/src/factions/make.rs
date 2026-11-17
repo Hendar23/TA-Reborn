@@ -19,7 +19,7 @@ pub const DESCRIPTION: &str = "Supreme Commander: Forged Alliance's four faction
 pub const TAGS: [&str; 3] = ["units", "factions", "supreme commander"];
 /// The converter's version, the mod's own (its manifest's `version`): a mod made by an older one
 /// is offered to be made again. Raised whenever what is made changes.
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 
 /// What was made.
 #[derive(Clone, Debug, Default)]
@@ -63,7 +63,10 @@ pub fn make(files: &Files, units: &[UnitBlueprint], reborn: &str, write: &mut dy
             made.units = done.len();
             return Ok(made);
         }
-        match unit(files, u, &mut |path, bytes| put(path, bytes, &mut made))? {
+        // (What it upgrades into in place: of its faction, among those made.)
+        let faction: Vec<&UnitBlueprint> = units.iter().filter(|o| o.faction == u.faction).collect();
+        let extra = units::Extra { upgrades_to: faction::upgrade_of(u, &faction).map(|t| t.id.as_str()) };
+        match unit(files, u, &extra, &mut |path, bytes| put(path, bytes, &mut made))? {
             Ok(None) => done.push(std::borrow::Cow::Borrowed(u)),
             Ok(Some(footprint)) => done.push(std::borrow::Cow::Owned(UnitBlueprint { footprint: Some(footprint), ..u.clone() })),
             Err(why) => made.skipped.push((u.id.clone(), why)),
@@ -132,7 +135,7 @@ fn read(files: &Files, u: &UnitBlueprint) -> std::result::Result<Read, String> {
 /// not its blueprint's (`units::fitted_footprint`). `Err(why)` (inside the Ok) when it is left
 /// out: what it is made of does not read, or its model cannot be written (nothing of it written
 /// then).
-fn unit(files: &Files, u: &UnitBlueprint, put: &mut dyn FnMut(&str, &[u8]) -> Result<()>) -> Result<std::result::Result<Option<[f64; 2]>, String>> {
+fn unit(files: &Files, u: &UnitBlueprint, extra: &units::Extra, put: &mut dyn FnMut(&str, &[u8]) -> Result<()>) -> Result<std::result::Result<Option<[f64; 2]>, String>> {
     let read = match read(files, u) {
         Ok(r) => r,
         Err(why) => return Ok(Err(why)),
@@ -193,7 +196,7 @@ fn unit(files: &Files, u: &UnitBlueprint, put: &mut dyn FnMut(&str, &[u8]) -> Re
     }
     // Its unit file and its script.
     let weapons = units::weapons(u);
-    put(&format!("units/{name}.fbi"), units::unit_file(u, &weapons, units::transport(mesh)).as_bytes())?;
+    put(&format!("units/{name}.fbi"), units::unit_file(u, &weapons, units::transport(mesh), extra).as_bytes())?;
     let builds = units::builds(u);
     let plan = script::Plan {
         unit: u,
@@ -214,9 +217,11 @@ mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
 
-    /// A blueprint of the test faction's: `cats` its categories, the rest its sections.
+    /// A blueprint of the test faction's: `cats` its categories, the rest its sections (its own
+    /// `General`, where it gives one: a table holds a key once, the first read).
     fn blueprint(cats: &str, rest: &str) -> String {
-        format!("UnitBlueprint {{ Categories = {{ 'PRODUCTSC1', 'UEF', {cats} }}, General = {{ FactionName = 'UEF' }}, Display = {{ UniformScale = 0.05 }}, {rest} }}")
+        let general = if rest.contains("General =") { "" } else { "General = { FactionName = 'UEF' }, " };
+        format!("UnitBlueprint {{ Categories = {{ 'PRODUCTSC1', 'UEF', {cats} }}, {general}Display = {{ UniformScale = 0.05 }}, {rest} }}")
     }
 
     /// A gun on the test tank's turret, firing `projectile`.
@@ -310,13 +315,24 @@ mod tests {
         };
         let (made, paths, first) = run();
         assert_eq!((made.units, made.skipped.len()), (7, 0), "{:?}", made.skipped);
+        // The tech 1 factory upgrades into the tech 2 one, which no builder builds.
+        let mut texts: std::collections::BTreeMap<String, String> = Default::default();
+        make(&files, &units, "test", &mut |path, bytes| {
+            if path.ends_with(".fbi") || path.ends_with(".tdf") {
+                texts.insert(path.to_string(), String::from_utf8_lossy(bytes).into_owned());
+            }
+            Ok(())
+        }, &mut |_, _| true).unwrap();
+        assert!(texts["units/ueb0101.fbi"].contains("	UpgradesTo=UEB0201;"), "{}", texts["units/ueb0101.fbi"]);
+        assert!(!texts["units/ueb0201.fbi"].contains("UpgradesTo"));
+        assert!(!texts["download/supcom_uef.tdf"].contains("UNITNAME=UEB0201;"), "on no menu");
         assert!(paths.iter().any(|p| p == "units/ueb0201.fbi") && paths.iter().any(|p| p == "weapons/supcom_uef.tdf"), "{paths:?}");
         assert_eq!(run().2, first, "made twice, the same bytes");
         assert_eq!(first, EXPECTED, "the converter's bytes changed: if it was meant to, put the new hash here");
     }
 
     /// The hash of the test faction's mod (see the test above).
-    const EXPECTED: &str = "8e461fa3ed52a3809f1ebf6481fb4048a85d3204274957ae9e3251e26a2a6fb1";
+    const EXPECTED: &str = "05bd5b2674b0390c0193f11c83e7fac5ccfd6ae6dde58161776736e86f5bff1a";
 
     /// A unit whose mesh does not read is left out, with its reason; the rest are made.
     #[test]

@@ -1062,6 +1062,20 @@ impl ClassicHud {
                 game.set_command_mode(if on { None } else { Some(mode) });
             }
         }
+        // Upgrade in place, where the selection has an upgrade (TA has no gadget for it).
+        if game.upgrade_offer().is_some()
+            && let Some(r) = small.pop()
+        {
+            let on = game.selection.iter().filter_map(|&id| game.sim.unit(id)).any(|u| matches!(u.orders.front(), Some(ta_sim::Order::Upgrade(_))));
+            let resp = self.plate_button(ui, env, r, ui.id().with("extra_upgrade"), &[n("UPGRADE"), n("UPGR")], on, true);
+            self.anchors.order("upgrade", resp.rect);
+            if resp.hovered() {
+                self.tip = Some(Tip::Text(n("UPGRADE").into(), crate::orders::upgrade_tip(game, &key(game, "upgrade"))));
+            }
+            if resp.clicked() {
+                game.upgrade_selection(ui.input(|i| i.modifiers.shift));
+            }
+        }
         if let Some(on) = sel.repeat {
             let labels = [n("REPEAT BUILD"), n("REPEAT")];
             let resp = match (wide.pop(), small.pop()) {
@@ -1334,6 +1348,12 @@ impl ClassicHud {
         if u.is_complete() && let Some((line, _)) = crate::hud::stockpile(&game.sim, u) {
             let y = l.get("DAMAGEBAR").map_or(466.0, |r| inclusive(r).max.y) + 1.0;
             text(painter, font, tb, at.x, y, Align::Center, &line, pal().classic_dim);
+        }
+        // Upgrading in place: into what and how far, there too.
+        if let Some((ta_sim::SelfJob::Upgrade(to), done)) = game.sim.self_work_progress(u).filter(|_| game.may_inspect(u.owner)) {
+            let y = l.get("DAMAGEBAR").map_or(466.0, |r| inclusive(r).max.y) + 1.0;
+            let pct = format!("{:.0}", (done.to_f32() * 100.0).floor());
+            text(painter, font, tb, at.x, y, Align::Center, &tf("Upgrading into {name}: {pct}%", &[("name", &crate::chat::unit_label(&game.sim, to)), ("pct", &pct)]), pal().classic_text);
         }
         // A constructor on duty, there too (TA's panel has no button for it: the key gives one).
         if let Some(duty) = game.duty_of(u.id) {

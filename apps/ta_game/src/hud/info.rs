@@ -111,6 +111,9 @@ pub(crate) fn head(ui: &mut egui::Ui, game: &Game, ty: &UnitType, unit: Option<&
         if !u.is_complete() {
             state.push(tf("{pct}% built", &[("pct", &format!("{:.0}", (u.build_progress.to_f32() * 100.0).floor()))]));
         }
+        if let Some((ta_sim::SelfJob::Upgrade(to), done)) = game.sim.self_work_progress(u).filter(|_| game.may_inspect(u.owner)) {
+            state.push(tf("Upgrading into {name}: {pct}%", &[("name", &crate::chat::unit_label(&game.sim, to)), ("pct", &format!("{:.0}", (done.to_f32() * 100.0).floor()))]));
+        }
         if u.kills > 0 {
             let rank = [n("Recruit"), n("Veteran"), n("Hardened"), n("Elite")][usize::from(u.rank().min(3))];
             state.push(if u.kills == 1 { tf("{rank} · 1 kill", &[("rank", &t(rank))]) } else { tf("{rank} · {n} kills", &[("rank", &t(rank)), ("n", &u.kills)]) });
@@ -395,6 +398,13 @@ pub(crate) fn facts(ui: &mut egui::Ui, game: &Game, ty: &UnitType) {
     }
     if d.on_offable {
         can.push(t("Switches on and off").to_string());
+    }
+    if let Some(to) = ty.upgrades_to {
+        let kind = game.sim.types.get(to);
+        can.push(tf(
+            "Upgrades in place into {name}: metal {metal}, energy {energy}",
+            &[("name", &crate::chat::unit_label(&game.sim, to)), ("metal", &whole(kind.cost_metal.to_f64())), ("energy", &whole(kind.cost_energy.to_f64()))],
+        ));
     }
     if d.is_airbase {
         can.push(t("Repairs aircraft that land on it").to_string());

@@ -31,6 +31,7 @@ mod info;
 mod map;
 mod navy;
 mod transport;
+mod upgrade;
 
 #[cfg(test)]
 mod tests;
@@ -870,6 +871,7 @@ impl SkirmishAi {
         self.run_commander(sim, &s, &mut out);
         self.plan_navy(sim, &s);
         self.run_builders(sim, &s, &mut out);
+        self.run_upgrades_in_place(sim, &s, &mut out);
         self.run_factories(sim, &s, &mut out);
         self.run_scouting(sim, &s, &mut out);
         self.run_army(sim, &s, &mut out);

@@ -19,6 +19,7 @@ use crate::world::{CELL, MoveSpec, Occupant, Region, World};
 
 mod air;
 mod repair_round;
+mod upgrade;
 
 /// Base resource storage every player has regardless of buildings (TA default).
 const BASE_STORAGE: i64 = 1000;
@@ -1773,6 +1774,10 @@ impl Sim {
         if let Order::Guard(target) = order && self.unit(*target).is_none_or(|u| u.dead || u.id == id || !self.allied(player, u.owner)) {
             return;
         }
+        // An upgrade its type has, a step or more along (queued after the steps before it).
+        if let Order::Upgrade(to) = order && !self.unit(id).is_some_and(|u| self.can_upgrade_into(u, *to)) {
+            return;
+        }
         let (factory, fires) = {
             let t = self.types.get(type_id);
             let mut weapons = t.weapons.iter().flatten().map(|&w| self.weapon_types.get(w));
@@ -1802,6 +1807,15 @@ impl Sim {
                     }
                 }
                 Order::Attack(_) | Order::ManualFire(_) if fires => {
+                    if !queue {
+                        u.orders.clear();
+                    }
+                    let pos = u.pos;
+                    queue_order(&mut u.orders, order, queue, pos);
+                }
+                // An upgrade starts at once (queued, after the factory's other orders): it makes
+                // nothing meanwhile, its queue waiting.
+                Order::Upgrade(_) => {
                     if !queue {
                         u.orders.clear();
                     }
@@ -2333,7 +2347,8 @@ impl Sim {
             if !held {
                 self.update_orders(id, t);
             }
-            if t.is_factory {
+            // (Not one upgraded just now: it is gone, the new one in its place.)
+            if t.is_factory && self.unit(id).is_some_and(|u| !u.dead) {
                 self.update_factory(id, t);
             }
             if t.locomotion == Locomotion::Air {
@@ -2589,6 +2604,14 @@ impl Sim {
     }
 
     fn update_orders(&mut self, id: UnitId, t: &UnitType) {
+        // Work on itself whose order is gone (Stop, an order not queued after it) is called off,
+        // its metal back.
+        if let Some(u) = self.unit(id)
+            && let Some(w) = u.self_work
+            && !matches!((u.orders.front(), w.job), (Some(Order::Upgrade(to)), crate::unit::SelfJob::Upgrade(job)) if *to == job)
+        {
+            self.cancel_self_work(id, true);
+        }
         let Some(order) = self.unit(id).and_then(|u| u.orders.front().cloned()) else {
             if Self::repairs_round(t) {
                 self.repair_round(id, t);
@@ -2678,6 +2701,7 @@ impl Sim {
             }
             Order::Load(target) => self.update_load_order(id, t, target),
             Order::Unload(dest) => self.update_unload_order(id, t, dest),
+            Order::Upgrade(to) => self.update_upgrade_order(id, t, to),
             Order::SetStates { fire, movement } => {
                 if let Some(u) = self.unit_mut(id) {
                     u.fire_state = fire.min(2);
@@ -2819,6 +2843,8 @@ impl Sim {
             u.self_destruct_at = None;
             u.self_destruct_manual = false;
             u.last_attacker = None;
+            // (What it was building on itself is lost with its old side's orders.)
+            u.self_work = None;
             for w in &mut u.weapons {
                 w.target = None;
             }
@@ -4244,6 +4270,10 @@ impl Sim {
     /// Whether a builder has anything to do for `u` (of type `t`): finish it, or mend it (one
     /// being taken apart only up to what is left of it).
     fn needs_work(&self, u: &Unit, t: &UnitType) -> bool {
+        // (Upgrading in place: its builders lend it their power.)
+        if u.self_work.is_some() && u.is_complete() {
+            return true;
+        }
         if self.being_taken_apart(u) {
             u.health < t.max_health * u.build_progress
         } else {
@@ -4635,6 +4665,13 @@ impl Sim {
             return;
         }
         let tt = types.get(tu.type_id);
+        // One upgrading in place: the builder's power goes into its upgrade, paid by the builder's
+        // side.
+        if tu.self_work.is_some() && tu.is_complete() {
+            let rate = self.mutator_work_rate(self.perk_work_rate(builder, t.work_rate));
+            self.work_on_self(target, rate, owner);
+            return;
+        }
         // A unit is finished once. While its own side takes it apart, work on it mends it and
         // no more, as TA's repair does (the reclaim goes on, not undone); one left part taken
         // apart is built back up, paid for as a build is, and is simply whole again.
@@ -4728,6 +4765,10 @@ impl Sim {
         let Some(f) = self.unit(id) else { return };
         let current = f.build;
         let has_queue = !f.factory_queue.is_empty();
+        // Upgrading in place it makes nothing: the unit on its pad and its queue wait.
+        if matches!(f.orders.front(), Some(Order::Upgrade(_))) {
+            return;
+        }
 
         if let Some(job) = current {
             let Some(target) = self.unit(job.target) else {
@@ -5830,6 +5871,7 @@ impl Sim {
                 Order::Load(id) => { mix(17); target(mix, Some(Target::Unit(*id))); }
                 Order::Unload(p) => { mix(18); target(mix, Some(Target::Ground(*p))); }
                 Order::Stop => mix(19),
+                Order::Upgrade(t) => { mix(20); mix(*t as i64); }
             }
         }
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -5921,6 +5963,13 @@ impl Sim {
             mix(u.busy as i64);
             target(&mut mix, u.build.map(|b| Target::Unit(b.target)));
             mix(u.build.is_some_and(|b| b.started) as i64);
+            // (Work on itself only where there is some: a game without any, TA's, sums as before.)
+            if let Some(w) = u.self_work {
+                match w.job {
+                    crate::unit::SelfJob::Upgrade(t) => { mix(-21); mix(t as i64); }
+                }
+                mix(w.work as i64);
+            }
             target(&mut mix, u.factory.map(Target::Unit));
             mix(u.orders.len() as i64);
             for o in &u.orders { order(&mut mix, o); }

@@ -542,7 +542,10 @@ impl SkirmishAi {
         }
         // Tech up.
         let tech_economy = s.minutes >= self.p.tech_minute && (s.m_inc >= fx(self.p.tech_income) || s.metal >= fx(1200));
-        if !t2 && !s.adv_factory && !plan.tech && tech_economy && let Some(t) = self.adv_factory_task(sim, s, b, &opts, plan) {
+        // (Where a factory of ours upgrades into the next tier, it is upgraded instead:
+        // `run_upgrades_in_place`.)
+        let climbs = self.climbs_by_upgrading(sim, s);
+        if !t2 && !s.adv_factory && !plan.tech && tech_economy && !climbs && let Some(t) = self.adv_factory_task(sim, s, b, &opts, plan) {
             plan.tech = true;
             return Some(t);
         }
@@ -550,7 +553,7 @@ impl SkirmishAi {
         // puts up one of the next tier its options hold, on the same economy (the Supreme
         // Commander factions' tech 3 plants; TA's factories make no constructor past tech 2, so
         // its games go as before).
-        if t2 && s.factory_tier == bi.tech && plan.tier <= bi.tech && tech_economy && let Some(t) = self.next_tier_task(sim, s, b, &opts, bi.tech, plan) {
+        if t2 && s.factory_tier == bi.tech && plan.tier <= bi.tech && tech_economy && !climbs && let Some(t) = self.next_tier_task(sim, s, b, &opts, bi.tech, plan) {
             plan.tier = bi.tech + 1;
             return Some(t);
         }
@@ -693,7 +696,7 @@ impl SkirmishAi {
     pub(crate) fn factory_to_help(&self, sim: &Sim, s: &Survey, b: &Unit, max_dist: i64) -> Option<UnitId> {
         s.factories
             .iter()
-            .filter(|f| !f.factory_queue.is_empty() && dist(f.pos, b.pos) < max_dist && self.unit_reaches(sim, b, f.pos))
+            .filter(|f| (!f.factory_queue.is_empty() || matches!(f.orders.front(), Some(Order::Upgrade(_)))) && dist(f.pos, b.pos) < max_dist && self.unit_reaches(sim, b, f.pos))
             .min_by_key(|f| {
                 let helpers = s.builders.iter().filter(|h| h.id != b.id && h.orders.front() == Some(&Order::Guard(f.id))).count() as i64;
                 (dist(f.pos, b.pos) + helpers * 400, f.id.slot)
@@ -1260,6 +1263,10 @@ impl SkirmishAi {
         for (i, d) in self.deposits.iter().enumerate() {
             let Some((old, t)) = d.ours else { continue };
             if sim.types.get(t).extracts_metal * 2 > rate || d.avoid_until > s.now || d.losses > 2 || self.threat.at(d.pos) > 0 {
+                continue;
+            }
+            // (One that upgrades in place is upgraded so: `run_upgrades_in_place`.)
+            if sim.types.get(t).upgrades_to.is_some() {
                 continue;
             }
             if self.upgrades.iter().any(|u| u.deposit == i) || sim.unit(old).is_none_or(|u| !u.is_complete() || u.self_destruct_at.is_some()) {

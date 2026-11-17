@@ -1046,6 +1046,37 @@ pad and takes on through its scripts. TA Reborn plays them as those engines did:
 [FORMATS.md](FORMATS.md) gives the details, mod by mod; `crates/ta_sim/tests/mod_upgrades.rs` plays
 every building of a mod that offers an upgrade ([testing](#from-the-source-tree)).
 
+#### Units that upgrade in place
+
+A unit may become another where it stands, as Supreme Commander's factories, extractors and radars
+do: `UpgradesTo=<UnitName>` in its `[UNITINFO]` names the unit it becomes. It is offered UPGRADE
+(in the modern interface's orders, with its own key, Alt+U; on the classic interface's orders
+page, among the buttons TA has no gadget for), and builds that unit on itself:
+
+- **With its own build power** (`WorkerTime`): give a unit that builds nothing else one for its
+  upgrades. The upgrade takes the new unit's `BuildTime` at that power, and builders helping it
+  (guarding it, or told to repair it) lend theirs, their side paying for their share.
+- **At the new unit's price**, paid as construction pays: a share of its metal and energy for each
+  share of the work, slowed by the economy as construction is (short of metal, it waits).
+- **While it upgrades** a factory makes nothing: the unit on its pad and its queue wait. Any other
+  unit works on: an extractor extracts, a power plant makes power, a radar watches. A mobile unit
+  stands still.
+- **Called off** by Stop, or by any order not queued after it, the metal paid for the upgrade
+  comes back (as a frame given up gives its metal back); its energy is spent. A unit captured
+  while it upgrades loses the upgrade.
+- **Done**, the new unit stands where the old one stood, facing as it faced, its owner's and
+  finished, with the old one's share of its health; it keeps the orders queued after the upgrade
+  (so `UpgradesTo` chains may be queued one step after another, with Shift), a factory's queue,
+  route, repeat and the unit on its pad, its fire and move orders and its experience; the rest is
+  a fresh unit's (its script starts anew). The old unit is gone without a wreck, a blast or a
+  loss; the selection and control groups move to the new one.
+
+The computer players upgrade factories into a higher tier, and extractors into better ones (where
+`ExtractsMetal` grows), when their economy allows; they climb the tiers so rather than build the
+next tier's factory wherever a factory of theirs upgrades into it. A unit of a type the battle does
+not allow (a mission's, the mutators') is no upgrade. `ta-tools data --unit <name>` shows a unit's
+`upgrades_to`.
+
 #### What TA Reborn does not run
 
 TA Reborn runs no code from a mod: patched executables (`TotalA.exe` and the like), DLLs and

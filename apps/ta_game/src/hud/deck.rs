@@ -1160,6 +1160,8 @@ impl Hud {
             }
             Some(Kind::Mode(mode)) => game.set_command_mode(if game.command_mode == Some(mode) { None } else { Some(mode) }),
             Some(Kind::Perspective(id)) => game.perspective_request = Some(id),
+            // (Shift: queued after the upgrade under way.)
+            Some(Kind::Upgrade) => game.upgrade_selection(ui.input(|i| i.modifiers.shift)),
             None => {}
         }
         let Some(u) = game.selection.first().and_then(|&id| game.sim.unit(id)) else { return };
@@ -1966,6 +1968,10 @@ pub(crate) fn activity(game: &Game, u: &Unit) -> (String, Color32) {
         return (tf("Self-destructing in {secs} s", &[("secs", &at.saturating_sub(sim.tick).div_ceil(30))]), pal().bad);
     }
     let ty = sim.unit_type(u);
+    // Upgrading in place (a factory's unit on its pad waits meanwhile).
+    if let Some((ta_sim::SelfJob::Upgrade(to), done)) = sim.self_work_progress(u) {
+        return (tf("Upgrading into {name}: {pct}%", &[("name", &crate::chat::unit_label(sim, to)), ("pct", &percent(done))]), pal().accent);
+    }
     // (A unit taking a wreck or a tree apart works on itself, as far as its build job says.)
     if u.build.is_some_and(|job| job.target == u.id) {
         return (t("Reclaiming").to_string(), pal().good);
@@ -2005,6 +2011,7 @@ pub(crate) fn activity(game: &Game, u: &Unit) -> (String, Color32) {
         Some(Order::Unload(_)) => (t("Setting its cargo down").to_string(), pal().text),
         Some(Order::Wait(_) | Order::WaitAttacked(_)) => (t("Waiting").to_string(), pal().text),
         Some(Order::SetStates { .. } | Order::Stop) => (t("Idle").to_string(), pal().steel),
+        Some(Order::Upgrade(to)) => (tf("About to upgrade into {name}", &[("name", &crate::chat::unit_label(sim, *to))]), pal().accent),
         None if ty.is_factory && !u.factory_queue.is_empty() => (t("Starting the next unit").to_string(), pal().good),
         None if ty.is_factory => (t("Idle: nothing queued").to_string(), pal().steel),
         None => match u.weapons.iter().find_map(|w| w.target) {

@@ -453,6 +453,22 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   assist the guarded unit's construction), build, repair, reclaim, capture, load, unload,
   manual fire, stop. Work found automatically that turns out unreachable is remembered and
   skipped.
+* **Upgrades in place** (`sim/upgrade.rs`; a unit type's `UpgradesTo`, Supreme Commander's
+  factories, extractors and radars): `Order::Upgrade(type)` at the front of a unit's orders builds
+  that type on the unit itself (`Unit::self_work`: the job and its work, of the type's
+  `build_work`), with its own `work_rate` and that of builders helping it (guard and repair orders
+  on it: `Sim::needs_work`, `apply_build_power`), paid by `Economy::spend_work` as construction is,
+  so it stalls with the economy. A factory makes nothing meanwhile (`update_factory` returns while
+  its first order is an upgrade); anything else works on. The order taken off the front (Stop, an
+  order not queued, `DropOrder`) calls the work off at the unit's next `update_orders`, its metal
+  back (`cancel_self_work`); a capture drops it. Done (`finish_upgrade`): the old unit is taken off
+  the map as given up (`removed`, its ground released at once) and a unit of the new type spawned
+  finished in its place and heading, with the old one's share of health, its orders after the
+  upgrade, a factory's queue, route, repeat and the unit on its pad (re-pointed to it), its states
+  and experience; builders guarding or mending it go on with the new one, and
+  `SimEvent::UnitUpgraded` lets the game carry its selection and control groups over
+  (`Game::carry_over`). `UnitTypes::upgrade_chain` lists a type's steps; orders may name a step past
+  the next (queued after it), which fails if it reaches the front first.
 * **Standing orders** (`Command::SetStates`, never touching the queue): fire (hold, return,
   at will) and movement. Idle armed units hit from beyond their reach answer by movement
   state: Maneuver advances on the attacker within a 420 px leash and walks back afterwards,
@@ -1598,6 +1614,14 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   from them all is a base found. Waves, the fleet and lifts go for what was seen first, and a
   start not yet looked at only when nothing is known (scouting in force). It is never
   "dominant" (going for the kill) before it has found the enemy.
+* Upgrades in place (`upgrade.rs`, `run_upgrades_in_place`): where a factory of ours upgrades into
+  a factory of a higher tier (`factory_tier`), the tiers are climbed by upgrading it, one factory
+  at a time, on the economy the first advanced factory waits for (`builder_task` then builds no
+  factory of the next tier: `climbs_by_upgrading`), the land factory first; with metal piling up,
+  more of them; extractors upgrade into better ones (more `extracts_metal`), the safe ones nearest
+  home first, a few at a time as the income allows and while power holds (the reclaim and rebuild of
+  `upgrade_task` leaves those alone). Builders that help factories help one upgrading
+  (`factory_to_help`). With no unit of ours that upgrades (TA's games), nothing of it runs.
 * Allies (`ally.rs`): players signal their team with `Command::Signal` (a ping with a
   meaning: look, attack, defend, on my way, need metal or energy; the sim keeps the last 32
   for 90 s in `Sim::signals`, the same on every machine, and emits `SimEvent::Signal`). A
@@ -2430,7 +2454,11 @@ where the units go (`hud/domain.rs`, below).
     click away), under DETAILS first what the selection makes and uses of metal and energy a second
     now, all of it together (`Sim::unit_flows` summed, as TA's unit bar gives the first unit's; with
     a queue shown, DETAILS has these alone); at the right, for a selection of ours, the command plate: ORDERS in rows by
-    kind (`orders::available`: moving and fighting, work, the special ones, each with its key),
+    kind (`orders::available`: moving and fighting, work, the special ones, each with its key;
+    UPGRADE among the work where the selection has a unit that upgrades in place, its tip the
+    unit it becomes, its price and time: `orders::upgrade_tip`, `Game::upgrade_selection`, Alt+U,
+    Shift queueing the step after; the progress an amber bar under the unit's health, and in its
+    card, `activity`),
     beside them the STANCE (the standing orders as labelled buttons showing what each is set to,
     switches some on and some off ON/OFF with a half-lit lamp, as the classic's mixed art, a press
     all one way: `Game::selection_power`; self-destruct last and apart; a column of glyphs where

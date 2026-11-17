@@ -107,6 +107,27 @@ pub enum Order {
     /// Transports: set cargo down at a point.
     Unload(FxVec3),
     Stop,
+    /// Become the unit type given, built in place on itself (its type's `UpgradesTo`: Supreme
+    /// Commander's factories, extractors, radars...), with its own build power and that of the
+    /// builders helping it, paying as construction does (see `Sim::update_upgrade_order`). Taken
+    /// off its orders, the upgrade is called off. (After `Stop`: records keep the earlier
+    /// variants' numbers.)
+    Upgrade(usize),
+}
+
+/// What a unit builds on itself: the type it is becoming ([`Order::Upgrade`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelfJob {
+    Upgrade(usize),
+}
+
+/// A unit's work on itself under way: what, and the work done on it so far (of its whole, as
+/// construction counts work: [`crate::UnitType::build_work`] for an upgrade). Called off, the
+/// metal paid for it comes back (`Sim::cancel_self_work`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelfWork {
+    pub job: SelfJob,
+    pub work: u64,
 }
 
 /// A construction aircraft's sway round what it builds, facing it (`Sim::drift_round`).
@@ -274,6 +295,8 @@ pub struct Unit {
     /// Whether `StartMoving` has been signalled to the script.
     pub moving: bool,
     pub build: Option<BuildJob>,
+    /// What it builds on itself now (an upgrade into another type), and how far along.
+    pub self_work: Option<SelfWork>,
     /// Factory production queue (unit type ids), and the orders every unit it releases
     /// is given (its rally route: move, patrol, fight and guard orders).
     pub factory_queue: VecDeque<usize>,
@@ -423,6 +446,7 @@ impl Unit {
             squeeze_until: 0,
             moving: false,
             build: None,
+            self_work: None,
             factory_queue: VecDeque::new(),
             rally: Vec::new(),
             factory: None,

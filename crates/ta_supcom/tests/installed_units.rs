@@ -324,8 +324,8 @@ fn the_mod_is_made_the_same_twice() {
 }
 
 /// Every unit a player can make is reached from its faction's commander: what each builder
-/// builds (its lists' categories, and the buildings made only by upgrading what it builds: the
-/// tech 2 and 3 factories), and what those build, all the way down.
+/// builds (its lists' categories), what each upgrades into in place (the tech 2 and 3 factories,
+/// which nothing builds outright), and what those build and upgrade into, all the way down.
 #[test]
 #[ignore]
 fn every_playable_unit_is_reached_from_its_commander() {
@@ -340,6 +340,7 @@ fn every_playable_unit_is_reached_from_its_commander() {
         let lists = faction::all_builds(&theirs);
         let commander = faction::commander(&theirs).expect("a commander");
         let mut reached: Vec<String> = vec![commander.id.clone()];
+        let mut upgrades = 0;
         let mut k = 0;
         while k < reached.len() {
             if let Some((_, built)) = lists.iter().find(|(b, _)| b.id == reached[k]) {
@@ -349,10 +350,22 @@ fn every_playable_unit_is_reached_from_its_commander() {
                     }
                 }
             }
+            if let Some(u) = theirs.iter().find(|u| u.id == reached[k]).and_then(|u| faction::upgrade_of(u, &theirs)) {
+                upgrades += 1;
+                if !reached.contains(&u.id) {
+                    reached.push(u.id.clone());
+                }
+            }
             k += 1;
         }
         let missing: Vec<&str> = theirs.iter().filter(|u| !reached.contains(&u.id)).map(|u| u.id.as_str()).collect();
-        eprintln!("{}: {} of {} reached from {}", f.name(), reached.len(), theirs.len(), commander.id);
+        eprintln!("{}: {} of {} reached from {} ({upgrades} upgrade in place)", f.name(), reached.len(), theirs.len(), commander.id);
+        // Nothing builds what is made by upgrading alone: the factories of tech 2 and 3.
+        for (b, built) in &lists {
+            for u in built {
+                assert!(!(u.is("FACTORY") && u.motion == unit::Motion::None && matches!(u.tech, Some(unit::Tech::T2 | unit::Tech::T3)) && u.upgrades_from.is_some()), "{}: {} builds {}", f.name(), b.id, u.id);
+            }
+        }
         assert!(missing.is_empty(), "{}: not reached: {missing:?}", f.name());
         // The commander builds its own tier: not what its engineering enhancements bring.
         let own = faction::builds(commander, &theirs);

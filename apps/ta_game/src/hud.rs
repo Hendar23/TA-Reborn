@@ -1274,12 +1274,14 @@ impl Hud {
             let countdown = u.self_destruct_manual && u.self_destruct_at.is_some();
             let group = if close || selected { group_of.get(&u.id).copied() } else { None };
             let capturing = u.capture_progress > ta_sim::Fx::ZERO;
+            // Upgrading in place (ours and our allies'): how far along, under its health.
+            let remaking = game.sim.self_work_progress(u).filter(|_| game.may_inspect(u.owner)).map(|(_, done)| done.to_f32().clamp(0.0, 1.0));
             let shown = match game.health_bars {
                 ta_config::HealthBars::Auto => close && (!u.is_complete() || damaged && u.owner == game.local_player),
                 ta_config::HealthBars::Damaged => !u.is_complete() || damaged,
                 ta_config::HealthBars::Selected => false,
             };
-            let bar = selected || capturing || game.hovered == Some(u.id) || shown;
+            let bar = selected || capturing || game.hovered == Some(u.id) || shown || remaking.is_some() && close;
             // (The viewer's sight is asked only of those with something to show.)
             if !(countdown || group.is_some() || bar) || game.seen(u) != ta_sim::Seen::Visible {
                 continue;
@@ -1307,7 +1309,7 @@ impl Hud {
             }
             // (Far out a selected unit at full health shows none: the strategic icons' rings
             // mark the selection.)
-            if !bar || strategic && selected && !damaged && u.is_complete() && !capturing && u.paralyzed_until <= game.sim.tick && game.hovered != Some(u.id) {
+            if !bar || strategic && selected && !damaged && u.is_complete() && !capturing && remaking.is_none() && u.paralyzed_until <= game.sim.tick && game.hovered != Some(u.id) {
                 continue;
             }
             if u.capture_progress > ta_sim::Fx::ZERO {
@@ -1393,6 +1395,12 @@ impl Hud {
                         eta::paint(&painter, Pos2::new(s.x, bar.min.y - 5.0), left, eta_strength);
                     }
                 }
+            }
+            if let Some(done) = remaking {
+                // (Amber: work on itself, not a frame's.)
+                let bb = Rect::from_min_size(Pos2::new(bar.min.x, bar.min.y + 6.0), EVec2::new(w, 3.0));
+                painter.rect_filled(bb.expand(1.0), 1.5, Color32::from_black_alpha(200));
+                painter.rect_filled(Rect::from_min_size(bb.min, EVec2::new(w * done, 3.0)), 1.0, Color32::from_rgb(255, 196, 70));
             }
             if selected && !strategic {
                 // On the ground round the unit, as a decal lies (drawn with the scene, so that the
