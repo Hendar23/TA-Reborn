@@ -32,6 +32,7 @@ mod enhance;
 mod info;
 mod map;
 mod navy;
+mod projects;
 mod transport;
 mod upgrade;
 
@@ -39,6 +40,8 @@ mod upgrade;
 mod tests;
 #[cfg(test)]
 mod clear_tests;
+#[cfg(test)]
+mod projects_tests;
 
 use std::cmp::Reverse;
 
@@ -98,6 +101,76 @@ pub enum Difficulty {
     Hard,
 }
 
+/// How a computer player plays, whatever its difficulty: its personality, as Forged Alliance's
+/// computer players had them. It shapes what it builds and when it attacks. (Saved games and
+/// replays keep it by its place in this list: new ones go at the end.)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum Persona {
+    /// A bit of everything: the economy and an army, towers, the tiers in turn.
+    #[default]
+    Balanced,
+    /// Attacks early and often with its first units; more factories, the tiers late.
+    Rush,
+    /// Fortifies: towers and heavy defences, anti-nuclear cover, long-range guns; attacks
+    /// late, in force.
+    Turtle,
+    /// Races up the tiers: advanced units, experimentals and nuclear missiles as soon as it can.
+    Tech,
+    /// Takes to the air: an aircraft plant early, bombers and gunships.
+    Air,
+    /// Takes to the sea where the sea reaches the enemy: shipyards early, a big fleet (on dry
+    /// land, it plays as Balanced).
+    Naval,
+    /// One of the others, drawn from the game's seed (every machine of a game draws the same).
+    Random,
+}
+
+impl Persona {
+    /// Every persona, in the order the interface lists them.
+    pub const ALL: [Persona; 7] = [Persona::Balanced, Persona::Rush, Persona::Turtle, Persona::Tech, Persona::Air, Persona::Naval, Persona::Random];
+
+    /// Its name in settings files and logs.
+    pub fn key(self) -> &'static str {
+        match self {
+            Persona::Balanced => "balanced",
+            Persona::Rush => "rush",
+            Persona::Turtle => "turtle",
+            Persona::Tech => "tech",
+            Persona::Air => "air",
+            Persona::Naval => "naval",
+            Persona::Random => "random",
+        }
+    }
+
+    /// The persona of a name ([`Persona::key`]), any case.
+    pub fn from_key(key: &str) -> Option<Persona> {
+        Persona::ALL.into_iter().find(|p| p.key().eq_ignore_ascii_case(key.trim()))
+    }
+
+    /// Its number on the wire (the lobby's seats): its place in [`Persona::ALL`].
+    pub fn code(self) -> u8 {
+        Persona::ALL.iter().position(|&p| p == self).unwrap_or(0) as u8
+    }
+
+    pub fn from_code(code: u8) -> Option<Persona> {
+        Persona::ALL.get(code as usize).copied()
+    }
+
+    /// The persona played: [`Persona::Random`] drawn from the game's seed and the player's
+    /// number (the same on every machine), the others as they are.
+    pub fn resolve(self, seed: u64, player: u8) -> Persona {
+        if self != Persona::Random {
+            return self;
+        }
+        let mut x = seed ^ 0x9E37_79B9_7F4A_7C15 ^ (player as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        x ^= x >> 31;
+        x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+        x ^= x >> 29;
+        let played = &Persona::ALL[..Persona::ALL.len() - 1];
+        played[(x % played.len() as u64) as usize]
+    }
+}
+
 /// Tuning per difficulty.
 #[derive(Clone)]
 struct Params {
@@ -150,6 +223,28 @@ struct Params {
     /// bombers massed for it strike it (`army.rs`). Hard only (at sea against Hard without
     /// it: +19.5% margin over 80 games, 24 outright wins to 6).
     air_doctrine: bool,
+    /// Projects (`projects.rs`): the first anti-nuclear defence with no enemy silo seen (from
+    /// this minute); long-range guns (at most, from this minute); experimentals (at once,
+    /// from this minute); heavy defences (Annihilators, Doomsday Machines: at most, from this
+    /// minute).
+    anti_minute: u64,
+    long_guns: usize,
+    long_gun_minute: u64,
+    experimentals: usize,
+    experimental_minute: u64,
+    heavy_towers: usize,
+    heavy_minute: u64,
+    /// The share (percent, at most) of the units a factory turns out at its top tier once the
+    /// economy has grown (`economy.rs`: `top_tier_share`).
+    top_tier: i64,
+    /// The persona's leanings: an aircraft plant first and more planes; shipyards first and a
+    /// bigger fleet (more aircraft or warships at most, beyond the usual).
+    air_first: bool,
+    naval_first: bool,
+    more_planes: usize,
+    more_ships: usize,
+    /// Wreckage closing our units' way is cleared (`clear.rs`; off for experiments).
+    clear_way: bool,
 }
 
 impl Params {
@@ -186,6 +281,19 @@ impl Params {
                 extra_towers: 0,
                 transports: 2,
                 air_doctrine: false,
+                anti_minute: u64::MAX,
+                long_guns: 0,
+                long_gun_minute: u64::MAX,
+                experimentals: 0,
+                experimental_minute: u64::MAX,
+                heavy_towers: 0,
+                heavy_minute: u64::MAX,
+                top_tier: 25,
+                air_first: false,
+                naval_first: false,
+                more_planes: 0,
+                more_ships: 0,
+                clear_way: true,
             },
             Difficulty::Normal => Params {
                 tech_minute: 7,
@@ -218,6 +326,19 @@ impl Params {
                 extra_towers: 0,
                 transports: 8,
                 air_doctrine: false,
+                anti_minute: 22,
+                long_guns: 1,
+                long_gun_minute: 22,
+                experimentals: 1,
+                experimental_minute: 28,
+                heavy_towers: 2,
+                heavy_minute: 18,
+                top_tier: 60,
+                air_first: false,
+                naval_first: false,
+                more_planes: 0,
+                more_ships: 0,
+                clear_way: true,
             },
             Difficulty::Hard => Params {
                 tech_minute: 7,
@@ -250,8 +371,88 @@ impl Params {
                 extra_towers: 1,
                 transports: 12,
                 air_doctrine: true,
+                anti_minute: 18,
+                long_guns: 2,
+                long_gun_minute: 18,
+                experimentals: 2,
+                experimental_minute: 24,
+                heavy_towers: 3,
+                heavy_minute: 15,
+                top_tier: 75,
+                air_first: false,
+                naval_first: false,
+                more_planes: 0,
+                more_ships: 0,
+                clear_way: true,
             },
         }
+    }
+
+    /// A difficulty's tuning shaped by a persona (whatever the difficulty, it plays the same
+    /// way; the difficulty decides how well). Easy keeps its slow hand and stays without
+    /// nuclear missiles, long-range guns and experimentals.
+    fn with_persona(mut self, persona: Persona, d: Difficulty) -> Params {
+        let easy = d == Difficulty::Easy;
+        let later = |m: u64, by: u64| m.saturating_add(by);
+        let sooner = |m: u64, by: u64| if m == u64::MAX { m } else { m.saturating_sub(by) };
+        match persona {
+            Persona::Balanced | Persona::Random => {}
+            Persona::Rush => {
+                // Small waves early and often, from more factories; the tiers and the big
+                // projects late.
+                self.wave_base = (self.wave_base * 2 / 5).max(250);
+                self.wave_growth /= 2;
+                self.wave_cooldown = self.wave_cooldown * 2 / 3;
+                self.max_factories += 1;
+                self.army_ratio = self.army_ratio.max(90);
+                self.tech_minute += 6;
+                self.top_tier /= 3;
+                self.extra_towers = 0;
+                self.nuke_minute = later(self.nuke_minute, 10);
+                self.anti_minute = later(self.anti_minute, 10);
+                self.long_guns = 0;
+                self.experimental_minute = later(self.experimental_minute, 8);
+                self.heavy_towers = self.heavy_towers.min(1);
+            }
+            Persona::Turtle => {
+                // Towers early and many, heavy defences, anti-nuclear cover and long-range guns;
+                // fewer, bigger waves.
+                self.towers = true;
+                self.extra_towers += if easy { 1 } else { 4 };
+                self.wave_base = self.wave_base * 3 / 2;
+                self.wave_growth = self.wave_growth * 3 / 2;
+                self.wave_cooldown = self.wave_cooldown * 3 / 2;
+                self.army_ratio = self.army_ratio.min(30);
+                self.heavy_towers += if easy { 0 } else { 3 };
+                self.heavy_minute = sooner(self.heavy_minute, 5);
+                self.anti_minute = sooner(self.anti_minute, 6);
+                self.anti_nukes += (!easy) as usize;
+                self.long_guns += (!easy) as usize;
+                self.long_gun_minute = sooner(self.long_gun_minute, 4);
+            }
+            Persona::Tech => {
+                // Up the tiers as soon as the economy allows: advanced constructors, the top
+                // tier's units, experimentals and missiles; later, bigger waves.
+                self.tech_minute = self.tech_minute.saturating_sub(3).max(4);
+                self.tech_income = (self.tech_income - 2).max(4);
+                self.adv_builders += 2;
+                self.top_tier = (self.top_tier + 30).min(95);
+                self.experimentals += (!easy) as usize;
+                self.experimental_minute = sooner(self.experimental_minute, 8);
+                self.nuke_minute = sooner(self.nuke_minute, 4);
+                self.wave_base = self.wave_base * 5 / 4;
+            }
+            Persona::Air => {
+                self.air_first = true;
+                self.more_planes = if easy { 4 } else { 16 };
+                self.strike_group = self.strike_group.saturating_sub(1).max(2);
+            }
+            Persona::Naval => {
+                self.naval_first = true;
+                self.more_ships = if easy { 2 } else { 12 };
+            }
+        }
+        self
     }
 }
 
@@ -259,6 +460,8 @@ impl Params {
 pub struct SkirmishAi {
     pub player: u8,
     pub difficulty: Difficulty,
+    /// How it plays (a random one drawn already).
+    pub persona: Persona,
     rng: Rng,
     p: Params,
     /// This brain works for a person (`DutyOfficer`): it goes only where the player has been,
@@ -444,11 +647,17 @@ pub struct SkirmishAi {
     scouted: u64,
     air_lift_failed: u64,
     /// Wreckage (or another feature) closing our units' way, and the work on it; where our
-    /// units stood at the last looks and since when (stalls); and where ways were searched
-    /// lately, until when not again (`clear.rs`).
+    /// units stood at the last looks and since when (stalls); and the ways searched lately (from,
+    /// to), until when not again (`clear.rs`).
     blockers: Vec<clear::Blocker>,
     marks: Vec<(UnitId, FxVec3, u64)>,
-    way_searched: Vec<(FxVec3, u64)>,
+    way_searched: Vec<(FxVec3, FxVec3, u64)>,
+    search_rest: u64,
+    /// What each of our long-range guns shells (where, since when: `projects.rs`).
+    gun_targets: Vec<(UnitId, FxVec3, u64)>,
+    /// Our side's tree leads to an experimental (or a factory of them) from what we start
+    /// with: TA's Core to its Krogoth, its Arm to none.
+    experimentals_reachable: bool,
 }
 
 /// One think's view of our forces and the enemy's.
@@ -508,6 +717,13 @@ struct Survey<'a> {
     /// What our finished army and buildings are worth (cost).
     army_value: i64,
     building_value: i64,
+    /// Projects (`projects.rs`), finished or not: heavy defences, long-range guns, experimentals
+    /// (and factories of them).
+    heavy_towers: usize,
+    long_guns: usize,
+    experimentals: usize,
+    /// Advanced factories (`advanced_factory`), finished or not.
+    adv_factories: usize,
 }
 
 /// Jobs handed out this think.
@@ -523,6 +739,12 @@ struct Plan {
     /// (The player's helper only.) What each builder is at or was sent to this think, of the
     /// jobs that two are not sent at: a hurt unit to mend, a feature to take apart.
     claims: Vec<(UnitId, Claim)>,
+    /// A project (`projects.rs`) was handed out this think: one at a time; and the projects under
+    /// way builders were sent to help with this think.
+    project: bool,
+    hands: Vec<UnitId>,
+    /// An experimental (or a factory of them) was handed out this think.
+    experimental: bool,
 }
 
 /// A job a builder has to itself (a frame is another matter: any number of hands may build it).
@@ -638,7 +860,9 @@ impl SkirmishAi {
     /// `army_cap`, `max_makers`, `max_factories`, `silos`, `anti_nukes`, `strike_group`,
     /// `builders_cap`, `wave_base`, `wave_growth`, `wave_cooldown` (seconds), `army_ratio`,
     /// `reach_pct`, `tech_minute`, `expanders`, `upgrades`, `power_plants`, `extra_towers`,
-    /// `transports`, `nuke_minute`, `air_doctrine` (0 or 1). False for an unknown name.
+    /// `transports`, `nuke_minute`, `air_doctrine` (0 or 1), `anti_minute`, `long_guns`,
+    /// `long_gun_minute`, `experimentals`, `experimental_minute`, `heavy_towers`,
+    /// `heavy_minute`, `top_tier` (percent), `clear_way` (0 or 1). False for an unknown name.
     pub fn tweak(&mut self, name: &str, value: i64) -> bool {
         let p = &mut self.p;
         let n = value.max(0) as usize;
@@ -667,12 +891,27 @@ impl SkirmishAi {
             "extra_towers" => p.extra_towers = n,
             "transports" => p.transports = n,
             "air_doctrine" => p.air_doctrine = value != 0,
+            "anti_minute" => p.anti_minute = value.max(0) as u64,
+            "long_guns" => p.long_guns = n,
+            "long_gun_minute" => p.long_gun_minute = value.max(0) as u64,
+            "experimentals" => p.experimentals = n,
+            "experimental_minute" => p.experimental_minute = value.max(0) as u64,
+            "heavy_towers" => p.heavy_towers = n,
+            "heavy_minute" => p.heavy_minute = value.max(0) as u64,
+            "top_tier" => p.top_tier = value.clamp(0, 100),
+            "clear_way" => p.clear_way = value != 0,
             _ => return false,
         }
         true
     }
 
     pub fn new(player: u8, sim: &Sim, difficulty: Difficulty) -> SkirmishAi {
+        SkirmishAi::with_persona(player, sim, difficulty, Persona::Balanced)
+    }
+
+    /// A computer player of a persona ([`Persona::Random`]: one drawn from the game's seed).
+    pub fn with_persona(player: u8, sim: &Sim, difficulty: Difficulty, persona: Persona) -> SkirmishAi {
+        let persona = persona.resolve(sim.seed, player);
         // Home is the commander, else (missions) the middle of our buildings or units.
         let centroid = |mine: bool, static_only: bool| {
             let pts: Vec<FxVec3> = sim
@@ -717,7 +956,28 @@ impl SkirmishAi {
         }
         let enemy_base_owners: Vec<u8> = enemy_bases.iter().map(|_| u8::MAX).collect();
         let enemy_base_seen: Vec<bool> = enemy_bases.iter().map(|_| false).collect();
-        let info = info::classify(sim);
+        let mut info = info::classify(sim);
+        info::mark_experimental_tree(sim, &mut info);
+        // Whether an experimental (or a factory of them) is in our side's tree, from the builders
+        // we start with, a few steps down (a factory, its constructor, an advanced factory, its
+        // constructor...).
+        let experimentals_reachable = {
+            let mut seen = vec![false; info.len()];
+            let mut frontier: Vec<usize> = sim.units().filter(|u| u.owner == player && sim.unit_type(u).is_builder).map(|u| u.type_id).collect();
+            let mut found = false;
+            for _ in 0..6 {
+                let mut next = Vec::new();
+                for t in frontier {
+                    if std::mem::replace(&mut seen[t], true) {
+                        continue;
+                    }
+                    found |= info[t].experimental || info[t].experimental_factory;
+                    next.extend(sim.types.get(t).ai_build_options.iter().copied().filter(|&o| sim.is_allowed(o)));
+                }
+                frontier = next;
+            }
+            found
+        };
         // Which movement classes get from our start to the nearest enemy start.
         let enemy = enemy_bases.iter().copied().min_by_key(|p| ((*p - base).xz().length_sq_raw(), p.x.0, p.z.0));
         let mut by_spec: Vec<(ta_sim::world::MoveSpec, bool)> = Vec::new();
@@ -750,7 +1010,8 @@ impl SkirmishAi {
             difficulty,
             // From the game's seed: the same game replays the same way, another one doesn't.
             rng: Rng::new(0xA1 ^ ((player as u64) << 32) ^ sim.seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)),
-            p: Params::for_difficulty(difficulty),
+            p: Params::for_difficulty(difficulty).with_persona(persona, difficulty),
+            persona,
             helper: false,
             base,
             enemy_bases,
@@ -852,6 +1113,9 @@ impl SkirmishAi {
             blockers: Vec::new(),
             marks: Vec::new(),
             way_searched: Vec::new(),
+            search_rest: 0,
+            gun_targets: Vec::new(),
+            experimentals_reachable,
         }
     }
 
@@ -885,19 +1149,24 @@ impl SkirmishAi {
         self.plan_navy(sim, &s);
         // Wreckage closing our units' way: constructors to reclaim it (before the builders' own
         // jobs), the army to fire on it (after its own orders).
-        self.find_blockers(sim, &s, &mut out);
-        self.send_clearers(sim, &s, &mut out);
+        if self.p.clear_way {
+            self.find_blockers(sim, &s, &mut out);
+            self.send_clearers(sim, &s, &mut out);
+        }
         self.run_builders(sim, &s, &mut out);
         self.run_upgrades_in_place(sim, &s, &mut out);
         self.run_enhancements(sim, &s, &mut out);
         self.run_factories(sim, &s, &mut out);
         self.run_scouting(sim, &s, &mut out);
         self.run_army(sim, &s, &mut out);
-        self.fire_on_blockers(sim, &s, &mut out);
+        if self.p.clear_way {
+            self.fire_on_blockers(sim, &s, &mut out);
+        }
         self.run_transports(sim, &s, &mut out);
         self.run_navy(sim, &s, &mut out);
         self.run_air(sim, &s, &mut out);
         self.run_silos(sim, &s, &mut out);
+        self.run_long_guns(sim, &s, &mut out);
         out
     }
 
@@ -975,6 +1244,10 @@ impl SkirmishAi {
             radars: 0,
             army_value: 0,
             building_value: 0,
+            heavy_towers: 0,
+            long_guns: 0,
+            experimentals: 0,
+            adv_factories: 0,
         };
         for u in sim.units() {
             if u.dead {
@@ -999,7 +1272,20 @@ impl SkirmishAi {
             // Units following a mission script (waiting, patrolling...) are left to it.
             let done = Self::can_command(sim, u);
             let out_of_yard = done && u.factory.is_none();
+            if i.long_range {
+                s.long_guns += 1;
+            } else if i.role == Role::Defense && i.cost >= projects::HEAVY_COST {
+                s.heavy_towers += 1;
+            }
+            s.experimentals += (i.experimental || i.experimental_factory) as usize;
             match i.role {
+                // (An experimental that builds, Forged Alliance's Fatboy: a factory on tracks,
+                // it fights with the army.)
+                Role::Builder if i.experimental => {
+                    if out_of_yard {
+                        s.army.push(u);
+                    }
+                }
                 Role::Builder => {
                     if i.commander {
                         if done {
@@ -1018,6 +1304,7 @@ impl SkirmishAi {
                 }
                 Role::Factory => {
                     let adv = self.advanced_factory(sim, u.type_id);
+                    s.adv_factories += adv as usize;
                     s.adv_factory |= adv;
                     s.adv_factory_done |= adv && done;
                     s.factory_tier = s.factory_tier.max(self.factory_tier(sim, u.type_id));
@@ -1059,7 +1346,8 @@ impl SkirmishAi {
             let building = sim.unit_type(u).locomotion == Locomotion::Static;
             // (Not one of ours being taken apart, an old extractor making way for a better one:
             // a builder sent to finish it would only mend it as it went.)
-            if !u.is_complete() && u.factory.is_none() && building && !sim.being_taken_apart(u) {
+            // (And an experimental a constructor builds in the field, Forged Alliance's.)
+            if !u.is_complete() && u.factory.is_none() && (building || i.experimental) && !sim.being_taken_apart(u) {
                 s.nanoframes.push(u);
             }
             if building && !sim.unit_type(u).radar.is_zero() {
@@ -1068,7 +1356,7 @@ impl SkirmishAi {
             if done {
                 if building {
                     s.building_value += i.cost;
-                } else if matches!(i.role, Role::Combat | Role::AntiAirUnit) {
+                } else if matches!(i.role, Role::Combat | Role::AntiAirUnit) || i.experimental {
                     s.army_value += i.cost;
                 }
             }

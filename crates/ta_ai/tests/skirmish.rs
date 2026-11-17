@@ -2,7 +2,9 @@
 //!
 //! `TA_TEST_MAP` picks the map (default Sherwood), `TA_TEST_MINUTES` the length (default
 //! 12), `TA_TEST_DIFFICULTY` (easy, normal, hard) the even players' level and
-//! `TA_TEST_DIFFICULTY2` the odd players' (default: the same). `TA_TEST_SWAP=1` rotates the
+//! `TA_TEST_DIFFICULTY2` the odd players' (default: the same); `TA_TEST_PERSONA` (balanced,
+//! rush, turtle, tech, air, naval, random) the even players' persona and `TA_TEST_PERSONA2` the
+//! odd players' (default: the same). `TA_TEST_SWAP=1` rotates the
 //! start positions; `TA_TEST_PLAYERS=n` plays n AIs (sides alternate ARM/CORE) and
 //! `TA_TEST_TEAMS=1` puts them on two alternating teams (e.g. a 2v2). `TA_TEST_SEED=n` changes
 //! the game's random seed (7), and with it the AIs' choices; `TA_TEST_TWEAKS=expanders=0`
@@ -22,7 +24,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-use ta_ai::{Difficulty, SkirmishAi};
+use ta_ai::{Difficulty, Persona, SkirmishAi};
 use ta_data::{GameData, MapInfo};
 use ta_formats::tdf;
 use ta_formats::tnt::TntMap;
@@ -50,6 +52,10 @@ fn difficulty(var: &str) -> Option<Difficulty> {
         "normal" => Some(Difficulty::Normal),
         _ => None,
     }
+}
+
+fn persona(var: &str) -> Option<Persona> {
+    Persona::from_key(&std::env::var(var).ok()?)
 }
 
 fn joined<T: std::fmt::Display>(v: &[T]) -> String {
@@ -99,17 +105,19 @@ fn audit_kind(sim: &Sim, type_id: usize) -> Option<&'static str> {
         }
         return None;
     }
+    let armed = weapons.iter().any(|w| gun(w) || w.hits_air && !w.def.interceptor && w.default_damage > Fx::ZERO);
+    // (One that builds too, Forged Alliance's Fatboy, is an experimental all the same.)
+    if armed && cost >= 5000 {
+        return Some("experimental");
+    }
     if t.is_builder {
         return None;
     }
     if weapons.iter().any(anti) {
         return Some("mobile anti-nuke");
     }
-    if !weapons.iter().any(|w| gun(w) || w.hits_air && !w.def.interceptor && w.default_damage > Fx::ZERO) {
+    if !armed {
         return None;
-    }
-    if cost >= 5000 {
-        return Some("experimental");
     }
     let artillery = weapons.iter().any(|w| gun(w) && matches!(w.trajectory, ta_sim::Trajectory::Ballistic | ta_sim::Trajectory::Guided) && w.range >= Fx::from_int(600));
     Some(match (t.locomotion, tier) {
@@ -212,7 +220,9 @@ fn ai_vs_ai_plays_a_game() {
         }
     }
     let levels: Vec<Difficulty> = (0..n).map(|i| if i % 2 == 0 { first } else { second }).collect();
-    let mut ais: Vec<SkirmishAi> = (0..n).map(|i| SkirmishAi::new(i as u8, &sim, levels[i])).collect();
+    let first_persona = persona("TA_TEST_PERSONA").unwrap_or_default();
+    let personas: Vec<Persona> = (0..n).map(|i| if i % 2 == 0 { first_persona } else { persona("TA_TEST_PERSONA2").unwrap_or(first_persona) }).collect();
+    let mut ais: Vec<SkirmishAi> = (0..n).map(|i| SkirmishAi::with_persona(i as u8, &sim, levels[i], personas[i])).collect();
     for kv in std::env::var("TA_TEST_TWEAKS").unwrap_or_default().split(',').filter(|kv| !kv.trim().is_empty()) {
         let (k, v) = kv.split_once('=').expect("TA_TEST_TWEAKS: name=value,...");
         let v: i64 = v.trim().parse().expect("TA_TEST_TWEAKS: a number");
@@ -220,7 +230,7 @@ fn ai_vs_ai_plays_a_game() {
             assert!(ai.tweak(k.trim(), v), "unknown AI parameter {k}");
         }
     }
-    let lineup: Vec<String> = (0..n).map(|i| format!("P{i} {} {:?}{}", players[i].side, levels[i], if teams { format!(" (team {})", i % 2) } else { String::new() })).collect();
+    let lineup: Vec<String> = (0..n).map(|i| format!("P{i} {} {:?} {:?}{}", players[i].side, levels[i], ais[i].persona, if teams { format!(" (team {})", i % 2) } else { String::new() })).collect();
     println!("{map_name}: {}", lineup.join(" vs "));
 
     let started = Instant::now();

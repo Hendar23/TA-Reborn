@@ -16,9 +16,19 @@ const LOOK_TICKS: u64 = 60;
 const STALL_PX: i64 = 32;
 const STALL_TICKS: u64 = 8 * SECOND;
 const STALL_FAR: i64 = 300;
-/// A way searched is not searched again for this long, nor another's from near it (px).
-const SEARCHED_TICKS: u64 = 20 * SECOND;
+/// A unit's way stopping this far (px) or further short of where it was sent stops short; it is
+/// searched once the unit is this near the end of it (on its way there, it may yet open).
+const SHORT_PX: i64 = 320;
+const SHORT_END_PX: i64 = 256;
+/// After a search that found nothing to clear, none for this long (a route can stop short of
+/// where it was sent for other reasons: a search costs a few milliseconds).
+const SEARCH_REST_TICKS: u64 = 30 * SECOND;
+/// A way searched is not searched again for this long, nor another's from near it (px) or going
+/// near where it went (from anywhere much nearer than across the map).
+const SEARCHED_TICKS: u64 = 30 * SECOND;
 const SEARCHED_NEAR: i64 = 500;
+const SEARCHED_GOAL: i64 = 600;
+const SEARCHED_FROM: i64 = 1500;
 /// Wreckage nobody has been held up by for this long is forgotten.
 const FORGET_TICKS: u64 = 90 * SECOND;
 /// Constructors go this far (px) to clear the way; the Commander this far, the place safe.
@@ -67,10 +77,10 @@ impl SkirmishAi {
                 out.push(Command::Order { player: me, units: back, order: Order::Fight(b.goal), queue: false });
             }
         }
-        if s.now % LOOK_TICKS >= THINK_TICKS {
+        if s.now % LOOK_TICKS >= THINK_TICKS || s.now < self.search_rest {
             return;
         }
-        self.way_searched.retain(|&(_, until)| now < until);
+        self.way_searched.retain(|&(_, _, until)| now < until);
         // Where each surface unit of the army stood at the last looks (to notice it stalled).
         let mut marks: Vec<(UnitId, FxVec3, u64)> = Vec::with_capacity(s.army.len());
         let mut candidate: Option<(&Unit, FxVec3)> = None;
@@ -88,9 +98,10 @@ impl SkirmishAi {
             if candidate.is_some() {
                 continue;
             }
-            // On a way that stops short of where it was sent, though the ground leads there...
+            // Near the end of a way that stops well short of where it was sent (not a building's
+            // width: the middle of one is sent at), though the ground leads there...
             let short = match (u.path_goal, u.move_request) {
-                (Some(g), Some(m)) if !u.path_partial && !g.within_xz(m, fx(96)) => Some(m),
+                (Some(g), Some(m)) if !u.path_partial && !g.within_xz(m, fx(SHORT_PX)) && u.pos.within_xz(g, fx(SHORT_END_PX)) => Some(m),
                 _ => None,
             };
             // ...or stalled on its way somewhere well off, not fighting.
@@ -99,7 +110,13 @@ impl SkirmishAi {
                 _ => None,
             };
             let Some(goal) = short.or(stalled) else { continue };
-            if self.way_searched.iter().any(|&(p, _)| p.within_xz(u.pos, fx(SEARCHED_NEAR))) || !self.unit_reaches(sim, u, goal) {
+            let searched = |&(from, to, _): &(FxVec3, FxVec3, u64)| from.within_xz(u.pos, fx(SEARCHED_NEAR)) || to.within_xz(goal, fx(SEARCHED_GOAL)) && from.within_xz(u.pos, fx(SEARCHED_FROM));
+            if self.way_searched.iter().any(searched) || !self.unit_reaches(sim, u, goal) {
+                continue;
+            }
+            // (Sent into an enemy base: its buildings are what stand round where it is going, and
+            // the army's to fight, not wreckage to clear.)
+            if short.is_some() && self.enemy_buildings.iter().any(|b| b.1.within_xz(goal, fx(400))) {
                 continue;
             }
             // (Held up by wreckage known already: it is still in the way.)
@@ -112,7 +129,7 @@ impl SkirmishAi {
         marks.sort_unstable_by_key(|m| m.0);
         self.marks = marks;
         let Some((u, goal)) = candidate else { return };
-        self.way_searched.push((u.pos, now + SEARCHED_TICKS));
+        self.way_searched.push((u.pos, goal, now + SEARCHED_TICKS));
         let Some(spec) = self.info[u.type_id].spec else { return };
         let found: Vec<usize> = sim
             .way_blockers(&spec, u.pos, goal)
@@ -123,6 +140,10 @@ impl SkirmishAi {
             })
             .take(2)
             .collect();
+        // (Nothing to clear: a rest before the next search.)
+        if found.is_empty() {
+            self.search_rest = now + SEARCH_REST_TICKS;
+        }
         for f in found {
             if self.blockers.iter().any(|b| b.feature == f) {
                 continue;

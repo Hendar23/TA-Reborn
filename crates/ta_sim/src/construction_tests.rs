@@ -800,3 +800,39 @@ fn a_builder_whose_arm_is_still_out_builds_the_next_job_at_once() {
     }
     assert!(!sim.unit(builder).unwrap().in_build_stance, "and drops as the script takes the arm in");
 }
+
+/// A unit built in the field by a mobile builder (Forged Alliance's engineers put up their
+/// experimentals so): one frame, worked on till it is finished. A mobile unit takes no cells, so
+/// the builder found no frame on the site whenever it lost hold of the one it had (the frame pushed
+/// out of its reach) and laid another there, again and again: twenty piled on one site, each left
+/// to un-build.
+#[test]
+fn a_unit_built_in_the_field_is_one_frame_however_it_is_jostled() {
+    let data = data_of(&[
+        unit("ENGINEER", "Builder=1; WorkerTime=300; CanMove=1; MaxVelocity=2; Acceleration=1; BrakeRate=1; TurnRate=32768; BuildDistance=96; FootprintX=2; FootprintZ=2;"),
+        unit("WALKER", "CanMove=1; MaxVelocity=1; BuildTime=300; BuildCostMetal=100; FootprintX=4; FootprintZ=4;"),
+    ]);
+    let mut sim = sim_of(with_menu(data, "ENGINEER", &["WALKER"]), 1);
+    sim.players[0].endless = true;
+    sim.set_starting_resources(0, Fx::from_int(100_000), Fx::from_int(100_000));
+    let walker = sim.types.id("WALKER").unwrap();
+    let engineer = sim.spawn_unit(sim.types.id("ENGINEER").unwrap(), 0, FxVec3::from_ints(300, 60, 300), 0, true).unwrap();
+    let site = FxVec3::from_ints(420, 60, 300);
+    sim.step(&[Command::Order { player: 0, units: vec![engineer], order: Order::Build { type_id: walker, pos: site }, queue: false }]);
+    let mut frames = std::collections::BTreeSet::new();
+    for tick in 0..30 * 30 {
+        // (The frame shoved off the site now and then, further than the builder reaches from
+        // where it stands: as a crowd's pushing does.)
+        let frame = sim.units().find(|u| u.type_id == walker && !u.is_complete()).map(|u| u.id);
+        if tick % 60 == 30 && let Some(f) = frame {
+            sim.unit_mut(f).unwrap().pos.x += Fx::from_int(48);
+        }
+        sim.step(&[]);
+        frames.extend(sim.units().filter(|u| u.type_id == walker).map(|u| u.id));
+        if sim.units().any(|u| u.type_id == walker && u.is_complete()) {
+            break;
+        }
+    }
+    assert!(sim.units().any(|u| u.type_id == walker && u.is_complete()), "the unit was finished");
+    assert_eq!(frames.len(), 1, "one frame, not a pile of them: {frames:?}");
+}

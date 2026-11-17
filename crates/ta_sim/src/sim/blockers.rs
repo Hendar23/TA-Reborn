@@ -19,16 +19,16 @@ use super::*;
 
 /// Cells the search for the ground's way looks at most, and the search for where the unit can
 /// get to (a pass several screens long is well within it; a way longer still is not looked at).
-const WAY_CELLS: usize = 60_000;
-const REACH_CELLS: usize = 30_000;
+const WAY_CELLS: usize = 20_000;
+const REACH_CELLS: usize = 10_000;
 /// Cells looked at without coming any nearer the goal before the search for where the unit can
 /// get to stops (it has found the front of the ground it can get to).
-const REACH_STALE: usize = 4_000;
+const REACH_STALE: usize = 1_500;
 /// Within this many steps of the goal (the ground's way, a step a cell), the unit gets there.
 const THERE_STEPS: u32 = 6;
-/// The ground's way is looked at this much further than it takes to the unit (twice as far once
-/// it is found), for the detours round what stands in it.
-const WAY_MARGIN: u32 = 24;
+/// The ground's way is looked at this many steps further than it takes to the unit, for the
+/// detours round what stands in it (a corridor along the way, not the ground all round).
+const WAY_MARGIN: u32 = 48;
 
 /// A step's cost along the ground's way: straight and diagonal (as the pathfinder's).
 const STRAIGHT: u32 = 10;
@@ -81,7 +81,7 @@ impl Sim {
             if c == start && to_unit.is_none() {
                 to_unit = Some(g);
                 // On a little past the unit (the way's cells round it, for detours).
-                limit = g * 2 + WAY_MARGIN * STRAIGHT;
+                limit = g + WAY_MARGIN * STRAIGHT;
             }
             for (dx, dz) in NEIGHBOURS {
                 let n = (c.0 + dx, c.1 + dz);

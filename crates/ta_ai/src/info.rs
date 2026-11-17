@@ -86,7 +86,29 @@ pub(crate) struct TypeInfo {
     pub speed: Fx,
     /// Transports: how many units fit aboard (0: not a transport).
     pub transport: u32,
+    /// An experimental: an armed mobile unit (not a Commander) costing [`EXPERIMENTAL_COST`] or
+    /// more (TA's Krogoth, Forged Alliance's Monkeylord, and its Fatboy, a factory on tracks,
+    /// which fights with the army); and a factory whose every combat unit is one (TA's Gantry).
+    pub experimental: bool,
+    pub experimental_factory: bool,
+    /// A building whose guns reach [`LONG_RANGE`] or further: a long-range gun (Big Bertha, the
+    /// Intimidator, the Vulcan), fired at what we know of the enemy's base (`projects.rs`).
+    pub long_range: bool,
+    /// Energy per second its guns take firing as fast as they can (TA's Annihilator draws a
+    /// thousand a shot): stockpiled missiles not counted.
+    pub fire_energy: i64,
+    /// The way to experimentals in the tree (`mark_experimental_tree`): a constructor that builds
+    /// one (or a factory of them), a factory that turns out such a constructor, and a constructor
+    /// that puts up such an (advanced) factory.
+    pub builds_experimentals: bool,
+    pub leads_to_experimentals: bool,
+    pub opens_way_to_experimentals: bool,
 }
+
+/// What a mobile unit costs (metal and energy / 60) to count as an experimental.
+pub(crate) const EXPERIMENTAL_COST: i64 = 5000;
+/// How far (px) a building's guns reach to count as a long-range gun.
+pub(crate) const LONG_RANGE: i64 = 2000;
 
 /// Tech level from whole category tokens. TA uses LEVELn; Escalation uses LEVn.
 /// Its fourth and fifth tiers remain advanced units in the AI's three-tier planning.
@@ -257,7 +279,53 @@ pub(crate) fn classify(sim: &Sim) -> Vec<TypeInfo> {
                 worker: t.worker_rate * 30,
                 speed: t.max_speed,
                 transport: if t.locomotion != Locomotion::Static && !t.is_builder { t.transport_capacity } else { 0 },
+                experimental: experimental(t, ground_dps + air_dps, cost),
+                builds_experimentals: false,
+                leads_to_experimentals: false,
+                opens_way_to_experimentals: false,
+                fire_energy: weapons.iter().filter(|w| !w.def.stockpile).map(|w| w.energy_per_shot.to_int().max(0) * w.burst.max(1) as i64 * 30 / w.reload_ticks.max(1) as i64).sum(),
+                experimental_factory: false,
+                long_range: role == Role::Defense && range >= LONG_RANGE,
             }
         })
+        .collect::<Vec<TypeInfo>>()
+        .into_iter()
+        .enumerate()
+        .map(|(k, mut i)| {
+            // (A factory every combat unit of which is an experimental.)
+            if i.role == Role::Factory {
+                let t = sim.types.get(k);
+                let combat = |o: &&usize| matches!(roles[**o], Role::Combat | Role::AntiAirUnit);
+                i.experimental_factory = t.ai_build_options.iter().any(|o| combat(&o)) && t.ai_build_options.iter().filter(combat).all(|&o| {
+                    let u = sim.types.get(o);
+                    u.weapons.iter().flatten().next().is_some() && experimental(u, 1, (u.cost_metal + u.cost_energy / 60).to_int())
+                });
+            }
+            i
+        })
         .collect()
+}
+
+/// Marks the way to experimentals in the tree (once a game: the tree never changes): the
+/// constructors that build them (or a factory of them), the factories that turn those out, and
+/// the constructors that put those (advanced) factories up.
+pub(crate) fn mark_experimental_tree(sim: &Sim, info: &mut [TypeInfo]) {
+    let n = info.len();
+    let opts = |t: usize| &sim.types.get(t).ai_build_options;
+    let constructor = |i: &TypeInfo| i.role == Role::Builder && (i.builds_mex || i.builds_energy) && !i.experimental;
+    let builds: Vec<bool> = (0..n).map(|c| constructor(&info[c]) && opts(c).iter().any(|&x| info[x].experimental || info[x].experimental_factory)).collect();
+    let leads: Vec<bool> = (0..n).map(|f| info[f].role == Role::Factory && opts(f).iter().any(|&c| builds[c])).collect();
+    let advanced = |f: usize| info[f].role == Role::Factory && opts(f).iter().any(|&o| info[o].role == Role::Builder && info[o].tech >= 2 && (info[o].builds_energy || info[o].builds_mex));
+    let opens: Vec<bool> = (0..n).map(|c| constructor(&info[c]) && opts(c).iter().any(|&f| advanced(f) && leads[f])).collect();
+    for (t, i) in info.iter_mut().enumerate() {
+        i.builds_experimentals = builds[t];
+        i.leads_to_experimentals = leads[t];
+        i.opens_way_to_experimentals = opens[t];
+    }
+}
+
+/// Whether a unit type is an experimental (see [`TypeInfo::experimental`]), from its damage (any
+/// of it) and cost.
+fn experimental(t: &UnitType, dps: i64, cost: i64) -> bool {
+    t.locomotion != Locomotion::Static && !t.def.is_commander && dps > 0 && cost >= EXPERIMENTAL_COST
 }

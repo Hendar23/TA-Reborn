@@ -3862,6 +3862,22 @@ impl Sim {
         let anchor = World::pos_to_anchor(pos, bt.footprint);
         let site = self.world.anchor_to_pos(anchor, bt.footprint);
         let reach = t.build_distance + t.radius;
+        // A mobile unit built in the field (Forged Alliance's experimentals, by its engineers)
+        // takes no cells: its frame is found where it stands, near the site, wherever the crowd has
+        // pushed it, and the builder goes on with it (to it, out of reach). Not looked for, a new
+        // frame was laid on the site whenever the builder lost hold of the last: a pile of them.
+        if bt.locomotion != Locomotion::Static && let Some(frame) = self.field_frame(type_id, site, owner, Fx::from_int(bt.footprint.0.max(bt.footprint.1) as i64 * CELL) + reach * 2) {
+            let (u, at) = (self.unit(id).unwrap(), self.unit(frame).unwrap().pos);
+            if self.in_build_range(u, at, bt.footprint) {
+                if let Some(u) = self.unit_mut(id) {
+                    u.build = Some(BuildJob { target: frame, started: false });
+                }
+            } else if u.path_goal.is_none() || u.stuck_ticks > 60 || u.move_request.is_none_or(|m| !m.within_xz(at, Fx::from_int(CELL * 4))) {
+                self.move_to_work(id, t, at, bt.footprint);
+            }
+            return;
+        }
+        let u = self.unit(id).unwrap();
         let gap = Self::distance_to_footprint(u.pos, site, bt.footprint);
         if gap > reach {
             if u.path_goal.is_none() && u.move_request == Some(site) && gap > reach + Fx::from_int(32) {
@@ -3886,6 +3902,7 @@ impl Sim {
             Occupant::Unit(slot) => self.units.get(slot as usize).and_then(|u| u.as_ref()).filter(|u| u.type_id == type_id && !u.dead && !u.is_complete() && self.allied(owner, u.owner)).map(|u| u.id),
             _ => None,
         };
+
         let mut standing = Vec::new();
         let target = match existing {
             Some(e) => e,
@@ -3943,6 +3960,21 @@ impl Sim {
         for o in standing {
             self.step_aside(o, &next);
         }
+    }
+
+    /// The frame of a mobile unit of `type_id` built in the field (not in a factory) by `owner`'s
+    /// side within `near` of `site`, the nearest.
+    fn field_frame(&mut self, type_id: usize, site: FxVec3, owner: u8, near: Fx) -> Option<UnitId> {
+        let mut found = std::mem::take(&mut self.scratch);
+        self.grid.query(site, near, &mut found);
+        let frame = found
+            .iter()
+            .filter_map(|&slot| self.units.get(slot as usize).and_then(|u| u.as_ref()))
+            .filter(|u| u.type_id == type_id && !u.dead && !u.is_complete() && u.factory.is_none() && self.allied(owner, u.owner) && u.pos.within_xz(site, near))
+            .min_by_key(|u| ((u.pos - site).xz().length_sq_raw(), u.id.slot))
+            .map(|u| u.id);
+        self.scratch = found;
+        frame
     }
 
     /// Mobile units (finished, on the ground or landed) standing on the blocking cells a

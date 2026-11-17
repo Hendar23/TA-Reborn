@@ -190,7 +190,11 @@ impl SkirmishAi {
             // More yards where the war is at sea (the ground army can't get across): a second
             // once the economy can feed it, a third with metal piling up.
             let rich = self.metal_avg > Fx::from_ratio(6, 10);
-            !ground_reaches && self.difficulty != Difficulty::Easy && s.minutes >= 8 && s.m_inc >= fx(if yards == 1 { 25 } else { 45 }) && (yards == 1 || rich) && factories < self.p.max_factories + 2
+            // (A persona at home at sea builds them whatever the land war.)
+            (!ground_reaches || self.p.naval_first) && self.difficulty != Difficulty::Easy && s.minutes >= 8 && s.m_inc >= fx(if yards == 1 { 25 } else { 45 }) && (yards == 1 || rich) && factories < self.p.max_factories + 2
+        } else if land_reaches && self.p.naval_first {
+            // (Soon, at any level, for a persona at home at sea.)
+            s.minutes >= 4 && s.m_inc >= fx(6) && factories < self.p.max_factories + 1
         } else if land_reaches {
             self.difficulty != Difficulty::Easy && s.minutes >= 9 && s.m_inc >= fx(14) && factories < self.p.max_factories
         } else if types.is_empty() {
