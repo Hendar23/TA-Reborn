@@ -1037,9 +1037,8 @@ impl SkirmishAi {
             }
             let t = sim.unit_type(silo);
             let Some(weapon) = t.weapons.iter().flatten().map(|&w| sim.weapon_types.get(w)).find(|w| w.def.stockpile && w.def.command_fire && w.def.targetable) else { continue };
-            let aoe = weapon.aoe_radius.max(fx(64));
             let have = silo.stockpile;
-            let Some((target, need)) = self.pick_nuke_target(sim, silo.pos, weapon.range, aoe, have) else { continue };
+            let Some((target, need)) = self.pick_nuke_target(sim, silo.pos, weapon, have) else { continue };
             if need <= have || silo.stockpile >= ta_sim::combat::MAX_STOCKPILE {
                 for i in 0..need.min(have) {
                     out.push(Command::Order { player: self.player, units: vec![silo.id], order: Order::ManualFire(Target::Ground(target)), queue: i > 0 });
@@ -1050,8 +1049,16 @@ impl SkirmishAi {
 
     /// Where to drop a nuke, and how many missiles it takes to get through: the enemy
     /// building cluster worth the most (minus what of ours stands near it) among those our
-    /// `have` missiles can reach through anti-missile cover; else the least defended one.
-    pub(crate) fn pick_nuke_target(&self, sim: &Sim, from: FxVec3, range: Fx, aoe: Fx, have: u32) -> Option<(FxVec3, u32)> {
+    /// `have` missiles of `weapon` can reach through anti-missile cover; else the least defended
+    /// one. The cover counted is that of the defences that take its missiles' classes (an
+    /// anti-nuke a nuke, a tactical defence a tactical missile: `WeaponDef::intercepts`); one that
+    /// takes them at its reload rather than from a stock (a tactical defence) stops every missile
+    /// of a salvo in turn: what it covers is left alone. A strategic missile's blast takes in a
+    /// base, any of it worth one; another (a tactical missile) goes on nothing worth less than it
+    /// costs (never on a wall).
+    pub(crate) fn pick_nuke_target(&self, sim: &Sim, from: FxVec3, weapon: &ta_sim::WeaponType, have: u32) -> Option<(FxVec3, u32)> {
+        let (range, aoe, classes) = (weapon.range, weapon.aoe_radius.max(fx(64)), weapon.def.targetable_classes());
+        let worth = if classes & ta_sim::STRATEGIC_CLASS != 0 { 0 } else { (weapon.metal_per_shot + weapon.energy_per_shot / 60).to_int().max(1) };
         let me = self.player;
         let value = |u: &Unit| self.info[u.type_id].cost;
         // What we know of the enemy: the buildings we have seen (and not seen gone since), and
@@ -1068,19 +1075,20 @@ impl SkirmishAi {
             .collect();
         // Allies count as our own: never drop a missile on them.
         let ours: Vec<&Unit> = sim.units().filter(|u| !sim.is_enemy(me, u.owner) && !u.dead).collect();
-        // Their anti-missile cover: the defences of it we have seen finished, each taken as
-        // stocked (what one holds is not to be seen).
-        let anti: Vec<(FxVec3, Fx)> = self
+        // Their anti-missile cover against these missiles: the defences of it we have seen
+        // finished, each taken as stocked (what one holds is not to be seen), or as unstocked.
+        let covers = |t: usize| self.info[t].coverage.filter(|_| self.info[t].cover_classes & classes != 0).map(|r| (r, self.info[t].cover_unstocked));
+        let anti: Vec<(FxVec3, Fx, bool)> = self
             .enemy_buildings
             .iter()
             .filter(|(id, _, _)| !self.enemy_frames.contains(id))
-            .filter_map(|&(_, p, t)| self.info[t].coverage.map(|r| (p, r)))
+            .filter_map(|&(_, p, t)| covers(t).map(|(r, unstocked)| (p, r, unstocked)))
             // Mobile defences only contribute where we can actually see them now;
             // remembered buildings stay put, but vehicles must not be tracked through fog.
             .chain(sim.units().filter(|u| !u.dead && u.is_complete() && u.carried_by.is_none()
                 && sim.is_enemy(me, u.owner) && sim.unit_type(u).locomotion != Locomotion::Static
                 && sim.seen_by(u, me) == Seen::Visible)
-                .filter_map(|u| self.info[u.type_id].coverage.map(|r| (u.pos, r))))
+                .filter_map(|u| covers(u.type_id).map(|(r, unstocked)| (u.pos, r, unstocked))))
             .collect();
         let candidates: Vec<FxVec3> = self.enemy_buildings.iter().map(|b| b.1).filter(|p| p.within_xz(from, range)).collect();
         let step = (candidates.len() / 120).max(1);
@@ -1090,10 +1098,14 @@ impl SkirmishAi {
         for &c in candidates.iter().step_by(step) {
             let mut score: i64 = enemies.iter().filter(|e| e.0.within_xz(c, hit)).map(|e| e.1).sum();
             score -= 2 * ours.iter().filter(|o| o.pos.within_xz(c, aoe * 13 / 10)).map(|o| value(o)).sum::<i64>();
-            if score <= 0 || ours.iter().any(|o| self.info[o.type_id].commander && o.pos.within_xz(c, aoe * 3 / 2)) {
+            if score <= 0 || score < worth || ours.iter().any(|o| self.info[o.type_id].commander && o.pos.within_xz(c, aoe * 3 / 2)) {
                 continue;
             }
-            let need = 1 + anti.iter().filter(|(p, r)| p.within_xz(c, *r)).count() as u32 * ANTI_STOCK;
+            let over = anti.iter().filter(|(p, r, _)| p.within_xz(c, *r));
+            if over.clone().any(|&(_, _, unstocked)| unstocked) {
+                continue;
+            }
+            let need = 1 + over.count() as u32 * ANTI_STOCK;
             if need <= have && best_ok.is_none_or(|(s, _, _)| score > s) {
                 best_ok = Some((score, c, need));
             }

@@ -127,9 +127,11 @@ impl Sim {
         let mut projectiles = std::mem::take(&mut self.projectiles);
         let mut near = std::mem::take(&mut self.scratch);
         self.spent.clear();
-        let live: rustc_hash::FxHashMap<u32, (usize, FxVec3, u8, bool)> = if projectiles.iter().any(|p| matches!(p.target, Some(Target::Projectile(_)))) {
+        // (Each live projectile by its id: where it is, whose it is, and its weapon, for what may
+        // intercept it: `WeaponDef::intercepts`.)
+        let live: rustc_hash::FxHashMap<u32, (usize, FxVec3, u8, usize)> = if projectiles.iter().any(|p| matches!(p.target, Some(Target::Projectile(_)))) {
             projectiles.iter().enumerate().filter(|(_, p)| !p.dead)
-                .map(|(i, p)| (p.id, (i, p.pos, p.owner_player, weapons.get(p.weapon).def.targetable))).collect()
+                .map(|(i, p)| (p.id, (i, p.pos, p.owner_player, p.weapon))).collect()
         } else { Default::default() };
 
         for p in &mut projectiles {
@@ -139,7 +141,7 @@ impl Sim {
             p.age += 1;
             match p.target {
                 Some(Target::Projectile(target)) => match live.get(&target) {
-                    Some(&(_, pos, owner, targetable)) if !w.def.interceptor || targetable && self.is_enemy(p.owner_player, owner) => p.target_pos = pos,
+                    Some(&(_, pos, owner, quarry)) if !w.def.interceptor || w.def.intercepts(&weapons.get(quarry).def) && self.is_enemy(p.owner_player, owner) => p.target_pos = pos,
                     // An interceptor without a live quarry has no ground target. Retire
                     // it without a blast rather than harming units at the old intercept point.
                     _ if w.def.interceptor => {
@@ -212,7 +214,7 @@ impl Sim {
             let Some(Target::Projectile(target)) = p.target else { return None };
             let &(j, ..) = live.get(&target)?;
             let q = &projectiles[j];
-            if q.dead || !weapons.get(q.weapon).def.targetable || !self.is_enemy(p.owner_player, q.owner_player) { return None; }
+            if q.dead || !weapons.get(p.weapon).def.intercepts(&weapons.get(q.weapon).def) || !self.is_enemy(p.owner_player, q.owner_player) { return None; }
             // Relative motion catches crossing missiles, and rejects missiles flying apart.
             let when = segment_entry(p.prev_pos - q.prev_pos, p.pos - q.pos, FxVec3::ZERO, Fx::from_int(40))?;
             if [impacts[i], impacts[j]].iter().flatten().any(|impact| impact.when < when) { return None; }

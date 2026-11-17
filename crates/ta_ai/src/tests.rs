@@ -152,6 +152,61 @@ fn nuclear_targeting_accounts_for_visible_mobile_missile_defence() {
     assert_eq!(out.len(), 1, "unseen mobile defences must not become omniscient AI intelligence");
 }
 
+/// Cover counts by class: an anti-nuke (class 1) is no cover against a tactical launcher's
+/// missiles (class 2), and is no anti-nuke to the computer players against them; a tactical
+/// defence (class 2, firing at its reload, no stock) stops every missile of a salvo in turn, so
+/// what it covers is left alone. A tactical missile goes on nothing worth less than it costs.
+#[test]
+fn missile_cover_counts_by_class() {
+    let setup = |anti_class: u32, stocked: bool, extractor_metal: f64| {
+        let mut sim = fixture_edit(|data| {
+            let factory = data.unit_id("FACTORY").unwrap();
+            data.units[factory].build_options.clear();
+            data.units[factory].weapons[0] = Some("GUN".into());
+            let gun = data.weapon_id("GUN").unwrap();
+            let w = &mut data.weapons[gun];
+            w.stockpile = true; w.command_fire = true; w.targetable = true; w.targetable_mask = 2;
+            w.range = 400.0; w.area_of_effect = 128.0; w.metal_per_shot = 180.0; w.energy_per_shot = 3600.0;
+            let tank = data.unit_id("TANK").unwrap();
+            data.units[tank].weapons[0] = Some("BOMB".into());
+            let anti = data.weapon_id("BOMB").unwrap();
+            let w = &mut data.weapons[anti];
+            w.dropped = false; w.command_fire = false; w.interceptor = true; w.interceptor_mask = anti_class; w.stockpile = stocked;
+            w.coverage = 200.0; w.range = 32000.0;
+            let extractor = data.unit_id("EXTRACTOR").unwrap();
+            data.units[extractor].build_cost_metal = extractor_metal;
+        });
+        sim.los_enabled = false;
+        let silo = sim.spawn_unit(sim.types.id("FACTORY").unwrap(), 0, FxVec3::from_ints(100, 60, 500), 0, true).unwrap();
+        sim.spawn_unit(sim.types.id("EXTRACTOR").unwrap(), 1, FxVec3::from_ints(350, 60, 500), 0, true).unwrap();
+        sim.spawn_unit(sim.types.id("TANK").unwrap(), 1, FxVec3::from_ints(360, 60, 500), 0, true).unwrap();
+        sim.grant_stockpile(silo, 1);
+        let mut ai = SkirmishAi::new(0, &sim, Difficulty::Hard);
+        ai.remember(&sim, &ai.survey(&sim));
+        let mut out = Vec::new();
+        ai.run_silos(&sim, &ai.survey(&sim), &mut out);
+        out.len()
+    };
+    assert_eq!(setup(1, true, 500.0), 1, "an anti-nuke is no cover against tactical missiles");
+    assert_eq!(setup(2, true, 500.0), 0, "a stocked tactical defence counts as cover");
+    assert_eq!(setup(2, false, 500.0), 0, "an unstocked one stops each missile in turn: left alone");
+    assert_eq!(setup(1, true, 50.0), 0, "nothing worth less than the missile");
+    // A building taking strategic missiles is an anti-nuke to the computer players; one taking
+    // tactical missiles alone is not.
+    for (class, anti_nuke) in [(1, true), (2, false), (3, true)] {
+        let sim = fixture_edit(|data| {
+            let factory = data.unit_id("FACTORY").unwrap();
+            data.units[factory].build_options.clear();
+            data.units[factory].weapons[0] = Some("BOMB".into());
+            let bomb = data.weapon_id("BOMB").unwrap();
+            let w = &mut data.weapons[bomb];
+            w.dropped = false; w.command_fire = false; w.interceptor = true; w.interceptor_mask = class; w.coverage = 200.0;
+        });
+        let ai = SkirmishAi::new(0, &sim, Difficulty::Hard);
+        assert_eq!(ai.info[sim.types.id("FACTORY").unwrap()].role == Role::AntiNuke, anti_nuke, "interceptor class {class}");
+    }
+}
+
 #[test]
 fn defeating_a_land_enemy_replans_for_the_remaining_island_enemy() {
     let base = fixture_players(3, |_| {});

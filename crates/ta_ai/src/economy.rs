@@ -1466,9 +1466,11 @@ impl SkirmishAi {
         if s.count[Role::AntiNuke as usize] + pending(Role::AntiNuke) < anti_wanted && let Some(a) = self.pick_cheapest(opts, Role::AntiNuke) && let Some(site) = self.place(sim, b, a, Zone::Ring, 60, plan) {
             return Some(Task::Build(a, site));
         }
-        // A second silo only deep into the game.
+        // A second silo only deep into the game. A strategic one where it can (a mod's tactical
+        // launcher, cheaper, where it has none: its tech 2 builders').
         let silos = if s.minutes >= self.p.nuke_minute.saturating_add(16) { self.p.silos } else { self.p.silos.min(1) };
-        if s.minutes >= self.p.nuke_minute && s.e_inc >= fx(1500) && s.m_inc >= fx(20) && s.count[Role::Silo as usize] + pending(Role::Silo) < silos && let Some(n) = self.pick_cheapest(opts, Role::Silo) && let Some(site) = self.place(sim, b, n, Zone::Back, 300, plan) {
+        let silo = opts.iter().copied().filter(|&o| self.info[o].role == Role::Silo && self.info[o].silo_classes & ta_sim::STRATEGIC_CLASS != 0).min_by_key(|&o| (self.info[o].cost, o)).or_else(|| self.pick_cheapest(opts, Role::Silo));
+        if s.minutes >= self.p.nuke_minute && s.e_inc >= fx(1500) && s.m_inc >= fx(20) && s.count[Role::Silo as usize] + pending(Role::Silo) < silos && let Some(n) = silo && let Some(site) = self.place(sim, b, n, Zone::Back, 300, plan) {
             return Some(Task::Build(n, site));
         }
         None

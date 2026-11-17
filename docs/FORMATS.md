@@ -763,6 +763,19 @@ take up to all 32 bits of a texel.
   and anti-nukes `LEVEL3`). Nukes: `stockpile=1 commandfire=1 targetable=1`, 180,000 E +
   2,000 M per missile over `reloadtime` 180 s, `areaofeffect=512`; anti-nukes
   `interceptor=1 coverage=2000`, 10,000 E + 200 M per interceptor.
+* **`interceptor` and `targetable` are classes**, as the Spring engine reads them: bits of the
+  number written (0 when not given; a negative number every bit). An interceptor takes a missile
+  when its `interceptor` and the missile's `targetable` share a bit (`WeaponDef::intercepts`);
+  any number but 0 makes a weapon an interceptor (or targetable). TA's own all say 1
+  (`ta_data::STRATEGIC_CLASS`), so every anti-nuke of TA's takes every one of its strategic
+  missiles, nukes, EMP and tactical missiles alike. The Supreme Commander factions' strategic
+  missiles say 1 and their anti-nukes take them; their tactical missiles say 2 and their tactical
+  missile defences and ships' point defences (`interceptor=2`) take those alone.
+* An interceptor fires at a missile headed into its `coverage` (or crossing it) once the missile
+  is within its `range` (its coverage, where that is larger; with no range written, wherever it
+  is), as the Spring engine's do: TA's anti-nukes (`range` 22,000 to 32,000) take a nuke as it
+  leaves its silo on TA's maps, a tactical defence a few hundred px across as the missile comes
+  down on what it covers (`Sim::update_interceptors`).
 * `tracks=1` (a guided weapon homes on the unit it is sent at): every guided weapon of TA's
   launched other than upright says it, and of the vertical launchers the anti-nukes
   (`AMD_ROCKET`, `FMD_ROCKET`, `ARMSCAB_WEAPON`, `CORMABM_WEAPON`) and the Krogoth's

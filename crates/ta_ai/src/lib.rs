@@ -1150,7 +1150,8 @@ impl SkirmishAi {
                     self.enemy_aa.add_disc(e.pos, 500, i.worth);
                 }
             }
-            if i.role == Role::Silo {
+            // (Strategic missiles alone call for anti-nukes: a mod's tactical launcher's do not.)
+            if i.role == Role::Silo && i.silo_classes & ta_sim::STRATEGIC_CLASS != 0 {
                 self.enemy_silo = true;
             }
             if kind == Locomotion::Static {
