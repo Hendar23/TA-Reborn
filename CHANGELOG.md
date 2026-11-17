@@ -57,6 +57,27 @@
   repair or load.
 
 ### Fixed
+- The Supreme Commander factions play as Forged Alliance's (make the factions again in the
+  launcher: it offers UPDATE). Their tech 2 and 3 factories, which the game makes only by
+  upgrading the one below, are on their engineers' menus, so every unit can now be built, and the
+  computer players climb the tiers. Nukes, anti-nukes and tactical missiles are built one at a
+  time at their price (a nuke 12,000 metal and 1,350,000 energy over five minutes), and a nuke
+  flies high and comes down on its target. Missile defences take what they do in the game: an
+  anti-nuke the nukes, a tactical missile defence or a ship's point defence the tactical
+  missiles. Anti-air homes on its aircraft, flak bursts over its area, and aircraft gather
+  speed, turn and attack as theirs do (only gunships hover to attack). Every weapon deals the
+  game's own damage a second, its racks, muzzles, beams, damage over time and splitting shells
+  counted. Upkeep is paid only for what TA Reborn plays (no shields yet: the Fatboy's costs
+  nothing), weapons and stealth a unit gets only from an enhancement or a toggle are left out,
+  hydrocarbon plants stand on the maps' vents, amphibians reach the deepest sea bed, ships
+  stand on footprints of their size and leave wrecks that block nothing, the Fire Beetle blows
+  itself up among its enemies, engineering stations help build and air staging repairs
+  aircraft. Ground weapons take on aircraft last, Commanders keep their guns still while they
+  build, walks loop without a jump and the units mend themselves at the game's rate. For mods:
+  TA's `interceptor` and `targetable` are now read as classes, as the Spring engine reads them,
+  so a mod's missile defences can take different missiles, and a missile defence fires once a
+  missile is within its range (TA's own all say 1 and reach across its maps: its nukes and
+  anti-nukes play as before; see [docs/MODDING.md](docs/MODDING.md#units-weapons-and-features)).
 - The Targeting Facility (Arm and Core, "Automatic Radar Targeting") did nothing. While one of
   yours is finished and switched on, your units set to fire at will now shoot at what your radar
   shows of the enemy as well as at what they see: a Big Bertha shells a radar contact across the

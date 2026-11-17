@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use ta_supcom::files::Files;
 use ta_supcom::install::{self, Install, Store};
 use ta_formats::surface::Material;
-use ta_supcom::factions::{make, model, pictures, textures};
+use ta_supcom::factions::{faction, make, model, pictures, textures, units};
 use ta_supcom::unit::{self, Faction, Tech};
 use ta_supcom::{sca, scm};
 
@@ -228,17 +228,32 @@ fn every_unit_is_made_a_model_the_same_twice() {
     };
     let files = Files::own(&game).unwrap();
     let all = unit::catalogue(&files).unwrap();
-    let make = |u: &unit::UnitBlueprint| -> Vec<Vec<u8>> {
+    // (Triangles whose texture coordinates were moved into the texture, and those left straddling
+    // its edge; the units with a far model.)
+    let mut uvs = (0usize, 0usize);
+    let mut fars = 0usize;
+    // (The vertices of the meshes with a far one: the near meshes' and the far ones'.)
+    let mut far_vertices = (0usize, 0usize);
+    let mut far_uvs = (0usize, 0usize);
+    let mut make = |u: &unit::UnitBlueprint| -> Vec<Vec<u8>> {
         let lod0 = &u.display.lods[0];
         let mesh = scm::parse(&files.read(&lod0.mesh).unwrap().unwrap()).unwrap();
         let paint: Vec<Vec<u8>> = [&lod0.albedo, &lod0.specular, &lod0.normals].iter().map(|p| files.read(p).unwrap().map(|b| textures::texture(&b).unwrap()).unwrap_or_default()).collect();
         let material = Material { name: u.id.to_ascii_lowercase(), albedo: "a".into(), specular: "s".into(), normals: "n".into(), mean: textures::mean(&paint[0]) };
-        let near = model::convert(&mesh, u.display.uniform_scale, material.clone());
+        let near = model::convert(&mesh, u.display.uniform_scale, material.clone()).unwrap();
+        uvs.0 += near.uvs_moved;
+        uvs.1 += near.uvs_straddling;
         let mut out = vec![near.model.to_bytes(), near.surface.to_bytes()];
         let back = ta_formats::model3do::Model3do::parse(&out[0]).unwrap();
         assert!(near.surface.fits(&back), "{}: its surface fits its model as read back", u.id);
         if let Some(bytes) = u.display.lods.get(1).and_then(|l| files.read(&l.mesh).unwrap()) {
-            let far = model::convert_onto(&scm::parse(&bytes).unwrap(), &mesh, &near, u.display.uniform_scale, material);
+            let far_mesh = scm::parse(&bytes).unwrap();
+            let far = model::convert_onto(&far_mesh, &mesh, &near, u.display.uniform_scale, material).unwrap();
+            fars += 1;
+            far_vertices.0 += mesh.vertices.len();
+            far_vertices.1 += far_mesh.vertices.len();
+            far_uvs.0 += far.uvs_moved;
+            far_uvs.1 += far.uvs_straddling;
             let far_back = ta_formats::model3do::Model3do::parse(&far.model.to_bytes()).unwrap();
             assert!(far.surface.fits(&far_back), "{}: the far surface fits", u.id);
             assert_eq!(far_back.pieces.iter().map(|p| &p.name).collect::<Vec<_>>(), back.pieces.iter().map(|p| &p.name).collect::<Vec<_>>(), "{}: the far model's pieces", u.id);
@@ -259,6 +274,7 @@ fn every_unit_is_made_a_model_the_same_twice() {
         assert!(first == make(u), "{}: made again, the same bytes", u.id);
     }
     eprintln!("{} units made twice the same, {} MB each time", playable.len(), bytes >> 20);
+    eprintln!("{} with a far model ({} vertices near, {} far); {} triangles moved into their texture, {} straddling its edge (far models: {} and {})", fars / 2, far_vertices.0 / 2, far_vertices.1 / 2, uvs.0 / 2, uvs.1 / 2, far_uvs.0 / 2, far_uvs.1 / 2);
 }
 
 
@@ -305,4 +321,190 @@ fn the_mod_is_made_the_same_twice() {
         assert!(first.iter().any(|(p, ..)| p == path), "{path}");
     }
     eprintln!("{} files, {} MB, the same twice", first.len(), first.iter().map(|f| f.1).sum::<usize>() >> 20);
+}
+
+/// Every unit a player can make is reached from its faction's commander: what each builder
+/// builds (its lists' categories, and the buildings made only by upgrading what it builds: the
+/// tech 2 and 3 factories), and what those build, all the way down.
+#[test]
+#[ignore]
+fn every_playable_unit_is_reached_from_its_commander() {
+    let Some(game) = the_game() else {
+        eprintln!("no copy of Forged Alliance found: nothing to read");
+        return;
+    };
+    let files = Files::own(&game).unwrap();
+    let all = unit::catalogue(&files).unwrap();
+    for f in Faction::PLAYABLE {
+        let theirs: Vec<&unit::UnitBlueprint> = all.iter().filter(|u| u.playable() && u.faction == f).collect();
+        let lists = faction::all_builds(&theirs);
+        let commander = faction::commander(&theirs).expect("a commander");
+        let mut reached: Vec<String> = vec![commander.id.clone()];
+        let mut k = 0;
+        while k < reached.len() {
+            if let Some((_, built)) = lists.iter().find(|(b, _)| b.id == reached[k]) {
+                for u in built {
+                    if !reached.contains(&u.id) {
+                        reached.push(u.id.clone());
+                    }
+                }
+            }
+            k += 1;
+        }
+        let missing: Vec<&str> = theirs.iter().filter(|u| !reached.contains(&u.id)).map(|u| u.id.as_str()).collect();
+        eprintln!("{}: {} of {} reached from {}", f.name(), reached.len(), theirs.len(), commander.id);
+        assert!(missing.is_empty(), "{}: not reached: {missing:?}", f.name());
+        // The commander builds its own tier: not what its engineering enhancements bring.
+        let own = faction::builds(commander, &theirs);
+        assert!(!own.iter().any(|u| u.is("BUILTBYTIER2COMMANDER") || u.is("BUILTBYTIER3COMMANDER")), "{}: {:?}", f.name(), own.iter().map(|u| &u.id).collect::<Vec<_>>());
+    }
+}
+
+/// A weapon section as TA Reborn reads it: its keys.
+fn keys(section: &str) -> ta_formats::tdf::TdfSection {
+    ta_formats::tdf::parse(section).sections.remove(0)
+}
+
+/// Every weapon slot of every unit a player can make, by Forged Alliance's firing rules: its
+/// damage a second in TA's keys Forged Alliance's (within 2%, its reload in whole ticks); a missile
+/// its launcher stores is TA's stockpile at its projectile's price and build time; missile
+/// defences take their own class (an anti-nuke the strategic missiles, the rest the tactical) and
+/// missiles are of theirs.
+#[test]
+#[ignore]
+fn the_weapons_follow_forged_alliances_rules() {
+    let Some(game) = the_game() else {
+        eprintln!("no copy of Forged Alliance found: nothing to read");
+        return;
+    };
+    let files = Files::own(&game).unwrap();
+    let all = unit::catalogue(&files).unwrap();
+    let (mut slots, mut stocked, mut defences, mut off) = (0usize, Vec::new(), Vec::new(), Vec::new());
+    let mut worst: Vec<(f64, String)> = Vec::new();
+    for u in all.iter().filter(|u| u.playable()) {
+        let w = units::weapons(u);
+        for slot in &w.slots {
+            let section = units::weapon_section(u, slot);
+            let k = keys(&section);
+            let name = units::weapon_name(u, slot);
+            let num = |key: &str| k.get_f64_or(key, 0.0);
+            if units::stockpiled(slot) {
+                let shot = slot.shot.as_ref().expect("a stored missile's projectile");
+                let seconds = shot.build_time / u.build_rate.max(1e-9);
+                assert!(k.get_bool_or("stockpile", false), "{name}");
+                assert_eq!((num("metalpershot"), num("energypershot")), (shot.cost_mass.round(), shot.cost_energy.round()), "{name}");
+                assert!((num("reloadtime") - seconds).abs() <= 1.0 / 30.0 + 1e-6, "{name}: {} against {seconds}", num("reloadtime"));
+                stocked.push(format!("{name} {}+{} {:.0}s", shot.cost_mass, shot.cost_energy, seconds));
+            }
+            let class = |key: &str| k.get_i64_or(key, 0) as u32;
+            if units::kind(slot) == units::Kind::AntiMissile {
+                let want = if slot.only_allow.to_ascii_uppercase().contains("STRATEGIC") { units::STRATEGIC } else { units::TACTICAL };
+                assert_eq!(class("interceptor"), want, "{name}: {}", slot.only_allow);
+                // (A tactical defence's shot leaves its muzzle at the speed to meet a missile coming
+                // down within its range: the zapper's beam and the flares too.)
+                if want == units::TACTICAL {
+                    assert!(num("weaponvelocity") >= 2880.0 && num("startvelocity") == num("weaponvelocity"), "{name}: {section}");
+                }
+                defences.push(format!("{name}={want} at {}", num("weaponvelocity")));
+                continue;
+            }
+            match slot.shot.as_ref() {
+                Some(s) if s.strategic_missile() => assert_eq!(class("targetable"), units::STRATEGIC, "{name}"),
+                Some(s) if s.tactical_missile() => assert_eq!(class("targetable"), units::TACTICAL, "{name}"),
+                _ => assert_eq!(class("targetable"), u32::from(slot.nuke.is_some()), "{name}"),
+            }
+            if units::stockpiled(slot) || slot.nuke.is_some() {
+                continue;
+            }
+            slots += 1;
+            let fa = units::fa_dps(slot);
+            let ticks = (num("reloadtime") * 30.0).round().max(1.0);
+            let ta = k.section("DAMAGE").map_or(0.0, |d| d.get_f64_or("default", 0.0)) * k.get_i64_or("burst", 1).max(1) as f64 / (ticks / 30.0);
+            let ratio = if fa > 0.0 { ta / fa } else { 1.0 };
+            worst.push(((ratio - 1.0).abs(), format!("{name}: FA {fa:.1}, TA {ta:.1}")));
+            if (ratio - 1.0).abs() > 0.02 {
+                off.push(format!("{name}: FA {fa:.1}, TA {ta:.1}"));
+            }
+        }
+        // What its script switches off as it is made is not in its slots (but the Overcharge).
+        for slot in &w.slots {
+            assert!(units::kind(slot) == units::Kind::Overcharge || !u.birth.weapon_off(&slot.label), "{}: {} is off at birth", u.id, slot.label);
+        }
+    }
+    worst.sort_by(|a, b| b.0.total_cmp(&a.0));
+    eprintln!("{slots} weapon slots by damage a second; the furthest from Forged Alliance's: {:?}", worst.iter().take(5).map(|w| &w.1).collect::<Vec<_>>());
+    eprintln!("{} stored missiles: {stocked:?}", stocked.len());
+    eprintln!("{} missile defences: {defences:?}", defences.len());
+    assert!(off.is_empty(), "{} slots off Forged Alliance's damage a second by more than 2%: {off:?}", off.len());
+}
+
+/// What the units' scripts switch off as they are made: weapons (a second, toggled gun; a missile
+/// an enhancement brings) and intel (the Cybran commander's stealth and sonar), listed.
+#[test]
+#[ignore]
+fn what_the_scripts_switch_off_at_birth() {
+    let Some(game) = the_game() else {
+        eprintln!("no copy of Forged Alliance found: nothing to read");
+        return;
+    };
+    let files = Files::own(&game).unwrap();
+    let all = unit::catalogue(&files).unwrap();
+    for u in all.iter().filter(|u| u.playable()) {
+        let b = &u.birth;
+        if !b.weapons_off.is_empty() || !b.intel_off.is_empty() || !b.by_layer.is_empty() {
+            eprintln!("{}: weapons off {:?}, by layer {:?}, intel off {:?}", u.id, b.weapons_off, b.by_layer, b.intel_off);
+        }
+    }
+    let xsl0001 = all.iter().find(|u| u.id == "XSL0001").unwrap();
+    assert!(xsl0001.birth.weapon_off("Missile"), "{:?}", xsl0001.birth);
+    let url0001 = all.iter().find(|u| u.id == "URL0001").unwrap();
+    assert!(url0001.birth.intel_off("RadarStealth") && url0001.birth.intel_off("Sonar"), "{:?}", url0001.birth);
+    let url0203 = all.iter().find(|u| u.id == "URL0203").unwrap();
+    assert!(!url0203.birth.weapon_off("Torpedo") && !url0203.birth.weapon_off("Bolter"), "the Wagner's by its layer: {:?}", url0203.birth);
+}
+
+/// Every walk clip is a cycle: where its last frame ends it (at its length), that frame is its
+/// first, the difference Forged Alliance's own walks leave (UEL0106's knees, URL0107's leg) eased
+/// in over the cycle's last quarter.
+#[test]
+#[ignore]
+fn walks_end_where_they_start() {
+    let Some(game) = the_game() else {
+        eprintln!("no copy of Forged Alliance found: nothing to read");
+        return;
+    };
+    let files = Files::own(&game).unwrap();
+    let all = unit::catalogue(&files).unwrap();
+    let (mut walks, mut closed, mut wrapping) = (0, 0, 0);
+    let mut out_of_step: Vec<String> = Vec::new();
+    for u in all.iter().filter(|u| u.playable()) {
+        let Some((path, _)) = &u.display.walk else { continue };
+        let Some(bytes) = files.read(path).unwrap() else { continue };
+        let Ok(anim) = sca::parse(&bytes) else { continue };
+        let lod0 = &u.display.lods[0];
+        let mesh = scm::parse(&files.read(&lod0.mesh).unwrap().unwrap()).unwrap();
+        // How far Forged Alliance's own walk ends from where it starts: the most any bone's turn
+        // differs (degrees).
+        let (a, z) = (&anim.frames[0], anim.frames.last().unwrap());
+        let apart = a.keys.iter().zip(&z.keys).map(|(p, q)| {
+            let dot = (p.1[0] * q.1[0] + p.1[1] * q.1[1] + p.1[2] * q.1[2] + p.1[3] * q.1[3]).abs().min(1.0) as f64;
+            2.0 * dot.acos().to_degrees()
+        }).fold(0.0, f64::max);
+        if apart > 5.0 {
+            out_of_step.push(format!("{} {apart:.0}°", u.id));
+        }
+        let material = Material { name: "m".into(), albedo: "a".into(), specular: "s".into(), normals: "n".into(), mean: [0; 3] };
+        let near = model::convert(&mesh, u.display.uniform_scale, material).unwrap();
+        let clips = ta_supcom::factions::anims::anims(&mesh, &near.bones, u.display.uniform_scale * 32.0, Some(&anim), &[]);
+        let Some(walk) = clips.clip("walk") else { continue };
+        walks += 1;
+        let last = walk.times.len() - 1;
+        if walk.times[last] + 1e-4 < walk.seconds {
+            wrapping += 1;
+            continue;
+        }
+        closed += 1;
+        assert_eq!(walk.frame(0), walk.frame(last), "{}: its walk's last frame its first", u.id);
+    }
+    eprintln!("{walks} walks: {closed} ending at their length (their last frame their first), {wrapping} wrapping back over the time left; Forged Alliance's own ending out of step: {out_of_step:?}");
 }

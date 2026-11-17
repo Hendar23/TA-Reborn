@@ -173,7 +173,52 @@ pub struct WeaponBlueprint {
     /// Needs to be ordered to fire (`ManualFire`: the commanders' overcharge, a launcher's
     /// strategic missile).
     pub manual_fire: bool,
+    /// Its racks all fire at each shot (`RackFireTogether`), rather than one a shot in turn.
+    pub racks_together: bool,
+    /// Seconds it waits once every rack has fired (`RackSalvoReloadTime`), charges before a
+    /// salvo (`RackSalvoChargeTime`) and before each muzzle fires (`MuzzleChargeDelay`).
+    pub rack_reload: f64,
+    pub rack_charge: f64,
+    pub muzzle_charge: f64,
+    /// Damage over time: `Damage` dealt `DoTPulses` times over `DoTTime` seconds (no time, once).
+    pub dot_time: f64,
+    pub dot_pulses: u32,
+    /// A beam hits every `BeamCollisionDelay` seconds and a tick (0.1 s).
+    pub beam_collision_delay: f64,
+    /// Fires projectiles its launcher builds and stores (`CountedProjectile`: missiles), at most
+    /// `MaxProjectileStorage` of them.
+    pub counted: bool,
+    pub max_storage: u32,
+    /// What it may aim at alone (`TargetRestrictOnlyAllow`: 'TACTICAL MISSILE', 'AIR'...), as
+    /// written.
+    pub only_allow: String,
+    /// Its projectile's blueprint (`ProjectileId`'s), where the game has it.
+    pub shot: Option<crate::projectile::ProjectileBlueprint>,
+    /// What its projectile splits into as it lands, all its splits followed (the Salvation's
+    /// shell into six, each of those into six more: 36 pieces, each with the shell's damage).
+    pub split: Option<Split>,
     pub table: Table,
+}
+
+/// A projectile's pieces once it has split, all the way down: how many reach the ground, and the
+/// share of the projectile's damage each deals.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Split {
+    pub pieces: u32,
+    pub share: f64,
+}
+
+impl WeaponBlueprint {
+    /// How many times its projectile's damage lands for each one fired: its pieces, each with its
+    /// share (1 for a projectile that does not split).
+    pub fn hits_per_shot(&self) -> f64 {
+        self.split.map_or(1.0, |s| s.pieces as f64 * s.share)
+    }
+
+    /// How many times its `Damage` is dealt for each hit: its damage over time's pulses (1 without).
+    pub fn pulses(&self) -> f64 {
+        if self.dot_time > 0.0 { self.dot_pulses.max(1) as f64 } else { 1.0 }
+    }
 }
 
 /// A strategic missile's two rings of damage.
@@ -265,6 +310,8 @@ pub struct UnitBlueprint {
     pub upgrades_to: Option<String>,
     pub upgrades_from: Option<String>,
     pub transport_class: Option<u32>,
+    /// What its script switches off as it is made (`units/<id>/<id>_script.lua`).
+    pub birth: crate::behaviour::Birth,
     pub table: Table,
 }
 
@@ -403,6 +450,7 @@ pub fn parse(id: &str, text: &str) -> Result<UnitBlueprint> {
         upgrades_to: blueprint_id(general("UpgradesTo")),
         upgrades_from: blueprint_id(general("UpgradesFrom")),
         transport_class: num(&["Transport"], "TransportClass").map(|n| n as u32),
+        birth: crate::behaviour::Birth::default(),
         categories,
         table,
     })
@@ -465,7 +513,20 @@ fn weapon(t: &Table) -> WeaponBlueprint {
         energy_required: n("EnergyRequired"),
         energy_drain: n("EnergyDrainPerSecond"),
         nuke,
-        manual_fire: b("ManualFire"),
+        // (`ManualFire = 1` in some, `true` in others.)
+        manual_fire: b("ManualFire") || n("ManualFire") > 0.0,
+        racks_together: b("RackFireTogether"),
+        rack_reload: n("RackSalvoReloadTime"),
+        rack_charge: n("RackSalvoChargeTime"),
+        muzzle_charge: n("MuzzleChargeDelay"),
+        dot_time: n("DoTTime"),
+        dot_pulses: n("DoTPulses").max(0.0) as u32,
+        beam_collision_delay: n("BeamCollisionDelay"),
+        counted: b("CountedProjectile"),
+        max_storage: n("MaxProjectileStorage").max(0.0) as u32,
+        only_allow: s("TargetRestrictOnlyAllow").unwrap_or_default(),
+        shot: None,
+        split: None,
         table: t.clone(),
     }
 }
@@ -540,8 +601,9 @@ fn default_lod(stem: &str, k: usize) -> Lod {
     }
 }
 
-/// Every unit blueprint in the game's files (`units/<id>/<id>_unit.bp`), in order of their ids;
-/// one that does not read is left out, and said in the log.
+/// Every unit blueprint in the game's files (`units/<id>/<id>_unit.bp`), in order of their ids,
+/// each with what its script switches off as it is made and its weapons' projectiles
+/// ([`attach`]); one that does not read is left out, and said in the log.
 pub fn catalogue(files: &crate::files::Files) -> Result<Vec<UnitBlueprint>> {
     let mut out = Vec::new();
     for path in files.list("units/") {
@@ -557,6 +619,61 @@ pub fn catalogue(files: &crate::files::Files) -> Result<Vec<UnitBlueprint>> {
         }
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
+    attach(files, &mut out)?;
+    Ok(out)
+}
+
+/// How many times a projectile's splits are followed down (the deepest, the Salvation's, two).
+const MAX_SPLITS: usize = 4;
+
+/// Each of `units` given what the game's files say beside its blueprint: what its script
+/// (`units/<id>/<id>_script.lua`) switches off as it is made ([`crate::behaviour::birth`]), and
+/// each weapon's projectile's blueprint and what that splits into ([`crate::behaviour::fragments`],
+/// from the projectile's script beside its blueprint). A file that is missing or does not read
+/// leaves that part as it is.
+pub fn attach(files: &crate::files::Files, units: &mut [UnitBlueprint]) -> Result<()> {
+    use std::collections::BTreeMap;
+    let mut shots: BTreeMap<String, Option<crate::projectile::ProjectileBlueprint>> = BTreeMap::new();
+    let mut splits: BTreeMap<String, Option<Split>> = BTreeMap::new();
+    for u in units.iter_mut() {
+        let id = u.id.to_ascii_lowercase();
+        if let Some(bytes) = files.read(&format!("units/{id}/{id}_script.lua"))? {
+            u.birth = crate::behaviour::birth(&String::from_utf8_lossy(&bytes));
+        }
+        for w in &mut u.weapons {
+            let Some(path) = w.projectile.as_deref().map(crate::projectile::normalise) else { continue };
+            if !shots.contains_key(&path) {
+                let read = crate::projectile::read(files, &path)?;
+                shots.insert(path.clone(), read);
+            }
+            w.shot = shots[&path].clone();
+            w.split = split(files, &path, &mut splits, 0)?;
+        }
+    }
+    Ok(())
+}
+
+/// What the projectile at `path` splits into, all the way down (its script beside its blueprint:
+/// `x_proj.bp`'s `x_script.lua`).
+fn split(files: &crate::files::Files, path: &str, known: &mut std::collections::BTreeMap<String, Option<Split>>, depth: usize) -> Result<Option<Split>> {
+    if let Some(s) = known.get(path) {
+        return Ok(*s);
+    }
+    let Some(stem) = path.strip_suffix("_proj.bp") else { return Ok(None) };
+    let found = match files.read(&format!("{stem}_script.lua"))? {
+        Some(bytes) => crate::behaviour::fragments(&String::from_utf8_lossy(&bytes)),
+        None => None,
+    };
+    let out = match found {
+        Some(f) => {
+            let child = crate::projectile::normalise(&f.child);
+            let below = if depth + 1 < MAX_SPLITS && child != path { split(files, &child, known, depth + 1)? } else { None };
+            let (pieces, share) = below.map_or((1, 1.0), |b| (b.pieces, b.share));
+            Some(Split { pieces: f.count.saturating_mul(pieces), share: f.share * share })
+        }
+        None => None,
+    };
+    known.insert(path.to_string(), out);
     Ok(out)
 }
 
