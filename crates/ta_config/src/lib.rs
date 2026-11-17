@@ -240,6 +240,11 @@ pub struct Launcher {
     /// The newest version whose news the player has been shown (the launcher shows what is new
     /// once after an update); empty before the first start.
     pub seen_version: String,
+    /// The launcher shows the features still being tried out (Settings, LAUNCHER: ENABLE
+    /// EXPERIMENTAL FEATURES), the Supreme Commander import among them; off, they are left out of
+    /// it, and what they made before stays as it is. Off by default: they ship before they are
+    /// ready for everyone, for testers to try early.
+    pub experimental_features: bool,
 }
 
 impl Default for Launcher {
@@ -252,6 +257,7 @@ impl Default for Launcher {
             window: None,
             maximized: false,
             seen_version: String::new(),
+            experimental_features: false,
         }
     }
 }
@@ -1763,7 +1769,7 @@ mod preset_tests {
     fn the_launcher_takes_the_shared_keys_and_only_those() {
         // (Every field set apart from its default: a new one has to be set here too.)
         let other = Launcher { on_play: OnPlay::Close, seasonal_effects: false, seasonal_theme: SeasonalTheme::Halloween, themed_cursor: false,
-            window: Some([800.0, 600.0]), maximized: true, seen_version: "9.9.9".into() };
+            window: Some([800.0, 600.0]), maximized: true, seen_version: "9.9.9".into(), experimental_features: true };
         let mut mine = Launcher::default();
         mine.take_shared(&other);
         let value = |launcher: &Launcher| toml::Value::try_from(launcher).unwrap();
@@ -2179,6 +2185,20 @@ mod tests {
         assert!(!config.launcher.themed_cursor);
         let restored: Config = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
         assert!(!restored.launcher.themed_cursor);
+    }
+
+    /// Experimental features are off until the player turns them on, settings written before the
+    /// switch included, and stay on once turned on.
+    #[test]
+    fn experimental_features_are_off_until_turned_on() {
+        for source in ["", "[launcher]", "[launcher]\nthemed_cursor = false"] {
+            let config: Config = toml::from_str(source).unwrap();
+            assert!(!config.launcher.experimental_features, "{source:?}");
+        }
+        let config: Config = toml::from_str("[launcher]\nexperimental_features = true").unwrap();
+        assert!(config.launcher.experimental_features);
+        let restored: Config = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert!(restored.launcher.experimental_features);
     }
 
     #[test]

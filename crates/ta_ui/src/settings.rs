@@ -69,7 +69,7 @@ impl Category {
             Category::Graphics => n("Detail, antialiasing, effects, lighting and the camera"),
             Category::Display => n("Resolution, window and frame rate"),
             Category::Sound => n("Volumes, units' replies, and how many sounds play at once"),
-            Category::Launcher => n("When the game starts, the launcher's music and sounds, updates and its pointers"),
+            Category::Launcher => n("When the game starts, the launcher's music and sounds, updates, its pointers and experimental features"),
         }
     }
 
@@ -901,6 +901,7 @@ fn launcher(ui: &mut Ui, rows: &mut Rows, launcher: &mut Launcher, a: &mut Audio
     toggle_row(ui, rows, "LAUNCHER SOUNDS", "TA's own button sounds in the launcher, from your install", "launcher clicks ui sound effects", &mut a.launcher_sounds);
     toggle_row(ui, rows, "LOOK FOR UPDATES", "Ask for a newer version of TA Reborn each time the launcher starts (About has CHECK NOW)", "update version new release download automatic check", &mut updates.check);
     toggle_row(ui, rows, "THEMED LAUNCHER CURSORS", "Use Reborn cursors in the launcher. Turn off to use your system pointer.", "launcher mouse pointer cursor accessibility", &mut launcher.themed_cursor);
+    toggle_row(ui, rows, "ENABLE EXPERIMENTAL FEATURES", "Try features still being tested before they become a normal part of the game, such as the Supreme Commander import. They may change, or not always work as they should.", "experimental features beta test testing early preview supreme commander import", &mut launcher.experimental_features);
 }
 
 fn accessibility(ui: &mut Ui, rows: &mut Rows, p: &mut Gameplay) {
@@ -1253,6 +1254,7 @@ fn restore(category: Category, config: &mut Config) {
             // (The seasons are Interface's: both the game and the launcher show them.)
             config.launcher.on_play = d.launcher.on_play;
             config.launcher.themed_cursor = d.launcher.themed_cursor;
+            config.launcher.experimental_features = d.launcher.experimental_features;
             config.audio.launcher_sounds = d.audio.launcher_sounds;
             config.audio.launcher_music = d.audio.launcher_music;
             config.audio.launcher_music_volume = d.audio.launcher_music_volume;
@@ -1512,7 +1514,7 @@ mod tests {
         let mut view = SettingsView::default();
         view.open(Category::Launcher);
         let (_, texts) = frame(&mut view, &mut config, &launcher);
-        for row in ["WHEN THE GAME STARTS", "LAUNCHER MUSIC", "LOOK FOR UPDATES", "THEMED LAUNCHER CURSORS"] {
+        for row in ["WHEN THE GAME STARTS", "LAUNCHER MUSIC", "LOOK FOR UPDATES", "THEMED LAUNCHER CURSORS", "ENABLE EXPERIMENTAL FEATURES"] {
             assert!(texts.iter().any(|text| text == row), "{row}: {texts:?}");
         }
         config.audio.launcher_music = !config.audio.launcher_music;
@@ -1599,6 +1601,28 @@ mod tests {
             restore(category, &mut config);
         }
         assert_eq!(config, Config::default());
+    }
+
+    /// ENABLE EXPERIMENTAL FEATURES: the launcher's alone, found by searching for it there and
+    /// never in the game's options, off as it comes, and off again with the launcher's defaults.
+    #[test]
+    fn experimental_features_are_the_launchers_and_off_by_default() {
+        let mut config = Config::default();
+        assert!(!config.launcher.experimental_features);
+        for in_game in [false, true] {
+            let mut host = host();
+            host.in_game = in_game;
+            for search in ["experimental", "supreme commander"] {
+                let mut view = SettingsView { search: search.into(), ..Default::default() };
+                let (_, texts) = frame(&mut view, &mut config, &host);
+                assert_eq!(texts.iter().any(|text| text == "ENABLE EXPERIMENTAL FEATURES"), !in_game, "{search} in_game={in_game}: {texts:?}");
+            }
+        }
+        config.launcher.experimental_features = true;
+        restore(Category::Interface, &mut config);
+        assert!(config.launcher.experimental_features, "not Interface's");
+        restore(Category::Launcher, &mut config);
+        assert!(!config.launcher.experimental_features);
     }
 
     #[test]

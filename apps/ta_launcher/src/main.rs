@@ -25,6 +25,7 @@ mod library;
 mod moddb;
 mod modlist;
 mod music_control;
+mod experimental;
 mod native_crash;
 mod maps;
 mod mod_library;
@@ -72,6 +73,11 @@ pub struct Args {
     /// Debug: make auto-detection find nothing, as if the original game were not installed.
     #[arg(long, hide = true)]
     pub pretend_missing: bool,
+    /// Debug: show the experimental features this run, whatever the settings say (Settings,
+    /// LAUNCHER: ENABLE EXPERIMENTAL FEATURES), as `--show` at an experimental dialog does; the
+    /// setting itself is left as it is.
+    #[arg(long, hide = true)]
+    pub experimental: bool,
     /// Debug: render a few frames, save the window as a PNG to this path, then exit.
     #[arg(long, hide = true, value_name = "PNG")]
     pub screenshot: Option<PathBuf>,

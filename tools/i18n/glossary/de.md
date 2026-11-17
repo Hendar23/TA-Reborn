@@ -709,3 +709,4 @@ konnte nicht erstellt werden"); other counts read for any number ("nicht erstell
 | with this (dialog) closed / the launcher's footer | bei geschlossenem Dialog / die Statusleiste des Launchers |
 | the commanders' enhancements / upgrading buildings in place | die Erweiterungen der Kommandanten / das Aufrüsten von Gebäuden an Ort und Stelle |
 | shields / stealth fields / teleporting | Schilde / Tarnkappenfelder (as Tarnkappe, TA's stealth; tarnen is cloak) / Teleportation |
+| experimental features / EXPERIMENTAL (tag) | experimentelle Funktionen / EXPERIMENTELL |

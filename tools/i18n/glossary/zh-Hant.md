@@ -544,3 +544,4 @@ print them (Alt, Ctrl, Shift, Cmd, Option, Enter, Esc, Tab, Home, End).
 | proxy / redirect / timed out / exception / the launcher crashed | 代理伺服器 / 重新導向 / 逾時 / 例外狀況 / 啟動器當機 |
 | stealth field (Forged Alliance's) / teleporting / upgrading buildings in place | 匿蹤力場 (as Stealthy 匿蹤; cloak stays 隱形) / 傳送 / 建築原地升級 |
 | the launcher's footer (its activity chips) / Held until the import ends | 啟動器底部的狀態列 / 匯入結束前無法變更 |
+| experimental features / EXPERIMENTAL (tag) | 實驗性功能 / 實驗性 |

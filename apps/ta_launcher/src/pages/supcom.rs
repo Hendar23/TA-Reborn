@@ -203,7 +203,14 @@ impl LauncherApp {
     fn supcom_body(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         ui.spacing_mut().item_spacing.y = 6.0;
         let mut tab = self.supcom.tab;
-        if widgets::segmented(ui, &mut tab, &[(Tab::Maps, Tab::Maps.label()), (Tab::Factions, Tab::Factions.label())]).changed() {
+        // (Beside the tabs, the tag of a feature still being tried out: `crate::experimental`.)
+        let changed = ui.horizontal(|ui| {
+            let changed = widgets::segmented(ui, &mut tab, &[(Tab::Maps, Tab::Maps.label()), (Tab::Factions, Tab::Factions.label())]).changed();
+            ui.add_space(space::M);
+            crate::experimental::tag(ui);
+            changed
+        }).inner;
+        if changed {
             self.supcom.set_tab(tab);
         }
         ui.add_space(space::XS);

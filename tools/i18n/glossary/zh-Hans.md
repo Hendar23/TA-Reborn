@@ -561,3 +561,4 @@ them (Alt, Ctrl, Shift, Cmd, Option, Enter, Esc, Tab, Home, End).
 | the original Supreme Commander (not Forged Alliance) / stealth fields / shields / teleporting / upgrading buildings in place / the commanders' enhancements | 原版 Supreme Commander / 隐身力场 (not 隐形: that is cloak) / 护盾 / 传送 / 建筑原地升级 / 指挥官强化 |
 | Held until the import ends (beside greyed controls) / the launcher's footer (its status bar) / UPDATE… (an imported mod made again) | 导入结束前不可更改 / 启动器底部的状态栏 (as 状态栏) / 更新… |
 | proxy / redirect / the launcher crashed | 代理服务器 / 重定向 / 启动器崩溃 |
+| experimental features / EXPERIMENTAL (tag) | 实验性功能 / 实验性 |

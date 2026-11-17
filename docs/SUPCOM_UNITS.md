@@ -6,6 +6,11 @@ against ARM and CORE. As with the maps (docs/SUPCOM_MAPS.md), they are made on t
 computer from their own copy of the game into their mods folder: nothing of Supreme Commander's is
 shipped with TA Reborn or kept in this repository.
 
+As with the maps, the import is an **experimental feature**: the launcher shows it with **ENABLE
+EXPERIMENTAL FEATURES** on (Settings, LAUNCHER; off by default). A factions mod made before stays
+installed and plays as any mod; `--experimental`, or `--show supcom-factions`, shows the import for
+one run.
+
 This page records what the game's units are made of (`crates/ta_supcom`: [`unit`], [`projectile`],
 [`behaviour`], [`scm`], [`sca`]) and how they are made into TA's ([`factions`]): their models,
 paint, build pictures and gameplay, and their walks and deaths. Their sounds come later.

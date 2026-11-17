@@ -39,6 +39,13 @@
   with more than three weapons now fire them all: the Fatboy, the CZAR, the Monkeylord and the
   battleships among them (make the factions again in the launcher: it offers UPDATE). See
   [docs/MODDING.md](docs/MODDING.md#units-weapons-and-features).
+- The launcher's Settings have **ENABLE EXPERIMENTAL FEATURES** (under LAUNCHER, off by default).
+  Features still being tested ship with it off, so testers can try them before they become a
+  normal part of the game. With it on, they show in the launcher, each with an EXPERIMENTAL tag.
+  The Supreme Commander import is the first: its SUPREME COMMANDER… buttons on the Maps and Mods
+  pages, and the Mods page's UPDATE… for what it made, show only with the setting on. Maps and
+  factions imported before stay installed and play as any mod, and an import already under way
+  can still be watched to its end.
 
 ### Changed
 - The modern interface's DETAILS tell what the selection makes and uses of metal and energy a
