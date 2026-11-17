@@ -170,6 +170,7 @@ impl PortraitStudio {
                 piece: None,
                 travel: [0.0; 2],
                 playing: crate::model::PLAYING_ALL,
+                key: 0,
             }],
             None,
             false,

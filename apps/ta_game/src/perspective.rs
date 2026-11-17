@@ -1012,26 +1012,40 @@ impl Perspective {
         self.hud.messages.retain(|m| now - m.1 < 3.2);
     }
 
-    /// The unit's weapons, for the instruments.
+    /// The unit's weapons, for the instruments: those that read the same (their name, reach and
+    /// reload, fired on command or not) in several of its places once, with how many it carries,
+    /// as its F1 page has them (a mod's units carry up to eight: the Fatboy's four Gauss cannons
+    /// are one row, "Gauss Cannon x4"). The first loaded of them stands for them all.
     pub fn weapons(&self, game: &Game) -> Vec<WeaponState> {
         let Some(u) = game.sim.unit(self.unit) else { return Vec::new() };
         let t = game.sim.unit_type(u);
         let has_normal = t.weapons.iter().flatten().any(|&w| !game.sim.weapon_types.get(w).command_fire);
-        (0..ta_data::unit::MAX_WEAPONS)
-            .filter_map(|s| {
-                let w = game.sim.weapon_types.get(t.weapons[s]?);
-                let full = w.reload_ticks.max(1) as f32;
-                Some(WeaponState {
-                    slot: s,
-                    name: weapon_name(w),
-                    left: (u.weapons[s].reload as f32 / full).clamp(0.0, 1.0),
-                    ready: u.weapons[s].reload == 0,
-                    range: w.range.to_f32(),
-                    reload: full / ta_sim::cob::TICKS_PER_SECOND as f32,
-                    manual: w.command_fire && s != 0 && has_normal,
-                })
+        let each = (0..ta_data::unit::MAX_WEAPONS).filter_map(|s| {
+            let w = game.sim.weapon_types.get(t.weapons[s]?);
+            let full = w.reload_ticks.max(1) as f32;
+            Some(WeaponState {
+                slot: s,
+                slots: 1 << s,
+                count: 1,
+                name: weapon_name(w),
+                left: (u.weapons[s].reload as f32 / full).clamp(0.0, 1.0),
+                ready: u.weapons[s].reload == 0,
+                range: w.range.to_f32(),
+                reload: full / ta_sim::cob::TICKS_PER_SECOND as f32,
+                manual: w.command_fire && s != 0 && has_normal,
             })
-            .collect()
+        });
+        let mut out: Vec<WeaponState> = Vec::new();
+        for w in each {
+            match out.iter_mut().find(|o| o.reads_as(&w)) {
+                Some(o) => o.join(w),
+                None => out.push(w),
+            }
+        }
+        for w in out.iter_mut().filter(|w| w.count > 1) {
+            w.name = ta_ui::i18n::tf("{name} x{n}", &[("name", &w.name), ("n", &w.count)]);
+        }
+        out
     }
 
     /// What the unit's guns are on, else the unit an attack order names: when the viewer can
@@ -1057,10 +1071,13 @@ pub(crate) fn weapon_name(w: &ta_sim::WeaponType) -> String {
     name.replace("Guass", "Gauss")
 }
 
-/// One of the unit's weapons, as the instruments show it.
+/// One of the unit's weapons (or several that read the same), as the instruments show it.
 pub struct WeaponState {
-    /// Its place on the unit (0..3).
+    /// Its place on the unit (0..8; of several, the first's), the places of all it stands for
+    /// (bits), and how many.
     pub slot: usize,
+    pub slots: u8,
+    pub count: usize,
     pub name: String,
     /// The share of its reload still to come (0: loaded), and whether it is loaded.
     pub left: f32,
@@ -1070,6 +1087,29 @@ pub struct WeaponState {
     pub reload: f32,
     /// Fired only when ordered to (the Commander's D-gun beside its laser).
     pub manual: bool,
+}
+
+impl WeaponState {
+    /// Whether `other` reads the same on the instruments: shown once, with their number.
+    fn reads_as(&self, other: &WeaponState) -> bool {
+        self.name == other.name && self.range == other.range && self.reload == other.reload && self.manual == other.manual
+    }
+
+    /// Stands for `other` too: loaded when either is, as far along as the one nearer.
+    fn join(&mut self, other: WeaponState) {
+        self.slots |= other.slots;
+        self.count += other.count;
+        if other.left < self.left {
+            self.left = other.left;
+        }
+        self.ready |= other.ready;
+    }
+
+    /// When the latest of the places it stands for did something, by `times` (each place's time:
+    /// the instruments' last shot, or when it came ready).
+    pub fn latest(&self, times: &[f64]) -> f64 {
+        times.iter().enumerate().filter(|&(s, _)| self.slots & (1 << s) != 0).map(|(_, &t)| t).fold(f64::NEG_INFINITY, f64::max)
+    }
 }
 
 /// The lip under a modelled cockpit's window, ahead of the eye (eye space, metres): where its

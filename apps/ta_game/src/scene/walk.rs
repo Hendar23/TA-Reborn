@@ -1008,17 +1008,24 @@ fn clip_walk(t: &UnitType, shape: &Shape, clip: &Clip) -> Result<Walk, String> {
     }
     let period = f64::from(clip.seconds) * 1000.0;
     let hidden = super::feet::hidden_when_built(t);
+    // The clip `at` milliseconds in, sampled once for each time asked (the table asks for every
+    // channel at one time in turn: sampled again and again, a type's first walk took milliseconds).
+    let last = std::cell::RefCell::new((f64::NAN, Vec::new()));
     let sample = |at: f64| {
-        let mut v = Vec::new();
-        clip.sample((at / 1000.0) as f32, true, &mut v);
-        v
+        let mut last = last.borrow_mut();
+        if last.0 != at {
+            let (time, keys) = &mut *last;
+            clip.sample((at / 1000.0) as f32, true, keys);
+            *time = at;
+        }
+        last
     };
     // Every model piece's state `at` milliseconds in: the clip's moves and turns, rest elsewhere
     // (what the script hides once built hidden).
     let states = |at: f64, out: &mut Vec<PieceState>| {
         out.clear();
         out.extend((0..t.model.pieces.len()).map(|i| ([0; 3], [0; 3], !hidden.get(i).copied().unwrap_or(false))));
-        for (k, v) in sample(at).iter().enumerate() {
+        for (k, v) in sample(at).1.iter().enumerate() {
             if let Some(s) = out.get_mut(clip.pieces[k] as usize) {
                 for (ch, &x) in v.iter().enumerate() {
                     set_channel(s, ch, if ch >= 3 { (x.round() as i32) as i16 as i32 } else { x.round() as i32 });
@@ -1027,7 +1034,7 @@ fn clip_walk(t: &UnitType, shape: &Shape, clip: &Clip) -> Result<Walk, String> {
         }
     };
     let stride = stride_of(t, shape, period, &states);
-    let gait = table(&stride, period, channels, &|c, at| f64::from(sample(at)[moved[c].0][moved[c].1]))?;
+    let gait = table(&stride, period, channels, &|c, at| f64::from(sample(at).1[moved[c].0][moved[c].1]))?;
     Ok(Walk::new(gait, None))
 }
 
@@ -1165,7 +1172,18 @@ fn stride_of(t: &UnitType, shape: &Shape, period: f64, states_at: &dyn Fn(f64, &
     // Pieces the cycle moves (themselves or what carries them).
     let moves: Vec<bool> = (0..pieces).map(|i| matrices.iter().any(|m| m[i] != Mat4::ZERO && !m[i].abs_diff_eq(matrices[0][i], 1e-4))).collect();
     // Each piece's lowest point at each moment: how low, and how far it goes back by the next
-    // (towards -z: the units face +z).
+    // (towards -z: the units face +z). (The first of the lowest, each point placed once: placed
+    // twice a comparison, a dense mod model's points took most of its walk's first reading.)
+    let lowest_point = |m: &Mat4, points: &[Vec3]| -> Option<Vec3> {
+        let mut best: Option<(f32, Vec3)> = None;
+        for &p in points {
+            let y = m.transform_point3(p).y;
+            if best.is_none_or(|(low, _)| y.total_cmp(&low) == std::cmp::Ordering::Less) {
+                best = Some((y, p));
+            }
+        }
+        best.map(|(_, p)| p)
+    };
     let contact: Vec<Vec<Option<(f32, f64)>>> = (0..samples)
         .map(|k| {
             let (m, next) = (&matrices[k], &matrices[k + 1]);
@@ -1174,7 +1192,7 @@ fn stride_of(t: &UnitType, shape: &Shape, period: f64, states_at: &dyn Fn(f64, &
                     if m[i] == Mat4::ZERO || next[i] == Mat4::ZERO {
                         return None;
                     }
-                    let v = shape.pieces[i].iter().copied().min_by(|a, b| m[i].transform_point3(*a).y.total_cmp(&m[i].transform_point3(*b).y))?;
+                    let v = lowest_point(&m[i], &shape.pieces[i])?;
                     let (now, then) = (m[i].transform_point3(v), next[i].transform_point3(v));
                     Some((now.y, (now.z - then.z) as f64))
                 })

@@ -32,6 +32,11 @@ use crate::minimap::Minimap;
 use crate::setup::{Assets, Controller, GameSetup, SlotSetup};
 
 pub fn run(args: Args, vfs: Vfs, mods: crate::record_mods::InPlay, config: ta_config::Config, profile: Option<ta_config::profiles::Profile>) -> Result<()> {
+    // (A film captured on a fixed clock, `TA_CAPTURE_FPS`, waits for the paint of the models with
+    // surfaces it draws: it shows a unit in its paint from its first frame, whatever the workers
+    // making it take. Other captures take the paint as the game does, as it comes.)
+    let film = std::env::var("TA_CAPTURE_FPS").ok().and_then(|v| v.parse::<f32>().ok()).is_some_and(|f| f > 0.0);
+    ta_render::model::surfaced::set_paint_waits(args.screenshot.is_some() && film);
     let event_loop = EventLoop::<egui_winit::accesskit_winit::Event>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App { args, vfs: Arc::new(vfs), mods, config, profile, state: None, active_load: None, error: None, proxy: event_loop.create_proxy(), accessibility_active: false };

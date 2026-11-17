@@ -857,8 +857,10 @@ A mod adds sides without replacing the game's side data, which would take anothe
 away: a `gamedata/sidedata_<name>.tdf` (any name after `sidedata_`) adds its `[SIDE<n>]`
 sections after the game's sides (and any other add-on's, in order of their paths), and joins
 its `[CANBUILD]` lists to the game's. A side named as one before it is passed over. The sides
-are numbered on from the game's; the classic interface lays out a side its file does not with
-the first side's layout. The Supreme Commander factions add theirs so
+are numbered on from the game's. What a side does not lay out of its own for the classic
+interface (the places of its resource bars and numbers, its logo, its lettering), it takes box by
+box from a side before it drawn in the same panels (its `intgaf`), else from the first side: a side
+may name its art and nothing more. The Supreme Commander factions add theirs so
 (`gamedata/sidedata_supcom.tdf`).
 
 #### Models with surfaces of their own
@@ -872,13 +874,28 @@ Supreme Commander's units are painted so. The format is in [FORMATS.md](FORMATS.
 
 - A polygon takes the material its texture name names; one naming no material of the surface is
   drawn as TA draws it. The surface must have the model's pieces in its order and each piece's
-  vertices; one that does not is left out, and the mod check says so.
-- The textures may be any DDS; they are drawn at 512 × 512 with every mip level, BC3. Give them so
-  (`ta_formats::dds::to_bc3_levels` makes them) and they are read as they are; others are made so
-  as they are read, which takes longer.
-- A material's paint is read the first time a model of it is drawn, and kept for the battle; until
-  then its faces are drawn in its colour on average, as they are in ray-traced reflections.
-- A surface may name a lighter model drawn in its place far off (`far`), of the same pieces.
+  vertices; one that does not (or does not read) is left out, the model drawn as TA draws its
+  faces (without Reborn's plates and seams, which would cut a dense mesh up along every
+  triangle), and the log and the mod check say so.
+- The textures must be DDS; they are drawn at 512 × 512 with every mip level, BC3. Give them so
+  (DXT5, or DXT1 or DXT3, of 512 × 512 or larger with every level below it;
+  `ta_formats::dds::to_bc3_levels` makes them) and they are read as they are, in about a
+  millisecond. Any other is decoded, resized and encoded again the first time it is drawn: tens of
+  milliseconds a texture, three to a material (a 1024 × 1024 uncompressed one, about forty). That
+  is done on workers of the game's own, the model drawn in its colours on average meanwhile, but a
+  battle of many such materials is painted seconds late; the mod check notes each such texture.
+  Mip levels past what a texture's size halves into, or past the end of its file, are not read
+  (the mod check says so).
+- A material's paint is read the first time a model of it is drawn, and kept for the battle (the
+  next battle lets it go and reads its own); until then its faces are drawn in its colour on
+  average, as they are in ray-traced reflections. The paint takes about a megabyte a material on
+  the graphics card (four where the card reads no block-compressed textures), room made 32
+  materials at a time; when the card has no more, the materials left over stay in their colours on
+  average.
+- A surface may name a lighter model drawn in its place far off (`far`), of the same pieces in the
+  same order (the mod check says when it has not): under 48 pixels across on the screen, though a
+  model drawn as itself a moment before stays so down to 42 (no swapping back and forth as the
+  camera shakes or a walker bobs).
 - Models with surfaces take no skins, liveries or Reborn's plates and bolts: their paint is their
   own, in either art style.
 - In TA itself, such a model shows its palette colours.
@@ -892,8 +909,10 @@ instead of its script's walk (the pieces its script aims with keep the script's 
 named `death`, `death2`... play where one dies on the ground, its wreck lying in the pose the
 clip ends in. The Supreme Commander units walk and die so, their clips made from their game's own
 animations. The format is in [FORMATS.md](FORMATS.md#model-animations-objects3dnameanims-ta-reborns-own);
-`ta_formats::anims::Anims::to_bytes` writes it. The mod check reads them and says which do not
-fit their model.
+`ta_formats::anims::Anims::to_bytes` writes it. A clip that does not fit its model (it moves pieces
+the model has not, or its keys are out of order or past its end) is left out, the others played;
+the log and the mod check name it. A death fades into its wreck's look in the moment its last pose
+holds.
 
 #### Build menus
 

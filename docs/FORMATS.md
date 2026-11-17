@@ -457,7 +457,10 @@ model, of the same name. Little-endian:
   (where it takes the player's colour); the normal map's tangent-space normal, x in alpha and y in
   green (z made up), x along u and y along v down the picture, as Direct3D's are.
 * `far`: a lighter model (a 3DO with its own surface, of the same pieces in the same order) drawn
-  in this one's place when it is under 48 pixels across on screen.
+  in this one's place when it is under 48 pixels across on screen; a model drawn as itself the
+  frame before stays so down to 42 (no swapping back and forth as the camera shakes).
+* A surface that does not read, or does not fit its model, leaves the model drawn as TA draws its
+  faces, without Reborn's kit.
 
 ## Model animations (`objects3d/<name>.anims`, TA Reborn's own)
 
@@ -483,8 +486,9 @@ posed by the ground they cover. Little-endian:
 * `death`, `death2`...: one of them, at random, plays where a unit of the model dies on the ground
   (an aircraft out of the sky and a ship going under go as TA Reborn's other units do); its wreck
   shows once the clip is over, lying in the pose it ends in.
-* A clip that moves a piece the model has not, more than once, or with its times out of order, is
-  not played (the mod check says so).
+* A clip that moves a piece the model has not, more than once, or with its times out of order or
+  past its length, is not played (the log and the mod check say so); the file's other clips are.
+  A file that does not read is told in the log.
 
 ## DDS textures
 
@@ -497,6 +501,9 @@ three-colour ones are encoded again, since BC3 always reads four; DXT3's colours
 encoded); anything else is decoded, halved or grown to 512 and encoded level by level. The encoders
 (an alpha block's ends its least and greatest, a colour block's ends along the colours' main axis,
 refined once by least squares) use plain arithmetic in a fixed order: the same bytes everywhere.
+A file claiming more mip levels than its size halves into is read with those its size has (a
+300 × 300 claiming four billion has nine), and only those its file holds; uncompressed channels
+take up to all 32 bits of a texel.
 
 ## COB bytecode (verified against shipped scripts)
 
@@ -547,7 +554,7 @@ refined once by least squares) use plain arithmetic in a fixed order: the same b
     45°, hits tipped tanks and radar vehicles half over and up to 17 px into the ground.
   * `SetSFXoccupy(state)`: what the unit moves over, when it changes: 4 land, 1 shallow
     water (up to 8 px deep), 2 deep water, 0 carried. Amphibians change to swim at 2.
-  * `TargetCleared(weapon)`: a weapon (1 to 3) lost its target.
+  * `TargetCleared(weapon)`: a weapon (1 to 8) lost its target.
   * `QueryNanoPiece(piece)`: while building, the piece the spray leaves from (factories
     alternate between two nozzles on each call).
   * `TargetHeading` (constructors) is only stored for a later `StartBuilding`, and

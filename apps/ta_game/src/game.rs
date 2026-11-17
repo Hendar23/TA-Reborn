@@ -852,6 +852,8 @@ impl Game {
         renderer.sprites.reset_atlas();
         renderer.set_ore(ore_w, ore_h, &ore);
         let mut scene = Scene::default();
+        // (The last battle's units' paint let go: this one's is read as they are first drawn.)
+        renderer.release_surface_paint();
         scene.preload_models(&sim, renderer, &|p| vfs.read_opt(p));
         Scene::read_surfaces_from(renderer, assets.vfs.clone());
         scene.after_tick(&sim);
@@ -1788,7 +1790,9 @@ impl Game {
                 // burns or comes down.)
                 if let SimEvent::UnitDestroyed { id, type_id, pos, removed: false, complete, .. } = &e {
                     let pieces = thrown.get(id).map_or(&[][..], Vec::as_slice);
-                    let death = crate::effects::Death { wreck: wrecks.get(id).copied(), complete: *complete };
+                    let wreck = wrecks.get(id).copied();
+                    let burnt = wreck.and_then(|w| self.sim.features.get(w)).is_some_and(|f| self.features.burnt_out(f.def));
+                    let death = crate::effects::Death { wreck, complete: *complete, burnt };
                     let clips = self.scene.death_clips(*type_id);
                     self.effects.unit_died(self.scene.take_departed(*id), *type_id, Vec3::from_array(pos.to_f32()), pieces, death, clips, &self.sim, now);
                 }
@@ -4245,23 +4249,23 @@ impl Game {
         for (i, model) in queued_models {
             // The build glow through the cloak's screen door: a faint hologram.
             let flags = ta_render::model::FLAG_BUILDING | ta_render::model::FLAG_CLOAKED;
-            list.push(DrawInstance { model, pieces: &queued_ghosts[i], team: *local_player as u32, flags, build: 0.0, damage: 0.0, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL });
+            list.push(DrawInstance { model, pieces: &queued_ghosts[i], team: *local_player as u32, flags, build: 0.0, damage: 0.0, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL, key: 0 });
         }
         for (r, model) in remembered {
             let mut flags = ta_render::model::FLAG_REMEMBERED;
             if r.build < 1.0 {
                 flags |= ta_render::model::FLAG_BUILDING;
             }
-            list.push(DrawInstance { model, pieces: &r.matrices, team: r.color, flags, build: r.build, damage: 0.0, travel: [0.0; 2], piece: None, playing: 0 });
+            list.push(DrawInstance { model, pieces: &r.matrices, team: r.color, flags, build: r.build, damage: 0.0, travel: [0.0; 2], piece: None, playing: 0, key: 0 });
         }
         list.extend(features.model_instances(sim, renderer, view_min, view_max, &waiting, effects.posed_wrecks()));
         list.extend(effects.models());
         if let (Some((model, flags)), Some(pl)) = (ghost, placement.as_ref()) {
-            list.push(DrawInstance { model, pieces: &pl.matrices, team: *local_player as u32, flags, build: 0.0, damage: 0.0, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL });
+            list.push(DrawInstance { model, pieces: &pl.matrices, team: *local_player as u32, flags, build: 0.0, damage: 0.0, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL, key: 0 });
         }
         if let Some(pl) = placement.as_ref() {
             for ((model, flags), m) in row_ghosts.into_iter().zip(&pl.row_matrices) {
-                list.push(DrawInstance { model, pieces: m, team: *local_player as u32, flags, build: 0.0, damage: 0.0, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL });
+                list.push(DrawInstance { model, pieces: m, team: *local_player as u32, flags, build: 0.0, damage: 0.0, travel: [0.0; 2], piece: None, playing: ta_render::model::PLAYING_ALL, key: 0 });
             }
         }
         list
