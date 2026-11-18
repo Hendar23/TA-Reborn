@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 1.0.8 — 2026-11-18
+
+Supreme Commander: Forged Alliance's four factions play in TA Reborn, made from your own copy of
+the game, as an experimental feature (Settings, LAUNCHER: ENABLE EXPERIMENTAL FEATURES): their
+units and buildings with their own models, paint, weapons, walks and deaths, factories upgrading
+in place and commanders taking enhancements. The computer players clear wrecks out of their way,
+build anti-nukes, silos, long-range guns and experimentals, and each can be given a difficulty and
+a persona in skirmish. Units turn with their factory's pad, the Commander mends itself, wrecks keep
+their heading and give metal alone, and the modern build menus stand each picture on the ground
+where its unit goes.
 
 ### Added
 - Upgrading in place: the Supreme Commander factions' factories upgrade into the next tier, their
