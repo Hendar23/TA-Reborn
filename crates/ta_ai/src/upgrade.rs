@@ -48,7 +48,20 @@ impl SkirmishAi {
             });
             let climbing: Vec<(&Unit, usize)> = candidates.iter().copied().filter(|&(_, to)| top_builder && self.factory_tier(sim, to) > s.factory_tier).collect();
             let rich = self.metal_avg > Fx::from_ratio(6, 10) && s.m_inc >= fx(self.p.tech_income * 2) && s.minutes >= self.p.tech_minute + 4;
-            let pool = if !climbing.is_empty() { climbing } else if rich { candidates } else { Vec::new() };
+            // More advanced factories as the economy grows (`adv_factories_wanted`, as they are
+            // built where nothing upgrades), and toward experimentals one that upgrades into a
+            // factory leading there.
+            let more = s.adv_factory_done && s.adv_factories < self.adv_factories_wanted(s);
+            let leading: Vec<(&Unit, usize)> = if self.toward_experimentals(sim, s) { candidates.iter().copied().filter(|&(_, to)| self.leads_to_experimentals(sim, to)).collect() } else { Vec::new() };
+            let pool = if !climbing.is_empty() {
+                climbing
+            } else if !leading.is_empty() {
+                leading
+            } else if rich || more {
+                candidates
+            } else {
+                Vec::new()
+            };
             // Land first (it reaches the enemy), then the lowest tier, the nearest home.
             let pick = pool.into_iter().min_by_key(|&(f, to)| {
                 let i = &self.info[f.type_id];
@@ -66,7 +79,7 @@ impl SkirmishAi {
         let room = (1 + s.m_inc.to_int() / 15).clamp(1, 4) as usize;
         let power = self.energy_avg >= Fx::from_ratio(3, 10) && s.e_inc > s.e_exp;
         let metal = s.metal >= fx(300) || self.metal_avg >= Fx::from_ratio(3, 10);
-        if s.minutes >= 4 && mex_upgrading < room && power && metal {
+        if s.minutes >= self.p.mex_upgrade_minute && mex_upgrading < room && power && metal {
             let pick = s
                 .own
                 .iter()

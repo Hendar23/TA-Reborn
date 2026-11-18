@@ -26,6 +26,13 @@ fn map_words(status: MapStatus) -> Option<(&'static str, Color32)> {
     }
 }
 
+/// What is said under a computer player's name: its difficulty and persona ("HARD · RUSH").
+fn computer_words(difficulty: u8, persona: u8) -> String {
+    let level = t(crate::setup::difficulty_name(super::ai_difficulty(difficulty)));
+    let persona = t(crate::setup::persona_name(ta_ai::Persona::from_code(persona).unwrap_or_default()));
+    format!("{} · {}", level.to_uppercase(), persona.to_uppercase())
+}
+
 /// The same, told in full (a pointer over it, a list of names).
 fn map_tip(name: &str, status: MapStatus) -> String {
     match status {
@@ -342,7 +349,7 @@ impl NetLobby {
         let counting = self.state.countdown.is_some();
         let watching = self.state.spectators.iter().any(|(p, _)| *p == me);
         let seated = self.state.slots.iter().any(|s| matches!(&s.kind, SlotKind::Human { peer, .. } if *peer == me));
-        let ai = [n("AI — Easy"), n("AI — Normal"), n("AI — Hard")];
+        let persona_width = crate::menu::persona_width(ui);
         // (The colours the seats have, for a click to pass over those taken.)
         let colours: Vec<(u8, bool)> = self.state.slots.iter().map(|s| (s.color, s.kind.plays())).collect();
         // (Whether each seat's person has the battle's map, as the host found.)
@@ -400,12 +407,15 @@ impl NetLobby {
                         let label = match &slot.kind {
                             SlotKind::Open => t("Open seat").to_string(),
                             SlotKind::Closed => t("Closed").to_string(),
-                            SlotKind::Ai { difficulty } => t(ai[(*difficulty as usize).min(2)]).to_string(),
+                            SlotKind::Ai { .. } => t("Computer").to_string(),
                             SlotKind::Human { .. } => String::new(),
                         };
+                        // (Who sits there: a computer's difficulty and persona are chosen on a
+                        // line of their own under the seat.)
                         egui::ComboBox::from_id_salt(("mp_kind", i)).selected_text(label).width(NAME).show_ui(ui, |ui| {
-                            for (kind, text) in [(SlotKind::Open, n("Open seat")), (SlotKind::Closed, n("Closed")), (SlotKind::Ai { difficulty: 0 }, ai[0]), (SlotKind::Ai { difficulty: 1 }, ai[1]), (SlotKind::Ai { difficulty: 2 }, ai[2])] {
-                                if ui.selectable_label(slot.kind == kind, t(text)).clicked() && slot.kind != kind {
+                            for (kind, text) in [(SlotKind::Open, n("Open seat")), (SlotKind::Closed, n("Closed")), (SlotKind::Ai { difficulty: 1, persona: 0 }, n("Computer"))] {
+                                let chosen = std::mem::discriminant(&slot.kind) == std::mem::discriminant(&kind);
+                                if ui.selectable_label(chosen, t(text)).clicked() && !chosen {
                                     requests.push(Request::Kind(i, kind));
                                 }
                             }
@@ -414,7 +424,8 @@ impl NetLobby {
                         let (name, sub) = match &slot.kind {
                             // ("LOBBY HOST": the noun; "HOST" is the connect page's button.)
                             SlotKind::Human { peer, name } => (name.clone(), if *peer == 0 { t("LOBBY HOST").to_string() } else if outside { t("WATCHES: NO ROOM").to_string() } else { String::new() }),
-                            SlotKind::Ai { difficulty } => (t(ai[(*difficulty as usize).min(2)]).to_string(), t("COMPUTER").to_string()),
+                            // (A computer: its difficulty and persona under it.)
+                            SlotKind::Ai { difficulty, persona } => (t("Computer").to_string(), computer_words(*difficulty, *persona)),
                             SlotKind::Open => (t("Open seat").to_string(), t("WAITING FOR A PLAYER").to_string()),
                             SlotKind::Closed => (t("Closed").to_string(), String::new()),
                         };
@@ -511,6 +522,17 @@ impl NetLobby {
                     }
                 }
             });
+            // The host's computer player: its difficulty and persona, on a line under its name.
+            if host && !counting && let SlotKind::Ai { difficulty, persona } = slot.kind {
+                ui.horizontal(|ui| {
+                    ui.add_space(26.0 + 30.0 + 2.0 * ui.spacing().item_spacing.x);
+                    let (mut level, mut chosen) = (super::ai_difficulty(difficulty), ta_ai::Persona::from_code(persona).unwrap_or_default());
+                    if crate::menu::ai_choice(ui, ("mp_persona", i), &mut level, &mut chosen, persona_width) {
+                        requests.push(Request::Kind(i, SlotKind::Ai { difficulty: super::ai_difficulty_code(level), persona: chosen.code() }));
+                    }
+                });
+                ui.add_space(4.0);
+            }
         }
         ui.add_space(4.0);
         if host && !self.state.countdown.is_some() {

@@ -85,13 +85,31 @@ impl SlotKind {
         [SlotKind::Closed, SlotKind::Human, SlotKind::AiEasy, SlotKind::AiNormal, SlotKind::AiHard].into_iter().find(|k| k.key() == key)
     }
 
+    /// Who plays the seat, as its drop-down names them (a computer's difficulty is chosen under
+    /// it).
     fn label(self) -> &'static str {
         match self {
             SlotKind::Closed => t("Closed"),
             SlotKind::Human => t("You"),
-            SlotKind::AiEasy => t("Computer — Easy"),
-            SlotKind::AiNormal => t("Computer — Normal"),
-            SlotKind::AiHard => t("Computer — Hard"),
+            SlotKind::AiEasy | SlotKind::AiNormal | SlotKind::AiHard => t("Computer"),
+        }
+    }
+
+    /// A computer player's difficulty (none: the player's seat, or a closed one).
+    fn difficulty(self) -> Option<ta_ai::Difficulty> {
+        match self {
+            SlotKind::AiEasy => Some(ta_ai::Difficulty::Easy),
+            SlotKind::AiNormal => Some(ta_ai::Difficulty::Normal),
+            SlotKind::AiHard => Some(ta_ai::Difficulty::Hard),
+            SlotKind::Closed | SlotKind::Human => None,
+        }
+    }
+
+    fn computer(difficulty: ta_ai::Difficulty) -> SlotKind {
+        match difficulty {
+            ta_ai::Difficulty::Easy => SlotKind::AiEasy,
+            ta_ai::Difficulty::Normal => SlotKind::AiNormal,
+            ta_ai::Difficulty::Hard => SlotKind::AiHard,
         }
     }
 }
@@ -101,6 +119,8 @@ struct Slot {
     side: usize,
     color: u8,
     team: u8,
+    /// How its computer player plays (a computer's seat).
+    persona: ta_ai::Persona,
 }
 
 /// Gives every open seat of `seats` a colour of its own: two players of one colour cannot be
@@ -143,6 +163,9 @@ struct KeptSlot {
     side: String,
     color: u8,
     team: u8,
+    /// A computer player's persona (`ta_ai::Persona::key`; kept before personas: none, Balanced).
+    #[serde(default)]
+    persona: String,
 }
 
 // (One action a frame at most: the size difference between its variants costs nothing.)
@@ -663,10 +686,10 @@ impl Menu {
             selected_map: default_map,
             map_choice: Default::default(),
             slots: vec![
-                Slot { kind: SlotKind::Human, side: 0, color: 0, team: 0 },
-                Slot { kind: SlotKind::AiNormal, side: 1, color: 1, team: 1 },
-                Slot { kind: SlotKind::Closed, side: 0, color: 2, team: 2 },
-                Slot { kind: SlotKind::Closed, side: 1, color: 3, team: 3 },
+                Slot { kind: SlotKind::Human, side: 0, color: 0, team: 0, persona: Default::default() },
+                Slot { kind: SlotKind::AiNormal, side: 1, color: 1, team: 1, persona: Default::default() },
+                Slot { kind: SlotKind::Closed, side: 0, color: 2, team: 2, persona: Default::default() },
+                Slot { kind: SlotKind::Closed, side: 1, color: 3, team: 3, persona: Default::default() },
             ],
             // A new series of games every session (the computer players draw from it).
             seed: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64),
@@ -1728,9 +1751,11 @@ impl Menu {
                     panel::section(ui, "PLAYERS");
                     let sides = crate::setup::side_choices(&assets.data);
                     // Each column of drop-downs one width, the widest of what it can show, so the
-                    // rows line up.
-                    let kinds = [SlotKind::Human, SlotKind::AiEasy, SlotKind::AiNormal, SlotKind::AiHard, SlotKind::Closed];
-                    let kind_width = w::combo_width(ui, kinds.map(SlotKind::label), 132.0);
+                    // rows line up. (Who plays each seat: you, the computer or nobody; a
+                    // computer's difficulty and persona on a line of their own under it.)
+                    let kinds = [SlotKind::Human, SlotKind::AiNormal, SlotKind::Closed];
+                    let kind_width = w::combo_width(ui, kinds.map(SlotKind::label), 112.0);
+                    let persona_width = persona_width(ui);
                     let side_width = w::combo_width(ui, sides.iter().map(|s| s.label.clone()), 84.0);
                     let team_width = w::combo_width(ui, (1..=5u8).map(|n| tf("Team {n}", &[("n", &n)])), 86.0);
                     // (The colours the seats have, for a click to pass over those taken.)
@@ -1749,7 +1774,12 @@ impl Menu {
                                     if n == 0 && k == SlotKind::Closed {
                                         continue;
                                     }
-                                    ui.selectable_value(&mut slot.kind, k, k.label());
+                                    // (A computer of any difficulty is "Computer": choosing it
+                                    // again keeps its difficulty.)
+                                    let chosen = slot.kind == k || slot.kind.difficulty().is_some() && k.difficulty().is_some();
+                                    if ui.selectable_label(chosen, k.label()).clicked() && !chosen {
+                                        slot.kind = k;
+                                    }
                                 }
                             });
                             if !open && slot.kind != SlotKind::Closed {
@@ -1776,6 +1806,17 @@ impl Menu {
                                 });
                             }
                         });
+                        // A computer player's difficulty and persona, under the drop-down saying
+                        // who plays the seat.
+                        if let Some(mut difficulty) = slot.kind.difficulty() {
+                            ui.horizontal(|ui| {
+                                ui.add_space(26.0 + ui.spacing().item_spacing.x);
+                                if ai_choice(ui, ("skirmish_persona", n), &mut difficulty, &mut slot.persona, persona_width) {
+                                    slot.kind = SlotKind::computer(difficulty);
+                                }
+                            });
+                            ui.add_space(4.0);
+                        }
                     }
                     if opened.is_some() {
                         let shown = self.slots.len().min(max_players.max(2));
@@ -1790,8 +1831,8 @@ impl Menu {
                         let color = (0..10u8).find(|c| !self.slots.iter().filter(playing).any(|s| s.color == *c)).unwrap_or(0);
                         let team = (0..10u8).find(|t| !self.slots.iter().filter(playing).any(|s| s.team == *t)).unwrap_or(0);
                         match closed {
-                            Some(seat) => self.slots[seat] = Slot { kind: SlotKind::AiNormal, side: seat % 2, color, team },
-                            None => self.slots.push(Slot { kind: SlotKind::AiNormal, side: self.slots.len() % 2, color, team }),
+                            Some(seat) => self.slots[seat] = Slot { kind: SlotKind::AiNormal, side: seat % 2, color, team, persona: Default::default() },
+                            None => self.slots.push(Slot { kind: SlotKind::AiNormal, side: self.slots.len() % 2, color, team, persona: Default::default() }),
                         }
                     }
                     ui.add_space(4.0);
@@ -1888,7 +1929,7 @@ impl Menu {
             slots: self
                 .slots
                 .iter()
-                .map(|s| KeptSlot { kind: s.kind.key().to_string(), side: sides.get(s.side).map_or_else(String::new, |c| c.key.clone()), color: s.color, team: s.team })
+                .map(|s| KeptSlot { kind: s.kind.key().to_string(), side: sides.get(s.side).map_or_else(String::new, |c| c.key.clone()), color: s.color, team: s.team, persona: s.persona.key().to_string() })
                 .collect(),
             rules: Some(self.rules.clone()),
         };
@@ -1924,7 +1965,8 @@ impl Menu {
             .filter_map(|k| {
                 let kind = SlotKind::from_key(&k.kind)?;
                 let side = sides.iter().position(|s| s.key.eq_ignore_ascii_case(&k.side)).unwrap_or(0);
-                Some(Slot { kind, side, color: k.color.min(9), team: k.team.min(9) })
+                let persona = ta_ai::Persona::from_key(&k.persona).unwrap_or_default();
+                Some(Slot { kind, side, color: k.color.min(9), team: k.team.min(9), persona })
             })
             .collect();
         // (One of them the player's, at most, and the first.)
@@ -1949,9 +1991,7 @@ impl Menu {
                     local = Some(players.len() as u8);
                     Controller::Human
                 }
-                SlotKind::AiEasy => Controller::Ai(ta_ai::Difficulty::Easy),
-                SlotKind::AiHard => Controller::Ai(ta_ai::Difficulty::Hard),
-                _ => Controller::Ai(ta_ai::Difficulty::Normal),
+                kind => Controller::Ai(kind.difficulty().unwrap_or(ta_ai::Difficulty::Normal), slot.persona),
             };
             let side = sides[slot.side.min(sides.len() - 1)].key.clone();
             players.push(SlotSetup { side, color: slot.color, controller, start: players.len(), team: slot.team, name: String::new() });
@@ -1960,6 +2000,36 @@ impl Menu {
         crate::setup::assign_starts(&mut players, max_players, seed, self.rules.random_starts, &crate::setup::start_spots(assets, map));
         GameSetup { map: map.to_string(), players, local_player: local, seed, mission: None, rules: self.rules.clone(), conquest: None, scenario: None }
     }
+}
+
+/// The width of a drop-down choosing a computer player's persona ([`ai_choice`]'s).
+pub fn persona_width(ui: &egui::Ui) -> f32 {
+    w::combo_width(ui, ta_ai::Persona::ALL.map(|p| t(crate::setup::persona_name(p))), 96.0)
+}
+
+/// A computer player's difficulty, its three levels side by side, and its persona in a
+/// drop-down after them (`persona_width` wide), each saying what it means under the pointer;
+/// true when either changed. (The skirmish's seats and the lobby's.)
+pub fn ai_choice(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::Debug, difficulty: &mut ta_ai::Difficulty, persona: &mut ta_ai::Persona, persona_width: f32) -> bool {
+    use ta_ai::{Difficulty, Persona};
+    use crate::setup::{persona_hint, persona_name};
+    // (The levels as wide as their lettering needs where the persona would not fit after them.)
+    let room = (ui.available_width() - persona_width - ui.spacing().item_spacing.x).max(0.0);
+    let levels = ui.allocate_ui_with_layout(vec2(room, 28.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        w::segmented(ui, difficulty, &[(Difficulty::Easy, "EASY"), (Difficulty::Normal, "NORMAL"), (Difficulty::Hard, "HARD")])
+    });
+    let mut changed = levels.inner.on_hover_text(t(crate::setup::DIFFICULTY_HINT)).changed();
+    let chosen = *persona;
+    let combo = egui::ComboBox::from_id_salt(id).selected_text(t(persona_name(chosen))).width(persona_width).show_ui(ui, |ui| {
+        for p in Persona::ALL {
+            if ui.selectable_label(chosen == p, t(persona_name(p))).on_hover_text(t(persona_hint(p))).clicked() && chosen != p {
+                *persona = p;
+                changed = true;
+            }
+        }
+    });
+    combo.response.on_hover_text(format!("{}\n\n{}", t(crate::setup::PERSONA_HINT), t(persona_hint(chosen))));
+    changed
 }
 
 /// Skirmish options: starting resources, fog, mapping, the commander rule and the unit

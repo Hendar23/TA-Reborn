@@ -573,12 +573,12 @@ impl Scenario {
         let mut players = vec![SlotSetup { side: self.player.side.clone(), color: 0, controller: Controller::Human, start: 0, team: 0, name: String::new() }];
         for (i, e) in self.enemies.iter().enumerate() {
             let d = e.ai.as_deref().and_then(difficulty_word).unwrap_or(difficulty);
-            players.push(SlotSetup { side: e.side.clone(), color: [1, 3, 5, 7, 2][i % 5], controller: Controller::Ai(d), start: i + 1, team: 1, name: String::new() });
+            players.push(SlotSetup { side: e.side.clone(), color: [1, 3, 5, 7, 2][i % 5], controller: Controller::ai(d), start: i + 1, team: 1, name: String::new() });
         }
         // Allies: the player's team, in colours near its own.
         for (i, a) in self.allies.iter().enumerate() {
             let d = a.ai.as_deref().and_then(difficulty_word).unwrap_or(difficulty);
-            players.push(SlotSetup { side: a.side.clone(), color: [8, 6, 4, 9][i % 4], controller: Controller::Ai(d), start: 1 + self.enemies.len() + i, team: 0, name: String::new() });
+            players.push(SlotSetup { side: a.side.clone(), color: [8, 6, 4, 9][i % 4], controller: Controller::ai(d), start: 1 + self.enemies.len() + i, team: 0, name: String::new() });
         }
         let rules = ta_sim::GameRules {
             start_metal: self.player.metal,
@@ -1077,7 +1077,7 @@ units = []
             .iter()
             .enumerate()
             .filter_map(|(i, s)| match s.controller {
-                Controller::Ai(d) if !entry.scenario.passive(i as u8) => Some(ta_ai::SkirmishAi::new(i as u8, &sim, d)),
+                Controller::Ai(d, persona) if !entry.scenario.passive(i as u8) => Some(ta_ai::SkirmishAi::with_persona(i as u8, &sim, d, persona)),
                 _ => None,
             })
             .collect();
@@ -1109,7 +1109,7 @@ units = []
                 start: fx(starts[i]),
                 metal: Fx::ZERO,
                 energy: Fx::ZERO,
-                ai: matches!(s.controller, Controller::Ai(_)),
+                ai: matches!(s.controller, Controller::Ai(..)),
             })
             .collect();
         let mut sim = Sim::new(assets.types.clone(), assets.data.for_map(vfs, &setup.map), &map, &info, 0, &players, setup.seed);
@@ -1256,8 +1256,8 @@ units = []
     /// itself, `TA_PILOT_TO=x,z` sends it all there at the start (the Commander behind; several
     /// points, `x,z|x,z`, one after another), `TA_PILOT_ATTACK=1` its aircraft at the enemy
     /// Commander; `TA_TEST_SEED=n` another seed; `TA_TEST_LOG=1` says where the enemy's units
-    /// are at the end, which kinds fired and killed, what killed the Commander, and what stood
-    /// on hold fire a minute in; `TA_TEST_WATCH=CORARAD,CORINT` when each enemy unit of those
+    /// are at the end (and the wreckage beside them that blocks their way), which kinds fired
+    /// and killed, what killed the Commander, and what stood on hold fire a minute in; `TA_TEST_WATCH=CORARAD,CORINT` when each enemy unit of those
     /// kinds fell, and how often they fired each minute.
     #[test]
     #[ignore]
@@ -1373,7 +1373,9 @@ units = []
                     let m = sim.mission.as_ref().unwrap();
                     let ours = sim.units().filter(|u| u.owner == 0 && !u.dead).count();
                     let theirs = sim.units().filter(|u| u.owner != 0 && !u.dead).count();
-                    println!("  {} min {}: {ours} of ours, {theirs} of theirs, waves {}, holds {:?}, metal {:.0} / {:.0}", entry.scenario.id, tick / 1800, m.waves_sent, m.holds, sim.players[0].stats.metal_produced.to_f32(), sim.players.get(1).map_or(0.0, |p| p.stats.metal_produced.to_f32()));
+                    // (Wreckage that blocks the way, standing on the map.)
+                    let wrecks = sim.features.iter().filter(|f| f.alive && sim.is_wreckage(f.def) && sim.data.features[f.def].blocking).count();
+                    println!("  {} min {}: {ours} of ours, {theirs} of theirs, waves {}, holds {:?}, metal {:.0} / {:.0}, blocking wrecks {wrecks}", entry.scenario.id, tick / 1800, m.waves_sent, m.holds, sim.players[0].stats.metal_produced.to_f32(), sim.players.get(1).map_or(0.0, |p| p.stats.metal_produced.to_f32()));
                     if !watch.is_empty() {
                         println!("    {watch:?} fired {watched_shots} times this minute");
                         watched_shots = 0;
@@ -1389,6 +1391,20 @@ units = []
                     c.1 += u.orders.is_empty() as usize;
                 }
                 println!("  enemy units by 512-px cell (count, idle): {cells:?}");
+                // Wreckage in the way: the blocking wrecks within 160 px of the enemy's ground
+                // units, and those units whose way ends short of where they are sent (a jam
+                // behind wreckage shows up).
+                let ground: Vec<&ta_sim::Unit> = sim.units().filter(|u| u.owner != 0 && !u.dead && matches!(sim.unit_type(u).locomotion, ta_sim::Locomotion::Ground | ta_sim::Locomotion::Hover)).collect();
+                let mut wrecks: std::collections::BTreeMap<String, usize> = Default::default();
+                let mut blocking = 0;
+                for f in sim.features.iter().filter(|f| f.alive && sim.is_wreckage(f.def) && sim.data.features[f.def].blocking) {
+                    blocking += 1;
+                    if ground.iter().any(|u| u.pos.within_xz(f.pos, Fx::from_int(160))) {
+                        *wrecks.entry(sim.data.features[f.def].name.clone()).or_default() += 1;
+                    }
+                }
+                let short = ground.iter().filter(|u| matches!((u.path_goal, u.move_request), (Some(g), Some(m)) if !g.within_xz(m, Fx::from_int(96)))).count();
+                println!("  blocking wreckage on the map {blocking}, beside the enemy's ground units {wrecks:?}; {short} of their {} ground units on ways that end short", ground.len());
                 let mut kinds: std::collections::BTreeMap<String, usize> = Default::default();
                 for u in sim.units().filter(|u| u.owner != 0 && !u.dead) {
                     *kinds.entry(sim.unit_type(u).name.clone()).or_default() += 1;
@@ -1403,6 +1419,37 @@ units = []
             let outcome = sim.mission.as_ref().and_then(|m| m.outcome);
             println!("{} ({difficulty:?}): {} after {}:{:02}", entry.scenario.id, match outcome { Some(true) => "WON", Some(false) => "LOST", None => "undecided" }, tick / 1800, tick / 30 % 60);
         }
+    }
+
+    /// Last Stand's waves come through the pass. The wrecks of its first wave's kbots, killed at
+    /// the western mouth, shut the winding pass, and every wave after them stood jammed behind
+    /// them (their ways stopping at a dead end nearer the Arm base as the crow flies): nobody at
+    /// the player's controls, a dozen of some sixty were destroyed in eight minutes. The waves'
+    /// units fire on the wreckage in their way now, and come on to the defences.
+    #[test]
+    fn last_stands_waves_come_through_the_pass() {
+        let Some(assets) = test_assets() else {
+            eprintln!("TA install not found; skipping");
+            return;
+        };
+        let entry = catalogue(&assets).into_iter().find(|e| e.scenario.id == "last-stand").expect("Last Stand");
+        let (mut sim, _, _) = battle(&assets, &entry, Difficulty::Normal);
+        let ground = |sim: &Sim, t: usize| matches!(sim.types.get(t).locomotion, ta_sim::Locomotion::Ground | ta_sim::Locomotion::Hover);
+        let (mut came, mut fell) = (0, 0);
+        for _ in 0..8 * 60 * 30 {
+            sim.step(&[]);
+            for e in sim.take_events() {
+                match e {
+                    ta_sim::SimEvent::UnitCreated { id, type_id } if ground(&sim, type_id) && sim.unit(id).is_some_and(|u| u.owner != 0) => came += 1,
+                    ta_sim::SimEvent::UnitDestroyed { type_id, owner, .. } if owner != 0 && ground(&sim, type_id) => fell += 1,
+                    _ => {}
+                }
+            }
+        }
+        println!("last-stand: of {came} ground units the waves brought in eight minutes, {fell} fell");
+        assert!(came >= 40, "the waves came ({came})");
+        // (Jammed, a sixth of them fell, 11 of 63; coming through, near half.)
+        assert!(fell * 3 >= came, "the waves' units reached the defences and fell there: {fell} of {came}");
     }
 
     /// Iron Rain's guns shell the Arm base as its briefing says ("every eight seconds each of

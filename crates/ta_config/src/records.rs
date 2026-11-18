@@ -30,8 +30,9 @@ pub struct RecordMetadata {
 /// These layouts were checked against their original definitions. Never expand this
 /// range just to bypass a version failure: a new layout needs its own decoder/migration.
 pub const fn record_version_readable(version: u32) -> bool {
-    // (45 is 44's layout: only what its data hash covers changed; 46 adds the mods' trailer.)
-    matches!(version, 36..=46)
+    // (45 is 44's layout: only what its data hash covers changed; 46 adds the mods' trailer; 47
+    // each computer player's persona in the setup.)
+    matches!(version, 36..=47)
 }
 
 /// Records of this version keep the mods they were made with ([`split_mods`]); older ones do
@@ -43,7 +44,7 @@ pub const fn record_has_mods(version: u32) -> bool {
 pub fn simulation_compatible(version: u32, metadata: Option<&RecordMetadata>) -> bool {
     match version {
         36..=40 => metadata.is_none() && version == crate::SIMULATION_VERSION,
-        41..=46 => metadata.is_some_and(|m| m.simulation_version == crate::SIMULATION_VERSION),
+        41..=47 => metadata.is_some_and(|m| m.simulation_version == crate::SIMULATION_VERSION),
         _ => false,
     }
 }
@@ -293,8 +294,8 @@ mod tests {
 
     #[test]
     fn readable_layout_does_not_imply_safe_save_resume() {
-        for version in 36..=46 { assert!(record_version_readable(version)); }
-        for version in [0, 35, 47, u32::MAX] { assert!(!record_version_readable(version)); }
+        for version in 36..=47 { assert!(record_version_readable(version)); }
+        for version in [0, 35, 48, u32::MAX] { assert!(!record_version_readable(version)); }
         assert!(record_has_mods(46) && !record_has_mods(45));
         assert!(simulation_compatible(46, Some(&fixture())));
         assert!(!simulation_compatible(46, None));

@@ -1342,7 +1342,7 @@ impl Stage {
                 SlotSetup {
                     side: faction.to_ascii_uppercase(),
                     color: spec.and_then(|p| p.color).unwrap_or(i as u8),
-                    controller: Controller::Ai(ta_ai::Difficulty::Hard),
+                    controller: Controller::ai(ta_ai::Difficulty::Hard),
                     start: i,
                     team: spec.and_then(|p| p.team).unwrap_or(i as u8),
                     name: String::new(),

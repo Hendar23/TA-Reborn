@@ -1517,7 +1517,7 @@ fn attract_setup(assets: &Assets, seed: u64) -> GameSetup {
         .map(|i| SlotSetup {
             side: if i % 2 == 0 { "ARM" } else { "CORE" }.into(),
             color: i as u8,
-            controller: Controller::Ai(ta_ai::Difficulty::Hard),
+            controller: Controller::ai(ta_ai::Difficulty::Hard),
             start: i,
             team: i as u8,
             name: String::new(),
@@ -1695,7 +1695,7 @@ impl State {
                 if (std::env::var_os("TA_RESULT_MINUTES").is_some() || args.demo.as_deref() == Some("spy"))
                     && let Some(me) = duel.players.first_mut()
                 {
-                    me.controller = crate::setup::Controller::Ai(ta_ai::Difficulty::Hard);
+                    me.controller = crate::setup::Controller::ai(ta_ai::Difficulty::Hard);
                 }
                 (duel, Screen::Playing)
             }
@@ -2583,7 +2583,7 @@ impl State {
                         .collect();
                 }
                 for p in &mut setup.players {
-                    p.controller = crate::setup::Controller::Ai(ta_ai::Difficulty::Hard);
+                    p.controller = crate::setup::Controller::ai(ta_ai::Difficulty::Hard);
                 }
                 setup.local_player = None;
                 let title = format!("{} (AI battle)", setup.map);
@@ -7394,7 +7394,7 @@ fn battle_card(ui: &mut egui::Ui, game: &Game) {
 fn meet_the_enemy(game: &mut Game, settings: &ta_config::Config, remember: bool) {
     game.player_name = settings.gameplay.player_name.clone();
     let setup = &game.setup;
-    let computers: Vec<u8> = setup.players.iter().enumerate().filter(|(_, s)| matches!(s.controller, crate::setup::Controller::Ai(_))).map(|(i, _)| i as u8).collect();
+    let computers: Vec<u8> = setup.players.iter().enumerate().filter(|(_, s)| matches!(s.controller, crate::setup::Controller::Ai(..))).map(|(i, _)| i as u8).collect();
     game.chatter = match setup.local_player {
         Some(me) if settings.gameplay.ai_chatter && setup.mission.is_none() => {
             // (Captures: `TA_RIVALS=won|lost` makes every persona a rival the player beat last

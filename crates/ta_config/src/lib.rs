@@ -33,9 +33,10 @@ pub const MAX_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
 /// data hash covering the units a campaign mission allows (`camps/useonly`, which 41 to 44 left
 /// out: a mod changing them passed the check); 46, the mods it was made with (`records::RecordMod`,
 /// in load order, in a trailer of their own: `records::append_mods`), so a player can be told which
-/// to get or turn on. Simulation changes no longer imply an unreadable file; update
-/// [`SIMULATION_VERSION`] for those instead.
-pub const RECORD_VERSION: u32 = 46;
+/// to get or turn on; 47, each computer player's persona beside its difficulty (how it plays:
+/// Balanced, Rush, Turtle...; 36 to 46 are read as Balanced). Simulation changes no longer imply an
+/// unreadable file; update [`SIMULATION_VERSION`] for those instead.
+pub const RECORD_VERSION: u32 = 47;
 /// Deterministic simulation revision, separate from the record's file layout. Saved
 /// games resume only on a matching revision; older replays can be watched with a warning.
 /// Revision 40 includes factory ownership, transport recovery and AI cancelled-job fixes; 41,
@@ -182,8 +183,15 @@ pub const RECORD_VERSION: u32 = 46;
 /// its metal back), and the computer players upgrade their factories up the tiers and their
 /// extractors; a unit's `[ENHANCEMENTS]` are installed on it (`Order::Enhance`: one a slot, built and
 /// paid as an upgrade, its numbers, weapons, menu, sensors and cloak added to the unit's), and the
-/// computer players install engineering suites and gun upgrades on their commanders.
-pub const SIMULATION_VERSION: u32 = 104;
+/// computer players install engineering suites and gun upgrades on their commanders; 105, computer
+/// players play their personas (the tiers, upgrades and engineering suites sooner or later as
+/// theirs has it), clear the wreckage shutting their ways (and a scenario's waves break up what
+/// shuts theirs), put up anti-nuclear cover, silos, heavy defences, long-range guns that shell the
+/// enemy's base and experimentals, and build or upgrade more of the top tier as their economy
+/// grows; a constructor's unit built in the field goes on with the frame laid for its order's
+/// site, however far it was pushed off it, rather than starting another (and a frame laid for
+/// another order's site nearby is that order's).
+pub const SIMULATION_VERSION: u32 = 105;
 /// Records shorter than one year of simulated time are supported. Shared with the
 /// launcher's metadata reader so impossible durations cannot start endless save catch-up.
 pub const MAX_RECORD_TICKS: u64 = 30 * 3600 * 24 * 365;

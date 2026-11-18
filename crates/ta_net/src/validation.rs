@@ -70,7 +70,7 @@ fn valid_slots(slots: &[crate::LobbySlot], spectators: &[(u8, String)]) -> bool 
     slots.len() <= 10 && spectators.len() <= 32 && slots.iter().all(|s| {
         s.color < 10 && s.team < 10 && s.side.len() <= 128 && match &s.kind {
             crate::SlotKind::Human { peer, name } => name.len() <= 128 && peers.insert(*peer),
-            crate::SlotKind::Ai { difficulty } => *difficulty <= 2,
+            crate::SlotKind::Ai { difficulty, persona } => *difficulty <= 2 && *persona < crate::PERSONAS,
             crate::SlotKind::Open | crate::SlotKind::Closed => true,
         }
     }) && spectators.iter().all(|(peer, name)| name.len() <= 128 && peers.insert(*peer))
@@ -168,7 +168,7 @@ mod tests {
             map: "Test".into(),
             seed: 1,
             // Players 0 and 2 on team 0, player 1 on team 1 (the open seat is no player).
-            slots: vec![human(0, 0), slot(SlotKind::Open, 5), human(1, 1), slot(SlotKind::Ai { difficulty: 1 }, 0)],
+            slots: vec![human(0, 0), slot(SlotKind::Open, 5), human(1, 1), slot(SlotKind::Ai { difficulty: 1, persona: 0 }, 0)],
             rules: Default::default(),
             spectators: vec![(9, "Watcher".into())],
         };
@@ -189,7 +189,10 @@ mod tests {
         assert!(!host_message(&lobby(vec![human(0, 0), human(0, 1)], vec![])), "a peer in two seats");
         assert!(!host_message(&lobby(vec![human(0, 0)], vec![(0, "W".into())])), "a player watching too");
         assert!(!host_message(&lobby((0..11).map(|p| human(p, 0)).collect(), vec![])), "eleven seats");
-        assert!(!host_message(&lobby(vec![slot(SlotKind::Ai { difficulty: 3 }, 0)], vec![])), "no fourth difficulty");
+        assert!(!host_message(&lobby(vec![slot(SlotKind::Ai { difficulty: 3, persona: 0 }, 0)], vec![])), "no fourth difficulty");
+        assert!(host_message(&lobby(vec![slot(SlotKind::Ai { difficulty: 2, persona: crate::PERSONAS - 1 }, 0)], vec![])), "the last persona");
+        assert!(!host_message(&lobby(vec![slot(SlotKind::Ai { difficulty: 1, persona: crate::PERSONAS }, 0)], vec![])), "no persona past the last");
+        assert_eq!(crate::PERSONAS as usize, ta_ai::Persona::ALL.len(), "the wire's count is the computer players'");
         assert!(!host_message(&lobby(vec![LobbySlot { color: 10, ..human(0, 0) }], vec![])), "colour out of range");
         assert!(!host_message(&lobby(vec![LobbySlot { side: "X".repeat(129), ..human(0, 0) }], vec![])), "side's name too long");
         assert!(!host_message(&lobby(vec![human(0, 0)], (0..33).map(|p| (p + 1, String::new())).collect())), "thirty-three watching");

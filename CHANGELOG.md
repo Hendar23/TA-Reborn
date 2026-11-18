@@ -79,6 +79,21 @@
   what goes on both, then the sea's, then aircraft, keeping TA's order within each; so do the
   radial menu's rings of buildings and units. The classic interface keeps TA's pages and pictures,
   and the Supreme Commander factions' pictures keep their own game's frames.
+- Computer players have personas, as Forged Alliance's had, and play the whole game. Each
+  computer seat of a skirmish or a lobby now shows its difficulty plainly, EASY, NORMAL or HARD
+  under the seat, and a persona beside it: Balanced, Rush (attacks early and often), Turtle
+  (towers, heavy defences, long-range guns), Tech (up the tech tree fast: its factories' and
+  extractors' upgrades and its commander's engineering suites sooner, a Rush's later), Air, Naval
+  or Random;
+  saved games, replays and multiplayer keep the choice, and the battle names it ("AI (Hard,
+  Rush)"). On a long game they now put up anti-nuclear defences once they find a silo, nuclear
+  silos, heavy defences, long-range guns that shell the bases they have found (the Big Bertha,
+  the Intimidator), experimentals (the Core's Krogoth Gantry, Forged Alliance's) and more of the
+  top tier as their economy grows (more advanced factories, upgraded where a factory upgrades,
+  as the Supreme Commander factions' do); Easy stays gentle. And they clear wreckage out of their way:
+  a pass shut by wrecks (Last Stand's, or a skirmish's) is reclaimed by their constructors, the
+  Commander too when it is near and safe, or broken up by their army's guns, and a scenario's
+  waves break up the wrecks that shut their way instead of piling up behind them.
 
 ### Changed
 - The modern interface's DETAILS tell what the selection makes and uses of metal and energy a

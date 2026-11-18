@@ -70,9 +70,12 @@ impl SkirmishAi {
             let Some(want) = self.want_of(sim, c, index) else { continue };
             // The suite past the first once our factories are of its tier (or we are rich).
             let deeper = e.prerequisite.is_some();
+            // (A Tech persona's come as soon as the tech economy allows; a Rush's later, with its
+            // tech minute.)
+            let early = self.p.tech_eager;
             let due = match want {
-                Want::Engineering => tech_economy && (!deeper || s.factory_tier >= 2 || rich),
-                Want::Gun => tech_economy && s.minutes >= self.p.tech_minute + 2,
+                Want::Engineering => tech_economy && (!deeper || s.factory_tier >= 2 || rich || early),
+                Want::Gun => tech_economy && s.minutes >= self.p.tech_minute + if early { 0 } else { 2 },
                 Want::Armour => rich && s.minutes >= self.p.tech_minute + 6,
             };
             // Something to pay with: a part of its price banked, or an income for it (its energy

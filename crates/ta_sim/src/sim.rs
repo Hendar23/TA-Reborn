@@ -18,8 +18,9 @@ use crate::vision::{self, Seen, Sensor, Vision};
 use crate::world::{CELL, MoveSpec, Occupant, Region, World};
 
 mod air;
-mod repair_round;
+mod blockers;
 pub mod enhance;
+mod repair_round;
 mod upgrade;
 
 /// Base resource storage every player has regardless of buildings (TA default).
@@ -338,7 +339,11 @@ struct CachedPath {
     path: Vec<(i32, i32)>,
     goal_pos: FxVec3,
     tick: u64,
+    /// The world's `blocking_version` it was planned at; for one stopping short of its goal
+    /// (`short`), its `occupancy_version`: whatever opens up on the ground (wreckage cleared out
+    /// of a pass) may let it through, and it is planned again.
     occupancy_version: u64,
+    short: bool,
 }
 
 /// Cached paths expire after this many ticks.
@@ -3365,7 +3370,7 @@ impl Sim {
         let cached = self
             .path_cache
             .get(&key)
-            .filter(|c| c.occupancy_version == version && self.tick < c.tick + PATH_CACHE_TICKS && unit_factory.is_none())
+            .filter(|c| c.occupancy_version == if c.short { self.world.occupancy_version } else { version } && self.tick < c.tick + PATH_CACHE_TICKS && unit_factory.is_none())
             .filter(|c| c.path.first().map_or(start == goal, |&w| crate::path::line_clear(&self.world, &spec, start, w, None)));
         let path = if let Some(route) = flow_route {
             route
@@ -3433,7 +3438,9 @@ impl Sim {
                 self.path_cache.retain(|_, c| now < c.tick + PATH_CACHE_TICKS);
                 self.path_cache_limit = (self.path_cache.len() * 2).max(PATH_CACHE_PURGE);
             }
-            self.path_cache.insert(key, CachedPath { path: path.clone(), goal_pos, tick: self.tick, occupancy_version: version });
+            let short = !reached;
+            let occupancy_version = if short { self.world.occupancy_version } else { version };
+            self.path_cache.insert(key, CachedPath { path: path.clone(), goal_pos, tick: self.tick, occupancy_version, short });
             path
         };
         if radius > 0 && let Some(&c) = path.last() {
@@ -3851,10 +3858,27 @@ impl Sim {
             return;
         }
 
-        let u = self.unit(id).unwrap();
         let anchor = World::pos_to_anchor(pos, bt.footprint);
         let site = self.world.anchor_to_pos(anchor, bt.footprint);
         let reach = t.build_distance + t.radius;
+        // A mobile unit built in the field (Forged Alliance's experimentals, by its engineers)
+        // takes no cells: the frame laid for this site is found where it stands, wherever the
+        // crowd has pushed it, and the builder goes on with it (to it, out of reach). Not looked
+        // for, a new frame was laid on the site whenever the builder lost hold of the last: a pile
+        // of them. (Only the frame laid for this site: one laid for another order's site nearby is
+        // that order's, or the two orders would finish one unit between them.)
+        if bt.locomotion != Locomotion::Static && let Some(frame) = self.field_frame(type_id, site, owner, Fx::from_int(bt.footprint.0.max(bt.footprint.1) as i64 * CELL) + reach * 2) {
+            let (u, at) = (self.unit(id).unwrap(), self.unit(frame).unwrap().pos);
+            if self.in_build_range(u, at, bt.footprint) {
+                if let Some(u) = self.unit_mut(id) {
+                    u.build = Some(BuildJob { target: frame, started: false });
+                }
+            } else if u.path_goal.is_none() || u.stuck_ticks > 60 || u.move_request.is_none_or(|m| !m.within_xz(at, Fx::from_int(CELL * 4))) {
+                self.move_to_work(id, t, at, bt.footprint);
+            }
+            return;
+        }
+        let u = self.unit(id).unwrap();
         let gap = Self::distance_to_footprint(u.pos, site, bt.footprint);
         if gap > reach {
             if u.path_goal.is_none() && u.move_request == Some(site) && gap > reach + Fx::from_int(32) {
@@ -3879,6 +3903,7 @@ impl Sim {
             Occupant::Unit(slot) => self.units.get(slot as usize).and_then(|u| u.as_ref()).filter(|u| u.type_id == type_id && !u.dead && !u.is_complete() && self.allied(owner, u.owner)).map(|u| u.id),
             _ => None,
         };
+
         let mut standing = Vec::new();
         let target = match existing {
             Some(e) => e,
@@ -3902,8 +3927,13 @@ impl Sim {
                 match self.spawn_unit(type_id, owner, site, 0, false) {
                     Some(n) => {
                         let tick = self.tick;
+                        let mobile = bt.locomotion != Locomotion::Static;
                         if let Some(frame) = self.unit_mut(n) {
                             frame.worked_at = Some(tick);
+                            // (The site it was laid for: `field_frame`.)
+                            if mobile {
+                                frame.field_site = Some(site);
+                            }
                         }
                         n
                     }
@@ -3936,6 +3966,20 @@ impl Sim {
         for o in standing {
             self.step_aside(o, &next);
         }
+    }
+
+    /// The frame of a mobile unit of `type_id` laid in the field (not in a factory) by `owner`'s
+    /// side for `site` (`Unit::field_site`), within `near` of it however it has been pushed: a
+    /// second builder ordered to that site helps with it, and one ordered to another site, however
+    /// near, lays a frame of its own. (Among all units, not those the unit grid had: one laid this
+    /// tick is not in it yet.)
+    fn field_frame(&self, type_id: usize, site: FxVec3, owner: u8, near: Fx) -> Option<UnitId> {
+        self.units
+            .iter()
+            .flatten()
+            .filter(|u| u.type_id == type_id && u.field_site == Some(site) && !u.dead && !u.is_complete() && u.factory.is_none() && self.allied(owner, u.owner) && u.pos.within_xz(site, near))
+            .min_by_key(|u| u.id.slot)
+            .map(|u| u.id)
     }
 
     /// Mobile units (finished, on the ground or landed) standing on the blocking cells a
@@ -5994,6 +6038,7 @@ impl Sim {
             mix(u.taken_apart_at.map_or(-1, |t| t as i64));
             mix(u.reclaim_owed.0);
             mix(u.worked_at.map_or(-1, |t| t as i64));
+            target(&mut mix, u.field_site.map(Target::Ground));
             mix(u.capture_work as i64);
             mix(u.in_build_stance as i64);
             mix(u.yard_open as i64);

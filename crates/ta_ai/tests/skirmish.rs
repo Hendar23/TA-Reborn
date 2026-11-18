@@ -2,7 +2,9 @@
 //!
 //! `TA_TEST_MAP` picks the map (default Sherwood), `TA_TEST_MINUTES` the length (default
 //! 12), `TA_TEST_DIFFICULTY` (easy, normal, hard) the even players' level and
-//! `TA_TEST_DIFFICULTY2` the odd players' (default: the same). `TA_TEST_SWAP=1` rotates the
+//! `TA_TEST_DIFFICULTY2` the odd players' (default: the same); `TA_TEST_PERSONA` (balanced,
+//! rush, turtle, tech, air, naval, random) the even players' persona and `TA_TEST_PERSONA2` the
+//! odd players' (default: the same). `TA_TEST_SWAP=1` rotates the
 //! start positions; `TA_TEST_PLAYERS=n` plays n AIs (sides alternate ARM/CORE) and
 //! `TA_TEST_TEAMS=1` puts them on two alternating teams (e.g. a 2v2). `TA_TEST_SEED=n` changes
 //! the game's random seed (7), and with it the AIs' choices; `TA_TEST_TWEAKS=expanders=0`
@@ -22,7 +24,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-use ta_ai::{Difficulty, SkirmishAi};
+use ta_ai::{Difficulty, Persona, SkirmishAi};
 use ta_data::{GameData, MapInfo};
 use ta_formats::tdf;
 use ta_formats::tnt::TntMap;
@@ -52,8 +54,84 @@ fn difficulty(var: &str) -> Option<Difficulty> {
     }
 }
 
+fn persona(var: &str) -> Option<Persona> {
+    Persona::from_key(&std::env::var(var).ok()?)
+}
+
 fn joined<T: std::fmt::Display>(v: &[T]) -> String {
     v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(" / ")
+}
+
+/// A unit type's tier: its LEVELn (or a mod's LEVn) tag, 1 to 3.
+fn tier(t: &ta_sim::UnitType) -> u8 {
+    t.def.category.split_whitespace().filter_map(|token| {
+        let token = token.to_ascii_uppercase();
+        token.strip_prefix("LEVEL").or_else(|| token.strip_prefix("LEV"))?.parse::<u8>().ok().filter(|l| (1..=5).contains(l)).map(|l| l.min(3))
+    }).max().unwrap_or(1)
+}
+
+/// What the tech tree audit counts a finished unit as, by its properties (a mod's units too):
+/// factories by tier, strategic buildings, artillery, experimentals and the army by tier; none
+/// for the rest (constructors, economy, small towers, the Commander).
+fn audit_kind(sim: &Sim, type_id: usize) -> Option<&'static str> {
+    let t = sim.types.get(type_id);
+    if t.def.is_commander {
+        return None;
+    }
+    let weapons: Vec<&ta_sim::WeaponType> = t.weapons.iter().flatten().map(|&w| sim.weapon_types.get(w)).collect();
+    let cost = (t.cost_metal + t.cost_energy / 60).to_int();
+    let nuclear = |w: &&ta_sim::WeaponType| w.def.stockpile && w.command_fire && w.def.targetable_classes() & ta_sim::STRATEGIC_CLASS != 0;
+    let anti = |w: &&ta_sim::WeaponType| w.def.interceptor && w.def.interceptor_classes() & ta_sim::STRATEGIC_CLASS != 0;
+    let gun = |w: &&ta_sim::WeaponType| w.hits_ground && !w.def.stockpile && !w.def.interceptor && !w.command_fire && w.default_damage > Fx::ZERO;
+    let tier = tier(t);
+    if t.locomotion == Locomotion::Static {
+        if sim.types.makes_units(t) {
+            return Some(["factory T1", "factory T2", "factory T3"][tier as usize - 1]);
+        }
+        if weapons.iter().any(nuclear) {
+            return Some("nuclear silo");
+        }
+        if weapons.iter().any(|w| w.def.stockpile && w.command_fire) {
+            return Some("other silo");
+        }
+        if weapons.iter().any(anti) {
+            return Some("anti-nuke");
+        }
+        if weapons.iter().any(|w| gun(w) && w.range >= Fx::from_int(2000)) {
+            return Some("long-range gun");
+        }
+        if weapons.iter().any(gun) && cost >= 2000 {
+            return Some("heavy defence");
+        }
+        return None;
+    }
+    let armed = weapons.iter().any(|w| gun(w) || w.hits_air && !w.def.interceptor && w.default_damage > Fx::ZERO);
+    // (One that builds too, Forged Alliance's Fatboy, is an experimental all the same.)
+    if armed && cost >= 5000 {
+        return Some("experimental");
+    }
+    if t.is_builder {
+        return None;
+    }
+    if weapons.iter().any(anti) {
+        return Some("mobile anti-nuke");
+    }
+    if !armed {
+        return None;
+    }
+    let artillery = weapons.iter().any(|w| gun(w) && matches!(w.trajectory, ta_sim::Trajectory::Ballistic | ta_sim::Trajectory::Guided) && w.range >= Fx::from_int(600));
+    Some(match (t.locomotion, tier) {
+        (Locomotion::Ground | Locomotion::Hover, _) if artillery => "mobile artillery",
+        (Locomotion::Air, 1) => "aircraft T1",
+        (Locomotion::Air, 2) => "aircraft T2",
+        (Locomotion::Air, _) => "aircraft T3",
+        (Locomotion::Naval, 1) => "ships T1",
+        (Locomotion::Naval, 2) => "ships T2",
+        (Locomotion::Naval, _) => "ships T3",
+        (_, 1) => "army T1",
+        (_, 2) => "army T2",
+        _ => "army T3",
+    })
 }
 
 #[test]
@@ -142,7 +220,9 @@ fn ai_vs_ai_plays_a_game() {
         }
     }
     let levels: Vec<Difficulty> = (0..n).map(|i| if i % 2 == 0 { first } else { second }).collect();
-    let mut ais: Vec<SkirmishAi> = (0..n).map(|i| SkirmishAi::new(i as u8, &sim, levels[i])).collect();
+    let first_persona = persona("TA_TEST_PERSONA").unwrap_or_default();
+    let personas: Vec<Persona> = (0..n).map(|i| if i % 2 == 0 { first_persona } else { persona("TA_TEST_PERSONA2").unwrap_or(first_persona) }).collect();
+    let mut ais: Vec<SkirmishAi> = (0..n).map(|i| SkirmishAi::with_persona(i as u8, &sim, levels[i], personas[i])).collect();
     for kv in std::env::var("TA_TEST_TWEAKS").unwrap_or_default().split(',').filter(|kv| !kv.trim().is_empty()) {
         let (k, v) = kv.split_once('=').expect("TA_TEST_TWEAKS: name=value,...");
         let v: i64 = v.trim().parse().expect("TA_TEST_TWEAKS: a number");
@@ -150,13 +230,25 @@ fn ai_vs_ai_plays_a_game() {
             assert!(ai.tweak(k.trim(), v), "unknown AI parameter {k}");
         }
     }
-    let lineup: Vec<String> = (0..n).map(|i| format!("P{i} {} {:?}{}", players[i].side, levels[i], if teams { format!(" (team {})", i % 2) } else { String::new() })).collect();
+    let lineup: Vec<String> = (0..n).map(|i| format!("P{i} {} {:?} {:?}{}", players[i].side, levels[i], ais[i].persona, if teams { format!(" (team {})", i % 2) } else { String::new() })).collect();
     println!("{map_name}: {}", lineup.join(" vs "));
 
     let started = Instant::now();
     let mut ai_time = 0.0;
     let (mut shots, mut deaths, mut built) = (0u32, 0u32, vec![0u32; n]);
     let (mut launches, mut interceptions) = (0u32, 0u32);
+    // The tech tree audit: per player, what was made of each kind (`audit_kind`) and the minute
+    // of the first; strategic launches, long-range gun shots and missiles shot down.
+    let mut made: Vec<BTreeMap<&'static str, (u32, u64)>> = vec![Default::default(); n];
+    let mut launched = vec![0u32; n];
+    let mut long_shots = vec![0u32; n];
+    let mut shot_down = vec![0u32; n];
+    // How each played (its persona): the minute its army first pushed at an enemy's start (three
+    // armed units or more within 1,500 px of it, looked at every 30 s), and the armed buildings,
+    // armed aircraft and armed ships it finished.
+    let starts: Vec<FxVec3> = players.iter().map(|p| p.start).collect();
+    let mut first_push: Vec<Option<u64>> = vec![None; n];
+    let (mut towers, mut planes, mut ships) = (vec![0u32; n], vec![0u32; n], vec![0u32; n]);
     let mut peak_units = 0;
     let mut dead_ids = HashSet::new();
     let mut dead_types: BTreeMap<String, u32> = Default::default();
@@ -216,17 +308,26 @@ fn ai_vs_ai_plays_a_game() {
         sim.step(&commands);
         for e in sim.take_events() {
             match e {
-                SimEvent::WeaponFired { weapon, .. } => {
+                SimEvent::WeaponFired { unit, weapon, .. } => {
                     shots += 1;
-                    let d = &sim.weapon_types.get(weapon).def;
-                    if d.stockpile && d.command_fire {
+                    let w = sim.weapon_types.get(weapon);
+                    let by = owners.get(&unit).copied().or_else(|| sim.unit(unit).map(|u| u.owner)).map(|o| o as usize);
+                    if w.def.stockpile && w.def.command_fire {
                         launches += 1;
-                        println!("tick {tick} ({} min): strategic launch ({})", tick / 1800, sim.weapon_types.get(weapon).name);
+                        if let Some(p) = by {
+                            launched[p] += 1;
+                        }
+                        println!("tick {tick} ({} min): strategic launch ({}) by P{by:?}", tick / 1800, w.name);
+                    } else if w.range >= Fx::from_int(2000) && !w.def.interceptor && let Some(p) = by {
+                        long_shots[p] += 1;
                     }
                 }
-                SimEvent::Intercepted { .. } => {
+                SimEvent::Intercepted { defender, .. } => {
                     interceptions += 1;
-                    println!("tick {tick} ({} min): missile intercepted", tick / 1800);
+                    if let Some(c) = shot_down.get_mut(defender as usize) {
+                        *c += 1;
+                    }
+                    println!("tick {tick} ({} min): missile intercepted by P{defender}", tick / 1800);
                 }
                 SimEvent::UnitCreated { id, .. } => {
                     if let Some(u) = sim.unit(id) {
@@ -287,6 +388,22 @@ fn ai_vs_ai_plays_a_game() {
                         println!("  {:5.1} min: P{} {} finished again ({times} times); at it: {}", tick as f32 / 1800.0, u.owner, sim.unit_type(u).name, hands.join(", "));
                     }
                     built[u.owner as usize] += 1;
+                    {
+                        let t = sim.unit_type(u);
+                        if t.weapons.iter().any(|w| w.is_some()) && !t.def.is_commander {
+                            let o = u.owner as usize;
+                            match t.locomotion {
+                                Locomotion::Static => towers[o] += 1,
+                                Locomotion::Air => planes[o] += 1,
+                                Locomotion::Naval => ships[o] += 1,
+                                _ => {}
+                            }
+                        }
+                    }
+                    if let Some(kind) = audit_kind(&sim, u.type_id) {
+                        let e = made[u.owner as usize].entry(kind).or_insert((0, tick / 1800));
+                        e.0 += 1;
+                    }
                     let t = sim.unit_type(u);
                     let kind = if t.locomotion == Locomotion::Static {
                         t.weapons.iter().any(|w| w.is_some()) as usize
@@ -308,6 +425,21 @@ fn ai_vs_ai_plays_a_game() {
             }
         }
         peak_units = peak_units.max(sim.unit_count());
+        if tick % 900 == 0 {
+            for p in 0..n {
+                if first_push[p].is_some() {
+                    continue;
+                }
+                let near = sim.units().filter(|u| {
+                    let t = sim.unit_type(u);
+                    u.owner == p as u8 && u.is_complete() && t.locomotion != Locomotion::Static && !t.is_builder && t.weapons.iter().any(|w| w.is_some())
+                        && (0..n).any(|e| sim.is_enemy(p as u8, e as u8) && u.pos.within_xz(starts[e], Fx::from_int(1500)))
+                }).count();
+                if near >= 3 {
+                    first_push[p] = Some(tick / 1800);
+                }
+            }
+        }
         if tick >= 3 * 1800 {
             for (p, d) in dry.iter_mut().enumerate() {
                 let e = &sim.players[p].economy;
@@ -418,12 +550,19 @@ fn ai_vs_ai_plays_a_game() {
         println!("units killed by an ally {ally_kills}");
     }
     println!("strategic launches {launches}, interceptions {interceptions}");
+    for p in 0..n {
+        let kinds: Vec<String> = made[p].iter().map(|(k, (count, first))| format!("{k} {count} (min {first})")).collect();
+        println!("P{p} tech: {}; launches {}, long-range shots {}, missiles shot down {}", kinds.join(", "), launched[p], long_shots[p], shot_down[p]);
+    }
     println!("first advanced/strategic builds (minute, player): {firsts:?}");
     if !upgraded.is_empty() {
         println!("upgrades in place ((player, into): (how many, first minute)): {upgraded:?}");
     }
     for (minute, p, unit, name) in &enhanced {
         println!("enhancement at {minute:2} min: P{p} {unit} installs {name}");
+    }
+    for p in 0..n {
+        println!("P{p} {:?}: first push at minute {:?}, armed buildings {}, armed aircraft {}, armed ships {}", ais[p].persona, first_push[p], towers[p], planes[p], ships[p]);
     }
     println!("{:?}", sim.stats);
     // (The same game ends in the same state: a change to the simulation or the AI that keeps

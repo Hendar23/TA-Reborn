@@ -752,7 +752,7 @@ impl Game {
             .iter()
             .enumerate()
             .map(|(i, slot)| {
-                let ai = matches!(slot.controller, Controller::Ai(_));
+                let ai = matches!(slot.controller, Controller::Ai(..));
                 // Missions set exact starting resources; skirmishes use the chosen amount
                 // (Conquest adds the player's bonus from the systems held).
                 // (Whole amounts: exact however large, up to what the simulation holds.)
@@ -892,8 +892,10 @@ impl Game {
             .iter()
             .enumerate()
             .filter_map(|(i, slot)| match slot.controller {
-                Controller::Ai(_) if scenario.as_ref().is_some_and(|s| s.passive(i as u8)) => None,
-                Controller::Ai(d) => Some(ta_ai::SkirmishAi::new(i as u8, &sim, d)),
+                Controller::Ai(..) if scenario.as_ref().is_some_and(|s| s.passive(i as u8)) => None,
+                // (A persona drawn at random is drawn from the game's seed: the same on every
+                // machine, and again when the game is loaded.)
+                Controller::Ai(d, persona) => Some(ta_ai::SkirmishAi::with_persona(i as u8, &sim, d, persona)),
                 Controller::Human => None,
             })
             .collect();
@@ -3220,7 +3222,7 @@ impl Game {
     pub fn signal(&mut self, kind: ta_sim::SignalKind, at: Vec3) {
         let now = self.sim.tick as f32 / 30.0;
         let name = if self.player_name.is_empty() { ta_ui::i18n::t("You").to_string() } else { self.player_name.clone() };
-        let computer_ally = self.allies().into_iter().any(|a| matches!(self.setup.players.get(a as usize).map(|p| &p.controller), Some(crate::setup::Controller::Ai(_))));
+        let computer_ally = self.allies().into_iter().any(|a| matches!(self.setup.players.get(a as usize).map(|p| &p.controller), Some(crate::setup::Controller::Ai(..))));
         match self.net.as_mut() {
             _ if self.spectator || self.playback.is_some() => self.pings.push(crate::signals::Ping { at, from: name, time: now, kind }),
             Some(net) if !computer_ally => {
@@ -3291,7 +3293,7 @@ impl Game {
 
     /// Whether a player is played by the computer.
     pub fn is_computer(&self, player: u8) -> bool {
-        matches!(self.setup.players.get(player as usize).map(|p| &p.controller), Some(crate::setup::Controller::Ai(_)))
+        matches!(self.setup.players.get(player as usize).map(|p| &p.controller), Some(crate::setup::Controller::Ai(..)))
     }
 
     /// Our computer allies, still in.
@@ -3353,18 +3355,19 @@ impl Game {
     }
 
     /// A player as the interface names them: "You", their multiplayer name, "AI (Hard)"
-    /// or "Player 3".
+    /// (a computer player of a persona other than Balanced: "AI (Hard, Rush)", as chosen: one
+    /// drawn at random stays "Random") or "Player 3".
     pub fn player_label(&self, i: u8) -> String {
         match self.setup.players.get(i as usize) {
             _ if !self.spectator && i == self.local_player => ta_ui::i18n::t("You").to_string(),
             Some(s) if !s.name.is_empty() => s.name.clone(),
-            Some(crate::setup::SlotSetup { controller: crate::setup::Controller::Ai(d), .. }) => {
-                let level = match d {
-                    ta_ai::Difficulty::Easy => ta_ui::i18n::t("Easy"),
-                    ta_ai::Difficulty::Normal => ta_ui::i18n::t("Normal"),
-                    ta_ai::Difficulty::Hard => ta_ui::i18n::t("Hard"),
-                };
-                ta_ui::i18n::tf("AI ({level})", &[("level", &level)])
+            Some(crate::setup::SlotSetup { controller: crate::setup::Controller::Ai(d, persona), .. }) => {
+                let level = ta_ui::i18n::t(crate::setup::difficulty_name(*d));
+                if *persona == ta_ai::Persona::Balanced {
+                    ta_ui::i18n::tf("AI ({level})", &[("level", &level)])
+                } else {
+                    ta_ui::i18n::tf("AI ({level}, {persona})", &[("level", &level), ("persona", &ta_ui::i18n::t(crate::setup::persona_name(*persona)))])
+                }
             }
             _ => ta_ui::i18n::tf("Player {n}", &[("n", &(i + 1))]),
         }
