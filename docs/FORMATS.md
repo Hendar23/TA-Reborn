@@ -277,6 +277,12 @@ recognises; TA's own files never begin with one.
   units have one). `Immunity=1` (19 units in 5 missions) is a unit nothing harms: the Gate to
   capture in AC11, the player's own Gates, Core mission 1's Commander, "deactivated" (`o 0 0,
   w 3600`) while the player's strike force clears the Arm out, Titanium Fist Bay's scouts.
+* A schema's placed units are the subsections of its `[units]`. TA: Escalation's copies of the
+  missions (all 175 of its mission OTAs, in `TAESC.gp3`) keep them in `[unitsE]` alone, as its
+  patched engine read `unitse` for TA's `units` folder; TA Reborn reads a schema without
+  `[units]` from the section whose entries name units (`Unitname`). Total Mayhem's own
+  campaign (`camps/face to face.tdf`) lists three maps made for skirmishes (a `Network 1` schema
+  of start positions, no units) as missions, their goals added.
 * TA's map and mission editor, TAE (installed with the game: `TAEread.txt`, `TAE.hlp`), says
   what the rest of a unit's keys mean; it writes them all for every unit (Two Continents, a
   multiplayer map, keeps a test schema with each set: `OffMapUnit`, `Immunity`,

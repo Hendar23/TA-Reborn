@@ -3725,7 +3725,10 @@ menu's briefing replays the narration through `MusicRequest::Narration`.
   `s` stop, `i ident` start aboard that
   transport, `b TYPE [n]` a factory builds (`b TYPE x z` a constructor), `bw n` missiles,
   `u [x z]` set one unit down, `d` self-destruct. `ta-tools missions` lists what it can't
-  read (TA's own slips).
+  read (TA's own slips). A schema's units are its `[units]`, or where it has none, the section
+  whose entries name units (`Unitname`), whatever it is called: TA: Escalation's engine read
+  `unitse` for TA's `units` folder, and its copies of TA's missions keep their units in
+  `[unitsE]` (all 175 of them). Read only as `[units]`, they placed nothing and were lost at once.
 * **Objectives**: every victory goal must be met (TA's rule, `MissionRules::all_victory`;
   scenarios keep any one), any defeat goal loses. Victory: DestroyAllUnits,
   KillAllMobileUnits, KillEnemyCommander, KillUnitType, KillAllOfType, CaptureUnitType,
@@ -3754,6 +3757,19 @@ menu's briefing replays the narration through `MusicRequest::Narration`.
   units were never built: `setup_mission` gives them their file's `StandingFireOrder`
   (`sim::file_fire_state`), so I09's and T31's Annihilators fire at will and the Berthas wait
   for the player, as their files say; what anyone builds comes out on TA's hold fire.
+* **Playable or not** (`ta_sim::mission::unplayable`): a mission the game's data can't play, the
+  mods that are on in it, is said so rather than started to be decided at its first look at its
+  goals: one that places no unit for the player (three of Total Mayhem's own missions are maps
+  made for skirmishes), none the data has (a total conversion's units in place of TA's), no
+  Commander where it is lost with one (`CommanderKilled`, the player's placed under a name the
+  data lacks), or whose every victory goal names a unit type the data lacks. The campaign page
+  marks it MISSION NOT PLAYABLE, with why, and offers no START (`campaign::not_playable`);
+  `Game::new` refuses it (`campaign::MissionNotPlayable`, which the menu says, `--mission` too).
+  TA's own all play (`every_campaign_mission_can_be_played`). The game's log says how many units
+  a mission placed, and once it is decided, the goals that decided it (`Sim::mission_goals_met`,
+  `Objective::describe`). The campaign smoke test plays every mission with a mod's data too
+  (`TA_TEST_MOD=<mod folder> cargo test --release -p ta_sim --test mission every_mission --
+  --ignored --nocapture`), saying why any is decided early.
 * **Scripts** run in the sim (`UnitScript`, every tick from `check_mission`) as steps: runs
   of orders the unit carries out itself (`Move`, `Patrol`, `Wait`, `WaitAttacked`,
   `AttackType`, `Guard`, `SetStates`, a constructor's `Build`), each followed by an end mark

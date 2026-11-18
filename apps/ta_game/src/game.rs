@@ -720,6 +720,15 @@ impl Game {
             _ => 0,
         };
         let mission_schema = mission.as_ref().and_then(|m| m.schemas.get(schema_index).cloned());
+        // A mission the game's data can't play (the mods that are on lack what it gives the
+        // player, or what wins it) is said so, not started to be decided at its first look at its
+        // goals. (Before anything of the renderer is touched: the menu it came from stays.)
+        if let (Some(m), Some(ms)) = (&mission, &setup.mission)
+            && let Some(why) = crate::campaign::not_playable(assets, m, &ms.difficulty)
+        {
+            log::warn!("mission {} ({}) not started: {why}", m.file, ms.difficulty);
+            return Err(crate::campaign::MissionNotPlayable(why).into());
+        }
         let scenario = match &setup.scenario {
             Some(sc) => Some(crate::scenario::Scenario::parse(&sc.source).with_context(|| format!("scenario {}", sc.id))?),
             None => None,
@@ -797,6 +806,8 @@ impl Game {
         } else if let (Some(m), Some(ms)) = (&mission, &mission_schema) {
             let allowed = ta_data::mission::use_only_units(vfs, &m.use_only);
             let placed = ta_sim::mission::setup_mission(&mut sim, m, ms, allowed.as_deref());
+            let ours = sim.units().filter(|u| u.owner == 0).count();
+            log::info!("mission {} ({}): {} units placed, {ours} of them the player's", m.file, ms.kind, sim.unit_count());
             if !placed.skipped.is_empty() {
                 log::warn!("mission {}: unknown unit types skipped: {:?}", m.file, placed.skipped);
             }
@@ -1950,6 +1961,14 @@ impl Game {
             if let Some(rules) = &self.sim.mission {
                 // Campaign missions end on their objectives only.
                 self.outcome = rules.outcome.map(|won| if won { Outcome::Victory } else { Outcome::Defeat });
+                // (What decided it, in the log: a mission decided at once points at data it is
+                // not played with.)
+                if let Some(outcome) = self.outcome {
+                    let (won, lost) = self.sim.mission_goals_met();
+                    let goals: Vec<String> = won.iter().chain(&lost).map(|o| o.describe(&self.sim.types)).collect();
+                    let file = self.setup.mission.as_ref().map_or(self.setup.map.as_str(), |m| m.file.as_str());
+                    log::info!("mission {file}: {outcome:?} at {:.1} s, by {}", self.sim.tick as f64 / 30.0, goals.join(", "));
+                }
                 return;
             }
             let me = &self.sim.players[self.local_player as usize];
