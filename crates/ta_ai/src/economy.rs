@@ -667,6 +667,10 @@ impl SkirmishAi {
         if let Some(t) = self.outpost_task(sim, s, b, &opts, plan) {
             return Some(t);
         }
+        // (A Turtle's towers are what it builds: they go up before any help at the factories.)
+        if self.p.towers_first && let Some(t) = self.defense_task(sim, s, b, &opts, plan) {
+            return Some(t);
+        }
         // An army too small for its base, metal too short for new projects (every project
         // takes a share of what there is, and it is the army's), or piling up faster than the
         // factories spend it: help the factories.
@@ -1109,6 +1113,10 @@ impl SkirmishAi {
         let first = s.count[Role::Factory as usize] == 0;
         let air_ok = s.minutes >= 5 && s.m_inc >= fx(7);
         let cands: Vec<usize> = opts.iter().copied().filter(|&o| self.info[o].role == Role::Factory && !self.advanced_factory(sim, o) && !self.info[o].experimental_factory && self.info[o].kind != Locomotion::Naval).collect();
+        // (Aircraft first, an Air persona's: its next two factories are air plants, whatever they
+        // cost, before more on the ground.)
+        let air_plants = s.factories.iter().chain(&s.nanoframes).filter(|f| self.info[f.type_id].role == Role::Factory && self.info[f.type_id].kind == Locomotion::Air).count();
+        let air_first = self.p.air_first && s.minutes >= 3 && air_plants < 2;
         let mut keyed = Vec::new();
         for o in cands {
             let i = self.info[o].clone();
@@ -1119,12 +1127,11 @@ impl SkirmishAi {
             }
             let reaches = i.kind == Locomotion::Air || self.factory_reaches(sim, o);
             let key = if first {
-                (false, false, false, false, i.cost)
-            } else if self.p.air_first && i.kind == Locomotion::Air && s.minutes >= 3 {
-                // (Aircraft first: an air plant, and more of them, before more on the ground.)
-                (false, false, false, false, i.cost)
+                (false, false, false, false, false, i.cost)
+            } else if air_first && i.kind == Locomotion::Air {
+                (false, false, false, false, false, i.cost)
             } else {
-                (s.factory_types.contains(&o), !reaches, i.kind == Locomotion::Air && (!air_ok || s.kinds.contains(&Locomotion::Air)), i.kind == Locomotion::Air, i.cost)
+                (air_first, s.factory_types.contains(&o), !reaches, i.kind == Locomotion::Air && (!air_ok || s.kinds.contains(&Locomotion::Air)), i.kind == Locomotion::Air, i.cost)
             };
             keyed.push((key, o));
         }
@@ -1286,8 +1293,8 @@ impl SkirmishAi {
             return None;
         }
         // A couple of towers on the approach, more as the game goes on.
-        let want = 1 + s.minutes as usize / 5 + self.p.extra_towers;
-        self.front_tower_task(sim, s, b, opts, plan, want.min(8))
+        let want = 1 + (s.minutes / self.p.tower_pace.max(1)) as usize + self.p.extra_towers;
+        self.front_tower_task(sim, s, b, opts, plan, want.min(self.p.tower_cap))
     }
 
     /// Anti-aircraft once planes of the enemy's have been seen lately, a few more the more of
@@ -1309,7 +1316,9 @@ impl SkirmishAi {
             return None;
         }
         let budget = if s.minutes >= 12 { 2500 } else { 800 };
-        let tower = opts.iter().copied().filter(|&o| self.info[o].role == Role::Defense && self.info[o].cost <= budget).max_by_key(|&o| (self.info[o].value, Reverse(o)))?;
+        // (The most fight for the metal; a Turtle's, the strongest the budget buys.)
+        let strength = |o: usize| if self.p.sturdy_towers { self.info[o].value * self.info[o].cost } else { self.info[o].value };
+        let tower = opts.iter().copied().filter(|&o| self.info[o].role == Role::Defense && self.info[o].cost <= budget).max_by_key(|&o| (strength(o), Reverse(o)))?;
         let site = self.place(sim, b, tower, Zone::Front, 260, plan)?;
         Some(Task::Build(tower, site))
     }

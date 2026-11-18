@@ -213,6 +213,7 @@ fn personas_shape_the_tuning_and_easy_stays_gentle() {
     let tech = tuned(Difficulty::Normal, Persona::Tech);
     assert!(rush.wave_base < balanced.wave_base && rush.wave_cooldown < balanced.wave_cooldown && rush.tech_minute > balanced.tech_minute);
     assert!(turtle.wave_base > balanced.wave_base && turtle.extra_towers > balanced.extra_towers && turtle.heavy_towers > balanced.heavy_towers && turtle.long_guns > balanced.long_guns);
+    assert!(turtle.tower_pace < balanced.tower_pace && turtle.tower_cap > balanced.tower_cap && turtle.sturdy_towers && turtle.towers_first && !balanced.towers_first);
     assert!(tech.tech_minute < balanced.tech_minute && tech.top_tier > balanced.top_tier && tech.experimentals > balanced.experimentals);
     assert!(tuned(Difficulty::Normal, Persona::Air).air_first && tuned(Difficulty::Normal, Persona::Naval).naval_first);
     for p in Persona::ALL {

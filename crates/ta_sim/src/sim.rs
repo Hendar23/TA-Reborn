@@ -3858,7 +3858,6 @@ impl Sim {
             return;
         }
 
-        let u = self.unit(id).unwrap();
         let anchor = World::pos_to_anchor(pos, bt.footprint);
         let site = self.world.anchor_to_pos(anchor, bt.footprint);
         let reach = t.build_distance + t.radius;

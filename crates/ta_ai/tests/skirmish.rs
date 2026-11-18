@@ -243,6 +243,12 @@ fn ai_vs_ai_plays_a_game() {
     let mut launched = vec![0u32; n];
     let mut long_shots = vec![0u32; n];
     let mut shot_down = vec![0u32; n];
+    // How each played (its persona): the minute its army first pushed at an enemy's start (three
+    // armed units or more within 1,500 px of it, looked at every 30 s), and the armed buildings,
+    // armed aircraft and armed ships it finished.
+    let starts: Vec<FxVec3> = players.iter().map(|p| p.start).collect();
+    let mut first_push: Vec<Option<u64>> = vec![None; n];
+    let (mut towers, mut planes, mut ships) = (vec![0u32; n], vec![0u32; n], vec![0u32; n]);
     let mut peak_units = 0;
     let mut dead_ids = HashSet::new();
     let mut dead_types: BTreeMap<String, u32> = Default::default();
@@ -382,6 +388,18 @@ fn ai_vs_ai_plays_a_game() {
                         println!("  {:5.1} min: P{} {} finished again ({times} times); at it: {}", tick as f32 / 1800.0, u.owner, sim.unit_type(u).name, hands.join(", "));
                     }
                     built[u.owner as usize] += 1;
+                    {
+                        let t = sim.unit_type(u);
+                        if t.weapons.iter().any(|w| w.is_some()) && !t.def.is_commander {
+                            let o = u.owner as usize;
+                            match t.locomotion {
+                                Locomotion::Static => towers[o] += 1,
+                                Locomotion::Air => planes[o] += 1,
+                                Locomotion::Naval => ships[o] += 1,
+                                _ => {}
+                            }
+                        }
+                    }
                     if let Some(kind) = audit_kind(&sim, u.type_id) {
                         let e = made[u.owner as usize].entry(kind).or_insert((0, tick / 1800));
                         e.0 += 1;
@@ -407,6 +425,21 @@ fn ai_vs_ai_plays_a_game() {
             }
         }
         peak_units = peak_units.max(sim.unit_count());
+        if tick % 900 == 0 {
+            for p in 0..n {
+                if first_push[p].is_some() {
+                    continue;
+                }
+                let near = sim.units().filter(|u| {
+                    let t = sim.unit_type(u);
+                    u.owner == p as u8 && u.is_complete() && t.locomotion != Locomotion::Static && !t.is_builder && t.weapons.iter().any(|w| w.is_some())
+                        && (0..n).any(|e| sim.is_enemy(p as u8, e as u8) && u.pos.within_xz(starts[e], Fx::from_int(1500)))
+                }).count();
+                if near >= 3 {
+                    first_push[p] = Some(tick / 1800);
+                }
+            }
+        }
         if tick >= 3 * 1800 {
             for (p, d) in dry.iter_mut().enumerate() {
                 let e = &sim.players[p].economy;
@@ -527,6 +560,9 @@ fn ai_vs_ai_plays_a_game() {
     }
     for (minute, p, unit, name) in &enhanced {
         println!("enhancement at {minute:2} min: P{p} {unit} installs {name}");
+    }
+    for p in 0..n {
+        println!("P{p} {:?}: first push at minute {:?}, armed buildings {}, armed aircraft {}, armed ships {}", ais[p].persona, first_push[p], towers[p], planes[p], ships[p]);
     }
     println!("{:?}", sim.stats);
     // (The same game ends in the same state: a change to the simulation or the AI that keeps

@@ -243,6 +243,14 @@ struct Params {
     naval_first: bool,
     more_planes: usize,
     more_ships: usize,
+    /// Towers on the approach (`defense_task`): one more every `tower_pace` minutes, at most
+    /// `tower_cap`; whether they are the strongest the budget buys rather than the most fight
+    /// for the metal, and whether they go up before the constructors help at the factories
+    /// (a Turtle's).
+    tower_pace: u64,
+    tower_cap: usize,
+    sturdy_towers: bool,
+    towers_first: bool,
     /// Wreckage closing our units' way is cleared (`clear.rs`; off for experiments).
     clear_way: bool,
 }
@@ -293,6 +301,10 @@ impl Params {
                 naval_first: false,
                 more_planes: 0,
                 more_ships: 0,
+                tower_pace: 5,
+                tower_cap: 8,
+                sturdy_towers: false,
+                towers_first: false,
                 clear_way: true,
             },
             Difficulty::Normal => Params {
@@ -338,6 +350,10 @@ impl Params {
                 naval_first: false,
                 more_planes: 0,
                 more_ships: 0,
+                tower_pace: 5,
+                tower_cap: 8,
+                sturdy_towers: false,
+                towers_first: false,
                 clear_way: true,
             },
             Difficulty::Hard => Params {
@@ -383,6 +399,10 @@ impl Params {
                 naval_first: false,
                 more_planes: 0,
                 more_ships: 0,
+                tower_pace: 5,
+                tower_cap: 8,
+                sturdy_towers: false,
+                towers_first: false,
                 clear_way: true,
             },
         }
@@ -419,6 +439,10 @@ impl Params {
                 // fewer, bigger waves.
                 self.towers = true;
                 self.extra_towers += if easy { 1 } else { 4 };
+                self.tower_cap += if easy { 2 } else { 6 };
+                self.tower_pace = if easy { 5 } else { 3 };
+                self.sturdy_towers = !easy;
+                self.towers_first = true;
                 self.wave_base = self.wave_base * 3 / 2;
                 self.wave_growth = self.wave_growth * 3 / 2;
                 self.wave_cooldown = self.wave_cooldown * 3 / 2;
@@ -889,6 +913,7 @@ impl SkirmishAi {
             "upgrades" => p.upgrades = n,
             "power_plants" => p.power_plants = n,
             "extra_towers" => p.extra_towers = n,
+            "tower_cap" => p.tower_cap = n,
             "transports" => p.transports = n,
             "air_doctrine" => p.air_doctrine = value != 0,
             "anti_minute" => p.anti_minute = value.max(0) as u64,
