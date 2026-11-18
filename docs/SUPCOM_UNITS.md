@@ -20,7 +20,7 @@ as they work. Their sounds come later.
   FACTIONS tab). The dialog finds the game (as for its maps: GOG's or Steam's copy, or a folder
   chosen, kept for the next start), counts each faction's units by kind, with its commander's
   build picture, and makes the factions chosen into the mod **Supreme Commander factions**
-  (`supcom-factions`), turned on, a side each in skirmish. All four take about 440 MB (3,638
+  (`supcom-factions`), turned on, a side each in skirmish. All four take about 443 MB (3,732
   files) and, on a fast computer, about half a minute, most of it writing and installing their
   files; the room on the disk is checked first. A stop installs nothing (not once the mod is being
   installed: STOP is greyed then), and the mod is made whole each time, of the factions chosen
@@ -387,9 +387,10 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
   stands (the unit's own movement carries it; its rise and fall kept), a death's goes with it.
   A walk is a cycle, its last frame its first: five of FA's end out of step with their start
   (UEL0106's knees 36° out, URL0107's leg 38°, UAL0106 14°, UEL0303 9°, URL0301 6°), eased back
-  over the cycle's last quarter rather than jumping there each step. 102 of the 357 units have
-  clips: 29 walks (the commanders, the support commanders, the bots, the walking experimentals)
-  and 93 with deaths; 6 MB in all.
+  over the cycle's last quarter rather than jumping there each step. 102 of the 357 units walk or
+  die by clips: 29 walks (the commanders, the support commanders, the bots, the walking
+  experimentals) and 93 with deaths; with the buildings' work (below), 156 have clips, 9 MB in
+  all.
 - **Buildings at work** (`factions::work`, from the blueprints and from what each unit's script
   moves, [`motions`]): what Forged Alliance moves on a structure as it works becomes what TA
   Reborn moves on it. Its keyframed animations become clips of its model's (`active`, `open` and
@@ -419,15 +420,18 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
   (`OnStopBeingBuilt`, `OnIntelEnabled`, `OnProductionUnpaused`, `OnShieldEnabled` and the states
   they change into; stopped as it is switched off: `Activate` and `Deactivate`, or once its build
   is done where it has no switch), or as it builds (a factory's `StartArmsMoving`: `StartBuilding`
-  and `StopBuilding`). Speeds set both ways in a loop make a swing (the Cybran radars' dishes,
-  tilting back and forth about their own slanted axes, made of turns about x and z; the Aeon
-  fabricator's spinner reversing); places set in a loop a shuttle (the factories' gantries); the
-  UEF power generator slides its panels out before its drums spin up. A factory's build point
-  slid aside (the Aeon, UEF and Seraphim tech 3 and UEF tech 2 naval factories') stays where it
-  was: it is where the simulation builds their units. Of the 186 structures a player can make, 66
-  play clips (19 `active`, 13 `open`, 44 `upgrade`) and 46 move parts in their scripts, all of them
-  made (`cargo test --release -p ta_supcom --test installed_units buildings_at_work -- --ignored
-  --nocapture` lists them). Mobile units' (an engineer's arms, an aircraft's hatches) are not yet.
+  and `StopBuilding`). Speeds set both ways in a loop make a swing, speeding up one way and
+  slowing to a stop, then the same back (the Cybran radars' dishes, tilting out from where they
+  rest about their own slanted axes and back, made of turns about x and z; the Aeon fabricator's
+  spinner reversing); places set in a loop a shuttle (the factories' gantries); the UEF power
+  generator slides its panels out before its drums spin up. A factory's build point slid aside
+  (the Aeon, UEF and Seraphim tech 3 and UEF tech 2 naval factories') stays where it was: it is
+  where the simulation builds their units. Of the 186 structures a player can make, 66 play clips
+  (19 `active`, 13 `open`, 44 `upgrade`) and 46 move parts in their scripts, every part but those
+  build points made so (`cargo test --release -p ta_supcom --test installed_units
+  buildings_at_work -- --ignored --nocapture` lists them). Mobile units' (an engineer's arms, an
+  aircraft's hatches) are not yet, nor what a weapon moves as it fires (a silo's doors, the UEF
+  tactical defence's spinning barrels).
 
 The computer players play them (`cargo test --release -p ta_ai --test skirmish` with
 `TA_TEST_MOD` and `TA_TEST_SIDES=UEF,CYBRAN`): each builds an economy, land, air and naval
