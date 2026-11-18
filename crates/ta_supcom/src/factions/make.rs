@@ -4,7 +4,7 @@
 
 use ta_formats::surface::Material;
 
-use super::{anims, enhance, faction, model, pictures, script, textures, units, UNIT_SCALE};
+use super::{anims, enhance, faction, model, pictures, script, textures, units, work, UNIT_SCALE};
 use crate::files::Files;
 use crate::scm::{self, Mesh};
 use crate::sca;
@@ -19,7 +19,7 @@ pub const DESCRIPTION: &str = "Supreme Commander: Forged Alliance's four faction
 pub const TAGS: [&str; 3] = ["units", "factions", "supreme commander"];
 /// The converter's version, the mod's own (its manifest's `version`): a mod made by an older one
 /// is offered to be made again. Raised whenever what is made changes.
-pub const VERSION: u32 = 7;
+pub const VERSION: u32 = 8;
 
 /// What was made.
 #[derive(Clone, Debug, Default)]
@@ -119,13 +119,16 @@ struct Read {
     far: Option<Mesh>,
     walk: Option<sca::Animation>,
     deaths: Vec<sca::Animation>,
+    /// What it plays as it works ([`work::clips`]): those the game has.
+    work: Vec<(work::Source, sca::Animation)>,
     icon: Option<Vec<u8>>,
     frame: Option<Vec<u8>>,
 }
 
-/// Reads what the unit's files are made from: `Err(why)` when one does not read (a file the
-/// archive cannot give, a mesh that is no mesh).
-fn read(files: &Files, u: &UnitBlueprint) -> std::result::Result<Read, String> {
+/// Reads what the unit's files are made from (what it plays as it works with the upgrade's where
+/// it `upgrades` in place): `Err(why)` when one does not read (a file the archive cannot give, a
+/// mesh that is no mesh).
+fn read(files: &Files, u: &UnitBlueprint, upgrades: bool) -> std::result::Result<Read, String> {
     let get = |path: &str| files.read(path).map_err(|e| format!("{path}: {e}"));
     let Some(lod0) = u.display.lods.first() else { return Err("no mesh".into()) };
     let Some(bytes) = get(&lod0.mesh)? else { return Err(format!("no {}", lod0.mesh)) };
@@ -145,12 +148,19 @@ fn read(files: &Files, u: &UnitBlueprint) -> std::result::Result<Read, String> {
     for path in &u.display.deaths {
         deaths.extend(animation(path)?);
     }
+    // (One the game has not, or that does not read, is no clip: some are named and missing.)
+    let mut work = Vec::new();
+    for source in work::clips(u, upgrades) {
+        if let Some(a) = animation(&source.path)? {
+            work.push((source, a));
+        }
+    }
     let icon = get(&pictures::icon_path(u))?;
     let frame = match pictures::frame_path(u) {
         Some(p) => get(&p)?,
         None => None,
     };
-    Ok(Read { mesh, paint, far, walk, deaths, icon, frame })
+    Ok(Read { mesh, paint, far, walk, deaths, work, icon, frame })
 }
 
 /// One unit's files: its model with its surface and its model for far off, its paint, its build
@@ -159,7 +169,7 @@ fn read(files: &Files, u: &UnitBlueprint) -> std::result::Result<Read, String> {
 /// out: what it is made of does not read, or its model cannot be written (nothing of it written
 /// then).
 fn unit(files: &Files, u: &UnitBlueprint, extra: &units::Extra, extra_weapons: &[&crate::unit::WeaponBlueprint], shown: Vec<Vec<String>>, put: &mut dyn FnMut(&str, &[u8]) -> Result<()>) -> Result<std::result::Result<Option<[f64; 2]>, String>> {
-    let read = match read(files, u) {
+    let read = match read(files, u, extra.upgrades_to.is_some()) {
         Ok(r) => r,
         Err(why) => return Ok(Err(why)),
     };
@@ -206,8 +216,11 @@ fn unit(files: &Files, u: &UnitBlueprint, extra: &units::Extra, extra_weapons: &
     }
     put(&format!("objects3d/{name}.3do"), &near.model.to_bytes())?;
     put(&format!("objects3d/{name}.surface"), &near.surface.to_bytes())?;
-    // Its walk and its deaths (the far model has the same pieces: they play on it as well).
-    let clips = anims::anims(mesh, &near.bones, u.display.uniform_scale * UNIT_SCALE, read.walk.as_ref(), &read.deaths);
+    // Its walk, its deaths and what it plays as it works (the far model has the same pieces: they
+    // play on it as well); a clip turning what a weapon aims is not made (`work::turns_an_aim`).
+    let at_work: Vec<anims::Work> = read.work.iter().map(|(s, a)| anims::Work { name: s.name, animation: a, rate: s.rate, cycle: s.cycle }).collect();
+    let mut clips = anims::anims(mesh, &near.bones, u.display.uniform_scale * UNIT_SCALE, read.walk.as_ref(), &read.deaths, &at_work);
+    clips.clips.retain(|c| !(matches!(c.name.as_str(), ta_formats::anims::ACTIVE | ta_formats::anims::OPEN) && work::turns_an_aim(u, mesh, &near.bones, c)));
     if !clips.clips.is_empty() {
         put(&format!("objects3d/{name}.anims"), &clips.to_bytes())?;
     }
@@ -221,10 +234,12 @@ fn unit(files: &Files, u: &UnitBlueprint, extra: &units::Extra, extra_weapons: &
     let weapons = units::weapons(u);
     put(&format!("units/{name}.fbi"), units::unit_file(u, &weapons, units::transport(mesh), extra).as_bytes())?;
     let builds = units::builds(u);
+    let pieces: Vec<String> = near.model.pieces.iter().map(|p| p.name.clone()).collect();
+    let motions = work::motions(u, mesh, &pieces, u.display.uniform_scale * UNIT_SCALE);
     let plan = script::Plan {
         unit: u,
         mesh,
-        pieces: near.model.pieces.iter().map(|p| p.name.clone()).collect(),
+        pieces,
         // (Its own weapons, then those its enhancements switch on, in the slots after them.)
         weapons: weapons.slots.iter().copied().chain(extra_weapons.iter().copied()).take(units::MAX_WEAPONS).collect(),
         factory: builds == units::Builds::Factory,
@@ -232,6 +247,8 @@ fn unit(files: &Files, u: &UnitBlueprint, extra: &units::Extra, extra_weapons: &
         builder: builds != units::Builds::No || u.is("AIRSTAGINGPLATFORM"),
         pixels: u.display.uniform_scale * UNIT_SCALE,
         enhancements: shown,
+        motions,
+        switched: units::activated_when_built(u),
     };
     put(&format!("scripts/{name}.cob"), &script::script(&plan).to_bytes())?;
     Ok(Ok(footprint))
@@ -243,10 +260,11 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     /// A blueprint of the test faction's: `cats` its categories, the rest its sections (its own
-    /// `General`, where it gives one: a table holds a key once, the first read).
+    /// `General` and `Display`, where it gives them: a table holds a key once, the first read).
     fn blueprint(cats: &str, rest: &str) -> String {
         let general = if rest.contains("General =") { "" } else { "General = { FactionName = 'UEF' }, " };
-        format!("UnitBlueprint {{ Categories = {{ 'PRODUCTSC1', 'UEF', {cats} }}, {general}Display = {{ UniformScale = 0.05 }}, {rest} }}")
+        let display = if rest.contains("Display =") { "" } else { "Display = { UniformScale = 0.05 }, " };
+        format!("UnitBlueprint {{ Categories = {{ 'PRODUCTSC1', 'UEF', {cats} }}, {general}{display}{rest} }}")
     }
 
     /// A gun on the test tank's turret, firing `projectile`.
@@ -301,6 +319,18 @@ mod tests {
                 "Economy = { BuildCostMass = 1500, BuildCostEnergy = 100000, BuildTime = 9000, BuildRate = 1080 }, \
                  Weapon = { { Label = 'AntiNuke', WeaponCategory = 'Defense', Damage = 30, MaxRadius = 90, RateOfFire = 0.6, CountedProjectile = true, \
                    TargetRestrictOnlyAllow = 'STRATEGIC MISSILE', ProjectileId = '/projectiles/AntiNuke/AntiNuke_proj.bp' } }")),
+            // An extractor pumping as it works and turning into the next as it upgrades, that next,
+            // a generator whose turret spins once it is built, and a radar whose turret spins
+            // while it watches.
+            ("UEB1103", blueprint("'STRUCTURE', 'MASSEXTRACTION', 'TECH1', 'BUILTBYTIER1ENGINEER'",
+                "Economy = { BuildCostMass = 50, BuildCostEnergy = 360, BuildTime = 60, BuildRate = 10, MaintenanceConsumptionPerSecondEnergy = 2, ProductionPerSecondMass = 2 }, \
+                 General = { FactionName = 'UEF', UpgradesTo = 'ueb1202' }, Display = { UniformScale = 0.05, AnimationOpen = '/units/UEB1103/UEB1103_pump.sca', AnimationUpgrade = '/units/UEB1103/UEB1103_up.sca' }")),
+            ("UEB1202", blueprint("'STRUCTURE', 'MASSEXTRACTION', 'TECH2', 'BUILTBYTIER2ENGINEER'",
+                "Economy = { BuildCostMass = 900, BuildCostEnergy = 5400, BuildTime = 900, MaintenanceConsumptionPerSecondEnergy = 9, ProductionPerSecondMass = 6 }, \
+                 General = { FactionName = 'UEF', UpgradesFrom = 'ueb1103' }")),
+            ("UEB1101", blueprint("'STRUCTURE', 'ENERGYPRODUCTION', 'TECH1', 'BUILTBYTIER1ENGINEER'", "Economy = { BuildCostMass = 75, BuildCostEnergy = 750, BuildTime = 125, ProductionPerSecondEnergy = 20 }")),
+            ("UEB3101", blueprint("'STRUCTURE', 'RADAR', 'INTELLIGENCE', 'TECH1', 'BUILTBYTIER1ENGINEER'",
+                "Economy = { BuildCostMass = 60, BuildCostEnergy = 600, BuildTime = 120, MaintenanceConsumptionPerSecondEnergy = 20 }, Intel = { RadarRadius = 115, VisionRadius = 20 }")),
         ];
         let projectile = |cats: &str, rest: &str| format!("ProjectileBlueprint {{ Categories = {{ 'PROJECTILE', {cats} }}, {rest} }}");
         let mut files: Vec<(String, Vec<u8>)> = Vec::new();
@@ -311,6 +341,19 @@ mod tests {
         files.push(("units/UEL0001/UEL0001_script.lua".into(), b"Unit = Class(Base) { Weapons = { Missile = Class(Launcher) { OnCreate = function(self) self:SetWeaponEnabled(false) end, }, }, \
             OnStopBeingBuilt = function(self, builder, layer) self:DisableUnitIntel('Sonar') end, \
             CreateEnhancement = function(self, enh) if enh == 'Missile' then self:SetWeaponEnabledByLabel('Missile', true) elseif enh == 'MissileRemove' then self:SetWeaponEnabledByLabel('Missile', false) end end, }".to_vec()));
+        files.push(("units/UEB1103/UEB1103_script.lua".into(), b"Extractor = Class(Base) { PlayActiveAnimation = function(self) Base.PlayActiveAnimation(self) \
+            self.Pump = CreateAnimator(self) self.Pump:PlayAnim(self:GetBlueprint().Display.AnimationOpen, true) end, \
+            OnProductionPaused = function(self) self.Pump:SetRate(0) end, }".to_vec()));
+        files.push(("units/UEB1101/UEB1101_script.lua".into(), b"Generator = Class(Base) { OnStopBeingBuilt = function(self, builder, layer) \
+            self.Trash:Add(CreateRotator(self, 'Turret', 'y', nil, 0, 30, 90)) end, }".to_vec()));
+        files.push(("units/UEB3101/UEB3101_script.lua".into(), b"Radar = Class(Base) { OnIntelEnabled = function(self) self.Dish = CreateRotator(self, 'Turret', 'y') \
+            self.Dish:SetTargetSpeed(-45) self.Dish:SetAccel(15) end, OnIntelDisabled = function(self) self.Dish:SetTargetSpeed(0) end, }".to_vec()));
+        // The pump lifts the turret and lowers it again; the upgrade turns the barrel up.
+        let still = [1.0f32, 0.0, 0.0, 0.0];
+        let key = |y: f32| ([0.0, y, -3.0], still);
+        files.push(("units/UEB1103/UEB1103_pump.sca".into(), crate::sca::tests::write(&[("Turret", -1)], &[(0.0, vec![key(4.0)]), (0.5, vec![key(5.0)]), (1.0, vec![key(4.0)])], 1.0)));
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        files.push(("units/UEB1103/UEB1103_up.sca".into(), crate::sca::tests::write(&[("Turret_Barrel", -1)], &[(0.0, vec![([0.0, -0.5, 3.0], still)]), (2.0, vec![([0.0, -0.5, 3.0], [s, -s, 0.0, 0.0])])], 2.0)));
         // The engineering suite's button.
         let mut icon = ta_formats::dds::header(8, 8, 1, None);
         icon.extend(std::iter::repeat_n([40u8, 80, 160, 255], 64).flatten());
@@ -336,7 +379,7 @@ mod tests {
         std::fs::write(dir.0.join("units.scd"), archive()).unwrap();
         let files = Files::of(Vec::new(), vec![crate::scd::Scd::open(&dir.0.join("units.scd")).unwrap()]);
         let units: Vec<UnitBlueprint> = crate::unit::catalogue(&files).unwrap().into_iter().filter(|u| u.playable()).collect();
-        assert_eq!(units.len(), 8);
+        assert_eq!(units.len(), 12);
         let run = || {
             let mut hash = Sha256::new();
             let mut paths: Vec<String> = Vec::new();
@@ -351,7 +394,7 @@ mod tests {
             (made, paths, hex)
         };
         let (made, paths, first) = run();
-        assert_eq!((made.units, made.skipped.len()), (8, 0), "{:?}", made.skipped);
+        assert_eq!((made.units, made.skipped.len()), (12, 0), "{:?}", made.skipped);
         // The tech 1 factory upgrades into the tech 2 one, which no builder builds.
         let mut texts: std::collections::BTreeMap<String, String> = Default::default();
         make(&files, &units, "test", &mut |path, bytes| {
@@ -389,8 +432,49 @@ mod tests {
         assert_eq!(first, EXPECTED, "the converter's bytes changed: if it was meant to, put the new hash here");
     }
 
+    /// The test faction's buildings at work: the extractor's clips (its pump, its upgrade), its
+    /// script switched on and off; the generator spinning once its build is done, the radar while
+    /// it is on.
+    #[test]
+    fn buildings_play_and_spin_as_they_work() {
+        let dir = crate::tests::Temp::new("make-work");
+        std::fs::write(dir.0.join("units.scd"), archive()).unwrap();
+        let files = Files::of(Vec::new(), vec![crate::scd::Scd::open(&dir.0.join("units.scd")).unwrap()]);
+        let units: Vec<UnitBlueprint> = crate::unit::catalogue(&files).unwrap().into_iter().filter(|u| u.playable()).collect();
+        let mut written: std::collections::BTreeMap<String, Vec<u8>> = Default::default();
+        make(&files, &units, "test", &mut |path, bytes| {
+            written.insert(path.to_string(), bytes.to_vec());
+            Ok(())
+        }, &mut |_, _| true).unwrap();
+        let clips = ta_formats::anims::Anims::parse(&written["objects3d/ueb1103.anims"]).unwrap();
+        let names: Vec<&str> = clips.clips.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["active", "upgrade"]);
+        let pump = clips.clip("active").unwrap();
+        assert_eq!((pump.seconds, pump.pieces.as_slice()), (1.0, &[1u32][..]), "the turret (piece 1) up and down");
+        assert_eq!(pump.frame(1)[0].moved[1], (1.0 * 0.05 * 32.0 * 65536.0f64).round() as i32);
+        assert!(!written.contains_key("objects3d/ueb1202.anims"), "the next has nothing to play");
+        let script = |id: &str| ta_formats::cob::CobScript::parse(&written[&format!("scripts/{id}.cob")]).unwrap();
+        let extractor = script("ueb1103");
+        assert!(extractor.function("Activate").is_none(), "nothing spins: its pump is its clip");
+        let (generator, radar) = (script("ueb1101"), script("ueb3101"));
+        for f in ["StartWorking", "StopWorking", "WorkWhenBuilt"] {
+            assert!(generator.function(f).is_some(), "{f}");
+        }
+        assert!(generator.function("Activate").is_none(), "no switch: it starts once built");
+        let listing = ta_formats::cob::disassemble(&generator);
+        assert!(listing.contains("spin             1 1"), "the turret about y: {listing}");
+        for f in ["Activate", "Deactivate", "StartWorking", "StopWorking"] {
+            assert!(radar.function(f).is_some(), "{f}");
+        }
+        assert!(radar.function("WorkWhenBuilt").is_none());
+        let listing = ta_formats::cob::disassemble(&radar);
+        assert!(listing.contains("push-const       -8192") && listing.contains("stop-spin        1 1"), "45 degrees a second the other way, stopped: {listing}");
+        let fbi = |id: &str| String::from_utf8(written[&format!("units/{id}.fbi")].clone()).unwrap();
+        assert!(fbi("ueb3101").contains("ActivateWhenBuilt=1;") && !fbi("ueb1101").contains("ActivateWhenBuilt"));
+    }
+
     /// The hash of the test faction's mod (see the test above).
-    const EXPECTED: &str = "8daeab8613d5b572b939b2bf84cfed4798f198af7b033203c3620fdcdd94dbc6";
+    const EXPECTED: &str = "0f2178cfeffa30346cb138071ee7577d4e4bf8a2aa4079bb3a0fa59dbc22de3c";
 
     /// A unit whose mesh does not read is left out, with its reason; the rest are made.
     #[test]

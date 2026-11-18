@@ -1,5 +1,6 @@
-//! A unit's animations (`objects3d/<id>.anims`, ta_formats' `anims`): its walk and its deaths,
-//! made from Forged Alliance's (`.sca`) for its model (docs/SUPCOM_UNITS.md).
+//! A unit's animations (`objects3d/<id>.anims`, ta_formats' `anims`): its walk, its deaths and
+//! what it plays as it works (a building's `active`, `open` and `upgrade`: [`super::work`]), made
+//! from Forged Alliance's (`.sca`) for its model (docs/SUPCOM_UNITS.md).
 //!
 //! An animation turns and moves the mesh's bones, each relative to its parent; the model's pieces
 //! are those bones laid along the model's axes at their places at rest ([`super::model`]). So a
@@ -12,11 +13,13 @@
 //!
 //! A walk's root keeps to where it stands (the unit's own movement carries it): its going across
 //! the ground over the cycle is taken out, its rise and fall kept. A death keeps all of its root's
-//! movement (a falling, toppling body).
+//! movement (a falling, toppling body), as a building's clips do.
 //!
 //! A walk is a cycle: its last frame, at its end, is its first again. Some of Forged Alliance's end
 //! elsewhere (UEL0106's knees 36° and 25° out, URL0107's upper leg 40°), which would jump back
-//! once a step: the difference is eased in over the cycle's last quarter ([`close_loop`]).
+//! once a step: the difference is eased in over the cycle's last quarter ([`close_loop`]). A
+//! building's `active` loop is closed so too. A clip played at another rate than its animation's
+//! (`SetRate(0.5)`: a Seraphim hydrocarbon plant's) has its times stretched by it.
 //!
 //! In plain arithmetic, with our own arctangent ([`crate::convert::trig`]): the same bytes on every
 //! computer.
@@ -34,27 +37,52 @@ type Pose = ([f64; 3], [f64; 4]);
 /// for the clip to move it.
 const STILL: i32 = 64;
 
-/// `walk` (a cycle) and `deaths` made into clips for the model made of `mesh` (`pieces`: each
-/// piece's bone, in the model's order: `model::Converted::bones`), its mesh units `pixels` pixels.
-/// Clips that move no piece are left out.
-pub fn anims(mesh: &Mesh, pieces: &[usize], pixels: f64, walk: Option<&Animation>, deaths: &[Animation]) -> Anims {
+/// One of a unit's animations to make a clip of for its work (see [`super::work`]): what it is
+/// played for, the animation, how fast it plays, and whether it is a cycle.
+pub struct Work<'a> {
+    pub name: &'a str,
+    pub animation: &'a Animation,
+    pub rate: f64,
+    pub cycle: bool,
+}
+
+/// `walk` (a cycle), `deaths` and `work` made into clips for the model made of `mesh` (`pieces`:
+/// each piece's bone, in the model's order: `model::Converted::bones`), its mesh units `pixels`
+/// pixels. Clips that move no piece are left out.
+pub fn anims(mesh: &Mesh, pieces: &[usize], pixels: f64, walk: Option<&Animation>, deaths: &[Animation], work: &[Work]) -> Anims {
     let mut clips = Vec::new();
     if let Some(w) = walk
-        && let Some(c) = clip("walk", mesh, pieces, pixels, w, true)
+        && let Some(c) = clip("walk", mesh, pieces, pixels, w, Root::Stays, 1.0, true)
     {
         clips.push(c);
     }
     for (k, d) in deaths.iter().enumerate() {
         let name = if k == 0 { "death".to_string() } else { format!("death{}", k + 1) };
-        if let Some(c) = clip(&name, mesh, pieces, pixels, d, false) {
+        if let Some(c) = clip(&name, mesh, pieces, pixels, d, Root::Goes, 1.0, false) {
+            clips.push(c);
+        }
+    }
+    for w in work {
+        if let Some(c) = clip(w.name, mesh, pieces, pixels, w.animation, Root::Goes, w.rate, w.cycle) {
             clips.push(c);
         }
     }
     Anims { clips }
 }
 
-/// One animation as a clip (`walk`: its root kept where it stands), or none if it moves nothing.
-fn clip(name: &str, mesh: &Mesh, pieces: &[usize], pixels: f64, anim: &Animation, walk: bool) -> Option<Clip> {
+/// Whether a clip's root keeps to where it stands across the ground (a walk's: the unit's own
+/// movement carries it) or goes where its animation takes it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Root {
+    Stays,
+    Goes,
+}
+
+/// One animation as a clip (its root as `root` says, played at `rate`, closed as a cycle where
+/// it is one), or none if it moves nothing.
+#[allow(clippy::too_many_arguments)]
+fn clip(name: &str, mesh: &Mesh, pieces: &[usize], pixels: f64, anim: &Animation, root: Root, rate: f64, cycle: bool) -> Option<Clip> {
+    let walk = root == Root::Stays;
     if anim.frames.is_empty() || pieces.is_empty() {
         return None;
     }
@@ -122,9 +150,11 @@ fn clip(name: &str, mesh: &Mesh, pieces: &[usize], pixels: f64, anim: &Animation
         return None;
     }
     let first = anim.frames[0].time;
-    let seconds = anim.duration.max(anim.frames.last().map_or(0.0, |f| f.time - first));
-    let times: Vec<f32> = anim.frames.iter().map(|f| (f.time - first).max(0.0)).collect();
-    if walk {
+    // (Played at `rate`: its times stretched by it.)
+    let rate = if rate > 0.0 && rate.is_finite() { rate as f32 } else { 1.0 };
+    let seconds = anim.duration.max(anim.frames.last().map_or(0.0, |f| f.time - first)) / rate;
+    let times: Vec<f32> = anim.frames.iter().map(|f| ((f.time - first) / rate).max(0.0).min(seconds)).collect();
+    if cycle {
         close_loop(&mut frames, &times, seconds);
     }
     Some(Clip {
@@ -287,7 +317,7 @@ mod tests {
         // x), and the hip walked 3 ahead and up 0.5.
         let leg_on = ([0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 0.0]);
         let a = animation(vec![vec![rest, leg_rest], vec![([0.0, 2.5, 3.0], [1.0, 0.0, 0.0, 0.0]), leg_on]]);
-        let clips = anims(&m, &[0, 1], 32.0, Some(&a), &[]);
+        let clips = anims(&m, &[0, 1], 32.0, Some(&a), &[], &[]);
         let walk = clips.clip("walk").unwrap();
         assert_eq!(walk.pieces, [0, 1], "both move");
         assert_eq!(walk.frame(0), [Key::default(); 2], "the first frame is the rest");
@@ -296,7 +326,7 @@ mod tests {
         assert_eq!(leg.moved, [0, 0, 0]);
         assert_eq!(leg.turned, [16384, 0, 0], "a quarter about x");
         // A death keeps its root's going.
-        let clips = anims(&m, &[0, 1], 32.0, None, &[a.clone(), a]);
+        let clips = anims(&m, &[0, 1], 32.0, None, &[a.clone(), a], &[]);
         assert_eq!(clips.clips.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["death", "death2"]);
         assert_eq!(clips.clip("death").unwrap().frame(1)[0].moved[2], (3.0 * 32.0 * 65536.0) as i32);
     }
@@ -355,11 +385,30 @@ mod tests {
         assert_eq!(frames[1][0], key(5000));
     }
 
+    /// A building's loop played at half its animation's rate takes twice as long; its root goes
+    /// where the animation takes it (a piston rising), as a death's does, not a walk's.
+    #[test]
+    fn a_buildings_loop_plays_at_its_rate() {
+        let m = mesh();
+        let s = std::f32::consts::FRAC_1_SQRT_2;
+        let a = animation(vec![
+            vec![([0.0, 2.0, 0.0], [1.0, 0.0, 0.0, 0.0]), ([0.0, 0.0, 1.0], [s, s, 0.0, 0.0])],
+            vec![([0.0, 2.0, 3.0], [1.0, 0.0, 0.0, 0.0]), ([0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 0.0])],
+        ]);
+        let clips = anims(&m, &[0, 1], 32.0, None, &[], &[Work { name: "active", animation: &a, rate: 0.5, cycle: true }, Work { name: "upgrade", animation: &a, rate: 1.0, cycle: false }]);
+        let pump = clips.clip("active").unwrap();
+        assert_eq!((pump.seconds, pump.times.as_slice()), (2.0, &[0.0, 1.0][..]));
+        assert_eq!(pump.frame(1)[0].moved[2], (3.0 * 32.0 * 65536.0) as i32, "its root goes ahead");
+        assert_eq!(pump.frame(1)[1].turned, [16384, 0, 0]);
+        let upgrade = clips.clip("upgrade").unwrap();
+        assert_eq!((upgrade.seconds, upgrade.times.as_slice()), (1.0, &[0.0, 0.5][..]));
+    }
+
     #[test]
     fn an_animation_that_moves_nothing_is_no_clip() {
         let m = mesh();
         let s = std::f32::consts::FRAC_1_SQRT_2;
         let still = animation(vec![vec![([0.0, 2.0, 0.0], [1.0, 0.0, 0.0, 0.0]), ([0.0, 0.0, 1.0], [s, s, 0.0, 0.0])]; 3]);
-        assert!(anims(&m, &[0, 1], 32.0, Some(&still), std::slice::from_ref(&still)).clips.is_empty());
+        assert!(anims(&m, &[0, 1], 32.0, Some(&still), std::slice::from_ref(&still), &[Work { name: "active", animation: &still, rate: 1.0, cycle: true }]).clips.is_empty());
     }
 }

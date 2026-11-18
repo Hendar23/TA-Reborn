@@ -4130,6 +4130,7 @@ dependencies = [
  "sha2",
  "ta_formats",
  "ta_mapart",
+ "ta_sim",
  "ta_vfs",
  "thiserror 2.0.21",
  "winreg 0.56.0",

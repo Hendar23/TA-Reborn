@@ -254,6 +254,17 @@ pub struct Display {
     pub walk: Option<(String, f64)>,
     pub deaths: Vec<String>,
     pub build_attach_bone: Option<String>,
+    /// Every animation it names by a key of its own (`AnimationOpen`, `AnimationUpgrade`,
+    /// `LoopingAnimation`...: the key and the path, lower case), which its classes and its script
+    /// play as it works ([`crate::motions`]).
+    pub animations: Vec<(String, String)>,
+}
+
+impl Display {
+    /// The animation its key `key` names (any case).
+    pub fn animation(&self, key: &str) -> Option<&str> {
+        self.animations.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, path)| path.as_str())
+    }
 }
 
 /// What its wreck is worth (`Wreckage`): shares of its cost and its health.
@@ -314,6 +325,8 @@ pub struct UnitBlueprint {
     pub birth: crate::behaviour::Birth,
     /// What its script's `CreateEnhancement` does for each enhancement it names.
     pub enhancement_scripts: Vec<crate::behaviour::EnhancementScript>,
+    /// What its script spins, slides and plays as it works.
+    pub motions: crate::motions::Motions,
     pub table: Table,
 }
 
@@ -454,6 +467,7 @@ pub fn parse(id: &str, text: &str) -> Result<UnitBlueprint> {
         transport_class: num(&["Transport"], "TransportClass").map(|n| n as u32),
         birth: crate::behaviour::Birth::default(),
         enhancement_scripts: Vec::new(),
+        motions: crate::motions::Motions::default(),
         categories,
         table,
     })
@@ -576,12 +590,20 @@ fn display(id: &str, t: Option<&Table>) -> Display {
         .and_then(Value::table)
         .map(|d| d.array.iter().filter_map(Value::table).filter_map(|e| e.get_ci("Animation").and_then(Value::str)).map(|a| a.trim_start_matches('/').to_ascii_lowercase()).collect())
         .unwrap_or_default();
+    // (Its other animations, by their keys: `AnimationOpen = '/units/x/x_aopen.sca'`.)
+    let animations = t
+        .fields
+        .iter()
+        .filter(|(key, _)| key.to_ascii_lowercase().contains("animation"))
+        .filter_map(|(key, v)| v.str().filter(|p| p.to_ascii_lowercase().ends_with(".sca")).map(|p| (key.clone(), p.trim().trim_start_matches('/').to_ascii_lowercase())))
+        .collect();
     Display {
         uniform_scale: t.get_ci("UniformScale").and_then(Value::num).unwrap_or(1.0),
         lods,
         walk,
         deaths,
         build_attach_bone: t.get_ci("BuildAttachBone").and_then(Value::str).map(str::to_string),
+        animations,
     }
 }
 
@@ -644,6 +666,7 @@ pub fn attach(files: &crate::files::Files, units: &mut [UnitBlueprint]) -> Resul
             let text = String::from_utf8_lossy(&bytes);
             u.birth = crate::behaviour::birth(&text);
             u.enhancement_scripts = crate::behaviour::enhancements(&text);
+            u.motions = crate::motions::motions(&text);
         }
         for w in &mut u.weapons {
             let Some(path) = w.projectile.as_deref().map(crate::projectile::normalise) else { continue };

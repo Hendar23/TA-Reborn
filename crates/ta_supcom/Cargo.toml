@@ -19,3 +19,7 @@ sha2.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
+
+[dev-dependencies]
+# (The scripts made for buildings at work, played in the game's own script engine.)
+ta_sim.workspace = true

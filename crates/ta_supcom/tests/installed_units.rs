@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use ta_supcom::files::Files;
 use ta_supcom::install::{self, Install, Store};
 use ta_formats::surface::Material;
-use ta_supcom::factions::{enhance, faction, make, model, pictures, textures, units};
+use ta_supcom::factions::{anims, enhance, faction, make, model, pictures, textures, units, work};
 use ta_supcom::unit::{self, Faction, Tech};
 use ta_supcom::{sca, scm};
 
@@ -575,7 +575,7 @@ fn walks_end_where_they_start() {
         }
         let material = Material { name: "m".into(), albedo: "a".into(), specular: "s".into(), normals: "n".into(), mean: [0; 3] };
         let near = model::convert(&mesh, u.display.uniform_scale, material).unwrap();
-        let clips = ta_supcom::factions::anims::anims(&mesh, &near.bones, u.display.uniform_scale * 32.0, Some(&anim), &[]);
+        let clips = ta_supcom::factions::anims::anims(&mesh, &near.bones, u.display.uniform_scale * 32.0, Some(&anim), &[], &[]);
         let Some(walk) = clips.clip("walk") else { continue };
         walks += 1;
         let last = walk.times.len() - 1;
@@ -587,4 +587,95 @@ fn walks_end_where_they_start() {
         assert_eq!(walk.frame(0), walk.frame(last), "{}: its walk's last frame its first", u.id);
     }
     eprintln!("{walks} walks: {closed} ending at their length (their last frame their first), {wrapping} wrapping back over the time left; Forged Alliance's own ending out of step: {out_of_step:?}");
+}
+
+/// Every building at work, as the conversion makes it (`factions::work`): the clips its model
+/// plays (`active`, `open`, `upgrade`: each made of the animation its classes or its script play,
+/// those the game has), and what its script spins, swings and slides, listed; then held: every
+/// extractor pumps, every building upgrading in place with an animation for it plays it, the
+/// power generators, fabricators and radars whose scripts spin their parts spin them, and nothing
+/// a script turns is left out unaccounted for.
+#[test]
+#[ignore]
+fn buildings_at_work() {
+    let Some(game) = the_game() else {
+        eprintln!("no copy of Forged Alliance found: nothing to read");
+        return;
+    };
+    let files = Files::own(&game).unwrap();
+    let all = unit::catalogue(&files).unwrap();
+    let playable: Vec<&unit::UnitBlueprint> = all.iter().filter(|u| u.playable() && !u.display.lods.is_empty()).collect();
+    let mut clips_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut spins_of: BTreeMap<String, usize> = BTreeMap::new();
+    let (mut missing, mut fighting, mut left_out) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut buildings, mut with_clips, mut with_motions) = (0, 0, 0);
+    for u in playable.iter().filter(|u| u.motion == unit::Motion::None) {
+        buildings += 1;
+        let faction: Vec<&unit::UnitBlueprint> = playable.iter().copied().filter(|o| o.faction == u.faction).collect();
+        let upgrades = faction::upgrade_of(u, &faction).is_some();
+        let mesh = scm::parse(&files.read(&u.display.lods[0].mesh).unwrap().unwrap()).unwrap();
+        let material = Material { name: "m".into(), albedo: "a".into(), specular: "s".into(), normals: "n".into(), mean: [0; 3] };
+        let near = model::convert(&mesh, u.display.uniform_scale, material).unwrap();
+        let pixels = u.display.uniform_scale * 32.0;
+        let mut read = Vec::new();
+        for s in work::clips(u, upgrades) {
+            match files.read(&s.path).unwrap().map(|b| sca::parse(&b)) {
+                Some(Ok(a)) => read.push((s, a)),
+                Some(Err(e)) => missing.push(format!("{} {}: {e}", u.id, s.path)),
+                None => missing.push(format!("{} {} ({})", u.id, s.path, s.name)),
+            }
+        }
+        let at_work: Vec<anims::Work> = read.iter().map(|(s, a)| anims::Work { name: s.name, animation: a, rate: s.rate, cycle: s.cycle }).collect();
+        let clips = anims::anims(&mesh, &near.bones, pixels, None, &[], &at_work);
+        let (mut kept, mut names) = (Vec::new(), Vec::new());
+        for c in &clips.clips {
+            if matches!(c.name.as_str(), "active" | "open") && work::turns_an_aim(u, &mesh, &near.bones, c) {
+                fighting.push(format!("{} {}", u.id, c.name));
+                continue;
+            }
+            assert!(c.fits(near.model.pieces.len()), "{}: its {} fits its model", u.id, c.name);
+            kept.push(format!("{} {:.2} s, {} pieces", c.name, c.seconds, c.pieces.len()));
+            names.push(c.name.clone());
+        }
+        let pieces: Vec<String> = near.model.pieces.iter().map(|p| p.name.clone()).collect();
+        let motions = work::motions(u, &mesh, &pieces, pixels);
+        left_out.extend(motions.left_out.iter().map(|w| format!("{}: {w}", u.id)));
+        if !kept.is_empty() {
+            with_clips += 1;
+        }
+        if !motions.spins.is_empty() || !motions.slides.is_empty() {
+            with_motions += 1;
+        }
+        let described: Vec<String> = motions
+            .spins
+            .iter()
+            .map(|s| format!("{} {:?}{} about {:?}", pieces[s.piece as usize], s.when, if s.sway.is_some() { " swinging" } else { " spinning" }, s.axes))
+            .chain(motions.slides.iter().map(|s| format!("{} {:?}{} to {:?} (made at {:?})", pieces[s.piece as usize], s.when, if s.shuttle { " shuttling" } else { " sliding" }, s.goals, s.made)))
+            .collect();
+        if !kept.is_empty() || !described.is_empty() {
+            eprintln!("{} ({}): {}{}{}", u.id, u.description, kept.join("; "), if kept.is_empty() || described.is_empty() { "" } else { " | " }, described.join("; "));
+        }
+        clips_of.insert(u.id.clone(), names);
+        spins_of.insert(u.id.clone(), motions.spins.len());
+    }
+    let count = |name: &str| clips_of.values().filter(|c| c.iter().any(|n| n == name)).count();
+    eprintln!("{buildings} buildings: {with_clips} with clips ({} active, {} open, {} upgrade), {with_motions} with parts their scripts move ({} spinning or swinging)", count("active"), count("open"), count("upgrade"), spins_of.values().filter(|&&n| n > 0).count());
+    eprintln!("animations named and not in the game: {missing:?}");
+    eprintln!("clips turning what a weapon aims, not made: {fighting:?}");
+    eprintln!("left out: {left_out:?}");
+    let has = |id: &str, clip: &str| clips_of.get(id).is_some_and(|c| c.iter().any(|n| n == clip));
+    // Every extractor pumps (its loop), and those upgrading with an animation for it play it.
+    for u in playable.iter().filter(|u| u.is("MASSEXTRACTION") && u.motion == unit::Motion::None) {
+        assert!(has(&u.id, "active"), "{}: it pumps", u.id);
+    }
+    for id in ["UEB1103", "UEB1202", "UAB1103", "UAB1202", "URB1103", "URB1202", "UEB0101", "URB0102", "XSB0201", "UEB3101", "UAB3102"] {
+        assert!(has(id, "upgrade"), "{id}: it upgrades as its animation shows");
+    }
+    // Power generators, fabricators and radars spin what their scripts spin.
+    for (id, spins) in [("UEB1101", 2), ("UAB1301", 3), ("XSB1301", 1), ("XAB1401", 1), ("UEB1303", 1), ("URB1104", 1), ("XSB1303", 3), ("UEB3201", 1), ("UAB3104", 3), ("URB3101", 3), ("XSB3104", 3)] {
+        assert_eq!(spins_of.get(id).copied(), Some(spins), "{id}");
+    }
+    assert!(has("XSB1102", "active") && has("URB0101", "active") && has("UAB1102", "open"), "the Seraphim hydrocarbon plant's loop, the Cybran factory's arms, the Aeon hydrocarbon plant's opening");
+    assert!(!has("UAB2301", "open"), "a turret unfolding before it aims is left as it rests");
+    assert!(left_out.iter().all(|w| w.contains("BuildAttachBone")), "{left_out:?}");
 }
