@@ -830,6 +830,15 @@ fn upkeep_pays(u: &UnitBlueprint) -> bool {
     u.is("MASSEXTRACTION") || u.production_mass > 0.0 || watches && u.is("INTELLIGENCE") && (u.is("RADAR") || u.is("SONAR") || u.is("OMNI")) && !u.is("COUNTERINTELLIGENCE")
 }
 
+/// Whether its file has it switched on once built (`ActivateWhenBuilt`: TA's engine runs its
+/// script's `Activate` then), as [`unit_file`] writes it: an extractor, a fabricator, what pays an
+/// upkeep for its radar or sonar, an air staging platform. (Its `Deactivate` runs as its player
+/// switches it off, where it has a switch.)
+pub fn activated_when_built(u: &UnitBlueprint) -> bool {
+    let upkeep = if upkeep_pays(u) { u.upkeep_energy } else { 0.0 };
+    u.is("MASSEXTRACTION") || upkeep > 0.0 || u.is("AIRSTAGINGPLATFORM") && builds(u) == Builds::No && u.motion == Motion::None
+}
+
 /// An aircraft's movement (`Air`): its top speed (px a tick), its acceleration and braking (px a
 /// tick squared) and its turn (TA's angle units a tick), as Forged Alliance flies it, at TA's scale.
 ///
@@ -1568,6 +1577,41 @@ mod tests {
         let mex = UnitBlueprint { id: "UEB1103".into(), faction: Faction::Uef, categories: vec!["MASSEXTRACTION".into()], upkeep_energy: 2.0, production_mass: 2.0, ..Default::default() };
         let file = unit_file(&mex, &none, None, &Extra::default());
         assert!(file.contains("EnergyUse=2;") && file.contains("ExtractsMetal=0.001;") && !file.contains("MetalStorage"), "{file}");
+    }
+
+    /// What the scripts take a unit's `Activate` to come with (`activated_when_built`) is what its
+    /// file says: an extractor, a radar paying its upkeep, a fabricator and a staging platform are
+    /// switched on once built; a power plant, a shield (its upkeep left out) and a factory are not.
+    #[test]
+    fn switched_on_once_built_as_the_file_says() {
+        let none = Weapons { slots: Vec::new(), death: None, dgun: None, kamikaze: None };
+        let building = |id: &str, cats: &[&str], upkeep: f64, mass: f64, energy: f64| UnitBlueprint {
+            id: id.into(),
+            faction: Faction::Uef,
+            categories: cats.iter().map(|c| c.to_string()).collect(),
+            upkeep_energy: upkeep,
+            production_mass: mass,
+            production_energy: energy,
+            intel: crate::unit::Intel { radar: if cats.contains(&"RADAR") { 115.0 } else { 0.0 }, ..Default::default() },
+            ..Default::default()
+        };
+        let mut factory = building("UEB0101", &["STRUCTURE", "FACTORY"], 0.0, 0.0, 0.0);
+        factory.build_rate = 20.0;
+        factory.buildable = vec!["BUILTBYTIER1FACTORY UEF MOBILE".into()];
+        let mut pad = building("UEB5202", &["STRUCTURE", "AIRSTAGINGPLATFORM"], 0.0, 0.0, 0.0);
+        pad.motion = Motion::None;
+        for (u, on) in [
+            (building("UEB1103", &["STRUCTURE", "MASSEXTRACTION"], 2.0, 2.0, 0.0), true),
+            (building("UEB3101", &["STRUCTURE", "RADAR", "INTELLIGENCE"], 20.0, 0.0, 0.0), true),
+            (building("UEB1104", &["STRUCTURE", "MASSFABRICATION"], 100.0, 1.0, 0.0), true),
+            (pad, true),
+            (building("UEB1101", &["STRUCTURE", "ENERGYPRODUCTION"], 0.0, 0.0, 20.0), false),
+            (building("UEB4202", &["STRUCTURE", "SHIELD"], 200.0, 0.0, 0.0), false),
+            (factory, false),
+        ] {
+            let file = unit_file(&u, &none, None, &Extra::default());
+            assert_eq!((activated_when_built(&u), file.contains("ActivateWhenBuilt=1;")), (on, on), "{}: {file}", u.id);
+        }
     }
 
     /// What a unit's script switches off as it is made is not given it: the Cybran commander's

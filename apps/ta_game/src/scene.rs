@@ -6,8 +6,8 @@
 //! vehicles squat and dive on their suspension and lean out of turns, hovercraft and aircraft
 //! bank into them, gunships tip towards where they are going, ships roll on the swell and
 //! submarines run at their depth; and every unit but a building rocks as its gun kicks it back
-//! or a big blast near it shoves it away (see [`Jolt`], [`Scene::jolt`]). None of it feeds back
-//! into the game.
+//! or a big blast near it shoves it away (see [`Jolt`], [`Scene::jolt`]); buildings play their
+//! models' clips as they work and upgrade (see [`work`]). None of it feeds back into the game.
 
 use glam::{Mat4, Quat, Vec2, Vec3};
 use rustc_hash::FxHashMap as HashMap;
@@ -20,6 +20,7 @@ mod footing;
 mod recoil;
 mod still;
 mod walk;
+mod work;
 
 pub use feet::{Foot, Pad, walks};
 pub use still::standing_pose;
@@ -564,6 +565,8 @@ struct Visual {
     travel: [[f32; 2]; 2],
     /// A walker's legs in step with the ground (see [`walk`]).
     walk: walk::Walker,
+    /// Its model's clips as it works and upgrades (see [`work`]).
+    work: work::Worker,
     /// How far its lights are on (1) or out (0), at the tick before and this one: on while it
     /// works (see [`lights_target`]), coming on and going out over [`LIGHTS_TICKS`].
     lights: [f32; 2],
@@ -727,6 +730,8 @@ pub struct Scene {
     /// Unit type id → its model's deaths (`objects3d/<name>.anims`' `death` clips: ta_formats'
     /// `anims`), played where one dies (`effects_remains.rs`).
     deaths: HashMap<usize, std::sync::Arc<Vec<ta_formats::anims::Clip>>>,
+    /// Unit type id → its model's clips for its work (`active`, `open`, `upgrade`: see [`work`]).
+    work: HashMap<usize, std::sync::Arc<work::Clips>>,
     /// Unit type id → its guns that recoil, and its pieces' faces (see [`recoil`]).
     guns: HashMap<usize, std::sync::Arc<recoil::Guns>>,
     /// The camera of the frame being drawn: walkers too small on it keep their scripts' walk.
@@ -824,6 +829,9 @@ impl Scene {
                     if !deaths.is_empty() {
                         self.deaths.insert(t.id, std::sync::Arc::new(deaths));
                     }
+                    if let Some(clips) = work::Clips::of(&anims) {
+                        self.work.insert(t.id, std::sync::Arc::new(clips));
+                    }
                 }
                 if t.locomotion == Locomotion::Ground {
                     // (The walkers' feet, for their prints: what their scripts hide once they
@@ -918,6 +926,7 @@ impl Scene {
         let moment = walk::Moment::new(&self.walk, sim, alpha, time, self.camera.as_ref());
         let legs = self.footing.get(&u.type_id).cloned();
         let guns = self.guns.get(&u.type_id).cloned();
+        let clips = self.work.get(&u.type_id).cloned();
         let v = self.visuals.get_mut(id.slot as usize)?.as_mut().filter(|v| v.id == id)?;
         let t = sim.types.get(u.type_id);
         let mut pose = Pose::lerp(v.prev, v.cur, alpha);
@@ -926,6 +935,10 @@ impl Scene {
         let root = pose.matrix();
         let [travel, turned] = [0, 1].map(|k| v.travel[0][k] + (v.travel[1][k] - v.travel[0][k]) * alpha);
         let (before, now) = v.walk.states(&moment, u, t, pose.pos, travel, turned, &v.anim_prev, &v.anim_cur);
+        let (before, now) = match clips.as_deref() {
+            Some(clips) => v.work.states(clips, time, alpha, before, now),
+            None => (before, now),
+        };
         let (before, now) = v.recoil.states(guns.as_deref(), moment.close(pose.pos, t.radius.to_f32()), before, now);
         piece_matrices_between(t, before, now, alpha, root, out);
         plant_feet(legs.as_ref().map(|l| l.as_slice()), u, &pose, &Ground::of(&sim.world), out);
@@ -963,6 +976,7 @@ impl Scene {
         // buildings new to it, which level the ground under them.
         let models = &self.models;
         let enemy_models = &self.enemy_models;
+        let work = &self.work;
         let skin_viewer = self.skin_viewer;
         let tick = sim.tick;
         let ground = Ground::of(&sim.world);
@@ -990,11 +1004,16 @@ impl Scene {
                 hit: (0, 0.0),
                 travel: [[0.0; 2]; 2],
                 walk: walk::Walker::default(),
+                work: work::Worker::default(),
                 lights: [lit; 2],
                 recoil: recoil::Recoil::default(),
             });
             // Its lights follow its work, a step a tick; after a load or a seek, as they are.
             v.lights = if jump || new { [lit; 2] } else { [v.lights[1], step_towards(v.lights[1], lit, 1.0 / LIGHTS_TICKS)] };
+            // (And its model's clips for its work.)
+            if work.contains_key(&u.type_id) {
+                v.work.tick(sim, u, t, jump || new);
+            }
             // A restored snapshot has no hits from the discarded timeline. Keeping a future
             // hit tick makes saturating_sub below hold its flash at full strength after a
             // benchmark preset change or replay rewind.
@@ -1146,6 +1165,7 @@ impl Scene {
         let skin_viewer = self.skin_viewer;
         let footing = &self.footing;
         let guns = &self.guns;
+        let work = &self.work;
         let ground = Ground::of(&sim.world);
         // Who is drawn, posed: each unit its own work, on all cores when a big battle is in
         // view (the visual of each slot is only its unit's).
@@ -1171,6 +1191,11 @@ impl Scene {
             // (Walkers step with the ground they cover.)
             let [travel, turned] = [0, 1].map(|k| v.travel[0][k] + (v.travel[1][k] - v.travel[0][k]) * alpha);
             let (before, now) = v.walk.states(&moment, u, t, pose.pos, travel, turned, &v.anim_prev, &v.anim_cur);
+            // (Buildings play their clips as they work and upgrade.)
+            let (before, now) = match work.get(&u.type_id) {
+                Some(clips) => v.work.states(clips, time, alpha, before, now),
+                None => (before, now),
+            };
             // (Guns kick back as far as they run clear.)
             let (before, now) = v.recoil.states(guns.get(&u.type_id).map(|g| &**g), moment.close(pose.pos, t.radius.to_f32()), before, now);
             piece_matrices_between(t, before, now, alpha, root, &mut v.matrices);
@@ -1870,5 +1895,88 @@ mod tests {
         assert!(playing(&mut sim, &mut scene, None), "its glow plays while it works");
         assert!(!playing(&mut sim, &mut scene, Some(false)), "and holds while it is switched off");
         assert!(playing(&mut sim, &mut scene, Some(true)), "and plays again when it is on");
+    }
+
+    /// A building of our own with clips for its work (`scene/work.rs`), played as the game has it:
+    /// its pump going up and down while it works, slowing to a stop and holding there as it is
+    /// switched off; its upgrade posed by how far the upgrade in place has come, the pump faded
+    /// out meanwhile; the next building standing as its model rests. The simulation's own pieces
+    /// stay where its script has them.
+    #[test]
+    fn a_buildings_clips_play_as_it_works_and_upgrades() {
+        use ta_formats::anims::{ACTIVE, Anims, Clip, Key, UPGRADE};
+        use ta_formats::model3do::{Model3do, Piece, Primitive};
+        use ta_sim::{Command, Fx, FxVec3, Order};
+        let piece = |name: &str, parent: Option<usize>, children: Vec<usize>| Piece {
+            name: name.into(),
+            parent,
+            offset: [0; 3],
+            vertices: vec![[0, 0, 0], [65536, 0, 0], [0, 65536, 0]],
+            primitives: vec![Primitive { color_index: 0, indices: vec![0, 1, 2], texture: None }],
+            selection_primitive: None,
+            children,
+        };
+        let model = Model3do { pieces: vec![piece("base", None, vec![1]), piece("pump", Some(0), vec![])] }.to_bytes();
+        let data = std::sync::Arc::new(data_of(&[
+            ("units/pump.fbi", "[UNITINFO]{UnitName=PUMP;Objectname=pump;MaxDamage=1000;BuildTime=100;FootprintX=2;FootprintZ=2;OnOffable=1;ActivateWhenBuilt=1;WorkerTime=60;UpgradesTo=PUMP2;}"),
+            ("units/pump2.fbi", "[UNITINFO]{UnitName=PUMP2;Objectname=pump;MaxDamage=1000;BuildTime=600;FootprintX=2;FootprintZ=2;}"),
+        ]));
+        let types = std::sync::Arc::new(ta_sim::UnitTypes::compile(&data, &|p| (p == "objects3d/pump.3do").then(|| model.clone())));
+        let map = ta_formats::tnt::TntMap { width: 32, height: 32, sea_level: 0, tiles: Vec::new(), tile_map: Vec::new(), heights: vec![10; 1024], features: vec![ta_formats::tnt::FEATURE_NONE; 1024], feature_names: Vec::new(), minimap: Default::default(), flags: Vec::new() };
+        let players = [ta_sim::PlayerSetup { side: "ARM".into(), color: 0, start: FxVec3::ZERO, metal: Fx::from_int(10000), energy: Fx::from_int(10000), ai: false }];
+        let mut sim = Sim::new(types, data, &map, &ta_data::MapInfo::default(), 0, &players, 7);
+        let (kind, next) = (sim.types.id("PUMP").unwrap(), sim.types.id("PUMP2").unwrap());
+        let id = sim.spawn_unit(kind, 0, FxVec3::from_ints(200, 10, 200), 0, true).unwrap();
+        // Its clips: the pump up 4 px and back over a second; turned a quarter about x as it upgrades.
+        let up = |y: i32, x: i32| Key { moved: [0, y * 65536, 0], turned: [x, 0, 0] };
+        let active = Clip { name: ACTIVE.into(), seconds: 1.0, pieces: vec![1], times: vec![0.0, 0.5], keys: vec![up(0, 0), up(4, 0)] };
+        let upgrade = Clip { name: UPGRADE.into(), seconds: 2.0, pieces: vec![1], times: vec![0.0, 2.0], keys: vec![up(0, 0), up(0, 16384)] };
+        let mut scene = Scene::default();
+        scene.models.insert(kind, Some(1));
+        scene.models.insert(next, Some(2));
+        scene.work.insert(kind, std::sync::Arc::new(work::Clips::of(&Anims { clips: vec![active, upgrade] }).unwrap()));
+        // (The pump as drawn: how high, and how far it is turned up.)
+        let pump = |scene: &mut Scene, sim: &Sim| -> (f32, f32) {
+            let drawn = scene.instances(sim, 0.0, &|_| false, &|_| true, (Vec2::ZERO, Vec2::splat(512.0)), 0.0);
+            let m = drawn[0].pieces[1];
+            (m.w_axis.y - drawn[0].pieces[0].w_axis.y, m.y_axis.z.atan2(m.y_axis.y))
+        };
+        let mut run = |sim: &mut Sim, scene: &mut Scene, commands: Vec<Command>, ticks: usize| -> Vec<(f32, f32)> {
+            let mut seen = Vec::new();
+            sim.step(&commands);
+            for _ in 0..ticks {
+                sim.step(&[]);
+                scene.after_tick(sim);
+                seen.push(pump(scene, sim));
+            }
+            seen
+        };
+        let working = run(&mut sim, &mut scene, Vec::new(), 45);
+        let highs: Vec<f32> = working.iter().map(|s| s.0).collect();
+        assert!(highs.iter().copied().fold(0.0, f32::max) > 3.5 && highs.iter().copied().fold(9.0, f32::min) < 0.5, "it pumps: {highs:?}");
+        let off = run(&mut sim, &mut scene, vec![Command::SetActive { player: 0, units: vec![id], on: false }], 45);
+        let held = off[44].0;
+        assert!(off[30..].iter().all(|s| s.0 == held), "slowed to a stop and held: {off:?}");
+        assert!(sim.unit(id).unwrap().piece_anim(sim.unit_type(sim.unit(id).unwrap()), 1).0 == [0; 3], "the simulation's pump never moved");
+        // Upgrading (it works on: back on first, then upgraded), posed by the share done.
+        run(&mut sim, &mut scene, vec![Command::SetActive { player: 0, units: vec![id], on: true }], 30);
+        let upgrading = run(&mut sim, &mut scene, vec![Command::Order { player: 0, units: vec![id], order: Order::Upgrade(next), queue: false }], 150);
+        let share = sim.self_work_progress(sim.unit(id).unwrap()).map(|(_, d)| d.to_f32()).unwrap();
+        assert!(share > 0.3 && share < 1.0, "{share}");
+        let (high, turned) = upgrading[149];
+        assert!(high.abs() < 0.01, "the pump faded out: {high}");
+        assert!((turned - share * std::f32::consts::FRAC_PI_2).abs() < 0.05, "turned up by the share done: {turned} at {share}");
+        // Done: the next building, at rest.
+        let mut done = None;
+        for _ in 0..600 {
+            sim.step(&[]);
+            scene.after_tick(&sim);
+            if let Some(u) = sim.units().find(|u| u.type_id == next) {
+                done = Some(u.id);
+                break;
+            }
+        }
+        assert!(done.is_some(), "upgraded");
+        assert_eq!(pump(&mut scene, &sim), (0.0, 0.0), "the next one stands as its model rests");
     }
 }

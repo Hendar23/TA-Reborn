@@ -212,6 +212,10 @@ impl Function {
     pub fn spin(&mut self, piece: u32, axis: u32) -> &mut Self {
         self.emit(&[op::SPIN, piece, axis])
     }
+    /// `stop-spin <piece> around <axis> decelerate <d>`: the deceleration on the stack (0: at once).
+    pub fn stop_spin(&mut self, piece: u32, axis: u32) -> &mut Self {
+        self.emit(&[op::STOP_SPIN, piece, axis])
+    }
     pub fn show(&mut self, piece: u32) -> &mut Self {
         self.emit(&[op::SHOW, piece])
     }

@@ -10,7 +10,7 @@
 //!
 //! Its factions' units are read too (docs/SUPCOM_UNITS.md), to be made into a mod of TA units:
 //! - [`unit`]: their blueprints, with their weapons' [`projectile`]s and what their scripts say
-//!   ([`behaviour`]);
+//!   ([`behaviour`]; what they move as the units work, [`motions`]);
 //! - [`scm`], [`sca`]: their meshes and animations.
 
 pub mod behaviour;
@@ -22,6 +22,7 @@ pub mod files;
 pub mod install;
 pub mod lua;
 pub mod map;
+pub mod motions;
 pub mod projectile;
 pub mod sca;
 pub mod scd;

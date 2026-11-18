@@ -12,14 +12,15 @@ installed and plays as any mod; `--experimental`, or `--show supcom-factions`, s
 one run.
 
 This page records what the game's units are made of (`crates/ta_supcom`: [`unit`], [`projectile`],
-[`behaviour`], [`scm`], [`sca`]) and how they are made into TA's ([`factions`]): their models,
-paint, build pictures and gameplay, and their walks and deaths. Their sounds come later.
+[`behaviour`], [`motions`], [`scm`], [`sca`]) and how they are made into TA's ([`factions`]): their
+models, paint, build pictures and gameplay, their walks and deaths, and what their buildings do
+as they work. Their sounds come later.
 
 - **Players:** the launcher's Mods page, **SUPREME COMMANDER…** (or the Maps page's, its
   FACTIONS tab). The dialog finds the game (as for its maps: GOG's or Steam's copy, or a folder
   chosen, kept for the next start), counts each faction's units by kind, with its commander's
   build picture, and makes the factions chosen into the mod **Supreme Commander factions**
-  (`supcom-factions`), turned on, a side each in skirmish. All four take about 440 MB (3,638
+  (`supcom-factions`), turned on, a side each in skirmish. All four take about 443 MB (3,732
   files) and, on a fast computer, about half a minute, most of it writing and installing their
   files; the room on the disk is checked first. A stop installs nothing (not once the mod is being
   installed: STOP is greyed then), and the mod is made whole each time, of the factions chosen
@@ -386,9 +387,51 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
   stands (the unit's own movement carries it; its rise and fall kept), a death's goes with it.
   A walk is a cycle, its last frame its first: five of FA's end out of step with their start
   (UEL0106's knees 36° out, URL0107's leg 38°, UAL0106 14°, UEL0303 9°, URL0301 6°), eased back
-  over the cycle's last quarter rather than jumping there each step. 102 of the 357 units have
-  clips: 29 walks (the commanders, the support commanders, the bots, the walking experimentals)
-  and 93 with deaths; 6 MB in all.
+  over the cycle's last quarter rather than jumping there each step. 102 of the 357 units walk or
+  die by clips: 29 walks (the commanders, the support commanders, the bots, the walking
+  experimentals) and 93 with deaths; with the buildings' work (below), 156 have clips, 9 MB in
+  all.
+- **Buildings at work** (`factions::work`, from the blueprints and from what each unit's script
+  moves, [`motions`]): what Forged Alliance moves on a structure as it works becomes what TA
+  Reborn moves on it. Its keyframed animations become clips of its model's (`active`, `open` and
+  `upgrade`, played by the game: docs/FORMATS.md), each from what plays it in Forged Alliance:
+  - `active`, a loop played while the building works (finished, on, its upkeep paid; a factory
+    while it builds), slowing to a stop where it is as it stops: the animation its script plays
+    round and round (`PlayAnim(anim, true)`, or again in a loop: every extractor's pump, the
+    Seraphim hydrocarbon plant's at the half rate it sets) or its class does (the Cybran land and
+    air factories' `AnimationBuild` while they build);
+  - `open`, played once as it starts working and held, back as it stops: what its script plays
+    once (the Aeon fabricator's opening, the Hive's as it builds, the Aeon nuke silo's arms), its
+    `AnimationPermOpen` (played once it is finished: the anti-nukes, the Aeon hydrocarbon plant,
+    the Cybran perimeter monitor) and the Seraphim shield generators' `AnimationActivate` (as their
+    shields come up). A clip turning a part a weapon aims, or one that carries it, is not made:
+    the turrets that unfold before they aim (the Aeon's point defence, artillery, flak and SAMs,
+    the Cybran torpedo ambusher) stand as they rest and aim from there, as before;
+  - `upgrade`, its `AnimationUpgrade`, posed at the share of its upgrade in place done, as
+    Forged Alliance sets the animation's frame from the new building's progress while it hides
+    that building: the tech 1 and 2 factories, extractors, radars and sonars and the UEF's shield
+    generator. Done, the new building stands in its place and starts its own work.
+
+  The parts its script spins (`CreateRotator`) and slides (`CreateSlider`) become its TA script's
+  `spin`s and `move`s (in the simulation: they are the same on every computer), about the model's
+  axis the bone's own turns about (spins are signed by the right hand, as the factories'
+  `RollOffPoints` turn their units: `UnitSpin` 90 towards +x), at Forged Alliance's speeds and
+  accelerations: from the unit's making (`OnCreate`: the Seraphim factories' pods), as it works
+  (`OnStopBeingBuilt`, `OnIntelEnabled`, `OnProductionUnpaused`, `OnShieldEnabled` and the states
+  they change into; stopped as it is switched off: `Activate` and `Deactivate`, or once its build
+  is done where it has no switch), or as it builds (a factory's `StartArmsMoving`: `StartBuilding`
+  and `StopBuilding`). Speeds set both ways in a loop make a swing, speeding up one way and
+  slowing to a stop, then the same back (the Cybran radars' dishes, tilting out from where they
+  rest about their own slanted axes and back, made of turns about x and z; the Aeon fabricator's
+  spinner reversing); places set in a loop a shuttle (the factories' gantries); the UEF power
+  generator slides its panels out before its drums spin up. A factory's build point slid aside
+  (the Aeon, UEF and Seraphim tech 3 and UEF tech 2 naval factories') stays where it was: it is
+  where the simulation builds their units. Of the 186 structures a player can make, 66 play clips
+  (19 `active`, 13 `open`, 44 `upgrade`) and 46 move parts in their scripts, every part but those
+  build points made so (`cargo test --release -p ta_supcom --test installed_units
+  buildings_at_work -- --ignored --nocapture` lists them). Mobile units' (an engineer's arms, an
+  aircraft's hatches) are not yet, nor what a weapon moves as it fires (a silo's doors, the UEF
+  tactical defence's spinning barrels).
 
 The computer players play them (`cargo test --release -p ta_ai --test skirmish` with
 `TA_TEST_MOD` and `TA_TEST_SIDES=UEF,CYBRAN`): each builds an economy, land, air and naval
@@ -435,4 +478,5 @@ Seen across the 357 (the installed test lists them); the conversion steps round 
 - Weapons naming bones their mesh has not (UAA0203's rack, the Czar's `Right_Turret01_Barrel03`,
   UES0202's missile hatches, XRL0403's missile turret, two Seraphim ships' racks).
 - Animations named that are not there (URL0103's and XSL0304's deaths, UAS0103's third, named
-  `uas00103`).
+  `uas00103`; the UEF hydrocarbon plant's opening, `ueb1102_Aopen`, which its script plays as it
+  starts: it opens no hatch; the tech 3 extractors' upgrades, which they never make).

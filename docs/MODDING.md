@@ -922,8 +922,23 @@ pieces, played on the screen alone (the simulation, and so multiplayer, never se
 named `walk` is played as a ground unit of the model walks, in step with the ground it covers,
 instead of its script's walk (the pieces its script aims with keep the script's turns); clips
 named `death`, `death2`... play where one dies on the ground, its wreck lying in the pose the
-clip ends in. The Supreme Commander units walk and die so, their clips made from their game's own
-animations. The format is in [FORMATS.md](FORMATS.md#model-animations-objects3dnameanims-ta-reborns-own);
+clip ends in. Three more show a unit's work (meant for buildings, played for any unit):
+
+- `active`: played round and round while the unit works: finished, switched on (or with no
+  switch), its energy upkeep paid, and, a factory or a unit with `Builder=1`, building something.
+  An extractor's pump, a factory's arms at work. It slows to a stop where it is as the unit stops
+  working (switched off, out of energy, starting an upgrade), and goes on from there.
+- `open`: played once as the unit starts working, held open while it works, and played back as it
+  stops: a hatch opening once the building is up, or every time it is switched on.
+- `upgrade`: posed by how far an upgrade in place has come ([Units that upgrade in
+  place](#units-that-upgrade-in-place)), from its first frame to its last: the building turning
+  into the next, which then stands in its place.
+
+These are added to what the unit's script does with the same pieces, so a script can go on
+spinning a radar dish that an `active` clip raises and lowers; leave the pieces a weapon aims to
+its script. The Supreme Commander units walk and die so, and their buildings pump, open and
+upgrade so, their clips made from their game's own animations (their spinning parts are their
+scripts' `spin`s). The format is in [FORMATS.md](FORMATS.md#model-animations-objects3dnameanims-ta-reborns-own);
 `ta_formats::anims::Anims::to_bytes` writes it. A clip that does not fit its model (it moves pieces
 the model has not, or its keys are out of order or past its end) is left out, the others played;
 the log and the mod check name it. A death fades into its wreck's look in the moment its last pose
@@ -1284,6 +1299,7 @@ names the mod's folder (an absolute path, with its `mod.toml`):
 | A mod's presentation: its pictures, preview and links, and their check | `crates/ta_vfs/src/mods.rs` (`Media`), `apps/ta_launcher/src/mod_media.rs`, `crates/ta_data/src/presentation.rs` |
 | A mod's interface theme: the palette, applying it in battle (the HUD alone: `hud`, `reborn`), its check | `crates/ta_vfs/src/mods.rs` (`Theme`), `crates/ta_ui/src/theme.rs` (`Palette`, `hud`), `apps/ta_game/src/mod_theme.rs`, `apps/ta_game/src/hud_skin.rs`, `crates/ta_data/src/presentation.rs` |
 | Script values | `crates/ta_sim/src/host.rs` |
+| Models' surfaces and clips (walks, deaths, buildings at work) | `crates/ta_formats/src/surface.rs`, `crates/ta_formats/src/anims.rs`, `apps/ta_game/src/scene/walk.rs`, `apps/ta_game/src/scene/work.rs`, `apps/ta_game/src/effects_remains.rs` |
 | The classic build pages, 768-pixel layouts, shared places | `apps/ta_game/src/hud_classic_art.rs` |
 | The catalogue, installs, the MODS page | `apps/ta_launcher/src/catalogue.rs`, `getmods.rs`, `modlist.rs`, `mod_library.rs`, `pages/mods.rs`, `pages/mod_order.rs`, `pages/mod_report.rs` |
 | The mods of saved games and replays | `crates/ta_config/src/records/mods.rs` |

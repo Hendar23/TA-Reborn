@@ -486,6 +486,23 @@ posed by the ground they cover. Little-endian:
 * `death`, `death2`...: one of them, at random, plays where a unit of the model dies on the ground
   (an aircraft out of the sky and a ship going under go as TA Reborn's other units do); its wreck
   shows once the clip is over, lying in the pose it ends in.
+* `active`: a cycle (as `walk` is) played round and round while the unit works: finished, switched
+  on (or with no on/off switch), its energy upkeep paid, neither stunned nor carried, not
+  upgrading or installing an enhancement, and, for a factory or any unit with `Builder=1`, building
+  something. As the unit stops working the clip slows to a stop where it is (in 0.6 s) and goes on
+  from there when it starts again; as it starts an upgrade the clip fades out (in 0.4 s). A unit
+  first seen at work is somewhere in its cycle by its unit number, not at its start.
+* `open`: played forward as the unit starts working (as `active` has it) and held at its end while
+  it works; played back to its start as it stops. A building with no switch opens once, as it is
+  finished.
+* `upgrade`: while the unit upgrades in place (`UpgradesTo`), posed at its share of the upgrade
+  done (its first frame at none, its last at all of it), faded in as the upgrade starts and out if
+  it is called off. Once done, the unit it upgrades into stands in its place as its own model rests.
+* `active`, `open` and `upgrade` are added to what the unit's script does with the same pieces (a
+  piece its script spins spins on as a clip lifts it), each turn taken as running on from the frame
+  before (30,000 then -30,000 is 35,536): fading, a clip never turns a piece half a turn back.
+  Nothing else plays them: a TA script's own moves are untouched, and the simulation never sees
+  them.
 * A clip that moves a piece the model has not, more than once, or with its times out of order or
   past its length, is not played (the log and the mod check say so); the file's other clips are.
   A file that does not read is told in the log.

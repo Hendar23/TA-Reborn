@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- The Supreme Commander factions' buildings move as they work, as in Forged Alliance: extractors
+  pump while they extract, stopping where they are when switched off; power generators, mass
+  fabricators, radars and shield generators spin, swing and slide their parts; factories' arms
+  work as they build (the Cybran's, and the UEF's air and naval ones), the Seraphim's pods turn;
+  hatches, silos and antennae open once a building is up. An upgrade in place plays
+  the building's own upgrade animation as it goes, a T1 extractor or factory turning into the next
+  as the work is done, until the new building stands in its place. Make the factions' mod again
+  (UPDATE) to have it. Any mod can use the same: a model's clips named `active`, `open` and
+  `upgrade` play as its unit works, opens and upgrades (see
+  [docs/MODDING.md](docs/MODDING.md#models-that-move-by-clips-of-their-own)).
+
 ## 1.0.8 — 2026-11-18
 
 Supreme Commander: Forged Alliance's four factions play in TA Reborn, made from your own copy of

@@ -43,14 +43,14 @@ impl Birth {
 /// A script's words: names, strings and single marks, comments and strings' insides left out of
 /// the marks (`#` and `--` comments to the line's end, `--[[ ]]` blocks).
 #[derive(Clone, Debug, PartialEq)]
-enum Token {
+pub(crate) enum Token {
     Name(String),
     Str(String),
     Num(String),
     Mark(char),
 }
 
-fn tokens(text: &str) -> Vec<Token> {
+pub(crate) fn tokens(text: &str) -> Vec<Token> {
     let b = text.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -92,13 +92,13 @@ fn tokens(text: &str) -> Vec<Token> {
     out
 }
 
-fn is_name(t: &Token, name: &str) -> bool {
+pub(crate) fn is_name(t: &Token, name: &str) -> bool {
     matches!(t, Token::Name(n) if n == name)
 }
 
 /// The end of the block that the opener at `start` opens (`function`, `if`, `do`, `repeat`: the
 /// index just past its `end` or `until`).
-fn block_end(t: &[Token], start: usize) -> usize {
+pub(crate) fn block_end(t: &[Token], start: usize) -> usize {
     let mut depth = 0i32;
     for (k, tok) in t.iter().enumerate().skip(start) {
         if let Token::Name(n) = tok {
@@ -240,7 +240,7 @@ pub fn birth(text: &str) -> Birth {
 }
 
 /// The index just past the `}` closing the table opened at `open` (`t[open]` is `{`).
-fn table_end(t: &[Token], open: usize) -> usize {
+pub(crate) fn table_end(t: &[Token], open: usize) -> usize {
     let mut depth = 0i32;
     for (k, tok) in t.iter().enumerate().skip(open) {
         match tok {
