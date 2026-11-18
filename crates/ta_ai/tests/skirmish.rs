@@ -19,6 +19,13 @@
 //! unit finished a second time, with the builders at it),
 //! `TA_TEST_DUMP=<minute>` lists every unit (position, order, progress) at that minute and
 //! `TA_TEST_LOG=1` prints the AI's debug log (jobs, waves, raid responses).
+//! `TA_TEST_UNTIL_DECIDED=1` stops once one team is left (else the winner plays on to the end).
+//!
+//! It reports, beside the economy, each player's tech tree as used (`audit_kind`): strategic and
+//! tactical launches and missiles shot down, the experimentals finished, every five minutes the
+//! big projects under way (how far along, how many at work on each; the strategic silos' missiles),
+//! every ten the army by tier (and what was finished in those ten minutes), and who won (the one
+//! left, else on points).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -106,8 +113,9 @@ fn audit_kind(sim: &Sim, type_id: usize) -> Option<&'static str> {
         return None;
     }
     let armed = weapons.iter().any(|w| gun(w) || w.hits_air && !w.def.interceptor && w.default_damage > Fx::ZERO);
-    // (One that builds too, Forged Alliance's Fatboy, is an experimental all the same.)
-    if armed && cost >= 5000 {
+    // (One that builds units too, Forged Alliance's Fatboy, is an experimental all the same; one
+    // that puts up buildings, its support commanders, a constructor.)
+    if armed && cost >= 5000 && !constructs(sim, t) {
         return Some("experimental");
     }
     if t.is_builder {
@@ -132,6 +140,78 @@ fn audit_kind(sim: &Sim, type_id: usize) -> Option<&'static str> {
         (_, 2) => "army T2",
         _ => "army T3",
     })
+}
+
+/// A builder that puts up buildings (a constructor, the factions' support commanders among them),
+/// not one that turns out units (Forged Alliance's Fatboy).
+fn constructs(sim: &Sim, t: &ta_sim::UnitType) -> bool {
+    t.is_builder && t.ai_build_options.iter().any(|&o| sim.types.get(o).locomotion == Locomotion::Static)
+}
+
+/// A unit type's place in the army: 0 to 2 its tier (`tier`), 3 an experimental (armed, mobile,
+/// costing 5,000 or more: TA's Krogoth, Forged Alliance's Monkeylord, and its Fatboy, a factory
+/// on tracks); none for what is no part of the army (buildings, constructors, the Commanders,
+/// unarmed units).
+fn army_tier(sim: &Sim, type_id: usize) -> Option<usize> {
+    let t = sim.types.get(type_id);
+    if t.locomotion == Locomotion::Static || t.def.is_commander || constructs(sim, t) {
+        return None;
+    }
+    let armed = t.weapons.iter().flatten().any(|&w| {
+        let w = sim.weapon_types.get(w);
+        !w.def.interceptor && w.default_damage > Fx::ZERO
+    });
+    if !armed {
+        return None;
+    }
+    if (t.cost_metal + t.cost_energy / 60).to_int() >= 5000 {
+        return Some(3);
+    }
+    (!t.is_builder).then(|| tier(t) as usize - 1)
+}
+
+/// A player's finished army by tier (`army_tier`): how many, and what they cost.
+fn army_by_tier(sim: &Sim, player: u8) -> ([u32; 4], [i64; 4]) {
+    let (mut count, mut cost) = ([0u32; 4], [0i64; 4]);
+    for u in sim.units().filter(|u| u.owner == player && !u.dead && u.is_complete()) {
+        if let Some(k) = army_tier(sim, u.type_id) {
+            let t = sim.unit_type(u);
+            count[k] += 1;
+            cost[k] += (t.cost_metal + t.cost_energy / 60).to_int();
+        }
+    }
+    (count, cost)
+}
+
+/// A player's big projects under way: experimentals (in a factory or in the field), missile silos
+/// and anti-missile defences going up, each with how far along it is and how many are at work on
+/// it (its factory among them); and its strategic silos standing, with the missiles they hold and
+/// how far along the next is.
+fn projects_under_way(sim: &Sim, player: u8) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for u in sim.units().filter(|u| u.owner == player && !u.dead) {
+        let t = sim.unit_type(u);
+        let missiles = t.weapons.iter().flatten().any(|&w| {
+            let w = sim.weapon_types.get(w);
+            w.def.stockpile && (w.command_fire || w.def.interceptor)
+        });
+        if u.is_complete() {
+            let strategic = t.weapons.iter().flatten().any(|&w| {
+                let w = sim.weapon_types.get(w);
+                w.def.stockpile && w.command_fire && w.def.targetable_classes() & ta_sim::STRATEGIC_CLASS != 0
+            });
+            if t.locomotion == Locomotion::Static && strategic {
+                out.push(format!("{} standing, {} missiles and the next {:.0}%", t.name, u.stockpile, u.stockpile_progress.to_f32() * 100.0));
+            }
+            continue;
+        }
+        if army_tier(sim, u.type_id) != Some(3) && !(t.locomotion == Locomotion::Static && missiles) {
+            continue;
+        }
+        let hands = sim.units().filter(|h| h.owner == player && h.build.is_some_and(|b| b.target == u.id)).count();
+        out.push(format!("{} {:.0}% ({} at it)", t.name, u.build_progress.to_f32() * 100.0, hands));
+    }
+    out.join(", ")
 }
 
 #[test]
@@ -243,6 +323,20 @@ fn ai_vs_ai_plays_a_game() {
     let mut launched = vec![0u32; n];
     let mut long_shots = vec![0u32; n];
     let mut shot_down = vec![0u32; n];
+    // Missiles of the other classes launched (the Supreme Commander factions' tactical ones),
+    // per player: `launched` counts the strategic ones (TA's every silo's, nukes and FA's
+    // strategic launchers').
+    let mut tactical = vec![0u32; n];
+    // Of the missiles each player shot down, the strategic ones (a strategic projectile ended
+    // where the interception was).
+    let mut strategic_down = vec![0u32; n];
+    // The army by tier (`army_tier`: first, second, third, experimental), per player: what was
+    // finished in each ten minutes; the experimentals finished (minute, player, name); and the
+    // minute each player was defeated.
+    let decades = (minutes as usize).div_ceil(10).max(1);
+    let mut by_tier: Vec<Vec<[u32; 4]>> = vec![vec![[0; 4]; decades]; n];
+    let mut experimentals_done: Vec<(u64, u8, String)> = Vec::new();
+    let mut defeated_at: Vec<Option<u64>> = vec![None; n];
     // How each played (its persona): the minute its army first pushed at an enemy's start (three
     // armed units or more within 1,500 px of it, looked at every 30 s), and the armed buildings,
     // armed aircraft and armed ships it finished.
@@ -282,7 +376,11 @@ fn ai_vs_ai_plays_a_game() {
     let dump_at: Option<u64> = std::env::var("TA_TEST_DUMP").ok().and_then(|v| v.parse().ok());
     // Last hit on every unit before this tick (name, owner of the attacker, victim finished).
     let mut last_hit: HashMap<UnitId, (String, u8, bool)> = Default::default();
+    // Ticks played (fewer than asked when the battle is decided sooner and `TA_TEST_UNTIL_DECIDED`).
+    let mut played = 0u64;
+    let until_decided = std::env::var("TA_TEST_UNTIL_DECIDED").is_ok_and(|v| v == "1");
     for tick in 0..30 * 60 * minutes {
+        played = tick + 1;
         if trace || teams {
             last_hit.clear();
             for u in sim.units() {
@@ -314,20 +412,32 @@ fn ai_vs_ai_plays_a_game() {
                     let by = owners.get(&unit).copied().or_else(|| sim.unit(unit).map(|u| u.owner)).map(|o| o as usize);
                     if w.def.stockpile && w.def.command_fire {
                         launches += 1;
+                        let strategic = w.def.targetable_classes() & ta_sim::STRATEGIC_CLASS != 0;
                         if let Some(p) = by {
-                            launched[p] += 1;
+                            if strategic {
+                                launched[p] += 1;
+                            } else {
+                                tactical[p] += 1;
+                            }
                         }
-                        println!("tick {tick} ({} min): strategic launch ({}) by P{by:?}", tick / 1800, w.name);
+                        // (The tactical ones are many: counted, not each told.)
+                        if strategic {
+                            println!("tick {tick} ({} min): strategic launch ({}) by P{by:?}", tick / 1800, w.name);
+                        }
                     } else if w.range >= Fx::from_int(2000) && !w.def.interceptor && let Some(p) = by {
                         long_shots[p] += 1;
                     }
                 }
-                SimEvent::Intercepted { defender, .. } => {
+                SimEvent::Intercepted { defender, pos, .. } => {
                     interceptions += 1;
                     if let Some(c) = shot_down.get_mut(defender as usize) {
                         *c += 1;
                     }
-                    println!("tick {tick} ({} min): missile intercepted by P{defender}", tick / 1800);
+                    let strategic = sim.spent.iter().any(|(p, _)| p.pos.within_xz(pos, Fx::from_int(96)) && sim.weapon_types.get(p.weapon).def.targetable_classes() & ta_sim::STRATEGIC_CLASS != 0);
+                    if strategic && let Some(c) = strategic_down.get_mut(defender as usize) {
+                        *c += 1;
+                    }
+                    println!("tick {tick} ({} min): {}missile intercepted by P{defender}", tick / 1800, if strategic { "strategic " } else { "" });
                 }
                 SimEvent::UnitCreated { id, .. } => {
                     if let Some(u) = sim.unit(id) {
@@ -403,6 +513,13 @@ fn ai_vs_ai_plays_a_game() {
                     if let Some(kind) = audit_kind(&sim, u.type_id) {
                         let e = made[u.owner as usize].entry(kind).or_insert((0, tick / 1800));
                         e.0 += 1;
+                    }
+                    if let Some(k) = army_tier(&sim, u.type_id) {
+                        by_tier[u.owner as usize][((tick / 1800) as usize / 10).min(decades - 1)][k] += 1;
+                        if k == 3 {
+                            println!("tick {tick} ({} min): P{} finishes an experimental, {}", tick / 1800, u.owner, sim.unit_type(u).name);
+                            experimentals_done.push((tick / 1800, u.owner, sim.unit_type(u).name.clone()));
+                        }
                     }
                     let t = sim.unit_type(u);
                     let kind = if t.locomotion == Locomotion::Static {
@@ -494,6 +611,55 @@ fn ai_vs_ai_plays_a_game() {
                 .collect();
             println!("t={:2}min  {}", tick / 1800, summary.join(" | "));
         }
+        // Every five minutes the big projects under way (experimentals, in a factory or in the
+        // field, and missile silos and anti-missile defences going up): how far along, and how
+        // many hands at each; every ten, each army by tier.
+        if tick % (5 * 1800) == 0 && tick > 0 {
+            for p in 0..n {
+                let line = projects_under_way(&sim, p as u8);
+                if !line.is_empty() {
+                    println!("t={:2}min  P{p} under way: {line}", tick / 1800);
+                }
+            }
+        }
+        if tick % (10 * 1800) == 0 && tick > 0 {
+            for p in 0..n {
+                let (count, cost) = army_by_tier(&sim, p as u8);
+                let total: i64 = cost.iter().sum::<i64>().max(1);
+                let decade = &by_tier[p][(tick / 1800 / 10) as usize - 1];
+                println!(
+                    "t={:2}min  P{p} army T1 {} / T2 {} / T3 {} / experimental {} (by cost {}% / {}% / {}% / {}%); finished in the last ten minutes T1 {} / T2 {} / T3 {} / experimental {}",
+                    tick / 1800,
+                    count[0],
+                    count[1],
+                    count[2],
+                    count[3],
+                    cost[0] * 100 / total,
+                    cost[1] * 100 / total,
+                    cost[2] * 100 / total,
+                    cost[3] * 100 / total,
+                    decade[0],
+                    decade[1],
+                    decade[2],
+                    decade[3]
+                );
+            }
+        }
+        if tick % 300 == 0 {
+            for (p, at) in defeated_at.iter_mut().enumerate() {
+                if at.is_none() && sim.players[p].defeated {
+                    *at = Some(tick / 1800);
+                    println!("tick {tick} ({} min): P{p} is defeated", tick / 1800);
+                }
+            }
+            // (`TA_TEST_UNTIL_DECIDED=1`: the battle decided, one team left, no more to see. Else
+            // the winner plays on alone, to the end: how far up the tree it gets.)
+            let standing: Vec<u8> = (0..n as u8).filter(|&p| !sim.players[p as usize].defeated).collect();
+            if until_decided && (standing.len() <= 1 || standing.iter().all(|&p| !sim.is_enemy(standing[0], p))) {
+                println!("the battle is over at minute {}", tick / 1800);
+                break;
+            }
+        }
         // Incomes averaged over the 20 s before each checkpoint (they jitter per tick).
         let minute = tick / 1800 + 1;
         if [5, 10, 15, 20, 30, 40, 50, 60].contains(&minute) && tick % 1800 >= 1800 - 30 * 20 {
@@ -508,9 +674,10 @@ fn ai_vs_ai_plays_a_game() {
         }
     }
     let elapsed = started.elapsed().as_secs_f64();
+    let minutes_played = played / 1800;
     println!(
-        "simulated {minutes} min in {elapsed:.2}s ({:.0}x real time, AI {ai_time:.2}s); built {built:?}, shots {shots}, deaths {deaths}, peak units {peak_units}",
-        (minutes * 60) as f64 / elapsed,
+        "simulated {minutes_played} min in {elapsed:.2}s ({:.0}x real time, AI {ai_time:.2}s); built {built:?}, shots {shots}, deaths {deaths}, peak units {peak_units}",
+        (played / 30) as f64 / elapsed,
     );
     for (m, metal, energy) in &income_at {
         let metal: Vec<String> = metal.iter().map(|v| format!("{v:.1}")).collect();
@@ -533,8 +700,8 @@ fn ai_vs_ai_plays_a_game() {
         );
     }
     println!("extractor losses {extractor_losses:?}, commander lost at minute {commander_lost:?}");
-    if minutes > 3 {
-        let span = ((minutes - 3) * 1800) as f32 / 100.0;
+    if played > 3 * 1800 {
+        let span = (played - 3 * 1800) as f32 / 100.0;
         for (p, d) in dry.iter().enumerate() {
             println!(
                 "P{p} from minute 3: out of metal {:.0}% of the time, out of metal with energy banked (store half full) {:.0}%, energy store brimming {:.0}%, both stores half full {:.0}%; units lost unfinished in a factory {}",
@@ -549,10 +716,36 @@ fn ai_vs_ai_plays_a_game() {
     if teams {
         println!("units killed by an ally {ally_kills}");
     }
-    println!("strategic launches {launches}, interceptions {interceptions}");
+    println!("missile launches {launches} (strategic {}, tactical {}), interceptions {interceptions} (strategic {})", launched.iter().sum::<u32>(), tactical.iter().sum::<u32>(), strategic_down.iter().sum::<u32>());
     for p in 0..n {
         let kinds: Vec<String> = made[p].iter().map(|(k, (count, first))| format!("{k} {count} (min {first})")).collect();
-        println!("P{p} tech: {}; launches {}, long-range shots {}, missiles shot down {}", kinds.join(", "), launched[p], long_shots[p], shot_down[p]);
+        println!("P{p} tech: {}; strategic launches {}, tactical launches {}, long-range shots {}, missiles shot down {} (strategic {})", kinds.join(", "), launched[p], tactical[p], long_shots[p], shot_down[p], strategic_down[p]);
+    }
+    for p in 0..n {
+        let decades: Vec<String> = by_tier[p]
+            .iter()
+            .enumerate()
+            .map(|(k, d)| {
+                let all = d.iter().sum::<u32>().max(1);
+                format!("{}-{}: {}/{}/{}/{} (T2 {}%, T3 {}%)", k * 10, k * 10 + 10, d[0], d[1], d[2], d[3], d[1] * 100 / all, d[2] * 100 / all)
+            })
+            .collect();
+        println!("P{p} army finished by tier (T1/T2/T3/experimental) per ten minutes: {}", decades.join(" | "));
+        let x: Vec<String> = experimentals_done.iter().filter(|e| e.1 == p as u8).map(|e| format!("{} (min {})", e.2, e.0)).collect();
+        println!("P{p} experimentals finished: {}", if x.is_empty() { "none".to_string() } else { x.join(", ") });
+    }
+    // Who won: the one left standing, else what each owns (cost, the Commander left out, as the
+    // ladder counts it).
+    let standing: Vec<usize> = (0..n).filter(|&p| !sim.players[p].defeated).collect();
+    let worth: Vec<i64> = (0..n)
+        .map(|p| sim.units().filter(|u| u.owner == p as u8 && !u.dead && !sim.unit_type(u).def.is_commander).map(|u| (sim.unit_type(u).cost_metal + sim.unit_type(u).cost_energy / 60).to_int()).sum())
+        .collect();
+    match standing.as_slice() {
+        [w] => println!("winner: P{w} ({:?}); defeated at minute {defeated_at:?}", sides[*w % 2].0),
+        _ => {
+            let w = (0..n).max_by_key(|&p| (worth[p], std::cmp::Reverse(p))).unwrap_or(0);
+            println!("winner on points: P{w} ({:?}), worth {worth:?}; defeated at minute {defeated_at:?}", sides[w % 2].0);
+        }
     }
     println!("first advanced/strategic builds (minute, player): {firsts:?}");
     if !upgraded.is_empty() {

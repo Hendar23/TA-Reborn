@@ -53,19 +53,30 @@ impl SkirmishAi {
             // factory leading there.
             let more = s.adv_factory_done && s.adv_factories < self.adv_factories_wanted(s);
             let leading: Vec<(&Unit, usize)> = if self.toward_experimentals(sim, s) { candidates.iter().copied().filter(|&(_, to)| self.leads_to_experimentals(sim, to)).collect() } else { Vec::new() };
-            let pool = if !climbing.is_empty() {
-                climbing
+            // Once a factory of the third tier stands, more of the ground's climb to it as the
+            // economy grows (`top_factories_wanted`), the nearest the top first: the army leans to
+            // the top tier as its factories climb (what they made of the lower tiers, the others
+            // make).
+            let ground = |f: &Unit| matches!(self.info[f.type_id].kind, Locomotion::Ground | Locomotion::Hover);
+            let top_ground = s.factories.iter().filter(|f| ground(f) && self.factory_tier(sim, f.type_id) >= 3 && self.factory_tier(sim, f.type_id) >= s.factory_tier).count();
+            let toward_top: Vec<(&Unit, usize)> = if s.factory_tier >= 3 && top_ground < self.top_factories_wanted(s) { candidates.iter().copied().filter(|&(f, _)| ground(f)).collect() } else { Vec::new() };
+            let (pool, highest_first) = if !climbing.is_empty() {
+                (climbing, false)
             } else if !leading.is_empty() {
-                leading
+                (leading, false)
+            } else if !toward_top.is_empty() {
+                (toward_top, true)
             } else if rich || more {
-                candidates
+                (candidates, false)
             } else {
-                Vec::new()
+                (Vec::new(), false)
             };
-            // Land first (it reaches the enemy), then the lowest tier, the nearest home.
+            // Land first (it reaches the enemy), then the lowest tier (or, toward the top, the
+            // highest), the nearest home.
             let pick = pool.into_iter().min_by_key(|&(f, to)| {
                 let i = &self.info[f.type_id];
-                (i.kind == Locomotion::Air, i.kind == Locomotion::Naval, self.factory_tier(sim, f.type_id), self.info[to].cost, dist(f.pos, self.base), f.id.slot)
+                let tier = self.factory_tier(sim, f.type_id) as i32;
+                (i.kind == Locomotion::Air, i.kind == Locomotion::Naval, if highest_first { -tier } else { tier }, self.info[to].cost, dist(f.pos, self.base), f.id.slot)
             });
             if let Some((f, to)) = pick {
                 log::debug!("{} min: P{me} upgrades its {} into {}", s.minutes, sim.unit_type(f).name, sim.types.get(to).name);
