@@ -139,7 +139,7 @@ fn native_a_host_is_asked_before_leaving_a_battle_others_fight() {
     let slot = |kind, color| ta_net::LobbySlot { kind, side: "ARM".into(), color, team: color, ready: true };
     let info = ta_net::StartInfo { map: "Painted Desert".into(), seed: 7, spectators: Vec::new(), rules: Default::default(),
         slots: vec![slot(ta_net::SlotKind::Human { peer: 0, name: "Host".into() }, 0), slot(ta_net::SlotKind::Human { peer: client.peer.unwrap(), name: "Guest".into() }, 1),
-            slot(ta_net::SlotKind::Ai { difficulty: 1 }, 2)] };
+            slot(ta_net::SlotKind::Ai { difficulty: 1, persona: 0 }, 2)] };
     let mut setup = GameSetup::duel(&info.map);
     let mut third = setup.players[1].clone();
     (third.team, third.start, third.color) = (2, 2, 2);

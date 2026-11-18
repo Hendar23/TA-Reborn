@@ -700,7 +700,7 @@ impl Conquest {
         let enemies = count.min(starts.saturating_sub(1)).max(1);
         let mut players = vec![SlotSetup { side: self.side.clone(), color: 0, controller: Controller::Human, start: 0, team: 0, name: String::new() }];
         for k in 0..enemies {
-            players.push(SlotSetup { side: self.enemy.clone(), color: 1 + k as u8 * 4, controller: Controller::Ai(difficulty), start: 1 + k, team: 1, name: String::new() });
+            players.push(SlotSetup { side: self.enemy.clone(), color: 1 + k as u8 * 4, controller: Controller::ai(difficulty), start: 1 + k, team: 1, name: String::new() });
         }
         let (metal, energy) = self.bonus();
         let veterans = self.selected_veterans().into_iter().map(|v| (v.unit, v.xp)).collect();

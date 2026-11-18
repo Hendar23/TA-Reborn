@@ -573,12 +573,12 @@ impl Scenario {
         let mut players = vec![SlotSetup { side: self.player.side.clone(), color: 0, controller: Controller::Human, start: 0, team: 0, name: String::new() }];
         for (i, e) in self.enemies.iter().enumerate() {
             let d = e.ai.as_deref().and_then(difficulty_word).unwrap_or(difficulty);
-            players.push(SlotSetup { side: e.side.clone(), color: [1, 3, 5, 7, 2][i % 5], controller: Controller::Ai(d), start: i + 1, team: 1, name: String::new() });
+            players.push(SlotSetup { side: e.side.clone(), color: [1, 3, 5, 7, 2][i % 5], controller: Controller::ai(d), start: i + 1, team: 1, name: String::new() });
         }
         // Allies: the player's team, in colours near its own.
         for (i, a) in self.allies.iter().enumerate() {
             let d = a.ai.as_deref().and_then(difficulty_word).unwrap_or(difficulty);
-            players.push(SlotSetup { side: a.side.clone(), color: [8, 6, 4, 9][i % 4], controller: Controller::Ai(d), start: 1 + self.enemies.len() + i, team: 0, name: String::new() });
+            players.push(SlotSetup { side: a.side.clone(), color: [8, 6, 4, 9][i % 4], controller: Controller::ai(d), start: 1 + self.enemies.len() + i, team: 0, name: String::new() });
         }
         let rules = ta_sim::GameRules {
             start_metal: self.player.metal,
@@ -1077,7 +1077,7 @@ units = []
             .iter()
             .enumerate()
             .filter_map(|(i, s)| match s.controller {
-                Controller::Ai(d) if !entry.scenario.passive(i as u8) => Some(ta_ai::SkirmishAi::new(i as u8, &sim, d)),
+                Controller::Ai(d, persona) if !entry.scenario.passive(i as u8) => Some(ta_ai::SkirmishAi::with_persona(i as u8, &sim, d, persona)),
                 _ => None,
             })
             .collect();
@@ -1109,7 +1109,7 @@ units = []
                 start: fx(starts[i]),
                 metal: Fx::ZERO,
                 energy: Fx::ZERO,
-                ai: matches!(s.controller, Controller::Ai(_)),
+                ai: matches!(s.controller, Controller::Ai(..)),
             })
             .collect();
         let mut sim = Sim::new(assets.types.clone(), assets.data.for_map(vfs, &setup.map), &map, &info, 0, &players, setup.seed);

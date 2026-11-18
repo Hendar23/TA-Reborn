@@ -222,8 +222,8 @@ fn context_for_setup(setup: &crate::setup::GameSetup, connected: bool, tutorial:
         else { MatchMode::Skirmish };
     let difficulty = if let Some(mission) = &setup.mission { mission.difficulty.clone() }
         else if let Some(scenario) = &setup.scenario { format!("{:?}", scenario.difficulty) }
-        else if !enemies.is_empty() && enemies.iter().all(|p| p.controller == Controller::Ai(ta_ai::Difficulty::Hard)) { "hard".to_string() }
-        else if !enemies.is_empty() && enemies.iter().all(|p| p.controller == Controller::Ai(ta_ai::Difficulty::Easy)) { "easy".to_string() }
+        else if !enemies.is_empty() && enemies.iter().all(|p| matches!(p.controller, Controller::Ai(ta_ai::Difficulty::Hard, _))) { "hard".to_string() }
+        else if !enemies.is_empty() && enemies.iter().all(|p| matches!(p.controller, Controller::Ai(ta_ai::Difficulty::Easy, _))) { "easy".to_string() }
         else { "normal".to_string() };
     MatchContext {
         mode, map: setup.map.clone(), faction: local.map_or_else(String::new, |p| p.side.clone()), difficulty, human_opponent,
@@ -499,7 +499,7 @@ mod tests {
         assert_eq!(context_for_setup(&setup, true, false).mode, MatchMode::Multiplayer);
         assert!(!context_for_setup(&setup, true, false).human_opponent);
         setup.players[1].team = 1;
-        setup.players[1].controller = crate::setup::Controller::Ai(ta_ai::Difficulty::Hard);
+        setup.players[1].controller = crate::setup::Controller::ai(ta_ai::Difficulty::Hard);
         assert_eq!(context_for_setup(&setup, true, false).mode, MatchMode::Multiplayer);
         assert!(!context_for_setup(&setup, true, false).human_opponent);
         assert_eq!(context_for_setup(&setup, false, true).mode, MatchMode::Tutorial);
@@ -508,9 +508,10 @@ mod tests {
     #[test]
     fn hard_skirmish_requires_every_enemy_ai_to_be_hard() {
         let mut setup = crate::setup::GameSetup::duel("test");
-        setup.players[1].controller = crate::setup::Controller::Ai(ta_ai::Difficulty::Hard);
+        // (Whatever their personas.)
+        setup.players[1].controller = crate::setup::Controller::Ai(ta_ai::Difficulty::Hard, ta_ai::Persona::Rush);
         assert_eq!(context_for_setup(&setup, false, false).difficulty, "hard");
-        let mut extra = setup.players[1].clone(); extra.controller = crate::setup::Controller::Ai(ta_ai::Difficulty::Easy);
+        let mut extra = setup.players[1].clone(); extra.controller = crate::setup::Controller::ai(ta_ai::Difficulty::Easy);
         setup.players.push(extra);
         assert_eq!(context_for_setup(&setup, false, false).difficulty, "normal");
         setup.players[2].team = setup.players[0].team;

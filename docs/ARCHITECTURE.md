@@ -1615,6 +1615,54 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   Unit roles come from properties (extractor, generator, factory, combat value...), never
   names, so mods work. Easy / Normal / Hard differ in `Params` (tech timing, wave sizes,
   factories, towers, production pace, how units are chosen, battle handling).
+* Personas (`Persona`, as Forged Alliance's computer players had them): Balanced, Rush,
+  Turtle, Tech, Air, Naval, or Random, drawn from the game's seed and the player's number as the
+  computer player is made (`Persona::resolve`: the same on every machine, and again when a saved
+  game is loaded). A persona bends the difficulty's `Params` (`Params::with_persona`), never past
+  what Easy allows: Rush attacks sooner and smaller, with more factories, no extra towers and the
+  tiers and projects late; Turtle puts up towers before its constructors help at the factories
+  (more of them, one every three minutes, the strongest the budget buys), heavy defences,
+  anti-nuclear cover and long-range guns early, and attacks late, in force; Tech climbs the tiers
+  and takes the experimentals and silos sooner; Air makes its next two factories air plants and
+  builds more planes; Naval its shipyard first, where the sea reaches the enemy, and more ships
+  (on dry land it plays as Balanced). Soak (`tests/skirmish.rs`, `TA_TEST_PERSONA`, Normal, 25
+  minutes on Painted Desert against Balanced): Rush's army first at an enemy start at minute 7
+  (Balanced's 11), Turtle's at 21 with 13 armed buildings (9) and a heavy defence at 17, Air's
+  11 armed aircraft (none), Tech a silo at 24 and its army thin. The setup carries each computer
+  player's difficulty and persona
+  (`setup::Controller::Ai`, saved games and replays from record version 47; older ones play
+  Balanced) and a lobby's seat its persona (`ta_net::SlotKind::Ai`, protocol 109); missions,
+  Conquest and scenarios keep their own settings, Balanced. The computer players' voices in the
+  chat (`chatter.rs`: their names, tempers and taunts, `TA_RIVALS`) are a side of their own and
+  do not follow the persona.
+* Projects (`projects.rs`): the tech tree's big buildings, each put up by advanced constructors
+  one at a time while the others help (`help_project_task`), once the economy can feed it (no
+  project while power or metal is short): anti-nuclear cover first once an enemy silo is seen (on
+  every level, Easy's only project) or from `anti_minute`; then by the persona's liking a nuclear
+  silo, a heavy defence on the approach (cost 1,500 or more, `HEAVY_COST`, as many as
+  `heavy_towers` allows, one more every 12 minutes, its power to fire four times over in our
+  income) and a long-range gun (`TypeInfo::long_range`: reach 2,000 or more) where it reaches
+  the enemy's base, which then shells what we know of that base (`run_long_guns`: a building's
+  guns fire of themselves only at what their side sees). Experimentals (`TypeInfo::experimental`:
+  armed, mobile, costing 5,000 or more) go up beside them, built by the constructor that builds
+  them or by a factory of them; where none of our factories turns out a constructor that leads
+  there (TA's Core: the Gantry needs the advanced construction kbot's lab), that factory and
+  constructor are made first (`toward_experimentals`). Factories lean to the top tier as the
+  metal income grows (`top_tier_share`, a share of their orders: none on Easy), the army's
+  cap grows a quarter for a player at tech 2 or more, and more advanced factories go up as the
+  economy grows (`adv_factories_wanted`).
+* Clearing the way (`clear.rs`): a unit whose route stops short of where it was sent though the
+  ground leads there (`Unit::path_goal` far from the move's goal), or that has stood stalled on
+  its way, has its way searched (`Sim::way_blockers`, `ta_sim`'s `sim/blockers.rs`: an A* back
+  from the goal over the static ground, then a search by the ground's own steps through what
+  stands there, so the wreckage across a winding pass is found, not the dead end nearest the
+  goal). What shuts it is reclaimed by a constructor (it pays its metal), the Commander among them
+  when near and safe, and broken up by up to six of the army's guns when no constructor is on it
+  within 20 seconds (a broken wreck leaves a heap, which blocks nothing). The searches are rationed
+  (one a look, ways near those searched in the last 30 s skipped, none for 30 s after one that
+  found nothing). A scenario's waves, which have no constructors, fire on the wreckage that shuts
+  their way (`mission.rs`, `Hunter::clearing`), and a route that stopped short is looked for
+  again once the ground changes (`CachedPath::short`).
 * It knows only what a player in its seat could: what is in its team's sight (`Seen::Visible`:
   what a unit is, its health), where radar shows something (`Seen::Radar`: a contact of a kind
   not known, a threat of an armed unit's worth: `Survey::contacts`), and what it remembers. An

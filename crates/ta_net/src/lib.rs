@@ -97,10 +97,12 @@ pub use transport::{Client, Host, HostEvent};
 /// are within their range; 108: repair patrols, `DefaultMissionType=RepairPatrol` builders mending
 /// the damaged units round them by themselves, on their pads too; 109: `Order::Upgrade`, a unit
 /// upgraded in place, and the computer players' upgrades; `Order::Enhance`, enhancements installed
-/// and taken out, and the computer players' enhancements.)
+/// and taken out, and the computer players' enhancements; 110: a computer player's seat carries its
+/// persona (`SlotKind::Ai::persona`), and the computer players of simulation 105 play by it, clear
+/// wreckage from their ways and put up the tech tree's projects.)
 /// [`Msg::Hello`] and [`Refusal::Version`] keep their layout, so builds of other protocols are
 /// still told why they cannot meet.
-pub const PROTOCOL: u32 = 109;
+pub const PROTOCOL: u32 = 110;
 pub const DEFAULT_PORT: u16 = 7890;
 /// Ticks between state hash reports (which double as progress reports).
 pub const HASH_INTERVAL: u64 = 15;
@@ -350,11 +352,15 @@ pub enum SlotKind {
     Open,
     /// A person, identified by peer id (0 = the host).
     Human { peer: u8, name: String },
-    /// A computer player: 0 easy, 1 normal, 2 hard.
-    Ai { difficulty: u8 },
+    /// A computer player: its difficulty (0 easy, 1 normal, 2 hard) and its persona (its place in
+    /// `ta_ai::Persona::ALL`: 0 balanced... [`PERSONAS`] of them, the last drawn at random).
+    Ai { difficulty: u8, persona: u8 },
     /// Nobody plays here and nobody may sit here (the host closed it).
     Closed,
 }
+
+/// How many personas a computer player's seat may carry (`ta_ai::Persona::ALL`'s length).
+pub const PERSONAS: u8 = 7;
 
 impl SlotKind {
     /// Whether the slot is a player in the battle (a person or a computer).
@@ -1497,7 +1503,7 @@ mod data_tests {
     #[test]
     fn the_battle_waits_for_everyone_to_have_the_map_spectators_too() {
         let human = |peer: u8| LobbySlot { kind: SlotKind::Human { peer, name: format!("P{peer}") }, side: "ARM".into(), color: peer, ready: true, team: peer };
-        let mut lobby = Lobby { slots: vec![human(0), human(1), LobbySlot { kind: SlotKind::Ai { difficulty: 1 }, ..human(9) }], spectators: vec![(2, "W".into())], ..Default::default() };
+        let mut lobby = Lobby { slots: vec![human(0), human(1), LobbySlot { kind: SlotKind::Ai { difficulty: 1, persona: 0 }, ..human(9) }], spectators: vec![(2, "W".into())], ..Default::default() };
         assert!(!lobby.everyone_has_the_map(), "nobody has told the host yet");
         assert_eq!(lobby.map_status_of(0), MapStatus::Ready, "the host's own");
         lobby.map_status = vec![(1, MapStatus::Ready), (2, MapStatus::Missing)];

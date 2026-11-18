@@ -116,12 +116,15 @@ impl<'de> Visitor<'de> for RecordSeed {
         let kind = field!();
         let data_hash = field!();
         // (Before version 42 a Conquest battle's setup had no reinforcements, before 43 the
-        // rules no mutators: read as it was.)
+        // rules no mutators, before 47 the computer players no personas: read as it was.)
         let setup: GameSetup = if version < 42 {
             let legacy: crate::setup::LegacySetup = field!();
             legacy.into()
         } else if version < 43 {
             let legacy: crate::setup::SetupV42 = field!();
+            legacy.into()
+        } else if version < 47 {
+            let legacy: crate::setup::SetupV46 = field!();
             legacy.into()
         } else {
             field!()
@@ -284,7 +287,7 @@ pub struct Record {
 
 /// Fields in order, the setup as the record's version lays it out: a record opened and written
 /// again keeps its bytes (before version 42 a Conquest battle had no reinforcements, before 43
-/// the rules no mutators).
+/// the rules no mutators, before 47 the computer players no personas).
 impl Serialize for Record {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
@@ -296,6 +299,8 @@ impl Serialize for Record {
             fields.serialize_field("setup", &crate::setup::LegacySetup::from(&self.setup))?;
         } else if self.version < 43 {
             fields.serialize_field("setup", &crate::setup::SetupV42::from(&self.setup))?;
+        } else if self.version < 47 {
+            fields.serialize_field("setup", &crate::setup::SetupV46::from(&self.setup))?;
         } else {
             fields.serialize_field("setup", &self.setup)?;
         }
@@ -802,7 +807,7 @@ mod tests {
     fn records_before_version_42_read_their_conquest_battles_as_laid_out_then() {
         let legacy = crate::setup::LegacySetup {
             map: "test".into(),
-            players: GameSetup::duel("test").players,
+            players: GameSetup::duel("test").players.iter().map(crate::setup::SlotSetupV46::from).collect(),
             local_player: Some(0),
             seed: 7,
             mission: None,
@@ -858,7 +863,7 @@ mod tests {
     fn records_of_version_43_have_no_duties_and_are_written_as_they_were() {
         // (Version 43 had no constructors on duty: a few bytes were added after the setup in 44.)
         let ticks: Vec<(u64, Vec<Command>)> = Vec::new();
-        let body = codec().serialize(&(43u32, RecordKind::Save, 123u64, &GameSetup::duel("before the duties"), &ticks, 0u64, 1_761_000_000u64, "an older save")).unwrap();
+        let body = codec().serialize(&(43u32, RecordKind::Save, 123u64, &crate::setup::SetupV46::from(&GameSetup::duel("before the duties")), &ticks, 0u64, 1_761_000_000u64, "an older save")).unwrap();
         let mut bytes = body.clone();
         let metadata = ta_config::records::RecordMetadata { simulation_version: ta_config::SIMULATION_VERSION, match_data_hash: 123, engine_build: "fixture".into(), full_commands: false };
         ta_config::records::append_metadata(&mut bytes, &metadata).unwrap();
@@ -907,7 +912,7 @@ mod tests {
     #[test]
     fn records_before_version_46_name_no_mods_and_are_written_as_they_were() {
         let ticks: Vec<(u64, Vec<Command>)> = Vec::new();
-        let body = codec().serialize(&(45u32, RecordKind::Save, 123u64, &GameSetup::duel("before the mods"), Vec::<u8>::new(), &ticks, 0u64, 1_761_000_000u64, "an older save")).unwrap();
+        let body = codec().serialize(&(45u32, RecordKind::Save, 123u64, &crate::setup::SetupV46::from(&GameSetup::duel("before the mods")), Vec::<u8>::new(), &ticks, 0u64, 1_761_000_000u64, "an older save")).unwrap();
         let mut bytes = body.clone();
         let metadata = ta_config::records::RecordMetadata { simulation_version: ta_config::SIMULATION_VERSION, match_data_hash: 123, engine_build: "fixture".into(), full_commands: true };
         ta_config::records::append_metadata(&mut bytes, &metadata).unwrap();
@@ -964,6 +969,33 @@ mod tests {
         assert!(replay.duties.is_empty());
     }
 
+    /// A record before version 47 knows no personas: its computer players play as Balanced did,
+    /// and it is written again as it was laid out; today's keep each computer player's persona.
+    #[test]
+    fn records_before_version_47_play_their_computers_balanced() {
+        use crate::setup::Controller;
+        let ticks: Vec<(u64, Vec<Command>)> = Vec::new();
+        let old = crate::setup::SetupV46::from(&GameSetup::duel("before the personas"));
+        let body = codec().serialize(&(46u32, RecordKind::Save, 123u64, &old, Vec::<u8>::new(), &ticks, 0u64, 1_761_000_000u64, "an older save")).unwrap();
+        let mut bytes = body.clone();
+        ta_config::records::append_mods(&mut bytes, &[]).unwrap();
+        let metadata = ta_config::records::RecordMetadata { simulation_version: ta_config::SIMULATION_VERSION, match_data_hash: 123, engine_build: "fixture".into(), full_commands: true };
+        ta_config::records::append_metadata(&mut bytes, &metadata).unwrap();
+        let record = Record::decode(&bytes).unwrap();
+        assert_eq!(record.version, 46);
+        assert_eq!(record.setup.players[1].controller, Controller::Ai(ta_ai::Difficulty::Normal, ta_ai::Persona::Balanced));
+        assert_eq!(bincode::serialize(&record).unwrap(), body, "written again as it was laid out");
+        // Today's records keep the persona, Random as chosen (each machine draws it from the seed).
+        for persona in [ta_ai::Persona::Turtle, ta_ai::Persona::Random] {
+            let mut setup = record.setup.clone();
+            setup.players[1].controller = Controller::Ai(ta_ai::Difficulty::Hard, persona);
+            let current = Record::new(RecordKind::Save, 123, Vec::new(), setup, Vec::new(), 0, "a persona".into());
+            let read = Record::decode(&current.encode().unwrap()).unwrap();
+            assert_eq!(read.version, VERSION);
+            assert_eq!(read.setup.players[1].controller, Controller::Ai(ta_ai::Difficulty::Hard, persona));
+        }
+    }
+
     #[test]
     fn record_execution_rejects_changed_data_and_versions() {
         let mut record = Record::new(RecordKind::Save, 123, Vec::new(), GameSetup::duel("test"), Vec::new(), 0, "test".into());
@@ -988,7 +1020,7 @@ mod tests {
             assert_eq!(record.version, version);
             assert_eq!(record.metadata, None);
             assert_eq!(record.setup.map, "Legacy arena");
-            assert_eq!(record.setup.players[1].controller, crate::setup::Controller::Ai(ta_ai::Difficulty::Hard));
+            assert_eq!(record.setup.players[1].controller, crate::setup::Controller::ai(ta_ai::Difficulty::Hard));
             assert_eq!(record.setup.conquest.as_ref().unwrap().veterans, [("ARMFAV".into(), ta_sim::Fx::ONE)]);
             let id = ta_sim::UnitId { slot: 7, generation: 3 };
             let position = ta_sim::FxVec3::new(ta_sim::Fx::ONE, ta_sim::Fx::ZERO, ta_sim::Fx::from_int(2));

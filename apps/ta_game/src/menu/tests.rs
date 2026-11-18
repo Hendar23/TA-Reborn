@@ -14,7 +14,7 @@ fn assets() -> Assets {
 }
 
 fn seat(kind: SlotKind, color: u8) -> Slot {
-    Slot { kind, side: 0, color, team: color }
+    Slot { kind, side: 0, color, team: color, persona: Default::default() }
 }
 
 fn colours(seats: &[Slot]) -> Vec<u8> {
@@ -77,6 +77,7 @@ fn skirmish_settings_are_saved_and_restored_for_the_pinned_profile() {
     let mut menu = Menu::new(&assets);
     menu.rules.start_metal = 5000;
     menu.slots[1].kind = SlotKind::AiHard;
+    menu.slots[1].persona = ta_ai::Persona::Turtle;
     menu.keep_skirmish(&assets, "First map");
     assert!(store.data_dir(&first.id).unwrap().join(KEPT_SKIRMISH).is_file());
     assert!(!root.join(KEPT_SKIRMISH).exists(), "skirmish preferences must not be shared across profiles");
@@ -94,6 +95,14 @@ fn skirmish_settings_are_saved_and_restored_for_the_pinned_profile() {
     menu.restore_skirmish(&assets);
     assert_eq!((menu.selected_map, menu.rules.start_metal, menu.rules.unit_limit), (0, 5000, 2500));
     assert_eq!(menu.slots[1].kind, SlotKind::AiHard);
+    assert_eq!(menu.slots[1].persona, ta_ai::Persona::Turtle);
+    // (A skirmish kept before personas: its computers play Balanced.)
+    let path = ta_config::player_data_dir().join(KEPT_SKIRMISH);
+    let text = std::fs::read_to_string(&path).unwrap().replace("persona = \"turtle\"", "");
+    std::fs::write(&path, text).unwrap();
+    let mut menu = Menu::new(&assets);
+    menu.restore_skirmish(&assets);
+    assert_eq!((menu.slots[1].kind, menu.slots[1].persona), (SlotKind::AiHard, ta_ai::Persona::Balanced));
 }
 
 /// A scenario of the settings folder that can't be played here (a map or unit the game lacks) is
