@@ -169,6 +169,14 @@ recognises; TA's own files never begin with one.
   along it. The scene draws the kicks of guns that point themselves only as far as they run
   clear (docs/ARCHITECTURE.md); `recoil_scan` in `crates/ta_sim/tests/animation_scan.rs` lists
   how every unit's guns are rigged and what their recoils pass through.
+* **Ground plates:** a piece's `SelectionPrimitive` is the plate under a unit that TA's editor
+  laid for its selection, a flat untextured quad, never drawn. Of TA's 288 wreck and heap models
+  (`*_dead`, `NxNa`...), 21 do not flag theirs: a black (colour 0) quad facing down at the foot of
+  the root, the size of the footprint (32, 48, 64, 80 or 128 square), among the rest of its faces
+  (`armss_dead`'s and `corss_dead`'s in colour 46, `corpyro_dead`'s in 95, `cordev1_dead`'s 1.25
+  under the origin); two more (`armah_dead`, `corckfus_dead`) carry a second copy of their flagged
+  one. Their debris mostly reaches lower (to −11.5 in `armemp_dead`). TA Reborn leaves these out
+  (`model::flag_ground_plates`, `wreck_ground_plates_are_left_out` lists them).
 
 ## Maps (TNT v0x2000 + OTA)
 

@@ -2491,6 +2491,13 @@ where the units go (`hud/domain.rs`, below).
   when it is the root (the Core Mine's unflagged selection plate) or lies on the ground (TA:
   Escalation's Commanders' `flip`, 108 units square: its shadow fell in black wedges where the
   ground dips and its contact occlusion darkened a square round them), `unflagged_ground_plate`.
+  A wreck's (a feature drawn from a 3DO) leaves out the plate among its root's faces too
+  (`model::flag_ground_plates`, as `features.rs` loads it): a flat, untextured four-cornered
+  face facing straight down, on or under the ground, spanning half the model each way, flagged
+  as its piece's selection plate (a copy of a flagged one emptied). 23 of TA's wrecks drew theirs,
+  black and footprint-wide: given its back by `halves::give_backs` (debris lies lower than it, so
+  it was not at the model's foot), each was a large black square at its wreck's base, and
+  darkened the ground round it (`wreck_ground_plates_are_left_out` lists them).
 * **Checking every unit**: `--demo gallery` puts every unit type on show, finished and
   switched on (`TA_GALLERY=<page>`, `TA_GALLERY_SIZE`, `TA_GALLERY_UNITS=a,b`);
   `TA_GALLERY_ACTION=produce|patrol|build` sets them working; `TA_GALLERY_TOUR=<dir>`
