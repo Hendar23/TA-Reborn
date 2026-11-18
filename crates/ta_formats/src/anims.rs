@@ -7,7 +7,19 @@
 //!   step with the ground it covers (as TA's walk scripts are: apps/ta_game's `scene/walk.rs`),
 //!   over whatever its script does to the other pieces;
 //! - `death`: played where the unit dies, its wreck shown once it ends (more than one: one of them
-//!   at random, `death`, `death2`...).
+//!   at random, `death`, `death2`...);
+//! - `active`: a cycle played round and round while the unit works (finished, switched on or
+//!   with no switch, its upkeep paid; a factory or a constructor while it builds): an extractor
+//!   pumping, a factory's arms at work. It slows to a stop where it is when the unit stops
+//!   working, and goes on from there when it starts again;
+//! - `open`: played once as the unit starts working and held at its end while it works, played
+//!   back to its start as it stops: a hatch opening once the building is up;
+//! - `upgrade`: posed by how far an upgrade in place (`UpgradesTo`) has come, its start at none
+//!   and its end at all of it: the building turning into the next, which takes its place once
+//!   it is done.
+//!
+//! `active`, `open` and `upgrade` are added to what the unit's script does with the same pieces
+//! (apps/ta_game's `scene/work.rs`): a dish its script spins spins on as a clip lifts its mast.
 //!
 //! The models TA Reborn makes of Supreme Commander's units have them (crates/ta_supcom, from the
 //! game's `.sca` animations); docs/MODDING.md tells mod makers how to give their models some.
@@ -31,6 +43,12 @@ use crate::{FormatError, Result};
 
 const MAGIC: &[u8; 8] = b"TAANIMS\0";
 const VERSION: u32 = 1;
+
+/// The clips' names, by what they are played for (see the module's notes).
+pub const WALK: &str = "walk";
+pub const ACTIVE: &str = "active";
+pub const OPEN: &str = "open";
+pub const UPGRADE: &str = "upgrade";
 /// The most clips, pieces or frames an animation file may claim.
 const MAX_ITEMS: u32 = 1 << 16;
 
@@ -70,6 +88,23 @@ impl Clip {
     pub fn frame(&self, frame: usize) -> &[Key] {
         let n = self.pieces.len();
         &self.keys[frame * n..(frame + 1) * n]
+    }
+
+    /// Each piece's turns made to run on from frame to frame rather than wrap round (a turn of
+    /// 30,000 and then of -30,000 read as 35,536: the short way, as [`Clip::sample`] goes between
+    /// them): the same poses, of which a share can be taken (a clip faded in or out) without a
+    /// piece jumping half a turn where its turn wraps.
+    pub fn unwrap_turns(&mut self) {
+        let n = self.pieces.len();
+        for f in 1..self.times.len() {
+            for k in 0..n {
+                for c in 0..3 {
+                    let before = self.keys[(f - 1) * n + k].turned[c];
+                    let key = &mut self.keys[f * n + k];
+                    key.turned[c] = before.saturating_add(key.turned[c].wrapping_sub(before) as i16 as i32);
+                }
+            }
+        }
     }
 
     /// Each moved piece's move and turn `at` seconds into the clip (a cycle wraps round from its
@@ -293,6 +328,30 @@ mod tests {
         assert_eq!(out[0][4], 16384.0);
         death.sample(1.0, false, &mut out);
         assert_eq!(out[0][4], 8192.0);
+    }
+
+    /// A piece turning round and round (a pump's shaft): its turns run on past a half turn rather
+    /// than wrap, so that a share of the clip (faded in or out) turns it a share of the way, not
+    /// half a turn back; sampled, the same poses as before.
+    #[test]
+    fn turns_unwrapped_run_on_and_keep_their_poses() {
+        let key = |t: i32| Key { moved: [0; 3], turned: [0, t, 0] };
+        let mut shaft = Clip { name: ACTIVE.into(), seconds: 2.0, pieces: vec![0], times: vec![0.0, 0.5, 1.0, 1.5], keys: vec![key(0), key(20000), key(-25536), key(-5536)] };
+        let mut before = Vec::new();
+        shaft.sample(1.25, true, &mut before);
+        shaft.unwrap_turns();
+        assert_eq!(shaft.keys.iter().map(|k| k.turned[1]).collect::<Vec<_>>(), [0, 20000, 40000, 60000]);
+        let mut after = Vec::new();
+        shaft.sample(1.25, true, &mut after);
+        assert_eq!((after[0][4] - before[0][4]).rem_euclid(65536.0), 0.0, "{} against {}", after[0][4], before[0][4]);
+        // Round the cycle's end, back to its first frame the short way: on to a whole turn.
+        shaft.sample(1.75, true, &mut after);
+        assert_eq!(after[0][4], 62768.0);
+        // And the other way round.
+        let mut back = Clip { keys: vec![key(0), key(-20000), key(25536), key(5536)], ..shaft.clone() };
+        back.unwrap_turns();
+        assert_eq!(back.keys.iter().map(|k| k.turned[1]).collect::<Vec<_>>(), [0, -20000, -40000, -60000]);
+        assert_eq!(Anims { clips: vec![back.clone()] }.clip("ACTIVE"), Some(&back), "named in any case");
     }
 
     #[test]

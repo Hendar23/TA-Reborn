@@ -1981,6 +1981,15 @@ only for units big enough on screen; the simulation's pieces are untouched (a sh
 muzzle before the kick). `TA_RECOIL_ROOM=0` turns it off; `cargo test --release -p ta_game
 recoil_room_report -- --ignored --nocapture` lists those guns' kicks as drawn, and the animation
 scan's `recoil_scan` what every unit's recoils pass through as the scripts move them.
+Buildings play their models' clips for their work (`scene/work.rs`; a model's `active`, `open` and
+`upgrade` clips, `ta_formats::anims`: the Supreme Commander buildings' own): `Scene::after_tick`
+notes each such unit's work at each tick (`work::works`: `Sim::working`, not upgrading, and a
+factory or a builder building) and how far its upgrade in place has come
+(`Sim::self_work_progress`); posing it, the loop goes on at its pace (easing to a stop as the unit
+stops working, held there), the opening forward or back, the upgrade at its share done between the
+ticks, the loop and the upgrade fading in and out as an upgrade starts or is called off, each clip
+added to the script's states (after the walk, before the recoil). The simulation's pieces are
+untouched.
 Big walkers stand level (`ta_sim::defs::big_walker`: a kbot, a Commander or a spider 60 px tall
 or more; the simulation tilts them no more than `Upright=1` units, so their guns fire from where
 they are drawn): those that were not upright (the mods' giants: TA: Enhanced's SpiderBot and
