@@ -20,7 +20,7 @@ as they work. Their sounds come later.
   FACTIONS tab). The dialog finds the game (as for its maps: GOG's or Steam's copy, or a folder
   chosen, kept for the next start), counts each faction's units by kind, with its commander's
   build picture, and makes the factions chosen into the mod **Supreme Commander factions**
-  (`supcom-factions`), turned on, a side each in skirmish. All four take about 443 MB (3,732
+  (`supcom-factions`), turned on, a side each in skirmish. All four take about 680 MB (3,732
   files) and, on a fast computer, about half a minute, most of it writing and installing their
   files; the room on the disk is checked first. A stop installs nothing (not once the mod is being
   installed: STOP is greyed then), and the mod is made whole each time, of the factions chosen
@@ -155,17 +155,32 @@ Each unit's first level of detail becomes `objects3d/<id>.3do` with its surface
   `convert_leaving_out`), the bones staying pieces that draw nothing, and out of what of the
   building stands on the ground. Drawn, they hung under the buildings and lay under their wrecks
   (the units' own models at rest) as dark slabs (converter version 9).
-- **Paint:** the colour, specular and team colour, and normal maps made BC3 of 512 × 512 with every
-  level: Forged Alliance's blocks kept wherever a texture has a level of that size (most; 1024² and
-  2048² ones from their smaller levels), the rest decoded and made again (256² and smaller grown,
-  one-level 1024² ones halved). The units are shaded as `Unit` (UEF), `Insect` (Cybran), `Aeon`
-  and `Seraphim` (each LOD's `ShaderName`): the Seraphim keep the player's colour in their colour
-  map's alpha (their specular map's empty), which the converter moves into the specular map's, as
-  the others have it. Their dark paint mirrors the sky over most of it (the specular map's red):
-  TA Reborn draws strong mirroring as polished metal. The normal maps are Direct3D's (x along u, y
-  along v, down the picture): across the meshes' seams, where the two sides' texture coordinates
-  run different ways, the normals they give agree best read so (the meshes' own tangents and
-  binormals run against u and v).
+- **Paint:** the colour, specular and team colour, and normal maps, each as large as Forged
+  Alliance paints it, from 512 to 1024 texels a side, with every level (`textures::texture`,
+  `ta_formats::dds::paint_side`): its 1024s keep their texels (145 of the 357 units' colour and
+  specular maps, 71 normal maps: most buildings, the commanders, the larger ships and the
+  experimentals), the Monkeylord's 2048s are taken at their 1024 level, its 512s stay as they are,
+  and its 256s and smaller are enlarged to 512, twice each way at a time by a Catmull-Rom spline
+  kept within the two by two texels nearest each new one (`dds::enlarge`: edges as sharp as the
+  texture has them, where sampling between texels blurred them; whole numbers, the same on every
+  computer). Forged Alliance's blocks are kept as they are wherever a texture has a level of the
+  size taken; its DXT1 colour maps' blocks of three colours (two thirds of their blocks), which
+  BC3's colour half cannot read, are given the same three colours as four-colour blocks where BC3
+  can hold them (`three_as_four`: one end moved half as far again past the other, so that a third
+  of the way is the halfway colour; encoded again, the halfway colour fell between the thirds),
+  else encoded again. Halved to 512 as before version 10, a factory filling much of the screen at
+  the classic camera's closest was drawn from a quarter of Forged Alliance's texels, each blown up
+  over two pixels and more, DXT's 4 × 4 blocks and all. The specular and normal maps are BC3, the
+  colour map BC1 (`textures::opaque`: the same colours, its alpha not drawn; half the bytes). The
+  units are shaded as `Unit` (UEF), `Insect` (Cybran), `Aeon` and `Seraphim` (each LOD's
+  `ShaderName`): the Seraphim keep the player's colour in their colour map's alpha (their
+  specular map's empty), which the converter moves into the specular map's, as the others have
+  it, glowing (the specular map's blue a quarter of the alpha, `SERAPHIM_GLOW`) as Forged
+  Alliance's ramp of light over their paint does. Their dark paint mirrors the sky over most of
+  it (the specular map's red): TA Reborn draws strong mirroring as polished metal. The normal
+  maps are Direct3D's (x along u, y along v, down the picture): across the meshes' seams, where
+  the two sides' texture coordinates run different ways, the normals they give agree best read
+  so (the meshes' own tangents and binormals run against u and v).
 - **Light:** Forged Alliance lights its paint in its texels' own (gamma) space, by its map's
   lighting multiplier and sun (about 1.3 each on its maps): a lit face of the UEF's (`Unit`, the
   sky its specular map's red mirrors on top) some 1.6 times as bright as its texel, of the Cybran's
@@ -193,7 +208,8 @@ Each unit's first level of detail becomes `objects3d/<id>.3do` with its surface
   first's pieces (a bone the piece of its name, or of the nearest of its parents with one), painted
   with the first's paint, as `objects3d/<id>_lod1.3do`, which the first's surface names `far`.
 
-The 357 units' models come to 56 MB and their paint to 361 MB, made in about seven seconds.
+The 357 units' models come to 56 MB and their paint to 615 MB (375 MB before version 10, every
+texture at 512), made in about twelve seconds.
 
 ## Gameplay
 

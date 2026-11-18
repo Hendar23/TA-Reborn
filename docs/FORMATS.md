@@ -466,10 +466,10 @@ model, of the same name. Little-endian:
 * A primitive whose texture name is one of the surface's materials (any case) is painted with it;
   any other is drawn as TA draws it. A surface whose pieces or vertices do not match its model's is
   not used (the log and the mod check say so).
-* The textures' channels: the colour map's RGB (sRGB; alpha unused); the specular map's red (how
-  much it mirrors its surroundings), green (how glossy), blue (where it glows by itself) and alpha
-  (where it takes the player's colour); the normal map's tangent-space normal, x in alpha and y in
-  green (z made up), x along u and y along v down the picture, as Direct3D's are.
+* The textures' channels: the colour map's RGB (sRGB; alpha unused, so BC1 serves); the specular
+  map's red (how much it mirrors its surroundings), green (how glossy), blue (where it glows by
+  itself) and alpha (where it takes the player's colour); the normal map's tangent-space normal, x
+  in alpha and y in green (z made up), x along u and y along v down the picture, as Direct3D's are.
 * `far`: a lighter model (a 3DO with its own surface, of the same pieces in the same order) drawn
   in this one's place when it is under 48 pixels across on screen; a model drawn as itself the
   frame before stays so down to 42 (no swapping back and forth as the camera shakes).
@@ -526,12 +526,21 @@ posed by the ground they cover. Little-endian:
 `ta_formats::dds` reads DirectDraw Surfaces: DXT1, DXT3 and DXT5 (BC1, BC2, BC3) and uncompressed
 colour of 8 to 32 bits described by masks, a mip level at a time, or its blocks as stored. The paint
 of models with surfaces is drawn from arrays of BC3 layers of 512 × 512 texels with every mip level
-(`to_bc3_levels`): a DXT5 of that size with its levels is taken as it is; DXT1's and DXT3's are made
-BC3 block by block (DXT1's four-colour blocks keep their colours under an opaque alpha, its
-three-colour ones are encoded again, since BC3 always reads four; DXT3's colours stay, its alpha is
-encoded); anything else is decoded, halved or grown to 512 and encoded level by level. The encoders
-(an alpha block's ends its least and greatest, a colour block's ends along the colours' main axis,
-refined once by least squares) use plain arithmetic in a fixed order: the same bytes everywhere.
+(`to_bc3_levels`): a DXT5 with a level of that size and every level below it is taken as it is;
+DXT1's and DXT3's are made BC3 block by block (DXT1's four-colour blocks keep their colours under
+an opaque alpha; its three-colour ones, which BC3 cannot read since it always reads four, are
+given the same three colours where four can hold them, one end kept and the other moved half as far
+again past it so that a third of the way along is the halfway colour, to a 565's rounding, and are
+encoded again where that comes no nearer or a texel takes the see-through black; DXT3's colours
+stay, its alpha is encoded); anything else is decoded, halved or grown to that side and encoded
+level by level. Growing doubles a texture each way at a time where it can (`enlarge`: each new
+texel from a Catmull-Rom spline through the 4 × 4 texels round it, its weights at a quarter of a
+texel whole 128ths, kept within the 2 × 2 texels nearest: edges stay sharp, nothing rings), and
+samples between texels for what is left. `paint_side` is the side a texture is made at: the
+largest power of two its larger side reaches, from 512 to a most (Supreme Commander's factions'
+paint is made so, up to 1024). The encoders (an alpha block's ends its least and greatest, a colour
+block's ends along the colours' main axis, refined once by least squares) use plain arithmetic in a
+fixed order: the same bytes everywhere.
 A file claiming more mip levels than its size halves into is read with those its size has (a
 300 × 300 claiming four billion has nine), and only those its file holds; uncompressed channels
 take up to all 32 bits of a texel.
