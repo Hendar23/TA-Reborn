@@ -1696,12 +1696,15 @@ impl Hud {
         let canvas = ranges::Canvas { painter: &painter, lens, ground: &ground_at, free: free.intersect(view), clock, still, placed: std::cell::RefCell::new(self.minimap_rect.filter(|_| !self.classic).map(|m| vec![m.expand(6.0)]).unwrap_or_default()) };
         for r in ranged {
             let t = game.sim.types.get(r.type_id);
-            let weapon = t.weapons.iter().flatten().map(|&w| game.sim.weapon_types.get(w)).filter(|w| !w.def.stockpile && !w.def.interceptor).map(|w| w.range.to_f32()).fold(0.0, f32::max);
+            // (A unit in play: its own weapons and sensors, as its enhancements have them; one
+            // being placed, its type's.)
+            let unit = r.unit(game);
+            let weapon = ranges::weapon_reach(t, unit, &game.sim.weapon_types);
             // (The weapons' reach shows with all the ranges, not with the sensors' alone.)
             if r.weapons && weapon > 0.0 && game.range_overlays == ta_config::RangeOverlays::All {
                 ring(r.at, weapon, Stroke::new(1.5, Color32::from_rgba_unmultiplied(255, 90, 70, 170)));
             }
-            for range in ranges::shown_ranges(t, &game.sim.weapon_types, game.range_overlays) {
+            for range in ranges::shown_ranges(t, unit, &game.sim.weapon_types, game.range_overlays) {
                 ranges::draw(&canvas, r.at, range, r.power);
                 if !still && r.power == ranges::Power::On {
                     ctx.request_repaint();

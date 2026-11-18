@@ -1967,7 +1967,9 @@ with a beam sweeping round, a sonar's with pings, a jammer's dashed rim, the uni
 dashed beside them, each captioned, out of the view's reach beside the unit; the colours are the sight
 overlay's, and the minimap shows the same discs, a radar's whole coverage at a glance; a unit switched
 off dims them and says OFF; `--demo radar`, `TA_RADAR_UNIT`, `TA_RADAR_OFF`; the player's RANGES,
-`gameplay.range_overlays`, Alt+O, shows them all, the radar, sonar and jammers' alone or none; every
+`gameplay.range_overlays`, Alt+O, shows them all, the radar, sonar and jammers' alone or none; a
+unit in play shows its own sensors and weapons, as its enhancements have them (`Ranged::unit`,
+`Unit::weapon_slots`), one being placed its type's; every
 rim and ring on the ground, a weapon's reach too, is laid by `hud/ground_line.rs`: only what is in
 front of the eye and in the view, a point every few screen points there, a few thousand at most
 however far it reaches: a rim of a fixed number of points, cut where the eye's plane met it, ran

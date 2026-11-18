@@ -19,8 +19,8 @@
   cloak. The build menu's ENHANCE tab lists them, a slot each, with their price and what they need
   first (the classic interface: an ENHANCE button); a click installs one, built on the commander
   with its own build power as an upgrade is, a right-click takes one out. The information page
-  (F1) shows them, those installed marked. The computer players install engineering suites and a
-  gun upgrade. Any mod can use them (`[ENHANCEMENTS]`, see
+  (F1) shows them, those installed marked, and the range overlays show what an enhanced unit
+  reaches. The computer players install engineering suites and a gun upgrade. Any mod can use them (`[ENHANCEMENTS]`, see
   [docs/MODDING.md](docs/MODDING.md#enhancements)); make the factions' mod again (UPDATE) to have
   them. Shields, teleporting, drones, resource allocation and the other enhancements TA Reborn
   does not play yet are left out.
