@@ -1910,7 +1910,8 @@ flags; faces painted with a track (`Tredside*`) carry their tread rate and side 
 `unit.wgsl` runs their texture by it. `hud.rs` is the egui HUD with portraits of the units
 (`ta_render::portrait`: each type's model drawn once per player's colour and size, posed as it
 stands finished, `scene::standing_pose`, by the battle's own shader in a studio's light, on a
-clear ground the HUD sets on a gunmetal backdrop; TA's `unitpics` with the classic panels, for
+clear ground the HUD sets on a gunmetal backdrop, or in a build menu on the ground where the unit
+goes, `hud/domain.rs`; TA's `unitpics` with the classic panels, for
 players' pictures and while a portrait is not drawn yet), order and state buttons, a hover card per unit (after the pointer rests;
 more after longer; under its health, a finished unit of ours or an ally's shows what it makes and
 uses of metal and energy a second now, `Sim::unit_flows`), the time left over what is being built
@@ -1933,7 +1934,8 @@ acknowledgements of orders (`Game::order_marks`, pushed by
 `Game::mark_order` where orders are given by clicks) and the minimap (fog overlay, alert
 pings). The top bar's economy (`hud/economy.rs`) reads each store as a `Store` with its
 `StoreState` (stalling from the economy's `build_factor`); `hud/deck.rs` shows a constructor's
-build menu by `Purpose` on tabs (`Hud::build_tab`).
+build menu by `Purpose` on tabs (`Hud::build_tab`), each tab, and a factory's list, ordered by
+where the units go (`hud/domain.rs`, below).
 
 * **Version, logs and crashes**: both programs show the version with the commit they were
   built from ("1.0.0 (c752ef7fe)", `TA_BUILD_COMMIT` from the build script), in the main
@@ -2439,6 +2441,32 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
     selection's plate has what it wants (`MIDDLE_WANTED`): the stance to glyphs, then the forces'
     columns narrow. The other overlays keep above the deck (`Clearance`); the battlefield's own
     marks show between its plates.
+  * **Where a unit goes** (`hud/domain.rs`), as Forged Alliance's build icons tell it: every
+    portrait in a build menu (the deck's, and the radial menu's rings of buildings and units)
+    stands on the ground of its `Domain`, in place of the gunmetal: grass for land, water for the
+    sea, the two split on the diagonal (land at the top left) for both, sky for aircraft. The
+    domain is the simulation's reading of the unit (`Domain::of`, one function): an aircraft
+    (`Locomotion::Air`, seaplanes too) the air, a hovercraft both, a ship or a submarine
+    (`Locomotion::Naval`) the sea; a unit on the ground both when its movement class (as
+    `MoveSpec::for_type` reads it, its own `MaxWaterDepth` with none) lets it go at least
+    `DEEP` (50) under the water, else land: TA's wading classes go 12 to 23 deep (the mods' up to
+    27), its amphibians' 100 (the Commanders and their decoys, the Triton and the Crock, the
+    Pelican and the Gimp, the crawling bombs), the mods' 255; a building as its placement
+    (`World::placement_error`) has it: any `MinWaterDepth` the sea (yards, seaplane platforms,
+    tidal generators, sonar, floating towers, the underwater extractors, storages and fusion
+    plants), a `MaxWaterDepth` of `DEEP` or more both (none of TA's; the mods' mines, storages and
+    plants that stand anywhere), else land (the air repair pads and the Core's fusion plant may
+    stand in a pixel of water, the mods' buildings in up to 18). A factory goes where it stands,
+    whatever it makes (an aircraft plant on grass). `Upright` and the `Amphibious` of TA's seaplanes play no part. The lists are ordered by
+    it (`domain::menu_order`, a stable sort): land first, then both, then the sea, then aircraft,
+    each group in the menu's own order (TA's pages and download entries, `GameData::build_menus`);
+    neither the player nor a mod has another way to order a menu. A picture with a ground of its
+    own keeps it: TA's `unitpics` (the classic interface, a portrait not drawn yet) and the Supreme
+    Commander factions' build pictures (`own_picture`: their game's icon on its frame). The
+    grounds are original art drawn by `tools/hud/grounds.py` into `apps/ta_game/hud/grounds.png`
+    (the four side by side at 192 pixels, in the order of `Domain`), brought down to six sizes as
+    they are first drawn (no mipmaps in egui's wgpu renderer), each drawn from the smallest at
+    least about as large as it is shown.
 * **Radial menu** (`radial.rs`, drawn by `hud/radial.rs`): the ring of a unit's choices round the
   pointer, for the mouse, the keys and a pad. What it offers is `radial::entries`, from the same
   list of orders as the command plate (`orders::available`) and the standing orders: a tower's

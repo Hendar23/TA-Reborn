@@ -19,6 +19,7 @@ use ta_ui::i18n::{n, t, tf};
 use crate::game::{CommandMode, Game, UnitInfo};
 use crate::input::Input;
 use crate::hud::Purpose;
+use crate::hud::domain::{self, Domain};
 use crate::hud_icons::Glyph;
 use crate::orders::{self, Kind};
 
@@ -125,11 +126,14 @@ pub struct Entry {
     pub cost: Option<(f32, f32)>,
     /// It would do nothing now (`hint` says why): drawn dim, and it makes nothing happen.
     pub disabled: bool,
+    /// What its picture stands on, as the build menus show a unit to build: the ground where the
+    /// unit goes (`hud::domain`).
+    pub ground: Option<Domain>,
 }
 
 impl Entry {
     pub(crate) fn new(id: Id, glyph: Glyph, label: impl Into<String>, hint: impl Into<String>) -> Entry {
-        Entry { id, glyph: Some(glyph), picture: None, label: label.into(), detail: None, action: None, key: None, hint: hint.into(), tone: Tone::Normal, lit: false, count: 0, opens: false, stays: false, cost: None, disabled: false }
+        Entry { id, glyph: Some(glyph), picture: None, label: label.into(), detail: None, action: None, key: None, hint: hint.into(), tone: Tone::Normal, lit: false, count: 0, opens: false, stays: false, cost: None, disabled: false, ground: None }
     }
 
     /// It cannot be made now, for `why` (shown where its hint is).
@@ -821,15 +825,24 @@ fn type_entry(game: &Game, id: Id, ty: usize, builder: &ta_sim::UnitType) -> Ent
     let mut e = Entry::new(id, Glyph::Build, label, hint.join("\n"));
     e.glyph = None;
     e.picture = Some(ty);
+    e.ground = Some(Domain::of(k, &game.sim.data.move_classes));
     e.detail = Some(cost_line(game, ty));
     e.cost = Some((k.cost_metal.to_f32(), k.cost_energy.to_f32()));
     e
 }
 
+/// What `builder` offers to build (those allowed in this battle), in its build menu's order: land
+/// first, then what goes on both, then the sea's, then aircraft (`domain::menu_order`).
+fn offered(game: &Game, builder: &ta_sim::UnitType) -> Vec<usize> {
+    let mut options: Vec<usize> = builder.build_options.iter().copied().filter(|&o| game.sim.is_allowed(o)).collect();
+    domain::menu_order(&game.sim.types, &game.sim.data.move_classes, &mut options);
+    options
+}
+
 /// A factory's units, a page of them: a click queues one, Shift five, right-click takes one off.
 fn unit_ring(game: &Game, u: &Unit, k: usize) -> Vec<Entry> {
     let builder = game.sim.unit_type(u).clone();
-    let options: Vec<usize> = builder.build_options.iter().copied().filter(|&o| game.sim.is_allowed(o)).collect();
+    let options = offered(game, &builder);
     let queued = |ty: usize| u.factory_queue.iter().filter(|&&q| q == ty).count();
     let list: Vec<Entry> = options
         .iter()
@@ -854,7 +867,7 @@ fn unit_ring(game: &Game, u: &Unit, k: usize) -> Vec<Entry> {
 /// A constructor's kinds of building by purpose: each with the picture of its first.
 fn purpose_ring(game: &Game, u: &Unit) -> Vec<Entry> {
     let builder = game.sim.unit_type(u);
-    let options: Vec<usize> = builder.build_options.iter().copied().filter(|&o| game.sim.is_allowed(o)).collect();
+    let options = offered(game, builder);
     Purpose::ALL
         .iter()
         .enumerate()
@@ -874,11 +887,9 @@ fn purpose_ring(game: &Game, u: &Unit) -> Vec<Entry> {
 fn building_ring(game: &Game, u: &Unit, purpose: usize, k: usize) -> Vec<Entry> {
     let builder = game.sim.unit_type(u).clone();
     let Some(&p) = Purpose::ALL.get(purpose) else { return Vec::new() };
-    let list: Vec<Entry> = builder
-        .build_options
-        .iter()
-        .copied()
-        .filter(|&o| game.sim.is_allowed(o) && Purpose::of(&game.sim.types, game.sim.types.get(o)) == p)
+    let list: Vec<Entry> = offered(game, &builder)
+        .into_iter()
+        .filter(|&o| Purpose::of(&game.sim.types, game.sim.types.get(o)) == p)
         .map(|o| type_entry(game, Id::Place(o), o, &builder))
         .collect();
     let mut shown = page(list, k);

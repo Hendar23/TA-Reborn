@@ -948,6 +948,18 @@ Units the data does not define are left out. In the classic interface a page's b
 `anims/<page>.gaf`'s art of their names, a download entry's `anims/<unit>_gadget.gaf`; without art,
 the unit's picture.
 
+The modern interface lays the same menu out on its own tabs (by what each building is for), and
+lists each tab, and a factory's units, by where they go: land first, then what goes on both, then
+the sea's, then aircraft, in the pages' order within each. Each picture stands on that ground
+(grass, grass and water, water, sky). Where a unit goes is read from its data as the game plays
+it: an aircraft (`CanFly`) the air; a hovercraft (`CanHover`) both; a unit that needs water
+(`MinWaterDepth` above 0, or `Floater` without a `MaxWaterDepth`) the sea; another unit both when
+its `MovementClass` (else its own `MaxWaterDepth`) lets it go 50 or more under the water, else land;
+a building the sea when it has a `MinWaterDepth` above 0, both when its `MaxWaterDepth` is 50 or
+more, else land. There is no key to order a menu otherwise. A unit with a picture of its own
+ground (a model with a surface and a `unitpics` picture, as the Supreme Commander factions' are) is
+shown as its picture is.
+
 **Build power makes a builder.** A unit with a `WorkerTime` above 0 has a menu and builds what it
 offers, whatever its `Builder` flag says: the mods' buildings that build their own upgrades have
 `Builder=0`. A unit without `WorkerTime` builds nothing, whatever its pages and lists name (the
