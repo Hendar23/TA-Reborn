@@ -194,6 +194,14 @@ pub struct UnitDef {
     /// Units this builder offers a player, in menu order: its GUI pages' and the download
     /// entries naming it (`GameData::build_menus`).
     pub build_options: Vec<String>,
+    /// The unit it becomes when upgraded in place (`UpgradesTo`, Supreme Commander's
+    /// `General.UpgradesTo`): given the order, it builds that unit on itself with its own build
+    /// power (`WorkerTime`), paying the unit's cost over its build time as construction does, and
+    /// is that unit when done, where it stood. Upper case; empty: none (TA's own units have none).
+    pub upgrades_to: String,
+    /// What it may install on itself (`[ENHANCEMENTS]` within its `[UNITINFO]`, in the file's
+    /// order: [`crate::EnhancementDef`]): Supreme Commander's commander enhancements. None of TA's.
+    pub enhancements: Vec<crate::EnhancementDef>,
     /// What the computer players build with it besides: the 3.1 patch's `[CANBUILD]` list for it
     /// (`gamedata/sidedata.tdf`), its entries not on its menu. TA's computer players went by
     /// these lists, its players by the menus: mods list units of their AI there that players are
@@ -362,6 +370,8 @@ impl UnitDef {
             pitch_scale: f("PitchScale", 1.0),
             steering_mode: s.get_i64_or("SteeringMode", 1).clamp(0, u32::MAX as i64) as u32,
             unit_number: count("UnitNumber", 0),
+            upgrades_to: st("UpgradesTo").to_ascii_uppercase(),
+            enhancements: crate::EnhancementDef::of_unit(s),
             build_options: Vec::new(),
             ai_build_options: Vec::new(),
             name,
@@ -420,6 +430,8 @@ mod tests {
         let x = read("[UNITINFO]{UnitName=X; MaxDamage=0; BuildTime=.5; MaxVelocity=2.5 fast; Builder=yes; WorkerTime=-;}").unwrap();
         assert_eq!((x.max_damage, x.build_time, x.max_velocity, x.worker_time), (1.0, 1.0, 2.5, 0.0), "at least a point of damage and a tick of building");
         assert!(!x.builder, "yes is no number: 0, as TA read it");
+        assert!(u.upgrades_to.is_empty(), "TA's units upgrade into nothing");
+        assert_eq!(read("[UNITINFO]{UnitName=UEB0101; UpgradesTo= ueb0201 ;}").unwrap().upgrades_to, "UEB0201", "the unit it upgrades into, in capitals");
     }
 
     /// The mods' upgrade modules: a footprint of none, or a speed with an acceleration of none (a

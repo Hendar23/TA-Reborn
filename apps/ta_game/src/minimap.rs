@@ -398,7 +398,7 @@ impl Minimap {
         for held in crate::hud::ranges::collect(game, game.alpha(), None) {
             let centre = to_screen(held.at.x, held.at.z);
             let dim = if held.power == crate::hud::ranges::Power::On { 1.0 } else { 0.4 };
-            for range in crate::hud::ranges::shown_ranges(game.sim.types.get(held.type_id), &game.sim.weapon_types, game.range_overlays) {
+            for range in crate::hud::ranges::shown_ranges(game.sim.types.get(held.type_id), held.unit(game), &game.sim.weapon_types, game.range_overlays) {
                 if range.reach == crate::hud::ranges::Reach::Sight {
                     continue;
                 }

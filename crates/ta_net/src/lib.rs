@@ -95,10 +95,12 @@ pub use transport::{Client, Host, HostEvent};
 /// themselves (`HealTime`), wreckage pays its metal alone; 107: interceptors take only the
 /// missiles of their classes (`interceptor` and `targetable` read as sets of classes), once they
 /// are within their range; 108: repair patrols, `DefaultMissionType=RepairPatrol` builders mending
-/// the damaged units round them by themselves, on their pads too.)
+/// the damaged units round them by themselves, on their pads too; 109: `Order::Upgrade`, a unit
+/// upgraded in place, and the computer players' upgrades; `Order::Enhance`, enhancements installed
+/// and taken out, and the computer players' enhancements.)
 /// [`Msg::Hello`] and [`Refusal::Version`] keep their layout, so builds of other protocols are
 /// still told why they cannot meet.
-pub const PROTOCOL: u32 = 108;
+pub const PROTOCOL: u32 = 109;
 pub const DEFAULT_PORT: u16 = 7890;
 /// Ticks between state hash reports (which double as progress reports).
 pub const HASH_INTERVAL: u64 = 15;

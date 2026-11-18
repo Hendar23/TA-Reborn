@@ -82,16 +82,17 @@ impl Sim {
             let active = u.activated || !t.def.on_offable && t.energy_use.is_zero();
             f = self.flows_of(u.type_id, active, u.upkeep_paid, u.occupied_origin);
         }
-        if u.cloak_on && t.def.cloak_cost > 0.0 && u.carried_by.is_none() {
-            let cost = if u.moving && t.def.cloak_cost_moving > 0.0 { t.def.cloak_cost_moving } else { t.def.cloak_cost };
-            f.energy_use += Fx::from_f64(cost);
+        if u.cloak_on && u.carried_by.is_none()
+            && let Some((still, on_the_move, _)) = u.cloak_costs(t)
+        {
+            f.energy_use += if u.moving && on_the_move > Fx::ZERO { on_the_move } else { still };
         }
         // Building: a second of its work, as a share of what it builds, at the builder's pace (as
         // `Sim::apply_build_power` has it: the engineer's perk and the build-speed mutator too;
         // nothing for mending one being taken apart).
         let working = u.is_complete() && u.carried_by.is_none() && self.tick >= u.paralyzed_until;
         if working && let Some(target) = u.build.and_then(|b| self.unit(b.target)).filter(|b| !b.dead && b.carried_by.is_none() && !b.is_complete() && !self.being_taken_apart(b)) {
-            let rate = self.mutator_work_rate(self.perk_work_rate(u.id, t.work_rate));
+            let rate = self.mutator_work_rate(self.perk_work_rate(u.id, u.work_rate(t)));
             let (tt, per_second) = (self.unit_type(target), rate.saturating_mul(TICKS_PER_SECOND as u64));
             f.metal_use += tt.cost_metal.share(per_second, tt.build_work.max(1));
             f.energy_use += tt.cost_energy.share(per_second, tt.build_work.max(1));
@@ -99,7 +100,7 @@ impl Sim {
         if working && u.in_build_stance && u.build.is_some() && let Some(crate::unit::Order::Resurrect(feature)) = u.orders.front()
             && let Some(type_id) = self.wreck_type(*feature).filter(|&t| self.is_allowed(t))
         {
-            let rate = self.mutator_work_rate(self.perk_work_rate(u.id, t.work_rate));
+            let rate = self.mutator_work_rate(self.perk_work_rate(u.id, u.work_rate(t)));
             let rt = self.types.get(type_id);
             if self.features[*feature].resurrect_work < rt.build_work {
                 f.energy_use += rt.cost_energy.share(rate.saturating_mul(TICKS_PER_SECOND as u64), rt.build_work);
@@ -109,7 +110,7 @@ impl Sim {
         // one does. Include it in the unit card's draw, stopping when full or switched off.
         if u.is_complete() && u.carried_by.is_none() && self.tick >= u.paralyzed_until
             && u.stockpile < crate::combat::MAX_STOCKPILE && (u.activated || !t.def.on_offable)
-            && let Some(w) = t.weapons.iter().flatten().map(|&w| self.weapon_types.get(w)).find(|w| w.def.stockpile)
+            && let Some(w) = u.weapon_slots(t).iter().flatten().map(|&w| self.weapon_types.get(w)).find(|w| w.def.stockpile)
         {
             f.metal_use += w.metal_per_shot.share(TICKS_PER_SECOND as u64, w.reload_ticks.max(1) as u64);
             f.energy_use += w.energy_per_shot.share(TICKS_PER_SECOND as u64, w.reload_ticks.max(1) as u64);

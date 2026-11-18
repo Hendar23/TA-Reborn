@@ -930,6 +930,24 @@ take up to all 32 bits of a texel.
   two cells wide through its middle, north to south, with walls either side: a unit built on
   the pad walks out through the factory's front wall (the engine lets it, until it is clear
   of the footprint).
+* **`UpgradesTo`** (TA Reborn's, for mods; Supreme Commander's `General.UpgradesTo`): the unit a
+  unit becomes upgraded in place (`Order::Upgrade`, docs/MODDING.md). None of TA's units gives
+  it. It builds that unit on itself with its own `WorkerTime` (and helpers'), at that unit's price
+  and build time, as construction pays and stalls; done, a unit of that type stands in its place,
+  finished, with its share of health, its queued orders, a factory's queue and route, its fire and
+  move orders and experience; the old one is taken off the map without a wreck or a loss. Called
+  off, its metal comes back (not its energy). A factory makes nothing while it upgrades.
+* **`[ENHANCEMENTS]`** (TA Reborn's, for mods; Supreme Commander's `Enhancements`), a section
+  within `[UNITINFO]`, one section an enhancement named by its id, in the menus' order: parts a
+  unit installs on itself (`Order::Enhance`), one a `Slot`, a `Prerequisite` first, at a unit's
+  price and work (`BuildCostMetal`, `BuildCostEnergy`, `BuildTime`) with its own build power, as an
+  upgrade in place is built. Installed, its `MaxDamage`, `HealRate` (hit points a second),
+  `WorkerTime`, `SightDistance`, `RadarDistance`, `SonarDistance` and `BuildOptions` add to the
+  unit's (`Boost`, `ta_sim::unit`), its `WeaponN` takes the unit's slot N, its `CloakCost`,
+  `CloakCostMoving`, `MinCloakDistance` and `Stealth` give it a cloak and stealth. The unit's
+  health rises with its most and falls to it, no further, when one is taken out (at once, for
+  nothing). The script's `SetEnhancement(index, on)` hears of each (the index in the file's order).
+  None of TA's units has any; the state is in the checksum (`Unit::enhancements`).
 * Build menus: `guis/<BUILDER><page>.gui` + `download/*.tdf`. The 3.1 patch's `[CANBUILD]` in
   sidedata is the computer players' list, never a player's menu: mods list units of their AI
   there (TA: The Final Frontier's AI Boost: `AAISOLAR` beside the `ARMSOLAR` a player builds,

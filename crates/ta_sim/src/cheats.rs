@@ -81,7 +81,7 @@ impl Sim {
             }
             Cheat::Destroy(units) => {
                 for &id in units {
-                    let Some(max) = self.unit(id).filter(|u| !u.dead).map(|u| self.types.get(u.type_id).max_health) else { continue };
+                    let Some(max) = self.unit(id).filter(|u| !u.dead).map(|u| u.max_health(self.types.get(u.type_id))) else { continue };
                     if let Some(u) = self.unit_mut(id) {
                         // A full-blooded death: its Killed script blows it to pieces.
                         u.health = Fx::ZERO;
@@ -93,7 +93,7 @@ impl Sim {
             }
             Cheat::Heal(units) => {
                 for &id in units {
-                    let Some(max) = self.unit(id).filter(|u| !u.dead).map(|u| self.types.get(u.type_id).max_health) else { continue };
+                    let Some(max) = self.unit(id).filter(|u| !u.dead).map(|u| u.max_health(self.types.get(u.type_id))) else { continue };
                     if let Some(u) = self.unit_mut(id) {
                         u.health = u.health.max(max * u.build_progress).max(Fx::ONE);
                         if u.is_complete() {

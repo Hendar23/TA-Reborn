@@ -19,6 +19,8 @@ use crate::world::{CELL, MoveSpec, Occupant, Region, World};
 
 mod air;
 mod repair_round;
+pub mod enhance;
+mod upgrade;
 
 /// Base resource storage every player has regardless of buildings (TA default).
 const BASE_STORAGE: i64 = 1000;
@@ -853,8 +855,10 @@ impl Sim {
             return;
         }
         let moving = u.speed > Fx::ZERO;
-        let per_second = if moving && t.def.cloak_cost_moving > 0.0 { t.def.cloak_cost_moving } else { t.def.cloak_cost };
-        let cost = Fx::from_f64(per_second) / TICKS_PER_SECOND;
+        // (Its own cloak, or its enhancements'.)
+        let (still, on_the_move, within) = u.cloak_costs(t).unwrap_or((Fx::ZERO, Fx::ZERO, Fx::ZERO));
+        let per_second = if moving && on_the_move > Fx::ZERO { on_the_move } else { still };
+        let cost = per_second / TICKS_PER_SECOND;
         let (owner, pos) = (u.owner, u.pos);
         let e = &mut self.players[owner as usize].economy;
         let paid = e.energy >= cost;
@@ -863,7 +867,7 @@ impl Sim {
             e.energy -= cost;
             e.tick_energy_out += cost;
         }
-        let reach = Fx::from_f64(t.def.min_cloak_distance.max(8.0));
+        let reach = within.max(Fx::from_int(8));
         let mut near = std::mem::take(&mut self.scratch);
         self.grid.query(pos, reach + Fx::from_int(48), &mut near);
         let mut mask = 0u64;
@@ -909,10 +913,11 @@ impl Sim {
             return Seen::Visible;
         }
         let t = self.types.get(u.type_id);
-        if t.def.stealth && !sonar {
+        let stealth = u.stealthy(t);
+        if stealth && !sonar {
             return Seen::Hidden;
         }
-        let radar = !t.def.stealth && !submerged && flags & vision::RADAR != 0 && jammed & vision::RADAR_JAM == 0;
+        let radar = !stealth && !submerged && flags & vision::RADAR != 0 && jammed & vision::RADAR_JAM == 0;
         if radar || sonar { Seen::Radar } else { Seen::Hidden }
     }
 
@@ -1046,12 +1051,14 @@ impl Sim {
         let (types, tick) = (self.types.clone(), self.tick);
         for u in self.units.iter_mut().flatten() {
             let t = types.get(u.type_id);
-            if t.heal_ticks == 0 || u.dead || !u.is_complete() || u.health <= Fx::ZERO || u.health >= t.max_health {
+            // (Its own, with its enhancements': they mend faster, and to more.)
+            let (ticks, most) = (u.heal_ticks(t), u.max_health(t));
+            if ticks == 0 || u.dead || !u.is_complete() || u.health <= Fx::ZERO || u.health >= most {
                 continue;
             }
-            let k = tick % t.heal_ticks;
-            let heal = crate::defs::HEAL_POINTS.share(k + 1, t.heal_ticks) - crate::defs::HEAL_POINTS.share(k, t.heal_ticks);
-            u.health = (u.health + heal).min(t.max_health);
+            let k = tick % ticks;
+            let heal = crate::defs::HEAL_POINTS.share(k + 1, ticks) - crate::defs::HEAL_POINTS.share(k, ticks);
+            u.health = (u.health + heal).min(most);
         }
     }
 
@@ -1079,7 +1086,7 @@ impl Sim {
             let pos = u.pos;
             let complete = u.is_complete();
             // Nanoframes only reveal their immediate surroundings.
-            let sight = if complete { t.sight.to_int() } else { t.sight.to_int().min(t.radius.to_int() * 2) };
+            let sight = if complete { u.sight(t).to_int() } else { t.sight.to_int().min(t.radius.to_int() * 2) };
             // (The eye: about the unit's size above where it stands, flies or floats.)
             let eye = pos.y.to_int() + (t.radius.to_int() + 8).clamp(16, 72);
             sensors.push(Sensor { player, pos, radius: sight.max(t.radius.to_int() + 16), flag: vision::LOS, eye });
@@ -1087,8 +1094,8 @@ impl Sim {
                 continue;
             }
             for (range, flag) in [
-                (t.radar.to_int(), vision::RADAR),
-                (t.def.sonar_distance as i64, vision::SONAR),
+                (u.radar(t).to_int(), vision::RADAR),
+                (u.sonar(t).to_int(), vision::SONAR),
                 (t.def.radar_jam as i64, vision::RADAR_JAM),
                 (t.def.sonar_jam as i64, vision::SONAR_JAM),
             ] {
@@ -1762,7 +1769,8 @@ impl Sim {
         }
         if let Order::Build { type_id: product, pos } = order {
             let t = self.types.get(type_id);
-            if !t.is_builder || !self.is_allowed(*product) || !t.ai_build_options.contains(product) {
+            // (Its menu as its enhancements have it.)
+            if !t.is_builder || !self.is_allowed(*product) || !self.unit(id).is_some_and(|u| u.ai_build_options(t).contains(product)) {
                 return;
             }
             if self.ceasefire_bars(player, *pos) {
@@ -1773,9 +1781,18 @@ impl Sim {
         if let Order::Guard(target) = order && self.unit(*target).is_none_or(|u| u.dead || u.id == id || !self.allied(player, u.owner)) {
             return;
         }
+        // An upgrade its type has, a step or more along (queued after the steps before it).
+        if let Order::Upgrade(to) = order && !self.unit(id).is_some_and(|u| self.can_upgrade_into(u, *to)) {
+            return;
+        }
+        // An enhancement its type has (whether it may be installed is seen when its turn comes).
+        if let Order::Enhance { index, .. } = order && !self.unit(id).is_some_and(|u| (*index as usize) < self.types.get(u.type_id).enhancements.len()) {
+            return;
+        }
         let (factory, fires) = {
             let t = self.types.get(type_id);
-            let mut weapons = t.weapons.iter().flatten().map(|&w| self.weapon_types.get(w));
+            let slots = self.unit(id).map_or(t.weapons, |u| *u.weapon_slots(t));
+            let mut weapons = slots.iter().flatten().map(|&w| self.weapon_types.get(w));
             let fires = match order {
                 Order::Attack(_) => weapons.any(|w| !w.def.interceptor && (!w.command_fire || w.def.stockpile)),
                 Order::ManualFire(_) => weapons.any(|w| w.command_fire && !w.def.interceptor),
@@ -1802,6 +1819,16 @@ impl Sim {
                     }
                 }
                 Order::Attack(_) | Order::ManualFire(_) if fires => {
+                    if !queue {
+                        u.orders.clear();
+                    }
+                    let pos = u.pos;
+                    queue_order(&mut u.orders, order, queue, pos);
+                }
+                // An upgrade starts at once (queued, after the factory's other orders): it makes
+                // nothing meanwhile, its queue waiting. So does an enhancement (a removal is done at
+                // once).
+                Order::Upgrade(_) | Order::Enhance { .. } => {
                     if !queue {
                         u.orders.clear();
                     }
@@ -1920,7 +1947,7 @@ impl Sim {
             Command::Produce { player, factory, type_id, count } => {
                 let types = self.types.clone();
                 let Some(f) = self.unit_mut(*factory) else { return };
-                if f.owner != *player || f.dead || !types.get(f.type_id).is_factory || !types.get(f.type_id).ai_build_options.contains(type_id) {
+                if f.owner != *player || f.dead || !types.get(f.type_id).is_factory || !f.ai_build_options(types.get(f.type_id)).contains(type_id) {
                     return;
                 }
                 if !self.is_allowed(*type_id) {
@@ -1970,7 +1997,7 @@ impl Sim {
             Command::SetCloak { player, units, on } => {
                 let types = self.types.clone();
                 for &id in units {
-                    if let Some(u) = self.unit_mut(id).filter(|u| u.owner == *player) && types.get(u.type_id).def.cloak_cost > 0.0 {
+                    if let Some(u) = self.unit_mut(id).filter(|u| u.owner == *player) && u.cloak_costs(types.get(u.type_id)).is_some() {
                         u.cloak_on = *on;
                     }
                 }
@@ -2276,7 +2303,7 @@ impl Sim {
         let tick = self.tick;
         due.retain(|&id| self.unit(id).is_some_and(|u| u.self_destruct_at.is_some_and(|t| t <= tick)));
         for id in due {
-            let max = self.unit(id).map(|u| self.types.get(u.type_id).max_health).unwrap_or(Fx::ONE);
+            let max = self.unit(id).map(|u| u.max_health(self.types.get(u.type_id))).unwrap_or(Fx::ONE);
             self.damage_unit(id, max * 2, id, FxVec3::ZERO);
         }
         if !self.events.is_empty() {
@@ -2333,7 +2360,8 @@ impl Sim {
             if !held {
                 self.update_orders(id, t);
             }
-            if t.is_factory {
+            // (Not one upgraded just now: it is gone, the new one in its place.)
+            if t.is_factory && self.unit(id).is_some_and(|u| !u.dead) {
                 self.update_factory(id, t);
             }
             if t.locomotion == Locomotion::Air {
@@ -2379,9 +2407,10 @@ impl Sim {
         let Some(u) = self.unit(id) else { return };
         if u.is_complete() && !u.dead {
             let tc = timed.then(std::time::Instant::now);
-            if t.weapons.iter().any(|w| w.is_some()) {
+            if u.armed(t) {
+                let stockpiles = u.stockpiles(t);
                 self.update_weapons(id, types, weapons);
-                if t.stockpile {
+                if stockpiles {
                     self.update_stockpile(id);
                 }
             }
@@ -2389,7 +2418,7 @@ impl Sim {
                 self.stats.weapons_ns += tc.elapsed().as_nanos() as u64 * PHASE_SAMPLE;
             }
             // (A script may cloak a unit its file gives no cloak cost: `UNIT_CLOAKED`.)
-            if t.def.cloak_cost > 0.0 || self.unit(id).is_some_and(|u| u.cloak_on || u.cloaked) {
+            if self.unit(id).is_some_and(|u| u.cloak_costs(t).is_some() || u.cloak_on || u.cloaked) {
                 self.update_cloak(id, t);
             }
             if t.def.is_airbase {
@@ -2531,7 +2560,7 @@ impl Sim {
             return;
         }
         let (pos, owner, move_state) = (u.pos, u.owner, u.move_state);
-        let armed: Vec<Fx> = t.weapons.iter().flatten().map(|&w| self.weapon_types.get(w)).filter(|w| !w.command_fire).map(|w| w.range).collect();
+        let armed: Vec<Fx> = u.weapon_slots(t).iter().flatten().map(|&w| self.weapon_types.get(w)).filter(|w| !w.command_fire).map(|w| w.range).collect();
         if armed.is_empty() {
             return;
         }
@@ -2589,6 +2618,15 @@ impl Sim {
     }
 
     fn update_orders(&mut self, id: UnitId, t: &UnitType) {
+        // Work on itself whose order is gone (Stop, an order not queued after it) is called off,
+        // its metal back.
+        if let Some(u) = self.unit(id)
+            && let Some(w) = u.self_work
+            && !matches!((u.orders.front(), w.job), (Some(Order::Upgrade(to)), crate::unit::SelfJob::Upgrade(job)) if *to == job)
+            && !matches!((u.orders.front(), w.job), (Some(Order::Enhance { index, remove: false }), crate::unit::SelfJob::Enhance(job)) if *index == job)
+        {
+            self.cancel_self_work(id, true);
+        }
         let Some(order) = self.unit(id).and_then(|u| u.orders.front().cloned()) else {
             if Self::repairs_round(t) {
                 self.repair_round(id, t);
@@ -2678,6 +2716,8 @@ impl Sim {
             }
             Order::Load(target) => self.update_load_order(id, t, target),
             Order::Unload(dest) => self.update_unload_order(id, t, dest),
+            Order::Upgrade(to) => self.update_upgrade_order(id, t, to),
+            Order::Enhance { index, remove } => self.update_enhance_order(id, t, index, remove),
             Order::SetStates { fire, movement } => {
                 if let Some(u) = self.unit_mut(id) {
                     u.fire_state = fire.min(2);
@@ -2762,9 +2802,10 @@ impl Sim {
         let cost = tt.cost_metal + tt.cost_energy / 60 + Fx::from_int(20);
         let work = (cost * 4).min(Fx::from_int(CAPTURE_WORK_MOST));
         let total = (work.0.max(1) as u64).saturating_mul(TICKS_PER_SECOND as u64);
+        let rate = self.unit(id).map_or(t.work_rate, |u| u.work_rate(t));
         let finished = {
             let Some(tu) = self.unit_mut(target) else { return };
-            tu.capture_work = tu.capture_work.saturating_add(t.work_rate.max(1)).min(total);
+            tu.capture_work = tu.capture_work.saturating_add(rate.max(1)).min(total);
             tu.capture_progress = Fx::fraction(tu.capture_work, total);
             tu.capture_work >= total
         };
@@ -2819,6 +2860,8 @@ impl Sim {
             u.self_destruct_at = None;
             u.self_destruct_manual = false;
             u.last_attacker = None;
+            // (What it was building on itself is lost with its old side's orders.)
+            u.self_work = None;
             for w in &mut u.weapons {
                 w.target = None;
             }
@@ -2962,7 +3005,7 @@ impl Sim {
             let ot = self.types.get(o.type_id);
             let rank = if !o.is_complete() {
                 0
-            } else if o.health < ot.max_health && ot.locomotion != Locomotion::Air {
+            } else if o.health < o.max_health(ot) && ot.locomotion != Locomotion::Air {
                 1
             } else {
                 continue;
@@ -3020,7 +3063,10 @@ impl Sim {
         let (target_pos, target_job, needs_work) = (tu.pos, tu.build, self.needs_work(tu, tt));
         let follow = tt.radius + t.radius + Fx::from_int(40);
         if t.is_builder && self.allied(owner, tu.owner) && (self.tick + id.slot as u64).is_multiple_of(8) {
-            let assist = target_job.map(|j| j.target).filter(|&b| b != id && self.unit(b).is_some_and(|b| !b.dead && !b.is_complete() && b.carried_by.is_none() && self.allied(owner, b.owner)));
+            // (One working on itself, an upgrade or an enhancement, is helped with that: what it
+            // was building waits, as it does.)
+            let on_itself = tu.self_work.is_some() && tu.is_complete();
+            let assist = target_job.map(|j| j.target).filter(|&b| !on_itself && b != id && self.unit(b).is_some_and(|b| !b.dead && !b.is_complete() && b.carried_by.is_none() && self.allied(owner, b.owner)));
             let work = assist.or(needs_work.then_some(target));
             if let Some(w) = work {
                 let reachable = t.locomotion != Locomotion::Static || {
@@ -3781,7 +3827,7 @@ impl Sim {
 
     fn update_build_order(&mut self, id: UnitId, t: &UnitType, type_id: usize, pos: FxVec3) {
         // Orders may also come from mission scripts or a previously queued job.
-        if !t.is_builder || !self.is_allowed(type_id) || !t.ai_build_options.contains(&type_id) {
+        if !t.is_builder || !self.is_allowed(type_id) || !self.unit(id).is_some_and(|u| u.ai_build_options(t).contains(&type_id)) {
             self.finish_build_job(id);
             self.stop(id);
             if let Some(u) = self.unit_mut(id) {
@@ -4070,8 +4116,9 @@ impl Sim {
         // TA's (players), its income felt at once. (The work stays on it if left unfinished.)
         let work = (metal + energy / 10).max(Fx::from_int(5)) * 20;
         let total = (work.0 as u64).saturating_mul(TICKS_PER_SECOND as u64);
+        let rate = self.unit(id).map_or(t.work_rate, |u| u.work_rate(t));
         let f = &mut self.features[index];
-        f.reclaim_work = f.reclaim_work.saturating_add(t.work_rate.max(1)).min(total);
+        f.reclaim_work = f.reclaim_work.saturating_add(rate.max(1)).min(total);
         f.reclaimed = Fx::fraction(f.reclaim_work, total);
         if f.reclaim_work >= total {
             let owner = self.unit(id).map_or(0, |u| u.owner) as usize;
@@ -4154,7 +4201,8 @@ impl Sim {
         // costs none, is gone at once.
         let total = tt.build_work;
         let reclaim_total = ((tt.cost_metal * 20).0.max(0) as u64).saturating_mul(TICKS_PER_SECOND as u64).max(1);
-        let step = ((t.work_rate.max(1) as u128 * total as u128) / reclaim_total as u128).clamp(1, u64::MAX as u128) as u64;
+        let rate = self.unit(id).map_or(t.work_rate, |u| u.work_rate(t));
+        let step = ((rate.max(1) as u128 * total as u128) / reclaim_total as u128).clamp(1, u64::MAX as u128) as u64;
         let left = work.saturating_sub(step);
         let refund = tt.cost_metal.share(work, total) - tt.cost_metal.share(left, total);
         let tick = self.tick;
@@ -4244,10 +4292,14 @@ impl Sim {
     /// Whether a builder has anything to do for `u` (of type `t`): finish it, or mend it (one
     /// being taken apart only up to what is left of it).
     fn needs_work(&self, u: &Unit, t: &UnitType) -> bool {
+        // (Upgrading in place: its builders lend it their power.)
+        if u.self_work.is_some() && u.is_complete() {
+            return true;
+        }
         if self.being_taken_apart(u) {
-            u.health < t.max_health * u.build_progress
+            u.health < u.max_health(t) * u.build_progress
         } else {
-            !u.is_complete() || u.health < t.max_health
+            !u.is_complete() || u.health < u.max_health(t)
         }
     }
 
@@ -4334,7 +4386,8 @@ impl Sim {
         let rt = self.types.get(type_id);
         let total = rt.build_work;
         let before = self.features[index].resurrect_work;
-        let full = self.mutator_work_rate(self.perk_work_rate(id, t.work_rate)).min(total.saturating_sub(before));
+        let own = self.unit(id).map_or(t.work_rate, |u| u.work_rate(t));
+        let full = self.mutator_work_rate(self.perk_work_rate(id, own)).min(total.saturating_sub(before));
         let owner = self.unit(id).map_or(0, |u| u.owner);
         let e = &mut self.players[owner as usize].economy;
         // Resurrection spends no metal: unrelated metal-starved construction must not
@@ -4457,6 +4510,20 @@ impl Sim {
         if !needs_work {
             self.finish_build_job(id);
             self.stop(id);
+            if let Some(u) = self.unit_mut(id) {
+                u.orders.pop_front();
+            }
+            return;
+        }
+        // A guard's help with what the unit it guards was building (`update_guard_order`) gives
+        // way once that unit works on itself (an upgrade, an enhancement): the guard turns to help
+        // with that, and what it was building waits, as it does.
+        let guarded = self.unit(id).and_then(|u| match u.orders.get(1) {
+            Some(Order::Guard(g)) => Some(*g),
+            _ => None,
+        });
+        if guarded.is_some_and(|g| g != target && self.unit(g).is_some_and(|gu| gu.self_work.is_some() && gu.is_complete())) {
+            self.finish_build_job(id);
             if let Some(u) = self.unit_mut(id) {
                 u.orders.pop_front();
             }
@@ -4605,7 +4672,7 @@ impl Sim {
     fn repair_health(&mut self, target: UnitId, rate: u64) {
         let Some(u) = self.unit(target).filter(|u| !u.dead && (u.is_complete() || u.finished) && u.carried_by.is_none()) else { return };
         let t = self.unit_type(u);
-        let (total, max_health) = (t.build_work, t.max_health);
+        let (total, max_health) = (t.build_work, u.max_health(t));
         // (Whole, all of it; else what is left of it, and never less than it has.)
         let most = if u.is_complete() { max_health } else { (max_health * u.build_progress).max(u.health) };
         let rate = rate.min(total);
@@ -4635,12 +4702,20 @@ impl Sim {
             return;
         }
         let tt = types.get(tu.type_id);
+        // One upgrading in place: the builder's power goes into its upgrade, paid by the builder's
+        // side.
+        let own = self.unit(builder).map_or(t.work_rate, |b| b.work_rate(t));
+        if tu.self_work.is_some() && tu.is_complete() {
+            let rate = self.mutator_work_rate(self.perk_work_rate(builder, own));
+            self.work_on_self(target, rate, owner);
+            return;
+        }
         // A unit is finished once. While its own side takes it apart, work on it mends it and
         // no more, as TA's repair does (the reclaim goes on, not undone); one left part taken
         // apart is built back up, paid for as a build is, and is simply whole again.
         let repairing = tu.is_complete() || self.being_taken_apart(tu);
         let (total, done, finished) = (tt.build_work, tu.build_work, tu.finished);
-        let rate = self.mutator_work_rate(self.perk_work_rate(builder, t.work_rate));
+        let rate = self.mutator_work_rate(self.perk_work_rate(builder, own));
         if self.players.get(owner as usize).is_some_and(|p| p.cheats.instant_build) {
             // The instant-build cheat: finished (or mended) at once, for nothing.
             let mut owner = None;
@@ -4649,7 +4724,7 @@ impl Sim {
                     tu.set_build_work(total, total);
                 }
                 // (All of it when whole; one being taken apart, what is left of it.)
-                tu.health = (tt.max_health * tu.build_progress).max(tu.health);
+                tu.health = (tu.max_health(tt) * tu.build_progress).max(tu.health);
                 tu.repair_work = 0;
                 owner = Some(tu.owner);
             }
@@ -4728,6 +4803,11 @@ impl Sim {
         let Some(f) = self.unit(id) else { return };
         let current = f.build;
         let has_queue = !f.factory_queue.is_empty();
+        // Upgrading in place, or installing an enhancement, it makes nothing: the unit on its pad
+        // and its queue wait.
+        if matches!(f.orders.front(), Some(Order::Upgrade(_) | Order::Enhance { remove: false, .. })) {
+            return;
+        }
 
         if let Some(job) = current {
             let Some(target) = self.unit(job.target) else {
@@ -5539,7 +5619,7 @@ impl Sim {
         let mut army = vec![Fx::ZERO; n];
         for u in self.units.iter().flatten() {
             let t = self.types.get(u.type_id);
-            if !u.dead && u.is_complete() && t.locomotion != Locomotion::Static && t.weapons.iter().any(|w| w.is_some()) && let Some(a) = army.get_mut(u.owner as usize) {
+            if !u.dead && u.is_complete() && t.locomotion != Locomotion::Static && u.armed(t) && let Some(a) = army.get_mut(u.owner as usize) {
                 *a += t.cost_metal + t.cost_energy / 60;
             }
         }
@@ -5656,7 +5736,7 @@ impl Sim {
 
     /// Unit type ids a unit can build.
     pub fn build_options(&self, id: UnitId) -> &[usize] {
-        self.unit(id).map_or(&[], |u| &self.types.get(u.type_id).build_options)
+        self.unit(id).map_or(&[], |u| u.build_options(self.types.get(u.type_id)))
     }
 
     /// Whether a building of `type_id` fits centred at `pos` (for placement previews).
@@ -5713,7 +5793,7 @@ impl Sim {
     /// Sets a unit's health, kept between 1 and its most (scenario set-up: the tutorial's
     /// damaged building to mend).
     pub fn set_health(&mut self, id: UnitId, health: Fx) {
-        let Some(most) = self.unit(id).map(|u| self.unit_type(u).max_health) else { return };
+        let Some(most) = self.unit(id).map(|u| u.max_health(self.unit_type(u))) else { return };
         if let Some(u) = self.unit_mut(id) {
             u.health = health.max(Fx::ONE).min(most);
         }
@@ -5830,6 +5910,8 @@ impl Sim {
                 Order::Load(id) => { mix(17); target(mix, Some(Target::Unit(*id))); }
                 Order::Unload(p) => { mix(18); target(mix, Some(Target::Ground(*p))); }
                 Order::Stop => mix(19),
+                Order::Upgrade(t) => { mix(20); mix(*t as i64); }
+                Order::Enhance { index, remove } => { mix(21); mix(*index as i64); mix(*remove as i64); }
             }
         }
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -5921,6 +6003,19 @@ impl Sim {
             mix(u.busy as i64);
             target(&mut mix, u.build.map(|b| Target::Unit(b.target)));
             mix(u.build.is_some_and(|b| b.started) as i64);
+            // (Work on itself only where there is some: a game without any, TA's, sums as before.)
+            if let Some(w) = u.self_work {
+                match w.job {
+                    crate::unit::SelfJob::Upgrade(t) => { mix(-21); mix(t as i64); }
+                    crate::unit::SelfJob::Enhance(i) => { mix(-22); mix(i as i64); }
+                }
+                mix(w.work as i64);
+            }
+            if !u.enhancements.is_empty() {
+                mix(-23);
+                mix(u.enhancements.len() as i64);
+                for &i in &u.enhancements { mix(i as i64); }
+            }
             target(&mut mix, u.factory.map(Target::Unit));
             mix(u.orders.len() as i64);
             for o in &u.orders { order(&mut mix, o); }

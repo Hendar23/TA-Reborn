@@ -103,7 +103,7 @@ pub(super) fn readiness(pen: &Pen, c: Pos2, r: f32, p: &Perspective, game: &Game
     let layout = slots(weapons.len());
     let numbered = numbered || weapons.len() > 1;
     for (i, (w, arcs)) in weapons.iter().zip(&layout).enumerate() {
-        let wt = ty.weapons.get(w.slot).copied().flatten().map(|id| game.sim.weapon_types.get(id));
+        let wt = u.weapon_slots(ty).get(w.slot).copied().flatten().map(|id| game.sim.weapon_types.get(id));
         let cost = wt.filter(|wt| wt.command_fire && w.manual).map_or(0.0, |wt| game.sim.shot_energy(u.id, wt).to_f32());
         let starved = w.manual && cost > energy;
         let col = state_colour(w, starved);
@@ -259,7 +259,7 @@ pub(super) fn bracket(pen: &Pen, view: &View, window: &Window, p: &Perspective, 
     let range = at.distance(p.eye);
     let enemy = game.sim.is_enemy(game.sim.unit(p.unit).map_or(game.local_player, |me| me.owner), u.owner);
     let name_col = if enemy { RED } else { GREEN };
-    let frac = (u.health / ty.max_health.max(Fx::ONE)).to_f32().clamp(0.0, 1.0);
+    let frac = (u.health / u.max_health(ty).max(Fx::ONE)).to_f32().clamp(0.0, 1.0);
     let since = p.hud.target.filter(|t| t.0 == id).map_or(now, |t| t.1);
     let taken = crate::perspective::ease(((now - since) as f32 / 0.3).clamp(0.0, 1.0));
     // NAME · 0000: the name in the side's colour, the range in amber.

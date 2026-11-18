@@ -468,6 +468,9 @@ pub struct Game {
     ally_hint_at: Option<f32>,
     /// The camera follows this unit (T) until the view is scrolled.
     pub follow: Option<UnitId>,
+    /// Units upgraded in place lately (the unit, the one it became), newest last: a staged
+    /// scene's labels follow them.
+    pub replaced: Vec<(UnitId, UnitId)>,
     /// Signals from us and our team on the map (see `signals.rs`), and the wheel of meanings
     /// while Alt+drag holds it.
     pub pings: Vec<crate::signals::Ping>,
@@ -933,6 +936,7 @@ impl Game {
             allies_greeted: false,
             ally_hint_at: None,
             follow: None,
+            replaced: Vec::new(),
             pings: Vec::new(),
             signal_wheel: None,
             radial: None,
@@ -1152,6 +1156,37 @@ impl Game {
     /// lines would otherwise be sent off to attack).
     pub fn retire_ai(&mut self, player: u8) {
         self.ais.retain(|ai| ai.player != player);
+    }
+
+    /// What the interface keeps of unit `from` passed on to `to`, which took its place (upgraded
+    /// in place): its place in the selection and the control groups, the camera following it,
+    /// the hover and the information page on it.
+    pub fn carry_over(&mut self, from: UnitId, to: UnitId) {
+        let swap = |list: &mut Vec<UnitId>| {
+            if let Some(slot) = list.iter_mut().find(|id| **id == from) {
+                *slot = to;
+            }
+        };
+        swap(&mut self.selection);
+        for group in &mut self.groups {
+            swap(group);
+        }
+        if self.follow == Some(from) {
+            self.follow = Some(to);
+        }
+        if self.replaced.len() >= 256 {
+            self.replaced.remove(0);
+        }
+        self.replaced.push((from, to));
+        if self.hovered == Some(from) {
+            self.hovered = Some(to);
+        }
+        if let Some(info) = self.unit_info.as_mut()
+            && info.unit == Some(from)
+        {
+            info.unit = Some(to);
+            info.type_id = self.sim.unit(to).map_or(info.type_id, |u| u.type_id);
+        }
     }
 
     pub fn local_commander(&self) -> Option<UnitId> {
@@ -1791,6 +1826,11 @@ impl Game {
                 {
                     self.ui_sounds.push("TREEBURN");
                 }
+                // A unit upgraded in place: the new one takes its place in the selection, the
+                // control groups, the camera's following and the information page.
+                if let SimEvent::UnitUpgraded { from, to, .. } = e {
+                    self.carry_over(from, to);
+                }
                 // A factory in a control group puts what it builds there too (TA 3.1's squads).
                 if let SimEvent::UnitCompleted { id, .. } = e
                     && let Some(factory) = self.sim.unit(id).filter(|u| u.owner == self.local_player).and_then(|u| u.factory)
@@ -2258,6 +2298,10 @@ impl Game {
         if self.keys.pressed(input, "cloak") && !self.selection.is_empty() {
             self.toggle_cloak();
         }
+        // Upgrade in place (with Shift: the step after those queued).
+        if self.keys.pressed(input, "upgrade") && !self.selection.is_empty() && !self.spectator {
+            self.upgrade_selection(input.modifiers.shift_key() || self.demo_shift);
+        }
         // Enter: chat to everyone (Shift+Enter: to our allies); a + line is one of TA's
         // commands or a cheat code.
         if self.keys.pressed(input, "chat") {
@@ -2504,7 +2548,7 @@ impl Game {
                     .selection
                     .iter()
                     .copied()
-                    .filter(|&id| self.sim.unit(id).is_some_and(|u| self.sim.unit_type(u).build_options.contains(&type_id)))
+                    .filter(|&id| self.sim.unit(id).is_some_and(|u| u.build_options(self.sim.unit_type(u)).contains(&type_id)))
                     .collect();
                 // A filled rectangle (Alt): its far side first, from where the builders will be,
                 // so that they work their way out of it rather than wall themselves in.
@@ -2559,7 +2603,7 @@ impl Game {
                         .selection
                         .iter()
                         .copied()
-                        .filter(|&id| self.sim.unit(id).is_some_and(|u| self.sim.unit_type(u).build_options.contains(&type_id)))
+                        .filter(|&id| self.sim.unit(id).is_some_and(|u| u.build_options(self.sim.unit_type(u)).contains(&type_id)))
                         .collect();
                     // (Queued after the rest: the plans under it go first. Without Shift the new
                     // order takes the place of the whole queue anyway.)
@@ -3099,7 +3143,7 @@ impl Game {
             .iter()
             .filter_map(|&id| self.sim.unit(id))
             .filter(|u| u.owner == self.local_player && u.is_complete())
-            .flat_map(|u| self.sim.unit_type(u).build_options.iter().copied())
+            .flat_map(|u| u.build_options(self.sim.unit_type(u)).iter().copied())
             .filter(|&o| {
                 let t = self.sim.types.get(o);
                 t.extracts_metal > Fx::ZERO && !t.needs_geo && self.sim.is_allowed(o)
@@ -3225,10 +3269,8 @@ impl Game {
     pub fn free_metal_near_commander(&self) -> Option<Vec3> {
         let commander = self.sim.unit(self.local_commander()?)?;
         let at = Vec3::from_array(commander.pos.to_f32());
-        let extractor = self
-            .sim
-            .unit_type(commander)
-            .build_options
+        let extractor = commander
+            .build_options(self.sim.unit_type(commander))
             .iter()
             .copied()
             .filter(|&o| {
@@ -3580,6 +3622,8 @@ impl Game {
         self.sim
             .units()
             .filter(|u| u.owner == self.local_player && u.is_complete() && !u.dead && u.factory_queue.is_empty() && u.build.is_none())
+            // (One upgrading in place is at work.)
+            .filter(|u| u.self_work.is_none() && !matches!(u.orders.front(), Some(Order::Upgrade(_))))
             .filter(|u| self.sim.types.makes_units(self.sim.unit_type(u)))
             .map(|u| u.id)
             .collect()
@@ -3674,6 +3718,76 @@ impl Game {
         }
     }
 
+    /// The type an UPGRADE click makes of a unit of ours (`queue`: after the upgrades already in
+    /// its orders; else its type's next), where it upgrades in place.
+    pub fn upgrade_step(&self, u: &Unit, queue: bool) -> Option<usize> {
+        if u.owner != self.local_player || self.spectator || !u.is_complete() || u.dead {
+            return None;
+        }
+        let last = if queue { u.orders.iter().rev().find_map(|o| if let Order::Upgrade(t) = o { Some(*t) } else { None }) } else { None };
+        match last {
+            Some(t) => self.sim.types.get(t).upgrades_to.filter(|&to| self.sim.is_allowed(to)),
+            None => self.sim.next_upgrade(u),
+        }
+    }
+
+    /// What UPGRADE offers the selection: the type the first unit that upgrades in place becomes
+    /// next, and how many of the selection upgrade. None when none does.
+    pub fn upgrade_offer(&self) -> Option<(usize, usize)> {
+        let mut first = None;
+        let mut count = 0;
+        for u in self.selection.iter().filter_map(|&id| self.sim.unit(id)) {
+            if let Some(to) = self.upgrade_step(u, false) {
+                first.get_or_insert(to);
+                count += 1;
+            }
+        }
+        first.map(|to| (to, count))
+    }
+
+    /// Upgrades the selected units in place, each into the next step of its type's upgrades
+    /// (`queue`: the step after those already ordered, queued after its other orders). A unit
+    /// already upgrading into that step goes on with it.
+    pub fn upgrade_selection(&mut self, queue: bool) {
+        let mut by_target: Vec<(usize, Vec<UnitId>)> = Vec::new();
+        for u in self.selection.iter().filter_map(|&id| self.sim.unit(id)) {
+            let Some(to) = self.upgrade_step(u, queue) else { continue };
+            if !queue && matches!(u.orders.front(), Some(Order::Upgrade(t)) if *t == to) {
+                continue;
+            }
+            match by_target.iter_mut().find(|(t, _)| *t == to) {
+                Some((_, units)) => units.push(u.id),
+                None => by_target.push((to, vec![u.id])),
+            }
+        }
+        if by_target.is_empty() {
+            return;
+        }
+        self.ui_sounds.push("ADDBUILD");
+        for (to, units) in by_target {
+            self.issue(Command::Order { player: self.local_player, units, order: Order::Upgrade(to), queue });
+        }
+    }
+
+    /// Installs enhancement `index` of unit type `type_id` (`remove`: takes it out) on each unit
+    /// of the selection of that type that may now (`enhancement_orders`: the type's list is the
+    /// one shown, and another type's is its own). `queue`: after its other orders.
+    pub fn enhance_selection(&mut self, type_id: usize, index: u16, remove: bool, queue: bool) {
+        if self.spectator {
+            return;
+        }
+        let orders = enhancement_orders(&self.sim, &self.selection, self.local_player, type_id, index, remove, queue);
+        if orders.is_empty() {
+            return;
+        }
+        self.ui_sounds.push("ADDBUILD");
+        for (id, list, after) in orders {
+            for (k, order) in list.into_iter().enumerate() {
+                self.issue(Command::Order { player: self.local_player, units: vec![id], order, queue: after || k > 0 });
+            }
+        }
+    }
+
     /// Whether a selected unit supports the D-gun command. Stockpiled missiles
     /// and primary command-fire weapons use Attack, as ordinary weapons do.
     pub fn selection_has_dgun(&self) -> bool {
@@ -3731,7 +3845,7 @@ impl Game {
                 .selection
                 .iter()
                 .copied()
-                .filter(|&id| self.sim.unit(id).is_some_and(|u| self.sim.unit_type(u).build_options.contains(&type_id)))
+                .filter(|&id| self.sim.unit(id).is_some_and(|u| u.build_options(self.sim.unit_type(u)).contains(&type_id)))
                 .collect();
             let from = builders.iter().filter_map(|&id| self.sim.unit(id)).map(|u| Vec3::from_array(u.pos.to_f32())).sum::<Vec3>() / builders.len().max(1) as f32;
             let stops: Vec<(Vec3, Vec3)> = sites.into_iter().map(|p| (p, p)).collect();
@@ -4188,7 +4302,7 @@ impl Game {
                 match keep {
                     SelectionFilter::Combat => t.weapons.iter().any(|w| w.is_some()) && !t.is_builder,
                     SelectionFilter::Builders => t.is_builder && !t.is_factory,
-                    SelectionFilter::Damaged => u.health < t.max_health,
+                    SelectionFilter::Damaged => u.health < u.max_health(t),
                     SelectionFilter::Idle => u.orders.is_empty() && u.build.is_none() && !self.on_duty(u.id),
                 }
             })
@@ -4644,10 +4758,50 @@ fn ghost_pose(poses: &mut rustc_hash::FxHashMap<usize, Vec<Mat4>>, t: &ta_sim::U
 }
 
 
+/// The orders installing enhancement `index` of unit type `type_id` (`remove`: taking it out)
+/// gives each of `units` that is `player`'s and of that type, and may: a unit of another type,
+/// whose list is its own (a mixed selection's other Commanders), is left alone, as is one with it
+/// installed already; one whose prerequisite is missing gets that first, queued before it, or
+/// waits for it where it is on its way. Each with whether it goes after its other orders
+/// (`queue`).
+pub(crate) fn enhancement_orders(sim: &Sim, units: &[UnitId], player: u8, type_id: usize, index: u16, remove: bool, queue: bool) -> Vec<(UnitId, Vec<Order>, bool)> {
+    let mut orders: Vec<(UnitId, Vec<Order>, bool)> = Vec::new();
+    for u in units.iter().filter_map(|&id| sim.unit(id)) {
+        if u.owner != player || u.type_id != type_id {
+            continue;
+        }
+        let ty = sim.unit_type(u);
+        let Some(e) = ty.enhancements.get(index as usize) else { continue };
+        if remove {
+            if u.enhancements.contains(&index) {
+                orders.push((u.id, vec![Order::Enhance { index, remove: true }], queue));
+            }
+            continue;
+        }
+        let mut list = Vec::new();
+        let mut after = queue;
+        match sim.enhancement_fit(u, index) {
+            ta_sim::EnhancementFit::Free { .. } => {}
+            ta_sim::EnhancementFit::Needs(p) if !u.enhancements.contains(&p) && e.prerequisite == Some(p) => {
+                // (Its prerequisite first; where that is on its way already, after it.)
+                if u.orders.iter().any(|o| *o == Order::Enhance { index: p, remove: false }) {
+                    after = true;
+                } else {
+                    list.push(Order::Enhance { index: p, remove: false });
+                }
+            }
+            _ => continue,
+        }
+        list.push(Order::Enhance { index, remove: false });
+        orders.push((u.id, list, after));
+    }
+    orders
+}
+
 /// Why the simulation refused an order (`SimEvent::OrderFailed`), for the translations: shown
 /// through `t`.
 #[allow(dead_code)]
-const ORDER_FAILURES: [&str; 8] = [
+const ORDER_FAILURES: [&str; 11] = [
     ta_ui::i18n::n("cannot carry that"),
     ta_ui::i18n::n("out of reach"),
     ta_ui::i18n::n("no room to unload"),
@@ -4656,6 +4810,9 @@ const ORDER_FAILURES: [&str; 8] = [
     ta_ui::i18n::n("build site blocked"),
     ta_ui::i18n::n("too near an enemy base in the ceasefire"),
     ta_ui::i18n::n("no captures in the ceasefire"),
+    ta_ui::i18n::n("it has no build power"),
+    ta_ui::i18n::n("cannot upgrade into that"),
+    ta_ui::i18n::n("needs another enhancement first"),
 ];
 
 /// TA's selections by category: the key's action and the category it selects.

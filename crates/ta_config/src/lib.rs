@@ -176,8 +176,14 @@ pub const RECORD_VERSION: u32 = 46;
 /// shoots down only the missiles whose classes it shares (TA's own all class 1), and once they are
 /// within its range; the no-nukes mutator leaves out the strategic class alone; 103, a builder whose
 /// `DefaultMissionType` is `RepairPatrol` (TA: Escalation's repair tower upgrades) mends the damaged
-/// units round it by itself when idle, and works as a module on the pad that took it on.
-pub const SIMULATION_VERSION: u32 = 103;
+/// units round it by itself when idle, and works as a module on the pad that took it on; 104, a unit
+/// with `UpgradesTo` upgrades in place (`Order::Upgrade`: built on itself with its build power and
+/// its helpers', paid and stalled as construction, a factory making nothing meanwhile; called off,
+/// its metal back), and the computer players upgrade their factories up the tiers and their
+/// extractors; a unit's `[ENHANCEMENTS]` are installed on it (`Order::Enhance`: one a slot, built and
+/// paid as an upgrade, its numbers, weapons, menu, sensors and cloak added to the unit's), and the
+/// computer players install engineering suites and gun upgrades on their commanders.
+pub const SIMULATION_VERSION: u32 = 104;
 /// Records shorter than one year of simulated time are supported. Shared with the
 /// launcher's metadata reader so impossible durations cannot start endless save catch-up.
 pub const MAX_RECORD_TICKS: u64 = 30 * 3600 * 24 * 365;
@@ -334,6 +340,7 @@ impl Keys {
         ("on_off", "On / off", "X"),
         ("duty", "Duty: the constructors work by themselves (economy, repair, reclaim, defence, then none)", "Alt+D"),
         ("cloak", "Cloak / decloak", "K"),
+        ("upgrade", "Upgrade in place (with Shift: queued after the upgrade under way)", "Alt+U"),
         ("self_destruct", "Self-destruct", "Ctrl+D"),
         ("select_all", "Select everything", "Ctrl+A"),
         ("select_commander", "Select the Commander", "Ctrl+C"),

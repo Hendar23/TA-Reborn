@@ -453,6 +453,40 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   assist the guarded unit's construction), build, repair, reclaim, capture, load, unload,
   manual fire, stop. Work found automatically that turns out unreachable is remembered and
   skipped.
+* **Upgrades in place** (`sim/upgrade.rs`; a unit type's `UpgradesTo`, Supreme Commander's
+  factories, extractors and radars): `Order::Upgrade(type)` at the front of a unit's orders builds
+  that type on the unit itself (`Unit::self_work`: the job and its work, of the type's
+  `build_work`), with its own `work_rate` and that of builders helping it (guard and repair orders
+  on it: `Sim::needs_work`, `apply_build_power`), paid by `Economy::spend_work` as construction is,
+  so it stalls with the economy. A factory makes nothing meanwhile (`update_factory` returns while
+  its first order is an upgrade or an enhancement to install; a factory's orders take both,
+  `order_unit`); anything else works on. Its guards help with it, not with the unit on its pad
+  (`update_guard_order`; a guard's help with that gives way, `update_repair_order`). The order taken off the front (Stop, an
+  order not queued, `DropOrder`) calls the work off at the unit's next `update_orders`, its metal
+  back (`cancel_self_work`); a capture drops it. Done (`finish_upgrade`): the old unit is taken off
+  the map as given up (`removed`, its ground released at once) and a unit of the new type spawned
+  finished in its place and heading, with the old one's share of health, its orders after the
+  upgrade, a factory's queue, route, repeat and the unit on its pad (re-pointed to it), its states
+  and experience; builders guarding or mending it go on with the new one, and
+  `SimEvent::UnitUpgraded` lets the game carry its selection and control groups over
+  (`Game::carry_over`). `UnitTypes::upgrade_chain` lists a type's steps; orders may name a step past
+  the next (queued after it), which fails if it reaches the front first.
+* **Enhancements** (`sim/enhance.rs`; a unit type's `[ENHANCEMENTS]`, Supreme Commander's
+  commanders'): `Order::Enhance { index, remove }` at the front of a unit's orders installs one as
+  an upgrade is built (`SelfJob::Enhance`, the same `self_work`, helpers, payment, stall and refund),
+  the unit standing; a removal is done at once. `Sim::enhancement_fit` says whether one may be
+  installed (its prerequisite installed, not already there). Installed (`set_enhancement`), it
+  takes its slot in place of the one there, and the unit's figures are made again from its type's
+  and every enhancement installed (`Unit::boost`, a `Boost`: most health, mending, build power,
+  sight, radar, sonar, weapon slots, menu, cloak, stealth; none for a unit with none, so TA's units
+  read their type's). Whatever reads those reads them through the unit (`Unit::max_health`,
+  `weapon_slots`, `work_rate`, `build_options`, `ai_build_options`, `sight`, `radar`, `sonar`,
+  `heal_ticks`, `cloak_costs`, `stealthy`), never the type's alone. Health rises with the most and
+  falls to it; a slot whose weapon changed starts afresh, and a stockpiling launcher swapped or
+  gone takes its missiles and the one under way with it; the script's `SetEnhancement(index, on)`
+  is called; `SimEvent::UnitEnhanced` follows. `Unit::enhancements` is in the checksum. The
+  interface gives an enhancement chosen from a type's list to the selected units of that type
+  alone (`game::enhancement_orders`): the index is the type's.
 * **Standing orders** (`Command::SetStates`, never touching the queue): fire (hold, return,
   at will) and movement. Idle armed units hit from beyond their reach answer by movement
   state: Maneuver advances on the attacker within a 420 px leash and walks back afterwards,
@@ -1598,6 +1632,20 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   from them all is a base found. Waves, the fleet and lifts go for what was seen first, and a
   start not yet looked at only when nothing is known (scouting in force). It is never
   "dominant" (going for the kill) before it has found the enemy.
+* Upgrades in place (`upgrade.rs`, `run_upgrades_in_place`): where a factory of ours upgrades into
+  a factory of a higher tier (`factory_tier`), the tiers are climbed by upgrading it, one factory
+  at a time, on the economy the first advanced factory waits for (`builder_task` then builds no
+  factory of the next tier: `climbs_by_upgrading`), the land factory first; with metal piling up,
+  more of them; extractors upgrade into better ones (more `extracts_metal`), the safe ones nearest
+  home first, a few at a time as the income allows and while power holds (the reclaim and rebuild of
+  `upgrade_task` leaves those alone). Builders that help factories help one upgrading
+  (`factory_to_help`). With no unit of ours that upgrades (TA's games), nothing of it runs.
+* Enhancements (`enhance.rs`, `run_enhancements`): the commander, near home and with no enemy
+  close, installs an engineering suite once the economy reaches the tech climb's (the next suite
+  once a factory of tech 2 stands, or metal piles up), a gun upgrade some minutes into the game
+  and more armour when rich, one at a time, only into an empty slot or over its prerequisite, when
+  it can afford it. Its builders' menus are their own (`Unit::ai_build_options`), the suites' units
+  among them. With no unit of ours with enhancements, nothing of it runs.
 * Allies (`ally.rs`): players signal their team with `Command::Signal` (a ping with a
   meaning: look, attack, defend, on my way, need metal or energy; the sim keeps the last 32
   for 90 s in `Sim::signals`, the same on every machine, and emits `SimEvent::Signal`). A
@@ -1924,7 +1972,9 @@ with a beam sweeping round, a sonar's with pings, a jammer's dashed rim, the uni
 dashed beside them, each captioned, out of the view's reach beside the unit; the colours are the sight
 overlay's, and the minimap shows the same discs, a radar's whole coverage at a glance; a unit switched
 off dims them and says OFF; `--demo radar`, `TA_RADAR_UNIT`, `TA_RADAR_OFF`; the player's RANGES,
-`gameplay.range_overlays`, Alt+O, shows them all, the radar, sonar and jammers' alone or none; every
+`gameplay.range_overlays`, Alt+O, shows them all, the radar, sonar and jammers' alone or none; a
+unit in play shows its own sensors and weapons, as its enhancements have them (`Ranged::unit`,
+`Unit::weapon_slots`), one being placed its type's; every
 rim and ring on the ground, a weapon's reach too, is laid by `hud/ground_line.rs`: only what is in
 front of the eye and in the view, a point every few screen points there, a few thousand at most
 however far it reaches: a rim of a fixed number of points, cut where the eye's plane met it, ran
@@ -2430,7 +2480,11 @@ where the units go (`hud/domain.rs`, below).
     click away), under DETAILS first what the selection makes and uses of metal and energy a second
     now, all of it together (`Sim::unit_flows` summed, as TA's unit bar gives the first unit's; with
     a queue shown, DETAILS has these alone); at the right, for a selection of ours, the command plate: ORDERS in rows by
-    kind (`orders::available`: moving and fighting, work, the special ones, each with its key),
+    kind (`orders::available`: moving and fighting, work, the special ones, each with its key;
+    UPGRADE among the work where the selection has a unit that upgrades in place, its tip the
+    unit it becomes, its price and time: `orders::upgrade_tip`, `Game::upgrade_selection`, Alt+U,
+    Shift queueing the step after; the progress an amber bar under the unit's health, and in its
+    card, `activity`),
     beside them the STANCE (the standing orders as labelled buttons showing what each is set to,
     switches some on and some off ON/OFF with a half-lit lamp, as the classic's mixed art, a press
     all one way: `Game::selection_power`; self-destruct last and apart; a column of glyphs where
@@ -2460,7 +2514,10 @@ where the units go (`hud/domain.rs`, below).
     whatever it makes (an aircraft plant on grass). `Upright` and the `Amphibious` of TA's seaplanes play no part. The lists are ordered by
     it (`domain::menu_order`, a stable sort): land first, then both, then the sea, then aircraft,
     each group in the menu's own order (TA's pages and download entries, `GameData::build_menus`);
-    neither the player nor a mod has another way to order a menu. A picture with a ground of its
+    neither the player nor a mod has another way to order a menu. The list is the unit's own menu
+    (`Unit::build_options`: what its enhancements add, ordered with the rest), and a factory that
+    upgrades in place offers the unit it becomes first, on its ground, stamped UPGRADE
+    (`upgrade_tile`); the ENHANCE tab's pictures keep their own. A picture with a ground of its
     own keeps it: TA's `unitpics` (the classic interface, a portrait not drawn yet) and the Supreme
     Commander factions' build pictures (`own_picture`: their game's icon on its frame). The
     grounds are original art drawn by `tools/hud/grounds.py` into `apps/ta_game/hud/grounds.png`

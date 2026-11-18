@@ -312,6 +312,8 @@ pub struct UnitBlueprint {
     pub transport_class: Option<u32>,
     /// What its script switches off as it is made (`units/<id>/<id>_script.lua`).
     pub birth: crate::behaviour::Birth,
+    /// What its script's `CreateEnhancement` does for each enhancement it names.
+    pub enhancement_scripts: Vec<crate::behaviour::EnhancementScript>,
     pub table: Table,
 }
 
@@ -451,6 +453,7 @@ pub fn parse(id: &str, text: &str) -> Result<UnitBlueprint> {
         upgrades_from: blueprint_id(general("UpgradesFrom")),
         transport_class: num(&["Transport"], "TransportClass").map(|n| n as u32),
         birth: crate::behaviour::Birth::default(),
+        enhancement_scripts: Vec::new(),
         categories,
         table,
     })
@@ -638,7 +641,9 @@ pub fn attach(files: &crate::files::Files, units: &mut [UnitBlueprint]) -> Resul
     for u in units.iter_mut() {
         let id = u.id.to_ascii_lowercase();
         if let Some(bytes) = files.read(&format!("units/{id}/{id}_script.lua"))? {
-            u.birth = crate::behaviour::birth(&String::from_utf8_lossy(&bytes));
+            let text = String::from_utf8_lossy(&bytes);
+            u.birth = crate::behaviour::birth(&text);
+            u.enhancement_scripts = crate::behaviour::enhancements(&text);
         }
         for w in &mut u.weapons {
             let Some(path) = w.projectile.as_deref().map(crate::projectile::normalise) else { continue };

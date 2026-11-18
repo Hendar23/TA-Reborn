@@ -58,6 +58,10 @@ pub struct Plan<'a> {
     pub builder: bool,
     /// TA pixels a mesh unit (its `UniformScale` times 32).
     pub pixels: f64,
+    /// The bones each of its enhancements shows (`ShowBones`), by the index the engine gives it
+    /// (`factions::enhance`'s order): `SetEnhancement(index, on)` shows them and all under them,
+    /// or hides them.
+    pub enhancements: Vec<Vec<String>>,
 }
 
 /// Where a bone points at rest: its heading (TA angle units, +16,384 towards +x, as the engine's
@@ -302,6 +306,31 @@ pub fn script(plan: &Plan) -> CobScript {
         build_functions(&mut asm, plan, building);
     }
 
+    // SetEnhancement(index, on): an enhancement installed shows its parts and all under them, one
+    // taken out hides them (TA Reborn's engine calls it).
+    let parts: Vec<Vec<u32>> = plan.enhancements.iter().map(|bones| pieces_under(plan, bones)).collect();
+    if parts.iter().any(|p| !p.is_empty()) {
+        let mut f = Function::new(2);
+        for (k, pieces) in parts.iter().enumerate().filter(|(_, p)| !p.is_empty()) {
+            let next = f.label();
+            f.push_local(0).push(k as i32).op(op::SET_EQUAL).jump_if_false(next);
+            let hide = f.label();
+            f.push_local(1).jump_if_false(hide);
+            for &p in pieces {
+                f.show(p);
+            }
+            f.ret(0);
+            f.mark(hide);
+            for &p in pieces {
+                f.hide(p);
+            }
+            f.ret(0);
+            f.mark(next);
+        }
+        f.ret(0);
+        asm.define("SetEnhancement", f);
+    }
+
     // A wreck where it dies.
     let mut killed = Function::new(2);
     killed.push(1).pop_local(1).ret(0);
@@ -398,7 +427,12 @@ fn build_functions(asm: &mut Assembler, plan: &Plan, building: Option<u32>) {
 /// The pieces hidden on a fresh unit: the bones its enhancements show and every bone under them
 /// (a mesh's parents come before their children: one pass), in the model's order.
 fn hidden_pieces(plan: &Plan) -> Vec<u32> {
-    let shown = enhancement_bones(plan.unit);
+    pieces_under(plan, &enhancement_bones(plan.unit))
+}
+
+/// The pieces of the bones `named` and every bone under them, in the model's order.
+fn pieces_under(plan: &Plan, named: &[String]) -> Vec<u32> {
+    let shown = named;
     let mut hidden = vec![false; plan.mesh.bones.len()];
     for (b, bone) in plan.mesh.bones.iter().enumerate() {
         hidden[b] = shown.iter().any(|s| s.eq_ignore_ascii_case(&bone.name)) || bone.parent.is_some_and(|p| hidden[p]);
@@ -455,7 +489,7 @@ mod tests {
         let mesh = scm::parse(&scm::tests::tank()).unwrap();
         let unit = UnitBlueprint { id: "TANK".into(), ..Default::default() };
         let w = gun();
-        let plan = Plan { unit: &unit, mesh: &mesh, pieces: mesh.bones.iter().map(|b| b.name.clone()).collect(), weapons: vec![&w], factory: false, builder: false, pixels: 2.0 };
+        let plan = Plan { unit: &unit, mesh: &mesh, pieces: mesh.bones.iter().map(|b| b.name.clone()).collect(), weapons: vec![&w], factory: false, builder: false, pixels: 2.0, enhancements: Vec::new() };
         let s = script(&plan);
         for name in ["Create", "AimPrimary", "AimFromPrimary", "QueryPrimary", "FirePrimary", "RestoreAfterDelay", "Killed", "SetMaxReloadTime"] {
             assert!(s.function(name).is_some(), "{name}");
@@ -486,7 +520,7 @@ mod tests {
         assert_eq!((side_aim.heading, side_aim.cos, side_aim.sin), (16384, 0, 1024));
         let unit = UnitBlueprint { id: "SHIP".into(), ..Default::default() };
         let w = WeaponBlueprint { yaw_bone: Some("Side".into()), pitch_bone: Some("Side".into()), muzzle_bone: Some("Side".into()), racks: vec![], ..gun() };
-        let plan = Plan { unit: &unit, mesh: &mesh, pieces: vec!["Hull".into(), "Rear".into(), "Side".into()], weapons: vec![&w], factory: false, builder: false, pixels: 2.0 };
+        let plan = Plan { unit: &unit, mesh: &mesh, pieces: vec!["Hull".into(), "Rear".into(), "Side".into()], weapons: vec![&w], factory: false, builder: false, pixels: 2.0, enhancements: Vec::new() };
         let listing = ta_formats::cob::disassemble(&script(&plan));
         assert!(listing.contains("push-const       16384"), "{listing}");
         assert!(listing.contains("turn             2 2"), "the side gun pitches about z: {listing}");
@@ -506,13 +540,13 @@ mod tests {
         let pieces: Vec<String> = vec!["Hull".into(), "Front".into(), "Back".into()];
         let body = |listing: &str, name: &str| -> String { listing.split(&format!("\n{name}:\n")).nth(1).map(|rest| rest.split("\n\n").next().unwrap_or("").to_string()).unwrap_or_default() };
         let mask = |body: &str| -> i32 { body.lines().next().and_then(|l| l.split_whitespace().last()).and_then(|v| v.parse().ok()).unwrap_or(-1) };
-        let listing = ta_formats::cob::disassemble(&script(&Plan { unit: &unit, mesh: &mesh, pieces: pieces.clone(), weapons: vec![&front, &back], factory: false, builder: false, pixels: 2.0 }));
+        let listing = ta_formats::cob::disassemble(&script(&Plan { unit: &unit, mesh: &mesh, pieces: pieces.clone(), weapons: vec![&front, &back], factory: false, builder: false, pixels: 2.0, enhancements: Vec::new() }));
         let (first, second) = (body(&listing, "RestoreAfterDelay"), body(&listing, "RestoreAfterDelay2"));
         assert!(first.contains("turn             1 1") && !first.contains("turn             2 1"), "{listing}");
         assert!(second.contains("turn             2 1") && !second.contains("turn             1 1"), "{listing}");
         assert_eq!((mask(&first), mask(&second)), (2, 4), "{listing}");
         // Sharing the front turret: either's aim stops both restores.
-        let listing = ta_formats::cob::disassemble(&script(&Plan { unit: &unit, mesh: &mesh, pieces, weapons: vec![&front, &on("Front")], factory: false, builder: false, pixels: 2.0 }));
+        let listing = ta_formats::cob::disassemble(&script(&Plan { unit: &unit, mesh: &mesh, pieces, weapons: vec![&front, &on("Front")], factory: false, builder: false, pixels: 2.0, enhancements: Vec::new() }));
         assert_eq!((mask(&body(&listing, "RestoreAfterDelay")), mask(&body(&listing, "RestoreAfterDelay2"))), (6, 6), "{listing}");
     }
 
@@ -525,7 +559,7 @@ mod tests {
         let mesh = scm::parse(&file).unwrap();
         let mut unit = UnitBlueprint { id: "ACU".into(), ..Default::default() };
         unit.table = crate::lua::parse("t = { Enhancements = { Shield = { ShowBones = { 'Back_Upgrade' } } } }").unwrap()[0].1.table().cloned().unwrap();
-        let plan = Plan { unit: &unit, mesh: &mesh, pieces: mesh.bones.iter().map(|b| b.name.clone()).collect(), weapons: vec![], factory: false, builder: false, pixels: 2.0 };
+        let plan = Plan { unit: &unit, mesh: &mesh, pieces: mesh.bones.iter().map(|b| b.name.clone()).collect(), weapons: vec![], factory: false, builder: false, pixels: 2.0, enhancements: Vec::new() };
         assert_eq!(hidden_pieces(&plan), [1, 2]);
         let listing = ta_formats::cob::disassemble(&script(&plan));
         assert!(listing.contains("hide             1") && listing.contains("hide             2") && !listing.contains("hide             3"), "{listing}");
@@ -550,7 +584,7 @@ mod tests {
             ..gun()
         };
         let pieces: Vec<String> = mesh.bones.iter().map(|b| b.name.clone()).collect();
-        let listing = ta_formats::cob::disassemble(&script(&Plan { unit: &unit, mesh: &mesh, pieces, weapons: vec![&w], factory: false, builder: false, pixels: 2.0 }));
+        let listing = ta_formats::cob::disassemble(&script(&Plan { unit: &unit, mesh: &mesh, pieces, weapons: vec![&w], factory: false, builder: false, pixels: 2.0, enhancements: Vec::new() }));
         let fire = listing.split("\nFirePrimary:\n").nth(1).unwrap().split("\n\n").next().unwrap();
         // Muzzles 0 and 1 on rack A (piece 2), muzzle 2 on rack B (piece 5).
         let moves: Vec<&str> = fire.lines().filter(|l| l.contains("move-now")).map(|l| l.split_whitespace().nth(2).unwrap_or("")).collect();
@@ -566,7 +600,7 @@ mod tests {
         unit.build_bones = Some((Some("Turret".into()), None, vec!["Turret_Barrel".into()]));
         let w = gun();
         let pieces: Vec<String> = mesh.bones.iter().map(|b| b.name.clone()).collect();
-        let listing = ta_formats::cob::disassemble(&script(&Plan { unit: &unit, mesh: &mesh, pieces: pieces.clone(), weapons: vec![&w], factory: false, builder: true, pixels: 2.0 }));
+        let listing = ta_formats::cob::disassemble(&script(&Plan { unit: &unit, mesh: &mesh, pieces: pieces.clone(), weapons: vec![&w], factory: false, builder: true, pixels: 2.0, enhancements: Vec::new() }));
         let body = |name: &str| listing.split(&format!("\n{name}:\n")).nth(1).unwrap().split("\n\n").next().unwrap().to_string();
         let (aim, restore, start, stop) = (body("AimPrimary"), body("RestoreAfterDelay"), body("StartBuilding"), body("StopBuilding"));
         // Aim: its first test the building flag, declining (0) while it is set.
@@ -574,7 +608,7 @@ mod tests {
         assert!(restore.contains("push-static") && restore.contains("jump-if-false"), "{restore}");
         assert!(start.contains("pop-static") && stop.contains("pop-static"), "{start}\n{stop}");
         // A plain tank's aim has no such test.
-        let plain = ta_formats::cob::disassemble(&script(&Plan { unit: &UnitBlueprint { id: "TANK".into(), ..Default::default() }, mesh: &mesh, pieces, weapons: vec![&w], factory: false, builder: false, pixels: 2.0 }));
+        let plain = ta_formats::cob::disassemble(&script(&Plan { unit: &UnitBlueprint { id: "TANK".into(), ..Default::default() }, mesh: &mesh, pieces, weapons: vec![&w], factory: false, builder: false, pixels: 2.0, enhancements: Vec::new() }));
         let aim = plain.split("\nAimPrimary:\n").nth(1).unwrap().split("\n\n").next().unwrap();
         assert!(!aim.contains("jump-if-false 0") && !aim.lines().take(4).any(|l| l.contains("push-static")), "{aim}");
     }
@@ -598,7 +632,7 @@ mod tests {
         };
         let pieces: Vec<String> = mesh.bones.iter().map(|b| b.name.clone()).collect();
         let query = |w: &WeaponBlueprint| {
-            let listing = ta_formats::cob::disassemble(&script(&Plan { unit: &unit, mesh: &mesh, pieces: pieces.clone(), weapons: vec![w], factory: false, builder: false, pixels: 1.0 }));
+            let listing = ta_formats::cob::disassemble(&script(&Plan { unit: &unit, mesh: &mesh, pieces: pieces.clone(), weapons: vec![w], factory: false, builder: false, pixels: 1.0, enhancements: Vec::new() }));
             listing.split("
 QueryPrimary:
 ").nth(1).unwrap().lines().find(|l| l.contains("push-const")).unwrap().split_whitespace().last().unwrap().to_string()
@@ -615,12 +649,12 @@ QueryPrimary:
         let mut unit = UnitBlueprint { id: "ENGINEER".into(), ..Default::default() };
         unit.build_bones = Some((Some("Turret".into()), None, vec!["Turret_Barrel".into(), "Exhaust".into()]));
         let pieces: Vec<String> = mesh.bones.iter().map(|b| b.name.clone()).collect();
-        let s = script(&Plan { unit: &unit, mesh: &mesh, pieces: pieces.clone(), weapons: vec![], factory: false, builder: true, pixels: 2.0 });
+        let s = script(&Plan { unit: &unit, mesh: &mesh, pieces: pieces.clone(), weapons: vec![], factory: false, builder: true, pixels: 2.0, enhancements: Vec::new() });
         assert!(s.function("StartBuilding").is_some() && s.function("QueryNanoPiece").is_some() && s.function("Activate").is_none());
         let listing = ta_formats::cob::disassemble(&s);
         assert!(listing.lines().any(|l| l.trim_end().ends_with(" set")), "the stance set: {listing}");
         unit.display.build_attach_bone = Some("Turret".into());
-        let s = script(&Plan { unit: &unit, mesh: &mesh, pieces, weapons: vec![], factory: true, builder: true, pixels: 2.0 });
+        let s = script(&Plan { unit: &unit, mesh: &mesh, pieces, weapons: vec![], factory: true, builder: true, pixels: 2.0, enhancements: Vec::new() });
         assert!(s.function("Activate").is_some() && s.function("QueryBuildInfo").is_some());
     }
 }

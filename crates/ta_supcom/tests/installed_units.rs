@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use ta_supcom::files::Files;
 use ta_supcom::install::{self, Install, Store};
 use ta_formats::surface::Material;
-use ta_supcom::factions::{faction, make, model, pictures, textures, units};
+use ta_supcom::factions::{enhance, faction, make, model, pictures, textures, units};
 use ta_supcom::unit::{self, Faction, Tech};
 use ta_supcom::{sca, scm};
 
@@ -324,8 +324,9 @@ fn the_mod_is_made_the_same_twice() {
 }
 
 /// Every unit a player can make is reached from its faction's commander: what each builder
-/// builds (its lists' categories, and the buildings made only by upgrading what it builds: the
-/// tech 2 and 3 factories), and what those build, all the way down.
+/// builds (its lists' categories), what each upgrades into in place (the tech 2 and 3 factories,
+/// which nothing builds outright), what its enhancements add to its menu (the engineering
+/// suites'), and what those build and upgrade into, all the way down.
 #[test]
 #[ignore]
 fn every_playable_unit_is_reached_from_its_commander() {
@@ -340,6 +341,8 @@ fn every_playable_unit_is_reached_from_its_commander() {
         let lists = faction::all_builds(&theirs);
         let commander = faction::commander(&theirs).expect("a commander");
         let mut reached: Vec<String> = vec![commander.id.clone()];
+        let mut upgrades = 0;
+        let mut by_enhancements: Vec<String> = Vec::new();
         let mut k = 0;
         while k < reached.len() {
             if let Some((_, built)) = lists.iter().find(|(b, _)| b.id == reached[k]) {
@@ -349,15 +352,92 @@ fn every_playable_unit_is_reached_from_its_commander() {
                     }
                 }
             }
+            if let Some(u) = theirs.iter().find(|u| u.id == reached[k]) {
+                let own = units::weapons(u);
+                let extra = enhance::extra_weapons(u, &own);
+                for e in enhance::enhancements(u, &theirs, &own, &extra).0 {
+                    for o in e.build_options {
+                        if let Some(b) = theirs.iter().find(|b| b.id.eq_ignore_ascii_case(&o))
+                            && !reached.contains(&b.id)
+                        {
+                            reached.push(b.id.clone());
+                            by_enhancements.push(b.id.clone());
+                        }
+                    }
+                }
+            }
+            if let Some(u) = theirs.iter().find(|u| u.id == reached[k]).and_then(|u| faction::upgrade_of(u, &theirs)) {
+                upgrades += 1;
+                if !reached.contains(&u.id) {
+                    reached.push(u.id.clone());
+                }
+            }
             k += 1;
         }
         let missing: Vec<&str> = theirs.iter().filter(|u| !reached.contains(&u.id)).map(|u| u.id.as_str()).collect();
-        eprintln!("{}: {} of {} reached from {}", f.name(), reached.len(), theirs.len(), commander.id);
+        eprintln!("{}: {} of {} reached from {} ({upgrades} upgrade in place; {} first through its enhancements' menus)", f.name(), reached.len(), theirs.len(), commander.id, by_enhancements.len());
+        // Nothing builds what is made by upgrading alone: the factories of tech 2 and 3.
+        for (b, built) in &lists {
+            for u in built {
+                assert!(!(u.is("FACTORY") && u.motion == unit::Motion::None && matches!(u.tech, Some(unit::Tech::T2 | unit::Tech::T3)) && u.upgrades_from.is_some()), "{}: {} builds {}", f.name(), b.id, u.id);
+            }
+        }
         assert!(missing.is_empty(), "{}: not reached: {missing:?}", f.name());
         // The commander builds its own tier: not what its engineering enhancements bring.
         let own = faction::builds(commander, &theirs);
         assert!(!own.iter().any(|u| u.is("BUILTBYTIER2COMMANDER") || u.is("BUILTBYTIER3COMMANDER")), "{}: {:?}", f.name(), own.iter().map(|u| &u.id).collect::<Vec<_>>());
     }
+}
+
+/// The commanders' and support commanders' enhancements as TA Reborn plays them: every commander
+/// has its engineering suites (tech 2, then tech 3 over it, units on their menus that FA keeps
+/// from the commander until then) and a gun upgrade; every prerequisite is among them, in the
+/// same slot where it is a suite; each has a price, and an effect.
+#[test]
+#[ignore]
+fn the_commanders_enhancements_are_played() {
+    let Some(game) = the_game() else {
+        eprintln!("no copy of Forged Alliance found: nothing to read");
+        return;
+    };
+    let files = Files::own(&game).unwrap();
+    let all = unit::catalogue(&files).unwrap();
+    let mut total = 0;
+    for f in Faction::PLAYABLE {
+        let theirs: Vec<&unit::UnitBlueprint> = all.iter().filter(|u| u.playable() && u.faction == f).collect();
+        let commander = faction::commander(&theirs).expect("a commander");
+        for u in theirs.iter().filter(|u| u.table.path(&["Enhancements"]).is_some()) {
+            let own = units::weapons(u);
+            let extra = enhance::extra_weapons(u, &own);
+            let (list, variants) = enhance::enhancements(u, &theirs, &own, &extra);
+            total += list.len();
+            let line: Vec<String> = list
+                .iter()
+                .map(|e| format!("{} [{}{}] {}m {}e {}t{}{}{}{}", e.id, e.slot, e.prerequisite.as_ref().map(|p| format!(" after {p}")).unwrap_or_default(), e.cost_mass, e.cost_energy, e.build_time,
+                    if e.build_options.is_empty() { String::new() } else { format!(" +{} units", e.build_options.len()) },
+                    if e.weapons.is_empty() { String::new() } else { format!(" weapons {:?}", e.weapons) },
+                    if e.max_damage > 0.0 { format!(" +{} hp", e.max_damage) } else { String::new() },
+                    if e.worker_time > 0.0 { format!(" +{} build", e.worker_time) } else { String::new() }))
+                .collect();
+            eprintln!("{} {}: {} enhancements, {} weapon variants\n  {}", f.name(), u.id, list.len(), variants.sections.len(), line.join("\n  "));
+            for e in &list {
+                assert!(e.cost_mass > 0.0 || e.cost_energy > 0.0, "{}: {} has a price", u.id, e.id);
+                assert!(!e.slot.is_empty(), "{}: {} has a slot", u.id, e.id);
+                if let Some(p) = &e.prerequisite {
+                    assert!(list.iter().any(|o| o.id.eq_ignore_ascii_case(p)), "{}: {} needs {p}, which is played", u.id, e.id);
+                }
+            }
+            if u.id == commander.id {
+                let suites: Vec<_> = list.iter().filter(|e| !e.build_options.is_empty()).collect();
+                assert!(suites.len() >= 2, "{}: its engineering suites", u.id);
+                let tech2 = theirs.iter().filter(|b| b.is("BUILTBYTIER2COMMANDER")).count();
+                assert!(tech2 == 0 || suites.iter().any(|e| e.build_options.len() >= tech2.min(1)), "{}: the suites' units", u.id);
+                let main = own.slots.iter().position(|w| units::kind(w) != units::Kind::Overcharge).expect("a gun");
+                assert!(list.iter().any(|e| e.weapons.iter().any(|(slot, _)| *slot == main)), "{}: a gun upgrade", u.id);
+            }
+        }
+    }
+    eprintln!("{total} enhancements in all");
 }
 
 /// A weapon section as TA Reborn reads it: its keys.

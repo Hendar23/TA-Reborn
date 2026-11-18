@@ -601,3 +601,24 @@ and are joined by a comma ("com fonte própria, imagens de fundo nos painéis").
 | Imported 1 map / the {faction} faction (the singular keys) | 1 mapa importado / Facção {faction} importada; failures stay count-safe ("não criados: {failed}", "unidades não criadas: {failed}") |
 | the commanders' enhancements / upgrading buildings in place / shields / stealth fields / teleporting (Forged Alliance's, still to come) | as melhorias dos comandantes / o aprimoramento de edifícios no próprio lugar / escudos / campos de furtividade / teletransporte |
 | experimental features / EXPERIMENTAL (tag) | recursos experimentais / EXPERIMENTAL |
+
+## Upgrading in place and the commanders' enhancements (`deck.rs`, `enhance.rs`, `info.rs`, `orders.rs`, `hud_classic.rs`)
+
+Forged Alliance's two features: a building upgrades itself in place on its own build power;
+a commander installs enhancements on itself, one in each slot of its body. Kept apart:
+aprimorar is only the building's upgrade, melhoria only the commander's enhancement.
+
+| English | pt-BR |
+|---|---|
+| upgrade (in place) / the upgrade under way | aprimorar (no próprio lugar), aprimorar-se ("enquanto se aprimora") / o aprimoramento em andamento |
+| UPGRADE (classic button) / UPGR (its short form) / Upgrade (the order) | APRIMORAR / APRIM. / Aprimorar ("Aprimorar ({key}): para {name}") |
+| upgrading into / about to upgrade into {name} | Aprimorando para {name} / Prestes a aprimorar para {name} |
+| enhancement(s) / ENHANCE (deck tab and classic button) / ENH / ENHANCEMENTS | melhoria(s) (feminine: instalada, esta) / MELHORIAS (a noun, as the tabs ECONOMIA, FÁBRICA) / MELH. / MELHORIAS |
+| slot (LCH, RCH, Back: the data's names, kept) / one a slot | encaixe ("Encaixe {slot}") / uma por encaixe |
+| install / take out / being installed | instalar / remover ("Removendo {name}") / em instalação |
+| on its own build power | com o próprio poder de construção |
+| Stop calls it off, its metal back | Parar cancela e devolve o metal (after a ·: "Parar: cancela e devolve o metal") |
+| Shift: queued (Shift+click puts it after the orders given) | Shift: na fila |
+| needs {name} (first) / needs another enhancement first (a refusal) | requer {name} (antes) / requer outra melhoria antes |
+| Mends {n} hit points a second | Recupera {n} de vida por segundo |
+| Builds {n} more kinds | Constrói novos tipos ({n}) |

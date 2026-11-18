@@ -54,16 +54,18 @@ pub enum Glyph {
     Duty,
     /// A factory's queue: a crate on a belt, on its way out.
     Queue,
+    /// Upgrade in place: a building raised a tier, two chevrons over it.
+    Upgrade,
 }
 
 #[cfg(test)]
 impl Glyph {
     /// Every glyph, in the atlas's order.
-    pub const ALL: [Glyph; 32] = [
+    pub const ALL: [Glyph; 33] = [
         Glyph::Stop, Glyph::Move, Glyph::Attack, Glyph::Fight, Glyph::Patrol, Glyph::Guard, Glyph::Capture, Glyph::Repair, Glyph::Load, Glyph::Unload,
         Glyph::Resurrect, Glyph::Reclaim, Glyph::DGun, Glyph::HoldFire, Glyph::ReturnFire, Glyph::FireAtWill, Glyph::HoldPosition, Glyph::Maneuver,
         Glyph::Roam, Glyph::Cloaked, Glyph::Visible, Glyph::Power, Glyph::SelfDestruct, Glyph::AreaMex, Glyph::Perspective,
-        Glyph::Build, Glyph::Info, Glyph::Back, Glyph::More, Glyph::Cancel, Glyph::Duty, Glyph::Queue,
+        Glyph::Build, Glyph::Info, Glyph::Back, Glyph::More, Glyph::Cancel, Glyph::Duty, Glyph::Queue, Glyph::Upgrade,
     ];
 }
 

@@ -667,3 +667,29 @@ AEON, SERAPHIM) are followed by 진영 ({faction} 진영을); units count in 기
 | the launcher's footer (its bar of activity chips) | 런처 하단 표시줄 |
 | shields / stealth fields / teleporting / upgrading buildings in place | 방어막 / 스텔스 필드 / 순간이동 / 건물의 제자리 업그레이드 |
 | experimental features / EXPERIMENTAL (tag) | 실험적 기능 / 실험적 |
+
+## Upgrades in place and the commanders' enhancements (`orders.rs`, `hud/deck.rs`, `hud/enhance.rs`, `hud/info.rs`, `hud_classic.rs`)
+
+Upgrade (a building made into its higher-tech version) and enhancement stay two words: 업그레이드
+and 강화 (as the launcher's 사령관 강화), never swapped. An enhancement is 장착 (mounted, as gear is),
+not 설치, which stays for software, mods and maps. "Into {name}" is an arrow, so no particle
+follows the placeholder (제자리 업그레이드 → {name}, 업그레이드 ({key}) → {name}); status lines
+follow 건설 중: {name} {pct}%. The refusals after 수행 불가: end in 음/함, as the others there.
+Slot names (LCH, RCH, Back) come from the data as they are.
+
+| English | 한국어 |
+|---|---|
+| upgrade / Upgrade / UPGRADE / upgrade in place | 업그레이드 / 제자리 업그레이드 |
+| UPGR (TA's side panel, when UPGRADE does not fit) | 업글 (the usual clipping, as the English is one) |
+| enhancement(s) / ENHANCE (tab, button) / ENHANCEMENTS (section) / ENH | 강화 |
+| install / installed / installing / being installed | 장착 / 장착됨 / 장착 중 / 장착 중 |
+| take out (an installed enhancement) / Taking out {name} | 제거 (as 우클릭: 제거) / 제거 중: {name} |
+| slot / one a slot / in place of {name} | 슬롯 / 슬롯당 하나 / {name} 대신 |
+| About to upgrade into / install {name} | 업그레이드 준비 중: {name} / 장착 준비 중: {name} |
+| {duration} on its own build power | 자체 건설력으로 {duration} |
+| Stop calls it off, its metal back | 정지하면 취소되고 금속이 반환됨 |
+| Shift: queued / queued after the upgrade under way | Shift: 예약 / 진행 중인 업그레이드 다음으로 예약 |
+| Needs {name} first / needs {name} (after the costs) | 먼저 {name} 장착 필요 / {name} 필요 |
+| Builds {n} more kinds: {names} and {more} others | 추가 건설 가능 {n}종: {names} 외 {more}종 |
+| Mends {n} hit points a second / {weapon}: stronger | 초당 체력 {n} 회복 / {weapon}: 위력 증가 |
+| refusals: it has no build power / cannot upgrade into that / needs another enhancement first | 건설력 없음 / 그 종류로는 업그레이드할 수 없음 / 다른 강화를 먼저 장착해야 함 |

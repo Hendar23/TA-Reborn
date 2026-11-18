@@ -266,6 +266,8 @@ pub struct ClassicHud {
     allies: bool,
     /// The SHARE button's menu is open.
     share: bool,
+    /// The ENHANCE button's list is open (a unit with enhancements selected).
+    enhancing: bool,
     /// The OPTIONS button was clicked: the app opens the game menu.
     pub open_menu: bool,
     /// TA's shortcut keys pressed this frame, the keys the page being drawn answers to, and
@@ -287,6 +289,12 @@ fn builder(game: &Game) -> Option<usize> {
     let t = game.sim.unit_type(u);
     let same = game.selection.iter().all(|&id| game.sim.unit(id).is_some_and(|o| o.type_id == u.type_id));
     (same && !t.build_options.is_empty()).then_some(u.type_id)
+}
+
+/// The selection's first unit, where it is ours and has enhancements (the ENHANCE button's).
+fn enhanceable(game: &Game) -> Option<&ta_sim::Unit> {
+    let u = game.sim.unit(*game.selection.first()?)?;
+    (!game.spectator && u.owner == game.local_player && u.is_complete() && !game.sim.unit_type(u).enhancements.is_empty()).then_some(u)
 }
 
 fn full_uv() -> Rect {
@@ -575,6 +583,9 @@ impl ClassicHud {
         if self.share {
             self.share_menu(&env, game);
         }
+        if self.enhancing {
+            self.enhance_menu(&env, game);
+        }
         self.claimed = std::mem::take(&mut self.claiming);
         self.keys_pressed.clear();
     }
@@ -626,6 +637,36 @@ impl ClassicHud {
         }
     }
 
+    /// The ENHANCE button's list: the first selected unit's enhancements (`hud::enhance::list`),
+    /// beside the side panel; a choice goes to each of the selection that may take it.
+    fn enhance_menu(&mut self, env: &Env, game: &mut Game) {
+        let Some(u) = enhanceable(game) else {
+            self.enhancing = false;
+            return;
+        };
+        let ty = game.sim.unit_type(u);
+        // (Its type's list: a choice goes to the selected units of that type alone.)
+        let type_id = ty.id;
+        let mut chosen = None;
+        let mut close = false;
+        let at = env.ta.pos(SIDE_W + 4.0, 128.0 + 40.0);
+        egui::Area::new(egui::Id::new("classic_enhance")).fixed_pos(at).order(egui::Order::Foreground).show(&env.ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.label(egui::RichText::new(t("ENHANCEMENTS")).strong());
+                chosen = crate::hud::enhance::list(ui, game, u, ty);
+                close = ui.button(t("Close")).clicked();
+            });
+        });
+        match chosen {
+            Some(crate::hud::enhance::EnhanceClick::Install { index, queue }) => game.enhance_selection(type_id, index, false, queue),
+            Some(crate::hud::enhance::EnhanceClick::Remove { index }) => game.enhance_selection(type_id, index, true, false),
+            None => {}
+        }
+        if close {
+            self.enhancing = false;
+        }
+    }
+
     // ---- Side panel -------------------------------------------------------------------
 
     fn side_panel(&mut self, ui: &mut egui::Ui, env: &Env, game: &mut Game, camera: &mut Camera, minimap: &mut Minimap) {
@@ -652,7 +693,9 @@ impl ClassicHud {
         let menu = builder(game).filter(|_| self.building);
         let (gui_name, menu_at, page) = match menu {
             Some(b) => {
-                let pages = self.art.menu(env.vfs, &game.sim.types, b, &env.st.template);
+                // (Its own menu: what the first one's enhancements add to it too.)
+                let own: Vec<usize> = game.selection.first().and_then(|&id| game.sim.unit(id)).map(|u| u.build_options(game.sim.unit_type(u)).to_vec()).unwrap_or_default();
+                let pages = self.art.own_menu(env.vfs, &game.sim.types, b, &own, &env.st.template);
                 let p = self.build_page.get(&b).copied().unwrap_or(0).min(pages.len().saturating_sub(1));
                 self.anchors.pages(pages.iter().enumerate().flat_map(|(k, pg)| pg.units().map(move |o| (o, k))), p);
                 let page = pages.get(p).cloned();
@@ -1062,6 +1105,37 @@ impl ClassicHud {
                 game.set_command_mode(if on { None } else { Some(mode) });
             }
         }
+        // Upgrade in place, where the selection has an upgrade (TA has no gadget for it).
+        if game.upgrade_offer().is_some()
+            && let Some(r) = small.pop()
+        {
+            let on = game.selection.iter().filter_map(|&id| game.sim.unit(id)).any(|u| matches!(u.orders.front(), Some(ta_sim::Order::Upgrade(_))));
+            let resp = self.plate_button(ui, env, r, ui.id().with("extra_upgrade"), &[n("UPGRADE"), n("UPGR")], on, true);
+            self.anchors.order("upgrade", resp.rect);
+            if resp.hovered() {
+                // (TA's bar holds a line: what it upgrades into and what that costs.)
+                let tip = crate::orders::upgrade_tip(game, &key(game, "upgrade")).lines().take(2).collect::<Vec<_>>().join("  ·  ");
+                self.tip = Some(Tip::Text(n("UPGRADE").into(), tip));
+            }
+            if resp.clicked() {
+                game.upgrade_selection(ui.input(|i| i.modifiers.shift));
+            }
+        }
+        // Enhancements, where the selection's first unit has them (TA has no gadget for them):
+        // their list beside the panel. (In an order place, else a state place: a Commander's
+        // orders take every order place TA's page has.)
+        if enhanceable(game).is_some()
+            && let Some(r) = small.pop().or_else(|| wide.pop())
+        {
+            let resp = self.plate_button(ui, env, r, ui.id().with("extra_enhance"), &[n("ENHANCE"), n("ENH")], self.enhancing, true);
+            self.anchors.order("enhance", resp.rect);
+            if resp.hovered() {
+                self.tip = Some(Tip::Text(n("ENHANCE").into(), n("Enhancements: parts it installs on itself, one a slot").into()));
+            }
+            if resp.clicked() {
+                self.enhancing = !self.enhancing;
+            }
+        }
         if let Some(on) = sel.repeat {
             let labels = [n("REPEAT BUILD"), n("REPEAT")];
             let resp = match (wide.pop(), small.pop()) {
@@ -1335,6 +1409,19 @@ impl ClassicHud {
             let y = l.get("DAMAGEBAR").map_or(466.0, |r| inclusive(r).max.y) + 1.0;
             text(painter, font, tb, at.x, y, Align::Center, &line, pal().classic_dim);
         }
+        // Upgrading in place, or installing an enhancement: into what and how far, there too.
+        if let Some((job, done)) = game.sim.self_work_progress(u).filter(|_| game.may_inspect(u.owner)) {
+            let y = l.get("DAMAGEBAR").map_or(466.0, |r| inclusive(r).max.y) + 1.0;
+            let pct = format!("{:.0}", (done.to_f32() * 100.0).floor());
+            let (line, short) = match job {
+                ta_sim::SelfJob::Upgrade(to) => (tf("Upgrading into {name}: {pct}%", &[("name", &crate::orders::upgrade_name(&game.sim, u.type_id, to)), ("pct", &pct)]), ta_ui::i18n::t("UPGRADE")),
+                ta_sim::SelfJob::Enhance(index) => (tf("Installing {name}: {pct}%", &[("name", &crate::hud::enhance::name(t, index)), ("pct", &pct)]), ta_ui::i18n::t("ENHANCE")),
+            };
+            // (The button's word and how far, where the line would run into the figures beside it.)
+            let room = l.get("UNITMETALMAKE").map_or(f32::INFINITY, |r| 2.0 * (r.min.x - at.x - 6.0));
+            let line = if font.width(&line) > room { format!("{short} {pct}%") } else { line };
+            text(painter, font, tb, at.x, y, Align::Center, &line, pal().classic_text);
+        }
         // A constructor on duty, there too (TA's panel has no button for it: the key gives one).
         if let Some(duty) = game.duty_of(u.id) {
             let y = l.get("DAMAGEBAR").map_or(466.0, |r| inclusive(r).max.y) + 1.0;
@@ -1409,7 +1496,7 @@ impl ClassicHud {
 /// A health bar in the unit bar, with the build progress under it while unfinished.
 fn health(painter: &egui::Painter, env: &Env, b: Rect, u: &ta_sim::Unit, t: &ta_sim::UnitType) {
     let tb = env.tb;
-    let frac = (u.health / t.max_health).to_f32().clamp(0.0, 1.0);
+    let frac = (u.health / u.max_health(t)).to_f32().clamp(0.0, 1.0);
     painter.rect_filled(tb.snap(b.expand(0.5)), 0.0, Color32::from_black_alpha(170));
     bar(painter, tb, b, frac, &env.data.palette, health_color(frac));
     if !u.is_complete() {

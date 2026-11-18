@@ -128,10 +128,10 @@ impl SelectionSummary {
             }
         }
         kinds.sort_by_key(|&(k, many)| (std::cmp::Reverse(many), k));
-        let (health, max_health) = units.iter().fold((0.0f32, 0.0f32), |(h, m), o| (h + o.health.to_f32(), m + game.sim.unit_type(o).max_health.to_f32()));
+        let (health, max_health) = units.iter().fold((0.0f32, 0.0f32), |(h, m), o| (h + o.health.to_f32(), m + o.max_health(game.sim.unit_type(o)).to_f32()));
         // (One on duty has its own work, and waits for it when there is none.)
         let idle = units.iter().filter(|o| o.orders.is_empty() && o.build.is_none() && o.factory_queue.is_empty() && !game.on_duty(o.id)).count();
-        let damaged = units.iter().filter(|o| o.health < game.sim.unit_type(o).max_health).count();
+        let damaged = units.iter().filter(|o| o.health < o.max_health(game.sim.unit_type(o))).count();
         let flows = flows_of(game, units.iter().copied());
         SelectionSummary { kinds, many: units.len(), health, max_health, idle, damaged, duty: game.selection_duty(), flows }
     }
@@ -419,15 +419,18 @@ impl Hud {
             return 0.0;
         }
         let ty = game.sim.unit_type(first);
-        let options: Vec<usize> = ty.build_options.iter().copied().filter(|&o| game.sim.is_allowed(o)).collect();
-        if options.is_empty() {
+        let options: Vec<usize> = first.build_options(ty).iter().copied().filter(|&o| game.sim.is_allowed(o)).collect();
+        if options.is_empty() && ty.enhancements.is_empty() {
             return 0.0;
         }
         let fullest = if ty.is_factory {
-            options.len()
+            // (Its upgrade in place first among its pictures, where it has one: `upgrade_tile`.)
+            options.len() + usize::from(game.upgrade_offer().is_some())
         } else {
             Purpose::ALL.iter().map(|&p| options.iter().filter(|&&o| Purpose::of(&game.sim.types, game.sim.types.get(o)) == p).count()).max().unwrap_or(0)
         };
+        // (Its enhancements are a tab of their own.)
+        let fullest = fullest.max(ty.enhancements.len());
         let columns = fullest.div_ceil(2).clamp(COLUMNS, COLUMNS_MOST);
         columns as f32 * TILE + (columns - 1) as f32 * GRID_GAP
     }
@@ -452,11 +455,11 @@ pub(super) fn force_list(game: &Game) -> Vec<Force> {
         // (As the idle counters on the top bar count them.)
         f.idle += match f.group {
             Group::Builders => usize::from(u.orders.is_empty() && u.build.is_none() && !game.on_duty(u.id)),
-            Group::Factories => usize::from(u.factory_queue.is_empty() && u.build.is_none()),
+            Group::Factories => usize::from(u.factory_queue.is_empty() && u.build.is_none() && u.self_work.is_none()),
             _ => 0,
         };
         f.health += u.health.to_f32();
-        f.max_health += ty.max_health.to_f32();
+        f.max_health += u.max_health(ty).to_f32();
     }
     forces.retain(|f| !f.ids.is_empty());
     mark_selected(&mut forces, game);
@@ -1068,7 +1071,8 @@ impl Hud {
                     if !output.is_empty() {
                         ui.add_space(3.0);
                     }
-                    let figures = super::info::summary_figures(game, &ty);
+                    // (One unit: as its enhancements have it.)
+                    let figures = super::info::summary_figures(game, &ty, (many == 1).then(|| game.sim.unit(first)).flatten());
                     let width = ui.available_width();
                     let rows = super::info::figure_rows(ui.painter(), &figures, width);
                     let (table, _) = ui.allocate_exact_size(EVec2::new(width, rows.len() as f32 * super::info::FIGURE_ROW), egui::Sense::hover());
@@ -1084,7 +1088,7 @@ impl Hud {
                 }
             }
         }
-        if part == Part::Build && all_same && !ty.build_options.is_empty() && !game.spectator {
+        if part == Part::Build && all_same && (!ty.build_options.is_empty() || !ty.enhancements.is_empty()) && !game.spectator {
             ui.add_space(4.0);
             let mut repeat = repeat_on;
             let mut repeat_changed = false;
@@ -1102,12 +1106,22 @@ impl Hud {
             if repeat_changed {
                 game.set_repeat(repeat);
             }
-            if let Some((opt, secondary, shift)) = self.build_menu(ui, ctx, vfs, game, &ty, &queued, producing) {
+            if let Some((opt, secondary, shift)) = self.build_menu(ui, ctx, vfs, game, &ty, game.sim.unit(first), &queued, producing) {
                 if ty.is_factory {
                     game.produce(opt, if secondary { -1 } else { 1 } * if shift { 5 } else { 1 });
                 } else if !secondary {
                     game.begin_placement(opt);
                 }
+            }
+            // The upgrade chosen in a factory's menu (its first picture): Shift, the step after.
+            if let Some(queue) = self.upgrade_click.take() {
+                game.upgrade_selection(queue);
+            }
+            // An enhancement chosen in the ENHANCE tab: for each of the selection that may.
+            match self.enhance_click.take() {
+                Some(super::enhance::EnhanceClick::Install { index, queue }) => game.enhance_selection(ty.id, index, false, queue),
+                Some(super::enhance::EnhanceClick::Remove { index }) => game.enhance_selection(ty.id, index, true, false),
+                None => {}
             }
         }
     }
@@ -1160,6 +1174,8 @@ impl Hud {
             }
             Some(Kind::Mode(mode)) => game.set_command_mode(if game.command_mode == Some(mode) { None } else { Some(mode) }),
             Some(Kind::Perspective(id)) => game.perspective_request = Some(id),
+            // (Shift: queued after the upgrade under way.)
+            Some(Kind::Upgrade) => game.upgrade_selection(ui.input(|i| i.modifiers.shift)),
             None => {}
         }
         let Some(u) = game.selection.first().and_then(|&id| game.sim.unit(id)) else { return };
@@ -1310,15 +1326,16 @@ impl Hud {
     /// in whole rows as large as the room lets them be (see [`BuildGrid::fit`]), a page at a time
     /// when they do not all fit. Returns a click.
     #[allow(clippy::too_many_arguments)]
-    fn build_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, vfs: &Vfs, game: &Game, builder: &UnitType, queued: &HashMap<usize, usize>, producing: Option<(usize, f32)>) -> Option<BuildClick> {
+    fn build_menu(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, vfs: &Vfs, game: &Game, builder: &UnitType, unit: Option<&Unit>, queued: &HashMap<usize, usize>, producing: Option<(usize, f32)>) -> Option<BuildClick> {
         let allowed = |o: usize| game.sim.is_allowed(o);
+        // (Its own menu: what its enhancements add to it too.)
+        let own_options = unit.map_or(&builder.build_options[..], |u| u.build_options(builder));
         // The units of a place several share on the builder's own page (Total Mayhem's long-range
         // guns, a variant for each way they face round one picture; its plants' halves, land and
         // sea) go as one picture, the plain one's, with the place's zones (`build_tile`).
         let shared = self.shared_places.entry(builder.id).or_insert_with(|| std::sync::Arc::new(crate::hud_classic_art::shared_places(vfs, &game.sim.types, builder))).clone();
         let place_of = |o: usize| shared.iter().find(|place| place.iter().any(|&(u, _)| u == o)).filter(|place| place.iter().filter(|&&(u, _)| allowed(u)).count() > 1);
-        let mut options: Vec<usize> = builder
-            .build_options
+        let mut options: Vec<usize> = own_options
             .iter()
             .copied()
             .filter(|&o| allowed(o) && place_of(o).is_none_or(|place| crate::hud_classic_art::plain_of(&game.sim.types, place, allowed) == Some(o)))
@@ -1338,30 +1355,63 @@ impl Hud {
         // that kind of builder, or the one holding what is being placed).
         let tabs: Vec<Purpose> = groups.iter().filter_map(|(p, _)| *p).collect();
         let mut shown = self.build_tab.get(&builder.id).copied().filter(|p| tabs.contains(p)).or_else(|| tabs.first().copied());
+        // A unit with enhancements has a tab for them too (ENHANCE), after its buildings'.
+        let enhanceable = unit.filter(|_| !builder.enhancements.is_empty());
+        let mut enhancing = enhanceable.is_some() && (self.enhancing.contains(&builder.id) || groups.is_empty());
         // Placing something picked elsewhere (a key, the classic panel): its tab, once.
         if placing != self.build_tab_placing {
             self.build_tab_placing = placing;
             if let Some(pl) = placing.map(|o| Purpose::of(&game.sim.types, game.sim.types.get(o))).filter(|p| tabs.contains(p)) {
                 shown = Some(pl);
+                enhancing = false;
             }
         }
-        if tabs.len() > 1 {
+        // (A factory with enhancements: its units on a tab of their own, beside them.)
+        let production = builder.is_factory && !groups.is_empty() && enhanceable.is_some();
+        let count = tabs.len() + production as usize + enhanceable.is_some() as usize;
+        if count > 1 {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 3.0;
-                let width = ((ui.available_width() - 3.0 * (tabs.len() - 1) as f32) / tabs.len() as f32).floor();
-                let lettering = tab_lettering(ui, &tabs.iter().map(|p| t(p.short())).collect::<Vec<_>>(), width);
+                let width = ((ui.available_width() - 3.0 * (count - 1) as f32) / count as f32).floor();
+                let mut words: Vec<&str> = tabs.iter().map(|p| t(p.short())).collect();
+                if production {
+                    words.push(t("PRODUCTION"));
+                }
+                if enhanceable.is_some() {
+                    words.push(t("ENHANCE"));
+                }
+                let lettering = tab_lettering(ui, &words, width);
+                if production && build_tab(ui, t("PRODUCTION"), width, lettering, !enhancing).clicked() {
+                    enhancing = false;
+                }
                 for &p in &tabs {
-                    let resp = build_tab(ui, t(p.short()), width, lettering, shown == Some(p));
-                    if shown != Some(p) {
+                    let on = shown == Some(p) && !enhancing;
+                    let resp = build_tab(ui, t(p.short()), width, lettering, on);
+                    if !on {
                         let holds = groups.iter().find(|(g, _)| *g == Some(p)).map(|(_, list)| list.clone()).unwrap_or_default();
                         self.anchors.tab(resp.rect, holds);
                     }
                     if resp.on_hover_text(t(p.label())).clicked() {
                         shown = Some(p);
+                        enhancing = false;
                     }
+                }
+                if enhanceable.is_some() && build_tab(ui, t("ENHANCE"), width, lettering, enhancing).on_hover_text(t("Enhancements: parts it installs on itself, one a slot")).clicked() {
+                    enhancing = true;
                 }
             });
             ui.add_space(3.0);
+        }
+        if enhanceable.is_some() {
+            if enhancing {
+                self.enhancing.insert(builder.id);
+            } else {
+                self.enhancing.remove(&builder.id);
+            }
+        }
+        if let (true, Some(u)) = (enhancing, enhanceable) {
+            self.enhance_click = self.enhancement_grid(ui, ctx, vfs, game, u, builder);
+            return None;
         }
         if let Some(p) = shown {
             self.build_tab.insert(builder.id, p);
@@ -1370,10 +1420,14 @@ impl Hud {
         // fits them all, else a page of them at a time over a pager; laid out for the fullest
         // tab, so that they stay as they are from tab to tab.
         let list: Vec<usize> = groups.iter().filter(|(p, _)| p.is_none() || *p == shown).flat_map(|(_, list)| list.iter().copied()).collect();
-        let fullest = groups.iter().map(|(_, list)| list.len()).max().unwrap_or(0);
+        // A factory that upgrades in place offers its next step first among its pictures, as Forged
+        // Alliance's build menus do (`upgrade_tile`).
+        let upgrade = if builder.is_factory && unit.is_some() { game.upgrade_offer().map(|(to, _)| to) } else { None };
+        let lead = usize::from(upgrade.is_some());
+        let fullest = groups.iter().map(|(_, list)| list.len()).max().unwrap_or(0) + lead;
         let grid = BuildGrid::fit(fullest, ui.available_width(), ui.available_height());
         let per_page = grid.columns * grid.rows;
-        let pages = list.len().div_ceil(per_page).max(1);
+        let pages = (list.len() + lead).div_ceil(per_page).max(1);
         // The page: the first for another builder or tab; the one holding what is being placed
         // when that starts (as the tab turns to it).
         let key = (builder.id, shown);
@@ -1382,26 +1436,32 @@ impl Hud {
         }
         if placing != self.build_page_placing {
             self.build_page_placing = placing;
-            if let Some(i) = placing.and_then(|o| list.iter().position(|&q| q == o)) {
+            if let Some(i) = placing.and_then(|o| list.iter().position(|&q| q == o)).map(|i| i + lead) {
                 self.build_page.1 = i / per_page;
             }
         }
         let mut page = self.build_page.1.min(pages - 1);
-        self.anchors.pages(list.iter().enumerate().map(|(i, &o)| (o, i / per_page)), page);
+        self.anchors.pages(list.iter().enumerate().map(|(i, &o)| (o, (i + lead) / per_page)), page);
         let mut click = None;
         // The costs lettered in one size across the menu, every tab's (fitted picture by picture,
         // the larger figures came out smaller than their neighbours').
-        let costs: Vec<(f32, f32)> = groups.iter().flat_map(|(_, list)| list.iter()).map(|&o| game.sim.types.get(o)).map(|k| (k.cost_metal.to_f32(), k.cost_energy.to_f32())).collect();
+        let costs: Vec<(f32, f32)> = groups.iter().flat_map(|(_, list)| list.iter()).chain(upgrade.as_ref()).map(|&o| game.sim.types.get(o)).map(|k| (k.cost_metal.to_f32(), k.cost_energy.to_f32())).collect();
         let cost_size = cost_lettering(ui.painter(), &costs, grid.tile);
         let width = grid.columns as f32 * (grid.tile + GRID_GAP) - GRID_GAP;
         let indent = ((ui.available_width() - width) / 2.0).floor().max(0.0);
         let shown_rows = ui.scope(|ui| {
             ui.spacing_mut().item_spacing = EVec2::new(GRID_GAP, GRID_GAP);
-            for row in list.chunks(grid.columns).skip(page * grid.rows).take(grid.rows) {
+            // (The upgrade first, marked so; then the menu's.)
+            let tiles: Vec<(bool, usize)> = upgrade.map(|to| (true, to)).into_iter().chain(list.iter().map(|&o| (false, o))).collect();
+            for row in tiles.chunks(grid.columns).skip(page * grid.rows).take(grid.rows) {
                 ui.horizontal(|ui| {
                     ui.add_space(indent);
-                    for &opt in row {
-                        if let Some(c) = self.build_tile(ui, ctx, vfs, game, builder, opt, place_of(opt).map(Vec::as_slice), queued, producing, placing, grid.tile, cost_size) {
+                    for &(upgrading, opt) in row {
+                        if upgrading {
+                            if let Some(queue) = self.upgrade_tile(ui, ctx, vfs, game, unit, opt, grid.tile, cost_size) {
+                                self.upgrade_click = Some(queue);
+                            }
+                        } else if let Some(c) = self.build_tile(ui, ctx, vfs, game, builder, opt, place_of(opt).map(Vec::as_slice), queued, producing, placing, grid.tile, cost_size) {
                             click = Some(c);
                         }
                     }
@@ -1440,6 +1500,116 @@ impl Hud {
             }
         }
         self.build_page.1 = page;
+        click
+    }
+
+    /// A factory's next step, first among its pictures (as Forged Alliance's build menus offer an
+    /// upgrade): the unit it becomes, on the ground where that goes (`domain`), stamped UPGRADE, its
+    /// price along the foot, a bar over it while the first selected upgrades. A click upgrades the
+    /// selection (`Game::upgrade_selection`; Shift: the step after, queued).
+    #[allow(clippy::too_many_arguments)]
+    fn upgrade_tile(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, vfs: &Vfs, game: &Game, unit: Option<&Unit>, to: usize, tile: f32, cost_size: f32) -> Option<bool> {
+        let size = EVec2::splat(tile);
+        let kind = game.sim.types.get(to);
+        let ground = Some(Domain::of(kind, &game.sim.data.move_classes));
+        let resp = match self.unit_pic(ctx, vfs, game, to, tile) {
+            Some(p) => pic_button_on(ui, &p, size, ground),
+            None => ui.add_sized(size, egui::Button::new(RichText::new(crate::chat::unit_label(&game.sim, to)).size(10.0)).wrap()),
+        };
+        let rect = resp.rect;
+        if ui.is_rect_visible(rect) {
+            let painter = ui.painter();
+            cost_strip(painter, rect, kind.cost_metal.to_f32(), kind.cost_energy.to_f32(), cost_size);
+            // The stamp: no unit made on the pad, the factory's own next step.
+            let stamp = Rect::from_min_size(rect.min + EVec2::new(2.0, 2.0), EVec2::splat((tile * 0.3).clamp(14.0, 26.0)));
+            painter.rect_filled(stamp, CornerRadius::same(2), Color32::from_black_alpha(170));
+            crate::hud_icons::paint(painter, stamp.shrink(2.0), crate::hud_icons::Glyph::Upgrade, pal().accent_bright);
+            if let Some((ta_sim::SelfJob::Upgrade(_), done)) = unit.and_then(|u| game.sim.self_work_progress(u)) {
+                let done = done.to_f32().clamp(0.0, 1.0);
+                let bar = Rect::from_min_size(Pos2::new(rect.min.x + 1.0, rect.max.y - 18.0), EVec2::new(rect.width() - 2.0, 4.0));
+                painter.rect_filled(bar, CornerRadius::ZERO, Color32::from_black_alpha(170));
+                painter.rect_filled(Rect::from_min_size(bar.min, EVec2::new(bar.width() * done, bar.height())), CornerRadius::ZERO, Color32::from_rgb(255, 196, 70));
+                painter.rect_stroke(rect.shrink(1.0), CornerRadius::same(1), Stroke::new(2.0, pal().accent_bright), egui::StrokeKind::Inside);
+            }
+        }
+        let resp = resp.on_hover_text(crate::orders::upgrade_tip(game, game.keys.text("upgrade")));
+        resp.clicked().then(|| ta_ui::widgets::click_modifiers(&resp, egui::PointerButton::Primary).shift)
+    }
+
+    /// The ENHANCE tab: `u`'s type's enhancements, each a picture (its name where it has none)
+    /// with its costs along its foot and its slot over it, in whole rows as large as the room lets
+    /// them be; lit where installed, a bar over it while it is being installed, dimmed where it
+    /// may not be installed now (what it needs missing). A click installs one (Shift: queued), a
+    /// right-click takes an installed one out.
+    fn enhancement_grid(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, vfs: &Vfs, game: &Game, u: &Unit, ty: &UnitType) -> Option<super::enhance::EnhanceClick> {
+        use super::enhance::EnhanceClick;
+        use ta_sim::EnhancementFit as Fit;
+        let total = ty.enhancements.len();
+        let grid = BuildGrid::fit(total, ui.available_width(), ui.available_height());
+        let costs: Vec<(f32, f32)> = ty.enhancements.iter().map(|e| (e.cost_metal.to_f32(), e.cost_energy.to_f32())).collect();
+        let cost_size = cost_lettering(ui.painter(), &costs, grid.tile);
+        let width = grid.columns as f32 * (grid.tile + GRID_GAP) - GRID_GAP;
+        let indent = ((ui.available_width() - width) / 2.0).floor().max(0.0);
+        let mut click = None;
+        let progress = game.sim.self_work_progress(u);
+        let queued: Vec<u16> = u.orders.iter().filter_map(|o| if let Order::Enhance { index, remove: false } = o { Some(*index) } else { None }).collect();
+        let indices: Vec<u16> = (0..total as u16).collect();
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing = EVec2::new(GRID_GAP, GRID_GAP);
+            for row in indices.chunks(grid.columns.max(1)).take(grid.rows.max(1) * 2) {
+                ui.horizontal(|ui| {
+                    ui.add_space(indent);
+                    for &index in row {
+                        let size = EVec2::splat(grid.tile);
+                        let picture = ty.def.enhancements.get(index as usize).map(|d| d.picture.clone()).filter(|p| !p.is_empty());
+                        let pic = picture.and_then(|p| self.enhancement_pic(ctx, vfs, &p));
+                        let fit = game.sim.enhancement_fit(u, index);
+                        let resp = match &pic {
+                            Some(p) => pic_button(ui, p, size),
+                            None => ui.add_sized(size, egui::Button::new(RichText::new(super::enhance::name(ty, index)).size(10.0)).wrap()),
+                        };
+                        let rect = resp.rect;
+                        if ui.is_rect_visible(rect) {
+                            let painter = ui.painter();
+                            let e = &ty.enhancements[index as usize];
+                            cost_strip(painter, rect, e.cost_metal.to_f32(), e.cost_energy.to_f32(), cost_size);
+                            // Its slot, small, at the top left.
+                            let slot = ta_ui::widgets::galley(ui, RichText::new(super::enhance::slot_name(ty, index)).font(strong(10.0)));
+                            let plate = Rect::from_min_size(rect.min + EVec2::new(2.0, 2.0), slot.size() + EVec2::new(6.0, 2.0));
+                            painter.rect_filled(plate, CornerRadius::same(2), Color32::from_black_alpha(170));
+                            painter.galley(plate.min + EVec2::new(3.0, 1.0), slot, pal().text_bright);
+                            match fit {
+                                Fit::Installed => {
+                                    painter.rect_stroke(rect.shrink(1.0), CornerRadius::same(1), Stroke::new(2.0, pal().good), egui::StrokeKind::Inside);
+                                    painter.add(metal::lamp(rect.right_top() + EVec2::new(-8.0, 8.0), 3.0, pal().good, 1.0));
+                                }
+                                Fit::Installing => {
+                                    let done = progress.filter(|(j, _)| *j == ta_sim::SelfJob::Enhance(index)).map_or(0.0, |(_, d)| d.to_f32().clamp(0.0, 1.0));
+                                    let bar = Rect::from_min_size(Pos2::new(rect.min.x + 1.0, rect.max.y - 18.0), EVec2::new(rect.width() - 2.0, 4.0));
+                                    painter.rect_filled(bar, CornerRadius::ZERO, Color32::from_black_alpha(170));
+                                    painter.rect_filled(Rect::from_min_size(bar.min, EVec2::new(bar.width() * done, bar.height())), CornerRadius::ZERO, Color32::from_rgb(255, 196, 70));
+                                    painter.rect_stroke(rect.shrink(1.0), CornerRadius::same(1), Stroke::new(2.0, pal().accent_bright), egui::StrokeKind::Inside);
+                                }
+                                Fit::Needs(_) | Fit::No => {
+                                    painter.rect_filled(rect, CornerRadius::same(1), Color32::from_black_alpha(140));
+                                }
+                                Fit::Free { .. } => {}
+                            }
+                            if queued.contains(&index) && fit != Fit::Installing {
+                                count(ui, rect.right_top() + EVec2::new(-4.0, 5.0), Align2::RIGHT_TOP, queued.iter().filter(|&&q| q == index).count(), 15.0);
+                            }
+                        }
+                        let resp = resp.on_hover_text(super::enhance::tip(game, u, ty, index));
+                        if resp.clicked() && matches!(fit, Fit::Free { .. } | Fit::Needs(_)) {
+                            // (One needing another: that one first, then it.)
+                            click = Some(EnhanceClick::Install { index, queue: ta_ui::widgets::click_modifiers(&resp, egui::PointerButton::Primary).shift });
+                        } else if resp.secondary_clicked() && fit == Fit::Installed {
+                            click = Some(EnhanceClick::Remove { index });
+                        }
+                    }
+                });
+            }
+        });
         click
     }
 
@@ -1966,6 +2136,17 @@ pub(crate) fn activity(game: &Game, u: &Unit) -> (String, Color32) {
         return (tf("Self-destructing in {secs} s", &[("secs", &at.saturating_sub(sim.tick).div_ceil(30))]), pal().bad);
     }
     let ty = sim.unit_type(u);
+    // Upgrading in place (a factory's unit on its pad waits meanwhile), or installing an
+    // enhancement.
+    match sim.self_work_progress(u) {
+        Some((ta_sim::SelfJob::Upgrade(to), done)) => {
+            return (tf("Upgrading into {name}: {pct}%", &[("name", &crate::orders::upgrade_name(sim, u.type_id, to)), ("pct", &percent(done))]), pal().accent);
+        }
+        Some((ta_sim::SelfJob::Enhance(index), done)) => {
+            return (tf("Installing {name}: {pct}%", &[("name", &super::enhance::name(ty, index)), ("pct", &percent(done))]), pal().accent);
+        }
+        None => {}
+    }
     // (A unit taking a wreck or a tree apart works on itself, as far as its build job says.)
     if u.build.is_some_and(|job| job.target == u.id) {
         return (t("Reclaiming").to_string(), pal().good);
@@ -2005,6 +2186,9 @@ pub(crate) fn activity(game: &Game, u: &Unit) -> (String, Color32) {
         Some(Order::Unload(_)) => (t("Setting its cargo down").to_string(), pal().text),
         Some(Order::Wait(_) | Order::WaitAttacked(_)) => (t("Waiting").to_string(), pal().text),
         Some(Order::SetStates { .. } | Order::Stop) => (t("Idle").to_string(), pal().steel),
+        Some(Order::Upgrade(to)) => (tf("About to upgrade into {name}", &[("name", &crate::orders::upgrade_name(sim, u.type_id, *to))]), pal().accent),
+        Some(Order::Enhance { index, remove: false }) => (tf("About to install {name}", &[("name", &super::enhance::name(ty, *index))]), pal().accent),
+        Some(Order::Enhance { index, remove: true }) => (tf("Taking out {name}", &[("name", &super::enhance::name(ty, *index))]), pal().accent),
         None if ty.is_factory && !u.factory_queue.is_empty() => (t("Starting the next unit").to_string(), pal().good),
         None if ty.is_factory => (t("Idle: nothing queued").to_string(), pal().steel),
         None => match u.weapons.iter().find_map(|w| w.target) {

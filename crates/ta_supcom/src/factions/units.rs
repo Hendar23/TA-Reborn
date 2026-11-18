@@ -279,24 +279,27 @@ fn power(w: &WeaponBlueprint) -> f64 {
     fa_dps(w) + w.nuke.as_ref().map_or(0.0, |n| n.inner_damage)
 }
 
+/// Whether a weapon of `u`'s takes a slot: not its death or its kamikaze blast, a dummy, an
+/// anti-torpedo defence or a weapon of a point a shot (the Galactic Colossus's tractor claws); nor,
+/// unless `enhanced` (one its enhancements switch on, `factions::enhance`), one an enhancement
+/// switches on or its script switches off as it is made (a toggled second gun; the Overcharge, off
+/// until ordered, is TA's D-gun).
+pub fn usable(u: &UnitBlueprint, w: &WeaponBlueprint, enhanced: bool) -> bool {
+    let k = kind(w);
+    !w.category.eq_ignore_ascii_case("death")
+        && !w.category.eq_ignore_ascii_case("kamikaze")
+        && (enhanced || w.table.get_ci("EnabledByEnhancement").is_none())
+        && (enhanced || k == Kind::Overcharge || !u.birth.weapon_off(&w.label))
+        && !w.label.to_ascii_lowercase().contains("dummy")
+        && !w.label.to_ascii_lowercase().contains("antitorpedo")
+        && !w.projectile.as_deref().unwrap_or("").to_ascii_lowercase().contains("antitorpedo")
+        && !restricts_to(w, "TORPEDO")
+        && (w.damage > 1.0 || w.nuke.is_some() || k == Kind::AntiMissile || k == Kind::Overcharge)
+}
+
 /// The weapons that take its slots (eight at most), the death weapon and its kamikaze blast.
 pub fn weapons(u: &UnitBlueprint) -> Weapons<'_> {
-    let usable = |w: &&WeaponBlueprint| {
-        let k = kind(w);
-        !w.category.eq_ignore_ascii_case("death")
-            && !w.category.eq_ignore_ascii_case("kamikaze")
-            && w.table.get_ci("EnabledByEnhancement").is_none()
-            // (What its script switches off as it is made: a toggled second gun, a missile an
-            // enhancement switches on. The Overcharge, off until ordered, is TA's D-gun.)
-            && (k == Kind::Overcharge || !u.birth.weapon_off(&w.label))
-            && !w.label.to_ascii_lowercase().contains("dummy")
-            && !w.label.to_ascii_lowercase().contains("antitorpedo")
-            && !w.projectile.as_deref().unwrap_or("").to_ascii_lowercase().contains("antitorpedo")
-            && !restricts_to(w, "TORPEDO")
-            // (A weapon dealing a point a shot at most is no gun: the Galactic Colossus's tractor
-            // claws.)
-            && (w.damage > 1.0 || w.nuke.is_some() || k == Kind::AntiMissile || k == Kind::Overcharge)
-    };
+    let usable = |w: &&WeaponBlueprint| usable(u, w, false);
     let death = u.weapons.iter().find(|w| w.category.eq_ignore_ascii_case("death") || w.label.eq_ignore_ascii_case("DeathWeapon"));
     let kamikaze = u.weapons.iter().find(|w| w.category.eq_ignore_ascii_case("kamikaze") && w.damage > 0.0);
     let mut armed: Vec<&WeaponBlueprint> = u.weapons.iter().filter(usable).collect();
@@ -452,6 +455,11 @@ pub fn missile_price(u: &UnitBlueprint, w: &WeaponBlueprint) -> (f64, f64, f64) 
 /// A weapon's section: its range, reload, speed, blast and damage Forged Alliance's at TA's
 /// scale; how it flies and looks as TA's weapons of its kind.
 pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
+    weapon_section_named(u, w, &weapon_name(u, w))
+}
+
+/// A weapon's section under `name` (an enhancement's changed gun: `factions::enhance`).
+pub fn weapon_section_named(u: &UnitBlueprint, w: &WeaponBlueprint, name: &str) -> String {
     let k = kind(w);
     let px = |ogrids: f64| (ogrids * UNIT_SCALE).round() as i64;
     let mut s = String::new();
@@ -666,7 +674,7 @@ pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
         None if stock => cycle(w).per_shot,
         None => fire.damage,
     };
-    format!("[{}]\n\t{{\n{s}\t[DAMAGE]\n\t\t{{\n\t\tdefault={};\n\t\t}}\n\t}}\n", weapon_name(u, w), number(damage.max(1.0)))
+    format!("[{}]\n\t{{\n{s}\t[DAMAGE]\n\t\t{{\n\t\tdefault={};\n\t\t}}\n\t}}\n", name, number(damage.max(1.0)))
 }
 
 /// A unit's death: its death weapon's section (a blast where it falls), or none.
@@ -861,8 +869,17 @@ fn winged(u: &UnitBlueprint) -> bool {
     u.table.path(&["Air"]).and_then(|a| a.get_ci("Winged")).and_then(crate::lua::Value::bool).unwrap_or(false)
 }
 
+/// What a unit's file says that its own blueprint does not tell alone: what it upgrades into in
+/// place (the unit its `General.UpgradesTo` names, of its faction and made), and its enhancements'
+/// section (`factions::enhance::section`).
+#[derive(Clone, Debug, Default)]
+pub struct Extra<'a> {
+    pub upgrades_to: Option<&'a str>,
+    pub enhancements: String,
+}
+
 /// The unit's file.
-pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32)>) -> String {
+pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32)>, extra: &Extra) -> String {
     let id = u.id.to_ascii_uppercase();
     let (fx, fz) = footprint(u);
     let side = side(&u.faction);
@@ -956,6 +973,14 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
         put("CanReclamate", "1".into());
         if builds == Builds::Factory {
             put("YardMap", yard_map(fx, fz));
+        }
+    }
+    // Upgrading in place (`UpgradesTo`): on its own build power, which a building that builds
+    // nothing else is given for it (an extractor's, a radar's: Forged Alliance's `BuildRate`).
+    if let Some(to) = extra.upgrades_to {
+        put("UpgradesTo", to.to_ascii_uppercase());
+        if builds == Builds::No {
+            put("WorkerTime", ((u.build_rate * WORK).round().max(1.0) as i64).to_string());
         }
     }
     // An air staging platform repairs the aircraft landed on it, as TA's repair pads do (their
@@ -1161,7 +1186,7 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
             }
         }
     }
-    format!("[UNITINFO]\n\t{{\n{f}\t}}\n")
+    format!("[UNITINFO]\n\t{{\n{f}{}\t}}\n", extra.enhancements)
 }
 
 /// TA's sound category for the unit's kind (TA's own sounds, `gamedata/sound.tdf`'s: Forged
@@ -1253,7 +1278,7 @@ mod tests {
         let u = striker();
         let w = weapons(&u);
         assert_eq!(w.slots.len(), 1);
-        let file = unit_file(&u, &w, None);
+        let file = unit_file(&u, &w, None, &Extra::default());
         for line in ["UnitName=UEL0201;", "Side=UEF;", "MaxDamage=300;", "BuildCostMetal=56;", "BuildCostEnergy=266;", "BuildTime=2800;", "FootprintX=2;", "SightDistance=640;", "Weapon1=UEL0201_MAINGUN;", "MovementClass=TANKSH2;", "TEDClass=TANK;", "TurnRate=546;", "Corpse=uel0201_dead;"] {
             assert!(file.contains(line), "{line} in {file}");
         }
@@ -1288,7 +1313,7 @@ mod tests {
         let w = weapons(&u);
         assert_eq!(w.slots.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(), ["RightZephyr", "OverCharge"]);
         assert_eq!(w.dgun, Some(1));
-        let file = unit_file(&u, &w, None);
+        let file = unit_file(&u, &w, None, &Extra::default());
         assert!(file.contains("canDgun=1;") && file.contains("Commander=1;") && file.contains("TEDClass=COMMANDER;"), "{file}");
         assert!(weapon_section(&u, w.slots[1]).contains("commandfire=1;"));
         let _ = Rack::default();
@@ -1368,7 +1393,7 @@ mod tests {
         }
         assert!(value(&section, "tracks").is_empty(), "a nuke strikes a place: {section}");
         assert!(value(&section, "interceptor").is_empty(), "{section}");
-        assert!(unit_file(&silo(), &Weapons { slots: vec![&nuke_weapon()], death: None, dgun: None, kamikaze: None }, None).contains("onoffable=0;"));
+        assert!(unit_file(&silo(), &Weapons { slots: vec![&nuke_weapon()], death: None, dgun: None, kamikaze: None }, None, &Extra::default()).contains("onoffable=0;"));
     }
 
     /// A tactical missile launcher's missiles are stored too (180 mass and 3,600 energy, 2,400 at
@@ -1511,21 +1536,21 @@ mod tests {
         use crate::unit::Layers;
         let none = Weapons { slots: Vec::new(), death: None, dgun: None, kamikaze: None };
         let engineer = UnitBlueprint { id: "UEL0105".into(), faction: Faction::Uef, motion: Motion::Land, build_rate: 5.0, buildable: vec!["BUILTBYTIER1ENGINEER UEF".into()], categories: vec!["ENGINEER".into()], ..Default::default() };
-        assert!(unit_file(&engineer, &none, None).contains("CanReclamate=1;"));
+        assert!(unit_file(&engineer, &none, None, &Extra::default()).contains("CanReclamate=1;"));
         let radar = UnitBlueprint { id: "UEB3101".into(), faction: Faction::Uef, categories: vec!["STRUCTURE".into(), "INTELLIGENCE".into(), "RADAR".into()], upkeep_energy: 20.0, intel: crate::unit::Intel { radar: 115.0, ..Default::default() }, layers: Layers { land: true, ..Default::default() }, ..Default::default() };
-        let file = unit_file(&radar, &none, None);
+        let file = unit_file(&radar, &none, None, &Extra::default());
         assert!(file.contains("EnergyUse=20;") && file.contains("ActivateWhenBuilt=1;") && file.contains("OnOffable=1;") && file.contains("MaxWaterDepth=0;"), "{file}");
         let transport = UnitBlueprint { id: "UEA0107".into(), faction: Faction::Uef, motion: Motion::Air, categories: vec!["AIR".into(), "TRANSPORTATION".into()], ..Default::default() };
-        let file = unit_file(&transport, &none, Some((6, 3)));
+        let file = unit_file(&transport, &none, Some((6, 3)), &Extra::default());
         assert!(file.contains("TransportCapacity=6;") && file.contains("TransportMaxUnits=6;") && file.contains("TransportSize=3;") && file.contains("canload=1;"), "{file}");
-        assert!(!unit_file(&transport, &none, None).contains("canload"), "no attach bones, no transport");
+        assert!(!unit_file(&transport, &none, None, &Extra::default()).contains("canload"), "no attach bones, no transport");
         // An extractor on land or the sea bed; a torpedo trap on the sea bed alone; a sonar afloat.
         let structure = |id: &str, layers: Layers| UnitBlueprint { id: id.into(), faction: Faction::Uef, categories: vec!["STRUCTURE".into()], layers, ..Default::default() };
-        let file = unit_file(&structure("UEB1103", Layers { land: true, seabed: true, ..Default::default() }), &none, None);
+        let file = unit_file(&structure("UEB1103", Layers { land: true, seabed: true, ..Default::default() }), &none, None, &Extra::default());
         assert!(file.contains("MaxWaterDepth=255;") && !file.contains("MinWaterDepth"), "{file}");
-        let file = unit_file(&structure("XRB2308", Layers { sub: true, ..Default::default() }), &none, None);
+        let file = unit_file(&structure("XRB2308", Layers { sub: true, ..Default::default() }), &none, None, &Extra::default());
         assert!(file.contains("MaxWaterDepth=255;") && file.contains("MinWaterDepth=15;") && !file.contains("Floater"), "{file}");
-        let file = unit_file(&structure("UEB3102", Layers { water: true, ..Default::default() }), &none, None);
+        let file = unit_file(&structure("UEB3102", Layers { water: true, ..Default::default() }), &none, None, &Extra::default());
         assert!(file.contains("MinWaterDepth=5;") && file.contains("Floater=1;"), "{file}");
     }
 
@@ -1535,13 +1560,13 @@ mod tests {
     fn upkeep_is_paid_only_for_what_is_there() {
         let none = Weapons { slots: Vec::new(), death: None, dgun: None, kamikaze: None };
         let shield = UnitBlueprint { id: "UEB4202".into(), faction: Faction::Uef, categories: vec!["STRUCTURE".into(), "SHIELD".into()], upkeep_energy: 200.0, ..Default::default() };
-        let file = unit_file(&shield, &none, None);
+        let file = unit_file(&shield, &none, None, &Extra::default());
         assert!(!file.contains("EnergyUse") && !file.contains("OnOffable"), "{file}");
         let stealthy = UnitBlueprint { id: "URA0303".into(), faction: Faction::Cybran, motion: Motion::Air, upkeep_energy: 25.0, intel: crate::unit::Intel { radar_stealth: true, ..Default::default() }, ..Default::default() };
-        let file = unit_file(&stealthy, &none, None);
+        let file = unit_file(&stealthy, &none, None, &Extra::default());
         assert!(file.contains("Stealth=1;") && !file.contains("EnergyUse"), "{file}");
         let mex = UnitBlueprint { id: "UEB1103".into(), faction: Faction::Uef, categories: vec!["MASSEXTRACTION".into()], upkeep_energy: 2.0, production_mass: 2.0, ..Default::default() };
-        let file = unit_file(&mex, &none, None);
+        let file = unit_file(&mex, &none, None, &Extra::default());
         assert!(file.contains("EnergyUse=2;") && file.contains("ExtractsMetal=0.001;") && !file.contains("MetalStorage"), "{file}");
     }
 
@@ -1552,7 +1577,7 @@ mod tests {
         let none = Weapons { slots: Vec::new(), death: None, dgun: None, kamikaze: None };
         let mut acu = UnitBlueprint { id: "URL0001".into(), faction: Faction::Cybran, motion: Motion::Amphibious, regen: 15.0, intel: crate::unit::Intel { sonar: 60.0, radar_stealth: true, ..Default::default() }, ..Default::default() };
         acu.birth.intel_off = vec!["RadarStealth".into(), "Sonar".into()];
-        let file = unit_file(&acu, &none, None);
+        let file = unit_file(&acu, &none, None, &Extra::default());
         assert!(!file.contains("SonarDistance") && !file.contains("Stealth=1;") && file.contains("HealTime=6.67;"), "{file}");
         // An amphibian goes by its own limits, to the deepest sea bed.
         assert!(file.contains("MaxWaterDepth=255;") && !file.contains("MovementClass"), "{file}");
@@ -1574,9 +1599,9 @@ mod tests {
         assert_eq!(turn.round(), 522.0, "86° a second");
         let gun = WeaponBlueprint { label: "Gun".into(), category: "Anti Air".into(), damage: 50.0, rate_of_fire: 1.0, turreted: true, ..Default::default() };
         let armed = Weapons { slots: vec![&gun], death: None, dgun: None, kamikaze: None };
-        assert!(!unit_file(&fighter, &armed, None).contains("HoverAttack"), "a fighter makes passes");
+        assert!(!unit_file(&fighter, &armed, None, &Extra::default()).contains("HoverAttack"), "a fighter makes passes");
         let gunship = plane("UEA0203", &["GROUNDATTACK"], "KMove = 0.8, KMoveDamping = 2, KTurn = 0.8");
-        assert!(unit_file(&gunship, &armed, None).contains("HoverAttack=1;"));
+        assert!(unit_file(&gunship, &armed, None, &Extra::default()).contains("HoverAttack=1;"));
     }
 
     /// A building's footprint covers what of its model stands on the ground where its blueprint's
@@ -1601,7 +1626,7 @@ mod tests {
             assert_eq!(fitted_footprint(other, Some([2.0, 2.0])), None, "{:?}", other.categories);
         }
         let none = Weapons { slots: Vec::new(), death: None, dgun: None, kamikaze: None };
-        assert!(unit_file(&pd, &none, None).contains("MaxSlope=10;"));
+        assert!(unit_file(&pd, &none, None, &Extra::default()).contains("MaxSlope=10;"));
     }
 
     /// A ship stands on a square of its hull's area (a frigate's 2 by 6 ogrids, 4 by 12 cells: 7);
@@ -1613,18 +1638,18 @@ mod tests {
         let frigate = UnitBlueprint { id: "UES0103".into(), faction: Faction::Uef, motion: Motion::Water, footprint: Some([2.0, 6.0]), ..Default::default() };
         assert_eq!(footprint(&frigate), (7, 7));
         let plant = UnitBlueprint { id: "UEB1102".into(), faction: Faction::Uef, categories: vec!["HYDROCARBON".into()], footprint: Some([1.0, 1.0]), ..Default::default() };
-        assert!(unit_file(&plant, &none, None).contains("YardMap=GGGG;"));
+        assert!(unit_file(&plant, &none, None, &Extra::default()).contains("YardMap=GGGG;"));
         let station = UnitBlueprint { id: "XRB0104".into(), faction: Faction::Cybran, build_rate: 15.0, categories: vec!["ENGINEERSTATION".into()], buildable: vec!["xrb0204".into()], ..Default::default() };
         assert_eq!(builds(&station), Builds::Assist);
-        let file = unit_file(&station, &none, None);
+        let file = unit_file(&station, &none, None, &Extra::default());
         assert!(file.contains("Builder=1;") && file.contains("WorkerTime=150;") && !file.contains("YardMap"), "{file}");
         let pad = UnitBlueprint { id: "UEB5202".into(), faction: Faction::Uef, categories: vec!["AIRSTAGINGPLATFORM".into()], ..Default::default() };
-        assert!(unit_file(&pad, &none, None).contains("IsAirBase=1;"));
+        assert!(unit_file(&pad, &none, None, &Extra::default()).contains("IsAirBase=1;"));
         let suicide = WeaponBlueprint { label: "Suicide".into(), category: "Kamikaze".into(), damage: 4500.0, damage_radius: 3.0, max_radius: 3.0, ..Default::default() };
         let beetle = UnitBlueprint { id: "XRL0302".into(), faction: Faction::Cybran, motion: Motion::Land, weapons: vec![suicide], ..Default::default() };
         let w = weapons(&beetle);
         assert!(w.slots.is_empty() && w.kamikaze.is_some());
-        let file = unit_file(&beetle, &w, None);
+        let file = unit_file(&beetle, &w, None, &Extra::default());
         for line in ["Kamikaze=1;", "KamikazeDistance=48;", "SelfDestructAs=XRL0302_BLAST;", "canattack=1;"] {
             assert!(file.contains(line), "{line} in {file}");
         }
@@ -1638,10 +1663,10 @@ mod tests {
         let gun = |label: &str, layers: &str| WeaponBlueprint { label: label.into(), category: "Direct Fire".into(), damage: 50.0, rate_of_fire: 1.0, ballistic_arc: "RULEUBA_None".into(), target_layers: vec![("Land".into(), layers.into())], ..Default::default() };
         let (a, b) = (gun("A", "Land|Water"), gun("B", "Land|Air"));
         let u = UnitBlueprint { id: "UEL0202".into(), faction: Faction::Uef, motion: Motion::Land, ..Default::default() };
-        let file = unit_file(&u, &Weapons { slots: vec![&a, &b], death: None, dgun: None, kamikaze: None }, None);
+        let file = unit_file(&u, &Weapons { slots: vec![&a, &b], death: None, dgun: None, kamikaze: None }, None, &Extra::default());
         assert!(file.contains("wpri_badTargetCategory=VTOL;") && !file.contains("wsec_badTargetCategory") && !file.contains("NoChaseCategory"), "{file}");
         let five: Vec<WeaponBlueprint> = (0..5).map(|k| gun(&format!("G{k}"), "Land")).collect();
-        let file = unit_file(&u, &Weapons { slots: five.iter().collect(), death: None, dgun: None, kamikaze: None }, None);
+        let file = unit_file(&u, &Weapons { slots: five.iter().collect(), death: None, dgun: None, kamikaze: None }, None, &Extra::default());
         assert!(file.contains("BadTargetCategory5=VTOL;") && file.contains("wspe_badTargetCategory=VTOL;") && file.contains("NoChaseCategory=VTOL;"), "{file}");
     }
 

@@ -3,7 +3,7 @@
 //! orders (the plate, the radial menu), so that they never differ.
 
 use ta_sim::UnitId;
-use ta_ui::i18n::t;
+use ta_ui::i18n::{t, tf};
 
 use crate::game::{CommandMode, Game};
 use crate::hud_icons::Glyph;
@@ -17,6 +17,9 @@ pub enum Kind {
     Mode(CommandMode),
     /// Perspective: into this unit, to ride along.
     Perspective(UnitId),
+    /// Upgrade in place: the selected units that upgrade become the next step of their type's
+    /// upgrades (with Shift, queued after those ordered).
+    Upgrade,
 }
 
 /// The rows the plate sets the orders in: moving and fighting; work (mending, reclaiming,
@@ -51,8 +54,53 @@ impl Def {
             Kind::Stop => format!("{} ({key})", t("Stop")),
             Kind::Mode(mode) => format!("{} ({key}): {}", t(mode.label_for(game)), t(mode.hint_for(game))),
             Kind::Perspective(_) => format!("{} ({key}): {}", t("Perspective"), t("See through its eyes as it goes on with its orders. Escape leaves.")),
+            Kind::Upgrade => upgrade_tip(game, &key),
         }
     }
+}
+
+/// UPGRADE's words: into what, its cost and how long it takes on the unit's own build power,
+/// what it does meanwhile, and how many of the selection upgrade.
+/// What a unit of type `from` upgrades into, by name: the new type's, with its tech level where
+/// the two share a name (Supreme Commander's factories are all "Land Factory": "Land Factory T2").
+pub fn upgrade_name(sim: &ta_sim::Sim, from: usize, to: usize) -> String {
+    let name = crate::chat::unit_label(sim, to);
+    if name != crate::chat::unit_label(sim, from) {
+        return name;
+    }
+    // (Its tech level by its category's LEVELn or LEVn, as the computer players read it.)
+    let level = sim.types.get(to).def.category.split_whitespace().filter_map(|token| {
+        let token = token.to_ascii_uppercase();
+        token.strip_prefix("LEVEL").or_else(|| token.strip_prefix("LEV"))?.parse::<u8>().ok()
+    }).max();
+    match level {
+        Some(n) => tf("{name} T{n}", &[("name", &name), ("n", &n)]),
+        None => name,
+    }
+}
+
+pub fn upgrade_tip(game: &Game, key: &str) -> String {
+    let Some((to, count)) = game.upgrade_offer() else { return format!("{} ({key})", t("Upgrade")) };
+    let sim = &game.sim;
+    let kind = sim.types.get(to);
+    let from = game.selection.iter().filter_map(|&id| sim.unit(id)).find(|u| game.upgrade_step(u, false) == Some(to)).map(|u| sim.unit_type(u));
+    let name = upgrade_name(sim, from.map_or(to, |f| f.id), to);
+    let secs = from.filter(|f| f.worker_rate > ta_sim::Fx::ZERO).map_or(0.0, |f| (kind.build_time / f.worker_rate).to_f32() / 30.0);
+    let mut lines = vec![tf("Upgrade ({key}): into {name}", &[("key", &key), ("name", &name)])];
+    lines.push(tf(
+        "Metal {metal}  ·  Energy {energy}  ·  {duration} on its own build power",
+        &[("metal", &format!("{:.0}", kind.cost_metal.to_f32())), ("energy", &format!("{:.0}", kind.cost_energy.to_f32())), ("duration", &crate::hud::duration(secs))],
+    ));
+    if from.is_some_and(|f| f.is_factory) {
+        lines.push(t("A factory makes nothing while it upgrades; Stop calls it off, its metal back").to_string());
+    } else {
+        lines.push(t("It works on while it upgrades; Stop calls it off, its metal back").to_string());
+    }
+    if count > 1 {
+        lines.push(tf("{n} of the selection upgrade", &[("n", &count)]));
+    }
+    lines.push(t("Shift: queued after the upgrade under way").to_string());
+    lines.join("\n")
 }
 
 /// The orders the selection can give, in the order the plate sets them: every group's in turn
@@ -79,6 +127,9 @@ pub fn available(game: &Game) -> Vec<Def> {
         if game.mode_available(mode) {
             out.push(Def { kind: Kind::Mode(mode), glyph, action, group });
         }
+    }
+    if game.upgrade_offer().is_some() {
+        out.push(Def { kind: Kind::Upgrade, glyph: Glyph::Upgrade, action: "upgrade", group: Group::Work });
     }
     if let Some(&id) = game.selection.first()
         && crate::perspective::Perspective::can_enter(game, id)

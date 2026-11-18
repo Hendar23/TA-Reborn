@@ -39,6 +39,7 @@ pub use perks::Perks;
 pub use signal::{Signal, SignalKind};
 /// (The class of strategic missiles and the interceptors that take them, `ta_data`'s.)
 pub use ta_data::STRATEGIC_CLASS;
+pub use sim::enhance::Fit as EnhancementFit;
 pub use sim::{Command, Feature, Sim, SimStats};
-pub use unit::{Drift, GameRules, Order, Player, PlayerSetup, PlayerStats, Sharing, StatSample, Target, Unit, UnitId, WeaponState, piece_world_heading, piece_world_position};
+pub use unit::{Boost, Drift, GameRules, Order, Player, PlayerSetup, PlayerStats, SelfJob, SelfWork, Sharing, StatSample, Target, Unit, UnitId, WeaponState, piece_world_heading, piece_world_position};
 pub use vision::{Seen, Vision};

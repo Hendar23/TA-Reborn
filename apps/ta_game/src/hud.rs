@@ -23,6 +23,7 @@ mod companion;
 mod conquest;
 pub(crate) mod domain;
 mod economy;
+pub(crate) mod enhance;
 mod eta;
 mod idle;
 pub(crate) mod info;
@@ -106,6 +107,14 @@ pub struct Hud {
     controls_touched: f64,
     /// The build menu's tab last shown, per kind of constructor.
     build_tab: HashMap<usize, deck::Purpose>,
+    /// The kinds of unit whose build menu shows their enhancements (the ENHANCE tab), and the
+    /// enhancement last clicked there (for the selection, once the menu is drawn).
+    enhancing: std::collections::HashSet<usize>,
+    enhance_click: Option<enhance::EnhanceClick>,
+    /// The upgrade clicked in a factory's build menu (its first picture), with Shift or not.
+    upgrade_click: Option<bool>,
+    /// Enhancements' pictures (`unitpics/<name>.pcx`), by name.
+    enhancement_pics: HashMap<String, Option<TextureHandle>>,
     /// The building being placed whose tab the build menu last turned to: it turns there once,
     /// when the placing starts, and the player may look at other tabs meanwhile.
     build_tab_placing: Option<usize>,
@@ -413,6 +422,21 @@ impl Hud {
     /// TA's own picture of a unit type.
     fn cameo(&mut self, ctx: &egui::Context, vfs: &Vfs, game: &Game, type_id: usize) -> Option<TextureHandle> {
         self.cameo_for_type(ctx, vfs, type_id, &game.sim.types.get(type_id).name)
+    }
+
+    /// An enhancement's picture (`unitpics/<name>.pcx`), as a unit's in the menus.
+    fn enhancement_pic(&mut self, ctx: &egui::Context, vfs: &Vfs, name: &str) -> Option<UnitPic> {
+        let texture = self
+            .enhancement_pics
+            .entry(name.to_ascii_lowercase())
+            .or_insert_with(|| {
+                let name = name.to_ascii_lowercase();
+                let pcx = PcxImage::parse(&vfs.read_opt(&format!("unitpics/{name}.pcx"))?).ok()?;
+                let img = egui::ColorImage::from_rgba_unmultiplied([pcx.width as usize, pcx.height as usize], &pcx.to_rgba());
+                Some(ctx.load_texture(format!("enhancementpic-{name}"), img, egui::TextureOptions::LINEAR))
+            })
+            .clone()?;
+        Some(UnitPic { id: texture.id(), portrait: false, allegiance: None })
     }
 
     fn cameo_for_type(&mut self, ctx: &egui::Context, vfs: &Vfs, type_id: usize, name: &str) -> Option<TextureHandle> {
@@ -1270,16 +1294,18 @@ impl Hud {
         for u in game.sim.units() {
             let selected = !selection.is_empty() && selection.contains(&u.id);
             let t = game.sim.unit_type(u);
-            let damaged = u.health < t.max_health;
+            let damaged = u.health < u.max_health(t);
             let countdown = u.self_destruct_manual && u.self_destruct_at.is_some();
             let group = if close || selected { group_of.get(&u.id).copied() } else { None };
             let capturing = u.capture_progress > ta_sim::Fx::ZERO;
+            // Upgrading in place (ours and our allies'): how far along, under its health.
+            let remaking = game.sim.self_work_progress(u).filter(|_| game.may_inspect(u.owner)).map(|(_, done)| done.to_f32().clamp(0.0, 1.0));
             let shown = match game.health_bars {
                 ta_config::HealthBars::Auto => close && (!u.is_complete() || damaged && u.owner == game.local_player),
                 ta_config::HealthBars::Damaged => !u.is_complete() || damaged,
                 ta_config::HealthBars::Selected => false,
             };
-            let bar = selected || capturing || game.hovered == Some(u.id) || shown;
+            let bar = selected || capturing || game.hovered == Some(u.id) || shown || remaking.is_some() && close;
             // (The viewer's sight is asked only of those with something to show.)
             if !(countdown || group.is_some() || bar) || game.seen(u) != ta_sim::Seen::Visible {
                 continue;
@@ -1307,7 +1333,7 @@ impl Hud {
             }
             // (Far out a selected unit at full health shows none: the strategic icons' rings
             // mark the selection.)
-            if !bar || strategic && selected && !damaged && u.is_complete() && !capturing && u.paralyzed_until <= game.sim.tick && game.hovered != Some(u.id) {
+            if !bar || strategic && selected && !damaged && u.is_complete() && !capturing && remaking.is_none() && u.paralyzed_until <= game.sim.tick && game.hovered != Some(u.id) {
                 continue;
             }
             if u.capture_progress > ta_sim::Fx::ZERO {
@@ -1316,7 +1342,7 @@ impl Hud {
                 painter.rect_filled(cb, 1.0, Color32::from_black_alpha(180));
                 painter.rect_filled(Rect::from_min_size(cb.min, EVec2::new(w * c, 3.0)), 1.0, Color32::from_rgb(200, 120, 255));
             }
-            let frac = (u.health / t.max_health).to_f32().clamp(0.0, 1.0);
+            let frac = (u.health / u.max_health(t)).to_f32().clamp(0.0, 1.0);
             let bar = Rect::from_min_size(Pos2::new(s.x - w / 2.0, s.y - 6.0), EVec2::new(w, 4.0));
             // The health just lost lingers as a pale chunk, then drains away (how hard the blow
             // was, at a glance); healing shows at once.
@@ -1393,6 +1419,12 @@ impl Hud {
                         eta::paint(&painter, Pos2::new(s.x, bar.min.y - 5.0), left, eta_strength);
                     }
                 }
+            }
+            if let Some(done) = remaking {
+                // (Amber: work on itself, not a frame's.)
+                let bb = Rect::from_min_size(Pos2::new(bar.min.x, bar.min.y + 6.0), EVec2::new(w, 3.0));
+                painter.rect_filled(bb.expand(1.0), 1.5, Color32::from_black_alpha(200));
+                painter.rect_filled(Rect::from_min_size(bb.min, EVec2::new(w * done, 3.0)), 1.0, Color32::from_rgb(255, 196, 70));
             }
             if selected && !strategic {
                 // On the ground round the unit, as a decal lies (drawn with the scene, so that the
@@ -1515,8 +1547,8 @@ impl Hud {
                         lines.push((line, Color32::from_gray(165), 11.0));
                     }
                 }
-                let health = (u.health / t.max_health).to_f32().clamp(0.0, 1.0);
-                hover_card(view, &painter, mouse, lines, Some((health, format!("{:.0} / {:.0}", u.health.to_f32().max(0.0), t.max_health.to_f32()))), figures);
+                let health = (u.health / u.max_health(t)).to_f32().clamp(0.0, 1.0);
+                hover_card(view, &painter, mouse, lines, Some((health, format!("{:.0} / {:.0}", u.health.to_f32().max(0.0), u.max_health(t).to_f32()))), figures);
             }
         } else if let (None, Some(mouse), Some(f)) = (game.hovered, ctx.pointer_hover_pos().or_else(|| game.cursor_override.and_then(project)), game.hovered_feature()) {
             // A wreck, rock or tree: what reclaiming it would give (what is left of it), and
@@ -1666,12 +1698,15 @@ impl Hud {
         let canvas = ranges::Canvas { painter: &painter, lens, ground: &ground_at, free: free.intersect(view), clock, still, placed: std::cell::RefCell::new(self.minimap_rect.filter(|_| !self.classic).map(|m| vec![m.expand(6.0)]).unwrap_or_default()) };
         for r in ranged {
             let t = game.sim.types.get(r.type_id);
-            let weapon = t.weapons.iter().flatten().map(|&w| game.sim.weapon_types.get(w)).filter(|w| !w.def.stockpile && !w.def.interceptor).map(|w| w.range.to_f32()).fold(0.0, f32::max);
+            // (A unit in play: its own weapons and sensors, as its enhancements have them; one
+            // being placed, its type's.)
+            let unit = r.unit(game);
+            let weapon = ranges::weapon_reach(t, unit, &game.sim.weapon_types);
             // (The weapons' reach shows with all the ranges, not with the sensors' alone.)
             if r.weapons && weapon > 0.0 && game.range_overlays == ta_config::RangeOverlays::All {
                 ring(r.at, weapon, Stroke::new(1.5, Color32::from_rgba_unmultiplied(255, 90, 70, 170)));
             }
-            for range in ranges::shown_ranges(t, &game.sim.weapon_types, game.range_overlays) {
+            for range in ranges::shown_ranges(t, unit, &game.sim.weapon_types, game.range_overlays) {
                 ranges::draw(&canvas, r.at, range, r.power);
                 if !still && r.power == ranges::Power::On {
                     ctx.request_repaint();
@@ -1872,7 +1907,7 @@ impl Hud {
                             None => kinds.push((u.type_id, 1)),
                         }
                         health += u.health.to_f32();
-                        max += game.sim.unit_type(u).max_health.to_f32();
+                        max += u.max_health(game.sim.unit_type(u)).to_f32();
                     }
                     let picture = kinds.iter().max_by_key(|&&(k, n)| (n, std::cmp::Reverse(k))).map(|&(k, _)| k);
                     let chosen = units.len() == selection.len() && units.iter().all(|id| selection.contains(id));
@@ -2078,7 +2113,7 @@ impl Hud {
             }
             let ty = game.sim.unit_type(u);
             if ty.def.is_commander {
-                commander[u.owner as usize] = Some(((u.health / ty.max_health).to_f32().clamp(0.0, 1.0), Vec3::from_array(u.pos.to_f32())));
+                commander[u.owner as usize] = Some(((u.health / u.max_health(ty)).to_f32().clamp(0.0, 1.0), Vec3::from_array(u.pos.to_f32())));
             } else if ty.locomotion != ta_sim::Locomotion::Static && ty.weapons.iter().any(|w| w.is_some()) {
                 army[u.owner as usize] += ty.cost_metal.to_f32() + ty.cost_energy.to_f32() / 60.0;
             }

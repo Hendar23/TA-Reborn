@@ -54,8 +54,8 @@ archives rebalance the units, and the import plays them as Forged Alliance does.
   about 26 tech 1, 31 tech 2, 26 tech 3, three or four experimentals, the ACU and a support
   commander. Every one but the tech 2 and 3 factories is made by some builder, by its lists'
   categories; those Forged Alliance makes only by upgrading the factory below
-  (`General.UpgradesFrom`), which the conversion puts on the menus of those that build that one
-  (Builds, below): every one is then reached from its faction's commander.
+  (`General.UpgradesTo`), as TA Reborn does (Upgrades, below): every one is then reached from
+  its faction's commander, by builds and upgrades (UEF 13 upgrades, the others 12 each).
 - Their first levels of detail hold 785,000 vertices in all (the Fatboy, UEL0401, the most: 15,100);
   194 walks and deaths.
 - `projectiles.scd` (289 projectile blueprints, 48 meshes), `textures.scd` (539 build icons,
@@ -321,12 +321,10 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
 - **Builds:** each builder's build lists matched against the units' categories. A commander
   builds its own tier (`BUILTBYCOMMANDER`), not what FA keeps from it until its engineering
   enhancements (`BUILTBYTIER2COMMANDER`, `BUILTBYTIER3COMMANDER`: the Cybran commander's
-  Engineering Station; the enhancements are not yet in TA Reborn); a factory builds units (the
-  buildings its lists name are its own upgrades, in place: later). A building FA makes only by
-  upgrading the one below (no builder's lists reach it: the tech 2 and 3 factories) goes on the
-  menus of those that build the one below, a tier below it at most (a tech 2 factory for tech 1
-  engineers and up, a tech 3 one for tech 2 and up, the support commanders' as tech 3), not a
-  commander's: built where it stands, at its own cost. An engineering station (the Kennel, the
+  Engineering Station), which add it to its menu (below); a factory builds units (the
+  buildings its lists name are its own upgrades, in place). A building FA makes only by
+  upgrading the one below (no builder's lists reach it: the tech 2 and 3 factories) is on no
+  builder's menu: it is made by upgrading, as in FA. An engineering station (the Kennel, the
   Hive) lends its build power to what is built round it (TA's assist turret: a builder with no
   menu); an air staging platform repairs the aircraft landed on it, as TA's repair pads do
   (`IsAirBase`). A mobile factory (the Fatboy, the carriers, the Atlantis, the Tempest, the CZAR)
@@ -334,6 +332,40 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
   moves. The menus (`download/supcom_<faction>.tdf`) put buildings before units, the lower tech
   first, economy, factories, defences, then the rest; the same lists are the computer players'
   (`[CANBUILD]`).
+- **Upgrades** (`faction::upgrade_of`): a unit whose `General.UpgradesTo` names a unit of its
+  faction that is made, and that has build power to upgrade with (`Economy.BuildRate`), says
+  `UpgradesTo` (docs/MODDING.md): the tech 1 factories into the tech 2 and those into the tech 3
+  (land, air and naval), the extractors (tech 1 into 2 into 3), the radars (into the omni
+  sensor), the sonars (into the tech 3 sonar platform) and the UEF's and the Seraphim's tech 2
+  shield generators: 49 in all (what the others name is no unit a player makes). A building
+  that builds nothing else gets its `BuildRate` as its `WorkerTime` for it; a fabricator, which
+  names an upgrade and has none, never upgrades (nor does it in FA). An upgrade takes what FA's
+  does: the new unit's build time at the old one's build rate (a tech 1 land factory into the tech
+  2 in 80 s, that into the tech 3 in 210 s; a tech 1 extractor into the tech 2 in 90 s, that into
+  the tech 3 in about 190 s), at the new unit's price. A factory makes nothing while it upgrades,
+  an extractor extracts on, a radar watches, as in FA.
+- **Enhancements** (`factions::enhance`; the unit file's `[ENHANCEMENTS]`, docs/MODDING.md): the
+  commanders' and support commanders' `Enhancements`, each with its slot, prerequisite, price and
+  build time (FA's times ten, as a unit's: the UEF's tech 2 suite takes its commander 90 s), and
+  its button's picture (`unitpics/<unit>_<id>.pcx`), in the order of their ids. What each does is
+  read from its blueprint and from the unit script's `CreateEnhancement` branch for it (as data):
+  health and mending (`NewHealth`, `NewRegenRate`; a chain's adding up, as FA's buffs stack, an
+  engineering suite's replacing the one before, as its buff does), build power (`NewBuildRate`,
+  the difference from the unit's own), the units FA keeps from a commander until then
+  (`BuildableCategoryAdds`, a suite past the first keeping the first's), weapons switched on
+  (`EnabledByEnhancement`, or the script's `SetWeaponEnabledByLabel`: in slots past the unit's own,
+  empty on a fresh unit; switched off by a later one in the chain, as the UEF's Billy takes the
+  tactical launcher's place), the main gun changed (`NewMaxRadius`, `NewRateOfFire`, the damage and
+  its radius: a weapon of its own in the gun's slot, the Overcharge reaching as far), sight, an
+  omni sensor's radius as radar and sonar, sonar, stealth and cloak the script switches on. The
+  script shows the bones an enhancement's `ShowBones` names, and all under them, once it is
+  installed (`SetEnhancement`). 42 enhancements are played, on the four commanders (the UEF's 6, the
+  Cybran's 7, the Aeon's 5, the Seraphim's 7) and their support commanders (3, 6, 3 and 5). Left out, with what TA Reborn does not play
+  yet: shields (the personal ones and the bubbles), teleporting, drones and pods, resource
+  allocation, regeneration fields, the Sacrificial System, the EMP burst, the radar jammer, and the
+  Chrono Dampener (a weapon of a point a shot): one none of whose effects is played is not offered,
+  nor one needing such another. FA's "Remove" enhancements are TA Reborn's own removal (at once,
+  for nothing).
 - **Sides:** `gamedata/sidedata_supcom.tdf` adds UEF, CYBRAN, AEON and SERAPHIM to the game's
   sides (a side add-on: docs/MODDING.md), each with its commander, drawn in Arm's panels (the UEF
   and the Aeon) or Core's (the Cybran and the Seraphim). They have no interface pages of their
@@ -361,16 +393,22 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
 The computer players play them (`cargo test --release -p ta_ai --test skirmish` with
 `TA_TEST_MOD` and `TA_TEST_SIDES=UEF,CYBRAN`): each builds an economy, land, air and naval
 factories, engineers, tanks, artillery, anti-air, bombers, interceptors and frigates and fights,
-and with the tech 2 and 3 factories on their engineers' lists climbs the tiers: a factory's tier
-is the highest tech of the engineers it makes, and an engineer of the top tier puts up one
-factory of the next (`SkirmishAi::factory_tier`; on Sherwood the tech 2 plants come at 9 to 15
-minutes, the tech 3 at 18 to 28, where a side lasts that long). They fire a tactical launcher's
+and climbs the tiers by upgrading its factories in place: a factory's tier is the highest tech of
+the engineers it makes, and on the economy the first advanced factory waits for, one factory at
+a time is upgraded into the next tier (`SkirmishAi::factory_tier`, `run_upgrades_in_place`; past
+the first, once a constructor of the top tier is out), more of them once metal piles up; and it
+upgrades its safe extractors, a few at a time as its income and power allow (on Sherwood, UEF
+against Cybran: the tech 2 factories at 9 minutes, the UEF's tech 3 at 16, the first tech 2
+extractors at 5 and 8). Their commanders install the engineering suites and a gun upgrade (one that
+reaches farther, hits harder or fires faster), at home and when the economy allows, its energy
+within a minute's income (`run_enhancements`; on Sherwood: the tech 2 suite at 10 to 16 minutes,
+the gun at 11 to 18, the tech 3 suite at 17 to 26). They fire a tactical launcher's
 missiles at what is worth one in reach (never a wall, nor what a tactical defence covers), and
 build anti-nukes against strategic silos alone. Experimentals they do not build yet.
 
 Not yet in TA Reborn: Forged Alliance's own sounds and weapon effects (TA's of their kinds play),
-the commanders' enhancements, upgrading buildings in place, shields, stealth fields and
-teleporting; and, besides, jamming, remote viewing, a weapon's toggles (the sniper's second
+shields, stealth fields and teleporting, and the enhancements that need them (and drones,
+resource allocation, regeneration fields); and, besides, jamming, remote viewing, a weapon's toggles (the sniper's second
 gun), FA's minimum ranges, factories that move and build within themselves, and air transports
 carrying more than one unit at a time.
 

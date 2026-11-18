@@ -124,7 +124,7 @@ impl Readouts {
     pub fn of(p: &Perspective, game: &Game) -> Option<Readouts> {
         let u = game.sim.unit(p.unit)?;
         let ty = game.sim.unit_type(u);
-        let max = ty.max_health.max(Fx::ONE);
+        let max = u.max_health(ty).max(Fx::ONE);
         let health = (u.health / max).to_f32().clamp(0.0, 1.0);
         let world = &game.sim.world;
         let ground = world.height_at(u.pos.x, u.pos.z).max(world.sea_level);
@@ -139,7 +139,7 @@ impl Readouts {
             kind: ty.def.description.clone(),
             health,
             hp: u.health.to_f32().round() as i32,
-            hp_max: ty.max_health.to_f32().round() as i32,
+            hp_max: u.max_health(ty).to_f32().round() as i32,
             rank: u.rank(),
             kills: p.hud.kills.saturating_sub(p.hud.kills_before),
             veterancy: u.veterancy().to_f32(),

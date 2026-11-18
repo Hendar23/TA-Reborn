@@ -402,7 +402,7 @@ impl Sim {
         let weapons = self.weapon_types.clone();
         let Some(u) = self.unit(id) else { return };
         let t = types.get(u.type_id);
-        let Some(w) = t.weapons.iter().flatten().map(|&w| weapons.get(w)).find(|w| w.def.stockpile) else { return };
+        let Some(w) = u.weapon_slots(t).iter().flatten().map(|&w| weapons.get(w)).find(|w| w.def.stockpile) else { return };
         if u.stockpile >= MAX_STOCKPILE || !(u.activated || !t.def.on_offable) {
             return;
         }
@@ -475,7 +475,7 @@ impl Sim {
                 let t = types.get(u.type_id);
                 let weapons = &weapons;
                 (0..MAX_WEAPONS).filter_map(move |slot| {
-                    let w = weapons.get(t.weapons[slot]?);
+                    let w = weapons.get(u.weapon_slots(t)[slot]?);
                     (w.def.interceptor && (!w.def.stockpile || u.stockpile > 0)).then_some((u.id, slot))
                 })
             })
@@ -489,7 +489,7 @@ impl Sim {
             }
             let Some(u) = self.unit(id) else { continue };
             let t = types.get(u.type_id);
-            let w = weapons.get(t.weapons[slot].unwrap());
+            let Some(w) = u.weapon_slots(t)[slot].map(|w| weapons.get(w)) else { continue };
             if u.weapons[slot].reload > 0 || !(u.activated || !t.def.on_offable) || !self.weapon_can_fire_from(u, w) {
                 continue;
             }
@@ -528,6 +528,8 @@ impl Sim {
     pub(crate) fn update_weapons(&mut self, id: UnitId, types: &crate::defs::UnitTypes, weapons: &crate::defs::WeaponTypes) {
         let Some(u) = self.unit(id) else { return };
         let t = types.get(u.type_id);
+        // (Its own slots: its enhancements fill and swap them.)
+        let slots = *u.weapon_slots(t);
         if u.dead || !u.is_complete() {
             return;
         }
@@ -547,7 +549,7 @@ impl Sim {
         // reload and burst timers run down (as below, for most units on most ticks).
         let looking = fire_state >= 2 && (self.tick + id.slot as u64).is_multiple_of(RETARGET_TICKS);
         if forced.is_none() && !looking && u.weapons.iter().all(|ws| ws.target.is_none()) {
-            let armed = t.weapons;
+            let armed = slots;
             if let Some(u) = self.unit_mut(id) {
                 for (ws, _) in u.weapons.iter_mut().zip(armed).filter(|(_, w)| w.is_some()) {
                     ws.reload = ws.reload.saturating_sub(1);
@@ -556,7 +558,7 @@ impl Sim {
             }
             return;
         }
-        let available = t.weapons.map(|w| w.is_some_and(|w| self.weapon_can_fire_from(u, weapons.get(w))));
+        let available = slots.map(|w| w.is_some_and(|w| self.weapon_can_fire_from(u, weapons.get(w))));
         // Command-fire weapons (D-gun, bombs) fire on manual-fire orders, and on plain
         // attack orders when they are the primary weapon (bombers, the Phoenix's bombs
         // beside its laser) or nothing else the unit carries can hit the target; the
@@ -567,7 +569,7 @@ impl Sim {
         };
         let can_hit = |w: &WeaponType| if flying { w.hits_air } else { w.hits_ground };
         // (Of the weapons that take the order: `Sim::takes_order`.)
-        let has_normal = t.weapons.iter().enumerate().any(|(slot, w)| {
+        let has_normal = slots.iter().enumerate().any(|(slot, w)| {
             available[slot] && w.is_some_and(|w| {
                 let w = weapons.get(w);
                 !w.command_fire && can_hit(w) && forced.is_none_or(|tg| self.takes_order(t, slot, w, tg, owner))
@@ -578,7 +580,7 @@ impl Sim {
         // (Slots index the type's weapons, the unit's weapon states and the aim functions.)
         #[allow(clippy::needless_range_loop)]
         for slot in 0..MAX_WEAPONS {
-            let Some(wid) = t.weapons[slot] else {
+            let Some(wid) = slots[slot] else {
                 // No weapon here: nothing may hold a target in this slot.
                 if let Some(u) = self.unit_mut(id) {
                     u.retarget(slot, None);
@@ -886,7 +888,7 @@ impl Sim {
         if !u.orders.is_empty() || u.move_state == 0 || u.fire_state == 0 { return; }
         // (Not after a bad target, which it takes on only when nothing else is near: as units do
         // not chase one.)
-        let engaged = u.weapons.iter().zip(t.weapons).enumerate().any(|(slot, (state, weapon))| {
+        let engaged = u.weapons.iter().zip(*u.weapon_slots(t)).enumerate().any(|(slot, (state, weapon))| {
             weapon.is_some_and(|w| {
                 let w = self.weapon_types.get(w);
                 state.target.is_some_and(|target| self.target_valid(id, w, target) && matches!(target, Target::Unit(tid) if self.unit(tid).is_some_and(|tu| !self.bad_target(t.id, slot, tu))))
@@ -1566,12 +1568,13 @@ impl Sim {
             _ => None,
         };
         let harmless = |tg: Target| match tg {
-            Target::Unit(tid) => ordered != Some(tg) && self.unit(tid).is_none_or(|tu| self.types.get(tu.type_id).weapons.iter().all(|w| w.is_none())),
+            Target::Unit(tid) => ordered != Some(tg) && self.unit(tid).is_none_or(|tu| !tu.armed(self.types.get(tu.type_id))),
             _ => false,
         };
+        let own = *u.weapon_slots(t);
         let slots: Vec<usize> = (0..MAX_WEAPONS)
             .filter(|&s| {
-                t.weapons[s].is_some_and(|w| {
+                own[s].is_some_and(|w| {
                     let w = self.weapon_types.get(w);
                     !w.command_fire && !w.def.stockpile && self.weapon_can_fire_from(u, w) && self.can_engage(w, attacker) && u.weapons[s].target.is_none_or(|tg| harmless(tg) && u.pos.within_xz(apos, w.range + at.radius))
                 })
@@ -1644,7 +1647,8 @@ impl Sim {
                 // Killed(severity, corpsetype): scripts explode pieces and pick the wreck.
                 // Severity is the killing blow as a percentage of max health, so units worn
                 // down by small arms leave wrecks while huge explosions leave nothing.
-                let severity = ((last_damage * Fx::from_int(100)) / t.max_health.max(Fx::ONE)).to_int().clamp(0, 100) as i32;
+                let most = self.unit(id).map_or(t.max_health, |u| u.max_health(t));
+                let severity = ((last_damage * Fx::from_int(100)) / most.max(Fx::ONE)).to_int().clamp(0, 100) as i32;
                 let corpse_type = self.call_script(id, "Killed", &[severity, 0]).and_then(|p| p.get(1).copied()).unwrap_or(1);
                 if complete {
                     self.spawn_wreck(&t.def.corpse, corpse_type, pos, heading, id);
@@ -1945,7 +1949,7 @@ impl Sim {
             let engaged = u
                 .weapons
                 .iter()
-                .zip(t.weapons.iter())
+                .zip(u.weapon_slots(t).iter())
                 .find_map(|(ws, w)| w.and(ws.target))
                 .filter(|&tg| self.target_known(tg, u.owner) || self.held_building(tg, u.owner))
                 .and_then(|tg| self.target_point(tg));
@@ -1969,9 +1973,10 @@ impl Sim {
             return true;
         }
         let targets = u.weapons.map(|ws| ws.target);
+        let own = *u.weapon_slots(t);
         let owner = u.owner;
         let weapons = self.weapon_types.clone();
-        let engaged = targets.into_iter().zip(t.weapons).enumerate().any(|(slot, (target, weapon))| {
+        let engaged = targets.into_iter().zip(own).enumerate().any(|(slot, (target, weapon))| {
             let (Some(target), Some(wid)) = (target, weapon) else { return false };
             let weapon = weapons.get(wid);
             if !self.unit(id).is_some_and(|u| self.weapon_can_fire_from(u, weapon)) || !self.target_known(target, owner) {
@@ -2017,10 +2022,12 @@ impl Sim {
         };
         let u = self.unit(id).unwrap();
         let t = types.get(u.type_id);
+        // (Its own slots: its enhancements fill and swap them.)
+        let own = *u.weapon_slots(t);
         // Nothing it carries reaches the target where it is (torpedoes a unit or a place out of
         // the water; surface guns, bombs and missiles what is wholly under it): the order ends,
         // as a failed one, rather than following the target about for ever.
-        if t.weapons.iter().flatten().next().is_some() && !t.weapons.iter().flatten().any(|&w| self.weapon_reaches(weapons.get(w), target)) {
+        if own.iter().flatten().next().is_some() && !own.iter().flatten().any(|&w| self.weapon_reaches(weapons.get(w), target)) {
             self.halt(id);
             if let Some(u) = self.unit_mut(id) {
                 u.orders.pop_front();
@@ -2040,10 +2047,10 @@ impl Sim {
         };
         let can_hit = |w: &WeaponType| self.weapon_can_fire_from(u, w) && self.weapon_reaches(w, target) && if flying { w.hits_air } else { w.hits_ground };
         let takes = |slot: usize, w: &WeaponType| self.takes_order(t, slot, w, target, owner);
-        let has_normal = (0..MAX_WEAPONS).any(|s| t.weapons[s].is_some_and(|w| { let w = weapons.get(w); !w.command_fire && can_hit(w) && takes(s, w) }));
+        let has_normal = (0..MAX_WEAPONS).any(|s| own[s].is_some_and(|w| { let w = weapons.get(w); !w.command_fire && can_hit(w) && takes(s, w) }));
         let fires = |slot: usize, w: &WeaponType| if w.command_fire { (manual || slot == 0 || !has_normal) && can_hit(w) } else { !manual && can_hit(w) && takes(slot, w) };
         let dy = tp.y - (u.model_pos(t).y + t.model.height / 2);
-        let reaches = (0..MAX_WEAPONS).filter_map(|s| t.weapons[s].map(|w| (s, weapons.get(w))));
+        let reaches = (0..MAX_WEAPONS).filter_map(|s| own[s].map(|w| (s, weapons.get(w))));
         let available = reaches.clone().filter(|&(_, w)| self.weapon_can_fire_from(u, w));
         let submerged_guns = reaches.clone().next().is_some() && available.clone().next().is_none();
         let firing = available.clone().filter(|&(s, w)| fires(s, w)).map(|(_, w)| self.weapon_reach(w, dy)).max().filter(|r| !r.is_zero());

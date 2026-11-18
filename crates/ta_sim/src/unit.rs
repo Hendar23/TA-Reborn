@@ -107,6 +107,57 @@ pub enum Order {
     /// Transports: set cargo down at a point.
     Unload(FxVec3),
     Stop,
+    /// Become the unit type given, built in place on itself (its type's `UpgradesTo`: Supreme
+    /// Commander's factories, extractors, radars...), with its own build power and that of the
+    /// builders helping it, paying as construction does (see `Sim::update_upgrade_order`). Taken
+    /// off its orders, the upgrade is called off. (After `Stop`: records keep the earlier
+    /// variants' numbers.)
+    Upgrade(usize),
+    /// Install (or with `remove`, take out) its type's enhancement `index` (`[ENHANCEMENTS]`:
+    /// Supreme Commander's commanders'): installed, it stands and builds it on itself as an
+    /// upgrade is built, in its slot in place of the one there; removed, at once, for nothing
+    /// (see `sim/enhance.rs`).
+    Enhance { index: u16, remove: bool },
+}
+
+/// What a unit builds on itself: the type it is becoming ([`Order::Upgrade`]), or an enhancement
+/// of its type's ([`Order::Enhance`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelfJob {
+    Upgrade(usize),
+    Enhance(u16),
+}
+
+/// A unit's figures with the enhancements it has installed (its type's with each one's added: see
+/// `sim/enhance.rs`), where it has any; [`Unit`]'s accessors give its type's otherwise.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Boost {
+    pub max_health: Fx,
+    /// Ticks it takes to mend 100 hit points (none: it does not).
+    pub heal_ticks: u64,
+    pub work_rate: u64,
+    pub worker_rate: Fx,
+    pub sight: Fx,
+    pub radar: Fx,
+    pub sonar: Fx,
+    /// The weapon in each slot.
+    pub weapons: [Option<usize>; ta_data::unit::MAX_WEAPONS],
+    pub stockpile: bool,
+    /// Its menu, and all it may be ordered to build.
+    pub build_options: Vec<usize>,
+    pub ai_build_options: Vec<usize>,
+    /// Its cloak, as `UnitType`'s def gives one (energy a second, on the move, seen within).
+    pub cloak: Option<(Fx, Fx, Fx)>,
+    pub stealth: bool,
+}
+
+/// A unit's work on itself under way: what, and the work done on it so far (of its whole, as
+/// construction counts work: [`crate::UnitType::build_work`] for an upgrade). Called off, the
+/// metal paid for it comes back (`Sim::cancel_self_work`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelfWork {
+    pub job: SelfJob,
+    pub work: u64,
 }
 
 /// A construction aircraft's sway round what it builds, facing it (`Sim::drift_round`).
@@ -274,6 +325,13 @@ pub struct Unit {
     /// Whether `StartMoving` has been signalled to the script.
     pub moving: bool,
     pub build: Option<BuildJob>,
+    /// What it builds on itself now (an upgrade into another type, an enhancement), and how far
+    /// along.
+    pub self_work: Option<SelfWork>,
+    /// Its type's enhancements it has installed (indices, one a slot, in order), and its figures
+    /// with them (none without).
+    pub enhancements: Vec<u16>,
+    pub boost: Option<Box<Boost>>,
     /// Factory production queue (unit type ids), and the orders every unit it releases
     /// is given (its rally route: move, patrol, fight and guard orders).
     pub factory_queue: VecDeque<usize>,
@@ -423,6 +481,9 @@ impl Unit {
             squeeze_until: 0,
             moving: false,
             build: None,
+            self_work: None,
+            enhancements: Vec::new(),
+            boost: None,
             factory_queue: VecDeque::new(),
             rally: Vec::new(),
             factory: None,
@@ -457,6 +518,89 @@ impl Unit {
 impl Unit {
     pub fn is_complete(&self) -> bool {
         self.build_progress >= Fx::ONE
+    }
+
+    /// Its most health: its type's, with its enhancements'.
+    #[inline]
+    pub fn max_health(&self, t: &UnitType) -> Fx {
+        self.boost.as_ref().map_or(t.max_health, |b| b.max_health)
+    }
+
+    /// The weapon in each of its slots: its type's, as its enhancements fill and swap them.
+    #[inline]
+    pub fn weapon_slots<'a>(&'a self, t: &'a UnitType) -> &'a [Option<usize>; ta_data::unit::MAX_WEAPONS] {
+        self.boost.as_ref().map_or(&t.weapons, |b| &b.weapons)
+    }
+
+    /// Whether it has a weapon at all.
+    #[inline]
+    pub fn armed(&self, t: &UnitType) -> bool {
+        self.weapon_slots(t).iter().any(Option::is_some)
+    }
+
+    /// Whether one of its weapons builds missiles to launch.
+    #[inline]
+    pub fn stockpiles(&self, t: &UnitType) -> bool {
+        self.boost.as_ref().map_or(t.stockpile, |b| b.stockpile)
+    }
+
+    /// Its build power: work a tick (as [`UnitType::work_rate`]), and points a tick.
+    #[inline]
+    pub fn work_rate(&self, t: &UnitType) -> u64 {
+        self.boost.as_ref().map_or(t.work_rate, |b| b.work_rate)
+    }
+
+    #[inline]
+    pub fn worker_rate(&self, t: &UnitType) -> Fx {
+        self.boost.as_ref().map_or(t.worker_rate, |b| b.worker_rate)
+    }
+
+    /// Its menu (its type's, and what its enhancements add), and all it may be ordered to build.
+    #[inline]
+    pub fn build_options<'a>(&'a self, t: &'a UnitType) -> &'a [usize] {
+        self.boost.as_ref().map_or(&t.build_options, |b| &b.build_options)
+    }
+
+    #[inline]
+    pub fn ai_build_options<'a>(&'a self, t: &'a UnitType) -> &'a [usize] {
+        self.boost.as_ref().map_or(&t.ai_build_options, |b| &b.ai_build_options)
+    }
+
+    /// How far it sees, and its radar's and sonar's reach.
+    #[inline]
+    pub fn sight(&self, t: &UnitType) -> Fx {
+        self.boost.as_ref().map_or(t.sight, |b| b.sight)
+    }
+
+    #[inline]
+    pub fn radar(&self, t: &UnitType) -> Fx {
+        self.boost.as_ref().map_or(t.radar, |b| b.radar)
+    }
+
+    #[inline]
+    pub fn sonar(&self, t: &UnitType) -> Fx {
+        self.boost.as_ref().map_or_else(|| Fx::from_f64(t.def.sonar_distance), |b| b.sonar)
+    }
+
+    /// Ticks it takes to mend 100 hit points (none: it does not).
+    #[inline]
+    pub fn heal_ticks(&self, t: &UnitType) -> u64 {
+        self.boost.as_ref().map_or(t.heal_ticks, |b| b.heal_ticks)
+    }
+
+    /// Its cloak, if it can cloak: energy a second, on the move, and how near an enemy sees
+    /// through it.
+    pub fn cloak_costs(&self, t: &UnitType) -> Option<(Fx, Fx, Fx)> {
+        match &self.boost {
+            Some(b) => b.cloak,
+            None => (t.def.cloak_cost > 0.0).then(|| (Fx::from_f64(t.def.cloak_cost), Fx::from_f64(t.def.cloak_cost_moving), Fx::from_f64(t.def.min_cloak_distance))),
+        }
+    }
+
+    /// Whether radar does not show it.
+    #[inline]
+    pub fn stealthy(&self, t: &UnitType) -> bool {
+        self.boost.as_ref().map_or(t.def.stealth, |b| b.stealth)
     }
 
     /// Whether its build stance is its script's to raise and drop (it has `StartBuilding`), as
@@ -511,10 +655,11 @@ impl Unit {
 
     /// Health as a percentage 0..=100 (COB `HEALTH`).
     pub fn health_percent(&self, t: &UnitType) -> i32 {
-        if t.max_health.is_zero() {
+        let most = self.max_health(t);
+        if most.is_zero() {
             return 100;
         }
-        ((self.health * Fx::from_int(100)) / t.max_health).to_int().clamp(0, 100) as i32
+        ((self.health * Fx::from_int(100)) / most).to_int().clamp(0, 100) as i32
     }
 
     /// Animation offset and rotation of a model piece (identity without a script).

@@ -1046,6 +1046,108 @@ pad and takes on through its scripts. TA Reborn plays them as those engines did:
 [FORMATS.md](FORMATS.md) gives the details, mod by mod; `crates/ta_sim/tests/mod_upgrades.rs` plays
 every building of a mod that offers an upgrade ([testing](#from-the-source-tree)).
 
+#### Units that upgrade in place
+
+A unit may become another where it stands, as Supreme Commander's factories, extractors and radars
+do: `UpgradesTo=<UnitName>` in its `[UNITINFO]` names the unit it becomes. It is offered UPGRADE
+(in the modern interface's orders, with its own key, Alt+U, and a factory's build menu offers the
+unit it becomes first among its pictures, as Forged Alliance's do; on the classic interface's
+orders page, among the buttons TA has no gadget for), and builds that unit on itself:
+
+- **With its own build power** (`WorkerTime`): give a unit that builds nothing else one for its
+  upgrades. The upgrade takes the new unit's `BuildTime` at that power, and builders helping it
+  (guarding it, or told to repair it) lend theirs, their side paying for their share.
+- **At the new unit's price**, paid as construction pays: a share of its metal and energy for each
+  share of the work, slowed by the economy as construction is (short of metal, it waits).
+- **While it upgrades** a factory makes nothing: the unit on its pad and its queue wait. Any other
+  unit works on: an extractor extracts, a power plant makes power, a radar watches. A mobile unit
+  stands still.
+- **Called off** by Stop, or by any order not queued after it, the metal paid for the upgrade
+  comes back (as a frame given up gives its metal back); its energy is spent. A unit captured
+  while it upgrades loses the upgrade.
+- **Done**, the new unit stands where the old one stood, facing as it faced, its owner's and
+  finished, with the old one's share of its health; it keeps the orders queued after the upgrade
+  (so `UpgradesTo` chains may be queued one step after another, with Shift), a factory's queue,
+  route, repeat and the unit on its pad, its fire and move orders and its experience; the rest is
+  a fresh unit's (its script starts anew). The old unit is gone without a wreck, a blast or a
+  loss; the selection and control groups move to the new one.
+
+The computer players upgrade factories into a higher tier, and extractors into better ones (where
+`ExtractsMetal` grows), when their economy allows; they climb the tiers so rather than build the
+next tier's factory wherever a factory of theirs upgrades into it. A unit of a type the battle does
+not allow (a mission's, the mutators') is no upgrade. `ta-tools data --unit <name>` shows a unit's
+`upgrades_to`.
+
+#### Enhancements
+
+A unit may install parts on itself, as Supreme Commander's commanders do: an `[ENHANCEMENTS]`
+section within its `[UNITINFO]` holds one section for each, named by its id. The order of the
+sections is the order the menus show them in.
+
+```
+[UNITINFO]
+	{
+	UnitName=UEL0001;
+	...
+	[ENHANCEMENTS]
+		{
+		[AdvancedEngineering]
+			{
+			Name=Tech 2 Engineering Suite;
+			Description=Builds tech 2 structures, builds faster;
+			Slot=LCH;
+			BuildCostMetal=720;
+			BuildCostEnergy=18000;
+			BuildTime=9000;
+			WorkerTime=200;
+			MaxDamage=3000;
+			HealRate=20;
+			BuildOptions=UEB0201 UEB0202 UEB1202;
+			Picture=uel0001_advancedengineering;
+			}
+		[T3Engineering]
+			{
+			Prerequisite=AdvancedEngineering;
+			Slot=LCH;
+			...
+			}
+		}
+	}
+```
+
+- **`Slot`**: one enhancement a slot (any name; the menus show it). One installed in a taken slot
+  takes the place of the one there.
+- **`Prerequisite`**: the id of one that must be installed first. Installed, this one takes its
+  slot (give them the same slot, as Supreme Commander's suites do, so that its numbers stand in
+  place of the other's).
+- **`BuildCostMetal`, `BuildCostEnergy`, `BuildTime`**: its price and work, as a unit's. The unit
+  stands and builds it on itself with its own build power, as an upgrade in place is built:
+  paid as construction pays, slowed by the economy, helped by builders guarding or repairing it
+  (a factory's guards turn from the unit on its pad to it); called off by Stop or another order,
+  its metal comes back. A factory with enhancements makes nothing while it installs one.
+- **What it changes** while installed, added to the unit's own: `MaxDamage` (its health rises by as
+  much), `HealRate` (hit points a second it mends), `WorkerTime` (build power), `SightDistance`,
+  `RadarDistance`, `SonarDistance`, `BuildOptions` (units added to its menu, and to what the
+  computer players may build with it), `CloakCost`, `CloakCostMoving` and `MinCloakDistance` (a
+  cloak it may switch on), `Stealth=1` (radar does not show it).
+- **`Weapon1`** to **`Weapon8`**: the weapon a slot fires while it is installed, in place of the
+  unit's own there; give the unit's file an empty slot (no `WeaponN`) for a weapon an
+  enhancement adds. A launcher that stockpiles its missiles, swapped for another or taken out,
+  loses the missiles built and the one under way.
+- **`Name`**, **`Description`** and **`Picture`** (`unitpics/<Picture>.pcx`, shown as a unit's) for
+  the menus.
+
+The modern interface shows them in the build menu's ENHANCE tab (a click installs one, Shift
+queues it, one whose prerequisite is missing comes after it; a right-click takes an installed one
+out, at once and for nothing, its health falling to its most); the classic interface, behind an
+ENHANCE button among the buttons TA has no gadget for. The information page (F1) lists them, those
+installed marked. A unit's script with a function `SetEnhancement(index, on)` is called with an
+enhancement's index (in the file's order) as it is installed (`on` 1) or taken out (`on` 0), to show
+or hide its parts. The computer players install on their Commander the engineering suites (those
+adding units to its menu) and one improving a weapon (reaching farther, hitting harder or firing
+faster, or arming an empty slot), near their base and when they can afford it; more health when
+rich.
+
 #### What TA Reborn does not run
 
 TA Reborn runs no code from a mod: patched executables (`TotalA.exe` and the like), DLLs and
