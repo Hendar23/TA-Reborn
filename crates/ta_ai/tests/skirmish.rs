@@ -327,6 +327,9 @@ fn ai_vs_ai_plays_a_game() {
     // per player: `launched` counts the strategic ones (TA's every silo's, nukes and FA's
     // strategic launchers').
     let mut tactical = vec![0u32; n];
+    // Of the missiles each player shot down, the strategic ones (a strategic projectile ended
+    // where the interception was).
+    let mut strategic_down = vec![0u32; n];
     // The army by tier (`army_tier`: first, second, third, experimental), per player: what was
     // finished in each ten minutes; the experimentals finished (minute, player, name); and the
     // minute each player was defeated.
@@ -425,12 +428,16 @@ fn ai_vs_ai_plays_a_game() {
                         long_shots[p] += 1;
                     }
                 }
-                SimEvent::Intercepted { defender, .. } => {
+                SimEvent::Intercepted { defender, pos, .. } => {
                     interceptions += 1;
                     if let Some(c) = shot_down.get_mut(defender as usize) {
                         *c += 1;
                     }
-                    println!("tick {tick} ({} min): missile intercepted by P{defender}", tick / 1800);
+                    let strategic = sim.spent.iter().any(|(p, _)| p.pos.within_xz(pos, Fx::from_int(96)) && sim.weapon_types.get(p.weapon).def.targetable_classes() & ta_sim::STRATEGIC_CLASS != 0);
+                    if strategic && let Some(c) = strategic_down.get_mut(defender as usize) {
+                        *c += 1;
+                    }
+                    println!("tick {tick} ({} min): {}missile intercepted by P{defender}", tick / 1800, if strategic { "strategic " } else { "" });
                 }
                 SimEvent::UnitCreated { id, .. } => {
                     if let Some(u) = sim.unit(id) {
@@ -709,10 +716,10 @@ fn ai_vs_ai_plays_a_game() {
     if teams {
         println!("units killed by an ally {ally_kills}");
     }
-    println!("missile launches {launches} (strategic {}, tactical {}), interceptions {interceptions}", launched.iter().sum::<u32>(), tactical.iter().sum::<u32>());
+    println!("missile launches {launches} (strategic {}, tactical {}), interceptions {interceptions} (strategic {})", launched.iter().sum::<u32>(), tactical.iter().sum::<u32>(), strategic_down.iter().sum::<u32>());
     for p in 0..n {
         let kinds: Vec<String> = made[p].iter().map(|(k, (count, first))| format!("{k} {count} (min {first})")).collect();
-        println!("P{p} tech: {}; strategic launches {}, tactical launches {}, long-range shots {}, missiles shot down {}", kinds.join(", "), launched[p], tactical[p], long_shots[p], shot_down[p]);
+        println!("P{p} tech: {}; strategic launches {}, tactical launches {}, long-range shots {}, missiles shot down {} (strategic {})", kinds.join(", "), launched[p], tactical[p], long_shots[p], shot_down[p], strategic_down[p]);
     }
     for p in 0..n {
         let decades: Vec<String> = by_tier[p]

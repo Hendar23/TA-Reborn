@@ -1038,11 +1038,14 @@ impl SkirmishAi {
 
     // ---- Strategic missiles -------------------------------------------------------------------
 
-    /// Salvos big enough to get through the anti-missile cover over the most valuable target.
+    /// Salvos big enough to get through the anti-missile cover over the most valuable target; a
+    /// look at the enemy's bases when a silo holds missiles and we know of nothing in its reach
+    /// (`send_recon`).
     pub(crate) fn run_silos(&mut self, sim: &Sim, s: &Survey, out: &mut Vec<Command>) {
         if s.peace {
             return;
         }
+        let mut blind = false;
         for silo in s.own.iter().filter(|u| Self::can_command(sim, u) && u.stockpile > 0 && self.info[u.type_id].role == Role::Silo) {
             if silo.orders.iter().any(|o| matches!(o, Order::ManualFire(_))) {
                 continue;
@@ -1051,9 +1054,12 @@ impl SkirmishAi {
             let Some(weapon) = t.weapons.iter().flatten().map(|&w| sim.weapon_types.get(w)).find(|w| w.def.stockpile && w.def.command_fire && w.def.targetable) else { continue };
             let have = silo.stockpile;
             let Some((target, need)) = self.pick_nuke_target(sim, silo.pos, weapon, have) else {
+                // (Nothing we know of in its reach that its blast would not take our own with.)
+                let known = self.enemy_buildings.iter().filter(|b| b.1.within_xz(silo.pos, weapon.range)).count();
                 if s.now % MINUTE < THINK_TICKS {
-                    log::debug!("{} min: P{}'s {} holds {have} missiles and has no target", s.minutes, self.player, t.name);
+                    log::debug!("{} min: P{}'s {} holds {have} missiles and has no target ({} enemy buildings known, {known} in reach)", s.minutes, self.player, t.name, self.enemy_buildings.len());
                 }
+                blind |= known == 0;
                 continue;
             };
             if need > have && s.now % MINUTE < THINK_TICKS {
@@ -1065,6 +1071,57 @@ impl SkirmishAi {
                 }
             }
         }
+        if blind {
+            self.send_recon(sim, s, out);
+        }
+    }
+
+    /// A look at the enemy's bases for our missiles, as a player sends a scout before a launch:
+    /// what our silos could strike there is gone, and what the enemy put up since was never seen.
+    /// A plane flies round the nearest of the enemy's bases (those seen first), far enough out to
+    /// keep off their towers' fire, and comes home; once in two minutes at most. The plane: a
+    /// scout of ours, else the fastest idle one at home, else an idle air transport.
+    pub(crate) fn send_recon(&mut self, sim: &Sim, s: &Survey, out: &mut Vec<Command>) {
+        if self.last_recon.is_some_and(|t| s.now < t + 2 * MINUTE) || self.enemy_bases.is_empty() {
+            return;
+        }
+        let ordered = ordered_units(out);
+        let striking = |id: UnitId| self.air_strike.as_ref().is_some_and(|a| a.planes.iter().any(|p| p.0 == id));
+        let idle = |u: &&&Unit| {
+            u.orders.is_empty() && !ordered.contains(&u.id) && Self::can_command(sim, u) && u.factory.is_none() && !striking(u.id) && Some(u.id) != self.scout && Some(u.id) != self.ground_scout
+        };
+        let fastest = |u: &&&Unit| (self.info[u.type_id].speed, Reverse(self.info[u.type_id].cost), Reverse(u.id.slot));
+        let plane = s
+            .own
+            .iter()
+            .filter(|u| self.is_scout(u.type_id))
+            .filter(idle)
+            .max_by_key(fastest)
+            .or_else(|| s.planes.iter().filter(idle).filter(|u| u.pos.within_xz(self.base, fx(1500))).max_by_key(fastest))
+            .or_else(|| {
+                s.transports
+                    .iter()
+                    .filter(|t| self.info[t.type_id].kind == Locomotion::Air && t.cargo.is_empty() && !self.riders.iter().any(|r| r.transport == t.id))
+                    .filter(idle)
+                    .max_by_key(fastest)
+            })
+            .copied();
+        let Some(plane) = plane else { return };
+        let mut bases: Vec<(bool, FxVec3)> = self.enemy_bases.iter().zip(&self.enemy_base_seen).map(|(&p, &seen)| (seen, p)).collect();
+        bases.sort_by_key(|&(seen, b)| (!seen, dist(b, plane.pos), b.x.0, b.z.0));
+        let (w, h) = sim.world.size_px();
+        let mut k = 0;
+        for (_, b) in bases.into_iter().take(2) {
+            for i in 0..6 {
+                let a = i * 65536 / 6;
+                let p = FxVec3::new((b.x + ta_sim::fixed::cos(a) * 520).clamp(fx(64), w - fx(64)), Fx::ZERO, (b.z + ta_sim::fixed::sin(a) * 520).clamp(fx(64), h - fx(64)));
+                out.push(Command::Order { player: self.player, units: vec![plane.id], order: Order::Move(p), queue: k > 0 });
+                k += 1;
+            }
+        }
+        out.push(Command::Order { player: self.player, units: vec![plane.id], order: Order::Move(self.base), queue: true });
+        self.last_recon = Some(s.now);
+        log::debug!("{} min: P{} sends a {} to look at the enemy's bases for its missiles", s.minutes, self.player, sim.unit_type(plane).name);
     }
 
     /// Where to drop a nuke, and how many missiles it takes to get through: the enemy

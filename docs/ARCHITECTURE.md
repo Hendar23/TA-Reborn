@@ -1659,8 +1659,14 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   shells what we know of that base (`run_long_guns`: a building's guns fire of themselves only at
   what their side sees). Strategic missiles go at the richest cluster their salvo gets through the
   cover over; tactical ones at buildings alone, defences and strategic weapons first
-  (`strike_value`), what a tactical defence covers left alone. The strategic silos standing add
-  what their missiles draw to the power wanted (`Survey::silo_draw`). Experimentals
+  (`strike_value`), what a tactical defence covers left alone; a silo holding missiles with
+  nothing known in its reach sends a plane round the enemy's bases (`send_recon`, once in two
+  minutes: a scout, else an idle plane or air transport). The strategic silos, standing or going
+  up, add what their missiles draw to the power the big plants are put up for
+  (`Survey::silo_draw`, `power_wanted`); a strategic silo's first missile, while it costs more
+  than two minutes of our income (`first_missile_due`: Forged Alliance's, 12,000 metal and
+  1,350,000 energy; never TA's), is a project: the next project waits for it, factories stand for
+  it, and the advanced constructors put up power first while our income falls short of it. Experimentals
   (`TypeInfo::experimental`: armed, mobile, costing 5,000 or more, no constructor of buildings:
   the factions' support commanders are constructors, of the third tier once their options hold a
   tech 3 engineer's, `mark_constructors`) go up beside them, built by the constructor that builds

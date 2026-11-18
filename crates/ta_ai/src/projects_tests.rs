@@ -120,6 +120,8 @@ fn late_fixture(minutes: u64) -> Sim {
             ("TANK1", "CanMove=1; MaxVelocity=2; Weapon1=GUN; Category=LEVEL1; BuildCostMetal=50;"),
             ("BIGBOT", "CanMove=1; MaxVelocity=1; Weapon1=GUN; Category=LEVEL2; BuildCostMetal=9000; MaxDamage=40000; FootprintX=3; FootprintZ=3; BuildTime=380000;"),
             ("SILO", "FootprintX=4; FootprintZ=4; Weapon1=NUKE; Category=LEVEL3; BuildCostMetal=1000;"),
+            ("TASILO", "FootprintX=4; FootprintZ=4; Weapon1=TANUKE; Category=LEVEL3; BuildCostMetal=1000;"),
+            ("PLANE", "CanFly=1; CanMove=1; MaxVelocity=8; CruiseAlt=100; Weapon1=GUN; BuildCostMetal=60;"),
             ("TACSILO", "FootprintX=2; FootprintZ=2; Weapon1=CRUISE; Category=LEVEL2; BuildCostMetal=800;"),
             ("TMD", "FootprintX=2; FootprintZ=2; Weapon1=FLAK; Category=LEVEL2; BuildCostMetal=300;"),
             ("ANTI", "FootprintX=4; FootprintZ=4; Weapon1=ABM; Category=LEVEL3; BuildCostMetal=1500;"),
@@ -127,7 +129,8 @@ fn late_fixture(minutes: u64) -> Sim {
             ("STORE", "FootprintX=2; FootprintZ=2; MetalStorage=1000; BuildCostMetal=600;"),
         ],
         "[GUN] { range=200; reloadtime=1; weaponvelocity=400; [DAMAGE] { default=10; } } \
-         [NUKE] { range=32000; reloadtime=30; weaponvelocity=400; stockpile=1; commandfire=1; targetable=1; areaofeffect=512; [DAMAGE] { default=5000; } } \
+         [NUKE] { range=32000; reloadtime=300; weaponvelocity=400; stockpile=1; commandfire=1; targetable=1; areaofeffect=512; metalpershot=12000; energypershot=1350000; [DAMAGE] { default=5000; } } \
+         [TANUKE] { range=32000; reloadtime=180; weaponvelocity=400; stockpile=1; commandfire=1; targetable=1; areaofeffect=512; metalpershot=2000; energypershot=180000; [DAMAGE] { default=5000; } } \
          [ABM] { range=32000; reloadtime=30; weaponvelocity=900; stockpile=1; interceptor=1; coverage=1000; [DAMAGE] { default=500; } } \
          [CRUISE] { range=6000; reloadtime=30; weaponvelocity=400; stockpile=1; commandfire=1; targetable=2; metalpershot=180; energypershot=3600; areaofeffect=128; [DAMAGE] { default=6000; } } \
          [FLAK] { range=400; reloadtime=2; weaponvelocity=900; interceptor=2; coverage=400; [DAMAGE] { default=100; } }",
@@ -576,4 +579,86 @@ fn support_commanders_are_constructors_of_the_third_tier() {
     assert_eq!(ai.info[id(&sim, "BUILD1")].tech, 1, "an ordinary constructor keeps its tier");
     assert!(ai.info[id(&sim, "BUILD3")].builds_strategic && !ai.info[id(&sim, "BUILD2")].builds_strategic);
     assert!(ai.info[id(&sim, "BIGBOT")].experimental, "an armed unit of its cost that builds nothing is one");
+}
+
+/// A strategic silo standing with no missile in its stock is saved for as a project is: while its
+/// first missile costs more than two minutes of our income (Forged Alliance's, 12,000 metal and
+/// 1,350,000 energy), a share of the factories stand and the next project waits (an experimental
+/// too); not for the second missile, nor for one costing less (TA's, 2,000 and 180,000, waited
+/// for by its build time).
+#[test]
+fn a_strategic_silos_first_missile_is_saved_for() {
+    let mut sim = late_fixture(40);
+    for k in 0..3 {
+        put(&mut sim, "FACT1", 0, 1100 + 200 * k, 700);
+    }
+    put(&mut sim, "FACT3", 0, 1100, 1100);
+    let silo = put(&mut sim, "SILO", 0, 400, 1500);
+    let third = put(&mut sim, "BUILD3", 0, 900, 1500);
+    for k in 0..4 {
+        put(&mut sim, "TANK1", 0, 600 + k * 40, 1300);
+    }
+    let mut ai = SkirmishAi::new(0, &sim, Difficulty::Normal);
+    assert_eq!(ai.info[id(&sim, "SILO")].missile_cost, (12_000, 1_350_000));
+    ai.metal_avg = Fx::from_ratio(5, 100);
+    let s = ai.survey(&sim);
+    assert!(s.silo_draw > 0 && s.first_missiles == 1, "its missiles' draw is wanted in power");
+    assert_eq!(ai.standing_for_projects(&sim, &s).len(), 1, "a share stand for its first missile");
+    assert_eq!(project(&mut ai, &sim, third), None, "the next project waits for the first missile");
+    // Its first missile in stock: none stand for the next, and the projects go on (the factory of
+    // experimentals, here).
+    sim.grant_stockpile(silo, 1);
+    let s = ai.survey(&sim);
+    assert!(ai.standing_for_projects(&sim, &s).is_empty());
+    assert_eq!(project(&mut ai, &sim, third), Some(id(&sim, "FACTX")));
+    // A silo whose missile costs less than two minutes of our income: none stand for it.
+    let mut sim = late_fixture(40);
+    for k in 0..3 {
+        put(&mut sim, "FACT1", 0, 1100 + 200 * k, 700);
+    }
+    put(&mut sim, "TASILO", 0, 400, 1500);
+    for k in 0..4 {
+        put(&mut sim, "TANK1", 0, 600 + k * 40, 1300);
+    }
+    let mut ai = SkirmishAi::new(0, &sim, Difficulty::Normal);
+    ai.metal_avg = Fx::from_ratio(5, 100);
+    let s = ai.survey(&sim);
+    assert!(ai.standing_for_projects(&sim, &s).is_empty());
+}
+
+/// A silo holding a missile with nothing we know of in its reach sends a plane to look at the
+/// enemy's bases (and once in a while only); with a building of theirs known, it fires instead.
+#[test]
+fn a_silo_with_nothing_known_sends_a_plane_to_look() {
+    let mut sim = late_fixture(40);
+    let silo = put(&mut sim, "SILO", 0, 400, 1500);
+    sim.grant_stockpile(silo, 1);
+    let plane = put(&mut sim, "PLANE", 0, 500, 500);
+    let mut ai = SkirmishAi::new(0, &sim, Difficulty::Normal);
+    ai.enemy_bases = vec![FxVec3::from_ints(2200, 0, 400)];
+    ai.enemy_base_seen = vec![true];
+    ai.enemy_base_owners = vec![1];
+    let s = ai.survey(&sim);
+    assert!(s.planes.iter().any(|p| p.id == plane));
+    let mut out = Vec::new();
+    ai.run_silos(&sim, &s, &mut out);
+    let looks = |out: &[Command]| out.iter().filter(|c| matches!(c, Command::Order { units, order: Order::Move(_), .. } if units == &vec![plane])).count();
+    assert!(looks(&out) >= 6, "a loop round the enemy's base: {out:?}");
+    assert!(!out.iter().any(|c| matches!(c, Command::Order { order: Order::ManualFire(_), .. })));
+    // Not again at once.
+    let mut again = Vec::new();
+    ai.run_silos(&sim, &s, &mut again);
+    assert_eq!(looks(&again), 0);
+    // A building of theirs known in its reach: a launch, no flight.
+    let mut sim = late_fixture(40);
+    let silo = put(&mut sim, "SILO", 0, 400, 1500);
+    sim.grant_stockpile(silo, 1);
+    put(&mut sim, "PLANE", 0, 500, 500);
+    put(&mut sim, "TOWER", 1, 2200, 400);
+    let mut ai = SkirmishAi::new(0, &sim, Difficulty::Normal);
+    ai.remember(&sim, &ai.survey(&sim));
+    let mut out = Vec::new();
+    ai.run_silos(&sim, &ai.survey(&sim), &mut out);
+    assert!(out.iter().any(|c| matches!(c, Command::Order { units, order: Order::ManualFire(_), .. } if units == &vec![silo])), "{out:?}");
+    assert!(!out.iter().any(|c| matches!(c, Command::Order { order: Order::Move(_), .. })));
 }

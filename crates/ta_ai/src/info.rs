@@ -81,10 +81,12 @@ pub(crate) struct TypeInfo {
     pub coverage: Option<Fx>,
     pub cover_classes: u32,
     pub cover_unstocked: bool,
-    /// A silo's missiles' classes (`WeaponDef::targetable_classes`; 0 for any other unit), and
-    /// how far they reach.
+    /// A silo's missiles' classes (`WeaponDef::targetable_classes`; 0 for any other unit), how
+    /// far they reach, and what one costs (metal, energy: TA's nuke 2,000 and 180,000, Forged
+    /// Alliance's 12,000 and 1,350,000).
     pub silo_classes: u32,
     pub missile_range: i64,
+    pub missile_cost: (i64, i64),
     /// Energy per second its stockpiled missiles take while it builds them as fast as it can
     /// (a silo's, an anti-missile defence's: TA's nuke 1,000, Forged Alliance's 4,500).
     pub stock_energy: i64,
@@ -306,6 +308,7 @@ pub(crate) fn classify(sim: &Sim) -> Vec<TypeInfo> {
                 cover_unstocked,
                 silo_classes,
                 missile_range: weapons.iter().filter(|w| w.def.stockpile && w.def.command_fire).map(|w| w.range.to_int()).max().unwrap_or(0),
+                missile_cost: weapons.iter().find(|w| w.def.stockpile && w.def.command_fire).map_or((0, 0), |w| (w.metal_per_shot.to_int().max(0), w.energy_per_shot.to_int().max(0))),
                 stock_energy: weapons.iter().filter(|w| w.def.stockpile).map(|w| w.energy_per_shot.to_int().max(0) * 30 / w.reload_ticks.max(1) as i64).sum(),
                 worker: t.worker_rate * 30,
                 speed: t.max_speed,

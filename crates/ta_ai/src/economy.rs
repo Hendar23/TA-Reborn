@@ -596,6 +596,12 @@ impl SkirmishAi {
             plan.tier = bi.tech + 1;
             return Some(t);
         }
+        // Power for a strategic silo's first missile, which takes all it is given (Forged
+        // Alliance's 4,500 energy a second at its full pace, more than a tech 3 plant makes): the
+        // advanced constructors' first job while our income falls short of it.
+        if t2 && s.first_missiles > 0 && s.e_inc < self.power_wanted(s) && let Some(t) = self.fusion_task(sim, s, b, &opts, plan) {
+            return Some(t);
+        }
         // The big projects (anti-nuclear cover, silos, heavy defences, long-range guns,
         // experimentals), one at a time, as the economy grows.
         if t2 && let Some(t) = self.project_task(sim, s, b, &opts, plan) {
@@ -1590,8 +1596,12 @@ impl SkirmishAi {
     /// A big power plant (fusion) when power is short and none is going up yet.
     pub(crate) fn fusion_task(&mut self, sim: &Sim, s: &Survey, b: &Unit, opts: &[usize], plan: &Plan) -> Option<Task> {
         let big_building = s.nanoframes.iter().any(|n| self.info[n.type_id].role == Role::Generator && self.info[n.type_id].energy >= fx(300));
-        // Storage brimming, or power to spare already: more would only be thrown away.
-        let full = self.energy_avg > Fx::from_ratio(8, 10) || self.power_spare(s);
+        // Storage brimming, or power to spare already: more would only be thrown away. (Not while
+        // our strategic silos will draw more than we make: their missiles take all they are
+        // given, and the power for them goes up while the silo does, as Forged Alliance's own
+        // computer players have it.)
+        let for_silos = s.silo_draw > 0 && s.e_inc < self.power_wanted(s);
+        let full = (self.energy_avg > Fx::from_ratio(8, 10) || self.power_spare(s)) && !for_silos;
         if full || s.e_inc >= self.power_wanted(s) || big_building || plan.pending[Role::Generator as usize] >= self.p.power_plants {
             return None;
         }
@@ -1934,21 +1944,29 @@ impl SkirmishAi {
         if near_cap { self.p.top_tier } else { ((s.m_inc.to_int() - 10) * 3).clamp(0, self.p.top_tier) }
     }
 
-    /// The factories that stand while a project saved for is under way on short metal (an
-    /// experimental in the field or in a factory's yard, a strategic silo going up) with more
-    /// metal left to pay than two minutes of our income (TA's silo, under a thousand, is waited
-    /// for by its build time, not its metal), leaving it their metal: the level's share of them
-    /// (`Params::save_share`), the lowest tier first and the farthest from home; never a factory
-    /// of experimentals, nor one at an experimental, nor a shipyard (the war at sea has its own
-    /// measure). None while the enemy's army seen lately outweighs ours: the army comes first.
-    /// (They still turn out constructors.)
+    /// The factories that stand while a project saved for is under way on short metal or power
+    /// (an experimental in the field or in a factory's yard, a strategic silo going up, and a
+    /// strategic silo's first missile: one standing with none in its stock) with more metal or
+    /// energy left to pay than two minutes of our income (TA's silo and its missiles are waited
+    /// for by their build time, not their price: they cost less), leaving it what they would
+    /// spend: the level's share of them (`Params::save_share`), the lowest tier first and the
+    /// farthest from home; never a factory of experimentals, nor one at an experimental, nor a
+    /// shipyard (the war at sea has its own measure). None while the enemy's army seen lately
+    /// outweighs ours: the army comes first. (They still turn out constructors.)
     pub(crate) fn standing_for_projects(&self, sim: &Sim, s: &Survey) -> Vec<UnitId> {
-        if self.p.save_share == 0 || self.metal_avg >= Fx::from_ratio(25, 100) || s.army_value < self.enemy_army_value() {
+        let short = self.metal_avg < Fx::from_ratio(25, 100) || self.energy_avg < Fx::from_ratio(25, 100);
+        if self.p.save_share == 0 || !short || s.army_value < self.enemy_army_value() {
             return Vec::new();
         }
-        let two_minutes = s.m_inc.to_int().max(1) * 120;
-        let big = |u: &Unit| (sim.types.get(u.type_id).cost_metal * (Fx::ONE - u.build_progress.clamp(Fx::ZERO, Fx::ONE))).to_int() > two_minutes;
-        let saved_for = s.yard_projects.iter().any(|&(u, _)| big(u)) || s.nanoframes.iter().any(|n| (self.info[n.type_id].experimental || self.info[n.type_id].strategic_silo()) && big(n));
+        let (metal_2, energy_2) = (s.m_inc.to_int().max(1) * 120, s.e_inc.to_int().max(1) * 120);
+        let left = |cost: Fx, done: Fx| (cost * (Fx::ONE - done.clamp(Fx::ZERO, Fx::ONE))).to_int();
+        let big = |u: &Unit| {
+            let t = sim.types.get(u.type_id);
+            left(t.cost_metal, u.build_progress) > metal_2 || left(t.cost_energy, u.build_progress) > energy_2
+        };
+        let saved_for = s.yard_projects.iter().any(|&(u, _)| big(u))
+            || s.nanoframes.iter().any(|n| (self.info[n.type_id].experimental || self.info[n.type_id].strategic_silo()) && big(n))
+            || self.first_missile_due(s);
         if !saved_for {
             return Vec::new();
         }
@@ -1964,6 +1982,21 @@ impl SkirmishAi {
         cands.sort_by_key(|f| (self.info[f.type_id].tech, Reverse(dist(f.pos, self.base)), f.id.slot));
         let k = (cands.len() * self.p.save_share + 50) / 100;
         cands.into_iter().take(k).map(|f| f.id).collect()
+    }
+
+    /// Whether a strategic silo of ours stands with no missile in its stock and more of the
+    /// missile left to pay than two minutes of our metal or energy income (Forged Alliance's,
+    /// 12,000 metal and 1,350,000 energy; TA's, cheaper, is waited for by its build time): its
+    /// first missile is a project of its own, saved for (`standing_for_projects`) and taking its
+    /// turn before the next project starts (`project_task`).
+    pub(crate) fn first_missile_due(&self, s: &Survey) -> bool {
+        let (metal_2, energy_2) = (s.m_inc.to_int().max(1) * 120, s.e_inc.to_int().max(1) * 120);
+        let left = |cost: i64, done: Fx| (fx(cost) * (Fx::ONE - done.clamp(Fx::ZERO, Fx::ONE))).to_int();
+        s.own.iter().any(|u| {
+            let i = &self.info[u.type_id];
+            let (metal, energy) = i.missile_cost;
+            i.strategic_silo() && u.is_complete() && u.stockpile == 0 && (left(metal, u.stockpile_progress) > metal_2 || left(energy, u.stockpile_progress) > energy_2)
+        })
     }
 
     /// Ground factories of the third tier wanted once one stands (Forged Alliance's: upgraded into,

@@ -79,7 +79,10 @@ impl SkirmishAi {
     pub(crate) fn project_task(&mut self, sim: &Sim, s: &Survey, b: &Unit, opts: &[usize], plan: &Plan) -> Option<Task> {
         let (m, e) = (s.m_inc.to_int(), s.e_inc.to_int());
         let frames = |experimental: bool| s.nanoframes.iter().any(|n| self.is_project(n.type_id) && self.is_experimental_project(n.type_id) == experimental);
-        let under_way = plan.project || frames(false);
+        // (A strategic silo's first missile, when it costs more than two minutes of our income, is
+        // a project under way: the next waits for it, an experimental too.)
+        let first_missile = self.first_missile_due(s);
+        let under_way = plan.project || frames(false) || first_missile;
         // (Not on an economy short of power or metal: what it has goes to that first. Cover
         // against a launcher seen excepted; and the projects saved for, short of metal in store,
         // go ahead on an income that feeds them, the factories leaving them a share of it.)
@@ -88,7 +91,7 @@ impl SkirmishAi {
         let saved_for = !ledger.e_low && m >= SAVED_FOR_INCOME;
         // Experimentals, one at a time beside the other projects: one the constructor builds
         // itself (Forged Alliance's), or a factory of them (TA's Gantry).
-        if !plan.experimental && !frames(true) && saved_for && s.minutes >= self.p.experimental_minute && e >= 1000 && s.experimentals < self.p.experimentals
+        if !plan.experimental && !frames(true) && !first_missile && saved_for && s.minutes >= self.p.experimental_minute && e >= 1000 && s.experimentals < self.p.experimentals
             && let Some(t) = self.experimental_task(sim, s, b, opts, plan)
         {
             return Some(t);

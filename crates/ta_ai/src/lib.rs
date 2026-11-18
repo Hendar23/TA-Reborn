@@ -734,6 +734,9 @@ pub struct SkirmishAi {
     search_rest: u64,
     /// What each of our long-range guns shells (where, since when: `projects.rs`).
     gun_targets: Vec<(UnitId, FxVec3, u64)>,
+    /// When a plane was last sent to look at the enemy's bases for our missiles (`army.rs`:
+    /// `send_recon`).
+    last_recon: Option<u64>,
     /// Our side's tree leads to an experimental (or a factory of them) from what we start
     /// with: TA's Core to its Krogoth, its Arm to none.
     experimentals_reachable: bool,
@@ -808,8 +811,11 @@ struct Survey<'a> {
     strategic_silos: usize,
     tactical_silos: usize,
     tactical_covers: usize,
-    /// Energy per second our finished strategic silos take building their missiles (at most).
+    /// Energy per second our strategic silos, standing or going up, take building their missiles
+    /// (at most): the power for them is put up while they are (`power_wanted`); and those of ours
+    /// standing with no missile yet in their stock.
     silo_draw: i64,
+    first_missiles: usize,
     /// Experimentals under way in our factories' yards, and the factory of each (TA's Krogoth in
     /// its Gantry): projects that hands help with at the factory (`help_project_task`).
     yard_projects: Vec<(&'a Unit, UnitId)>,
@@ -1220,6 +1226,7 @@ impl SkirmishAi {
             way_searched: Vec::new(),
             search_rest: 0,
             gun_targets: Vec::new(),
+            last_recon: None,
             experimentals_reachable,
         }
     }
@@ -1357,6 +1364,7 @@ impl SkirmishAi {
             tactical_silos: 0,
             tactical_covers: 0,
             silo_draw: 0,
+            first_missiles: 0,
             yard_projects: Vec::new(),
         };
         for u in sim.units() {
@@ -1390,9 +1398,8 @@ impl SkirmishAi {
             s.experimentals += (i.experimental || i.experimental_factory) as usize;
             if i.strategic_silo() {
                 s.strategic_silos += 1;
-                if done {
-                    s.silo_draw += i.stock_energy;
-                }
+                s.silo_draw += i.stock_energy;
+                s.first_missiles += (done && u.stockpile == 0) as usize;
             } else if i.tactical_silo() {
                 s.tactical_silos += 1;
             } else if i.tactical_cover() {
