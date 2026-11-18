@@ -144,3 +144,43 @@ fn a_scenario_that_cannot_be_played_can_be_chosen_to_see_why() {
     frame(&mut menu, Vec::new());
     assert_eq!(menu.scenario_selected, 1, "the scenario that can't be played is chosen, its page shows why");
 }
+
+/// A computer's seat says who plays it ("Computer") and, on a line under it, its difficulty, the
+/// three side by side, and its persona: a click on HARD makes it Hard and keeps its persona, and
+/// the battle set up carries both.
+#[test]
+fn a_computer_seats_difficulty_and_persona_are_chosen_under_it() {
+    let assets = assets();
+    let mut menu = Menu::new(&assets);
+    menu.page = Page::Skirmish;
+    menu.slots[1].persona = ta_ai::Persona::Turtle;
+    let ctx = egui::Context::default();
+    ta_ui::theme::install(&ctx);
+    ctx.enable_accesskit();
+    let mut time = 0.0;
+    let mut frame = |menu: &mut Menu, events: Vec<egui::Event>| {
+        time += 1.0 / 30.0;
+        let input = egui::RawInput { time: Some(time), screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0))), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            menu.skirmish(ui, &assets);
+        });
+        let update = out.platform_output.accesskit_update.take();
+        out.drop_without_applying_deltas();
+        update
+    };
+    let mut tree = None;
+    for _ in 0..45 {
+        tree = frame(&mut menu, Vec::new()).or(tree);
+    }
+    let tree = tree.expect("the page's accessibility tree");
+    let named = |name: &str| tree.nodes.iter().filter(|(_, node)| node.label() == Some(name) || node.value() == Some(name)).map(|(id, _)| *id).collect::<Vec<_>>();
+    assert_eq!(named("HARD").len(), 1, "one computer seat, one row of difficulties");
+    assert!(!named("Turtle").is_empty(), "its persona shown beside them");
+    assert!(named("Computer — Normal").is_empty(), "who plays a seat and how well are no longer one choice");
+    let click = egui::accesskit::ActionRequest { action: egui::accesskit::Action::Click, target_tree: egui::accesskit::TreeId::ROOT, target_node: named("HARD")[0], data: None };
+    frame(&mut menu, vec![egui::Event::AccessKitActionRequest(click)]);
+    frame(&mut menu, Vec::new());
+    assert_eq!((menu.slots[1].kind, menu.slots[1].persona), (SlotKind::AiHard, ta_ai::Persona::Turtle));
+    let setup = menu.build_setup(&assets, "First map", 2);
+    assert_eq!(setup.players[1].controller, Controller::Ai(ta_ai::Difficulty::Hard, ta_ai::Persona::Turtle));
+}

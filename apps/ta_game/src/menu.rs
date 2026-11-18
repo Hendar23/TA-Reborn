@@ -1776,7 +1776,7 @@ impl Menu {
                                     }
                                     // (A computer of any difficulty is "Computer": choosing it
                                     // again keeps its difficulty.)
-                                    let chosen = slot.kind.label() == k.label();
+                                    let chosen = slot.kind == k || slot.kind.difficulty().is_some() && k.difficulty().is_some();
                                     if ui.selectable_label(chosen, k.label()).clicked() && !chosen {
                                         slot.kind = k;
                                     }
