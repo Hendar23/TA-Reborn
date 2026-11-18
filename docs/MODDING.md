@@ -931,7 +931,11 @@ Supreme Commander's units are painted so. The format is in [FORMATS.md](FORMATS.
   model drawn as itself a moment before stays so down to 42 (no swapping back and forth as the
   camera shakes or a walker bobs).
 - Models with surfaces take no skins, liveries or Reborn's plates and bolts: their paint is their
-  own, in either art style.
+  own, in either art style. Enhanced Classic lights it as Supreme Commander does (the specular
+  map's green a broad, cool sheen); Reborn finishes it as it finishes TA's paint (greys without
+  their cast, painted highlights on a shoulder, matte paint as glossy as the green is round about,
+  the green's outlines worn bright, strong red polished metal; its colour map read sharp where it
+  is magnified): see docs/SUPCOM_UNITS.md, "Light".
 - In TA itself, such a model shows its palette colours.
 
 #### Models that move by clips of their own

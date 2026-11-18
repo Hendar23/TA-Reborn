@@ -197,12 +197,29 @@ Each unit's first level of detail becomes `objects3d/<id>.3do` with its surface
   (`textures::paint_gain`: the UEF's 1.45 times, the Cybran's twice, the others as they are) by
   multiplying each block's two colour ends, Forged Alliance's blocks otherwise as they were made:
   drawn as they were, the UEF's and the Cybran's units were half as bright as in their game. The
-  specular map's green is how strongly a broad, cool sheen shines over the paint where the sun
-  glances off it towards the eye (Forged Alliance's highlights on its units' metal, a power of 2 or
-  3 broad: what makes that paint read as metal), the player's colour is laid on as the game lays
-  it (the paint blended into the player's own colour as far as the alpha says), and a model's
-  rim light, and its highlight when selected, go by its faces' own normals: lit by every turn of
-  its normal map, a selected Commander was a pale haze, the ground seeming to show through it.
+  player's colour is laid on as the game lays it (the paint blended into the player's own colour
+  as far as the alpha says), and a model's rim light, and its highlight when selected, go by its
+  faces' own normals: lit by every turn of its normal map, a selected Commander was a pale haze,
+  the ground seeming to show through it. The rest by the art style (`unit.wgsl`):
+  - **Enhanced Classic** draws Forged Alliance's look: the specular map's green is how strongly a
+    broad, cool sheen shines over the paint where the sun glances off it towards the eye (Forged
+    Alliance's highlights on its units' metal, a power of 2 or 3 broad: what makes that paint read
+    as metal).
+  - **Reborn** finishes the paint as it finishes TA's (`surfaced_finish`), from what each map says
+    rather than from Forged Alliance's light. Forged Alliance's artists painted its light into the
+    paint (streaks of sheen over the panels, a blue cast in the UEF's greys) and laid its cool
+    highlight over that: under Reborn's light, sky and reflections the two read as frost, the
+    UEF's buildings a pale, washed-out blue-white, every panel line a row of white specks. So the
+    greys lose most of their cast (gunmetal), the painted highlights rise on a shoulder (the light
+    shines on the metal itself), and the paint is matte, as glossy as the green says over some six
+    texels round each (its panels' gloss, not its outlines); the green's outlines (glossier than
+    round about: the panels' edges) are worn to brighter, smoother bare metal; strong mirroring
+    (the red) is polished metal, the Aeon's and the Seraphim's chrome; the player's colour a
+    little darker, as Reborn lays TA's on, so the light shapes it. The paint is lit by Reborn's
+    physically based light as every model is (no cool sheen), and where it is magnified (a texel
+    over a pixel and a half) its colour map is read through a Catmull-Rom spline of its four by
+    four texels (`surface_sharp`), its panel lines staying sharp rather than blurring between
+    texels.
 - **Texture coordinates** run 0 to 1 (TA Reborn keeps them in 16 bits, and a texture's edge
   clamps): a triangle the mesh paints from a repeat of its texture is moved by whole textures to
   lie within it (the same texels), its corners copied where other triangles share them: 229 of

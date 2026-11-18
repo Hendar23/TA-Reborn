@@ -40,6 +40,58 @@ fn surface_texel(word: u32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4
     return textureSampleGrad(surface_paint, tex_sampler, uv, word, dx, dy);
 }
 
+// Its first level's texel at `uv`, between texels as the sampler blends them.
+fn surface_level0(word: u32, uv: vec2<f32>) -> vec4<f32> {
+    if ((word & 0x80000000u) != 0u) {
+        return textureSampleLevel(surface_paint_fine, tex_sampler, uv, word & 0x7FFFFFFFu, 0.0);
+    }
+    return textureSampleLevel(surface_paint, tex_sampler, uv, word, 0.0);
+}
+
+// A model's own surface's texture where it is magnified (`bilinear` its plain lookup): from as
+// large as a texel is drawn over a pixel and a half, a Catmull-Rom spline through the four by
+// four texels round it (in five bilinear lookups, the corners' small weights left out), kept within
+// the two by two nearest's colours, so that the paint's panel lines and edges stay sharp rather
+// than blurring over the pixels between texels.
+fn surface_sharp(word: u32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>, bilinear: vec4<f32>) -> vec4<f32> {
+    let size = select(512.0, 1024.0, (word & 0x80000000u) != 0u);
+    // (Texels a pixel: under 1 the texture is magnified.)
+    let texels = max(length(dx), length(dy)) * size;
+    let sharp = 1.0 - smoothstep(0.45, 0.7, texels);
+    if (sharp <= 0.0) {
+        return bilinear;
+    }
+    let p = uv * size - 0.5;
+    let base = floor(p);
+    let f = p - base;
+    let w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    let w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    let w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    let w3 = f * f * (-0.5 + 0.5 * f);
+    let w12 = w1 + w2;
+    let at0 = (base - 0.5) / size;
+    let at12 = (base + 0.5 + w2 / w12) / size;
+    let at3 = (base + 2.5) / size;
+    let top = surface_level0(word, vec2<f32>(at12.x, at0.y));
+    let left = surface_level0(word, vec2<f32>(at0.x, at12.y));
+    let middle = surface_level0(word, at12);
+    let right = surface_level0(word, vec2<f32>(at3.x, at12.y));
+    let bottom = surface_level0(word, vec2<f32>(at12.x, at3.y));
+    let wt = w12.x * w0.y;
+    let wl = w0.x * w12.y;
+    let wm = w12.x * w12.y;
+    let wr = w3.x * w12.y;
+    let wb = w12.x * w3.y;
+    var c = (top * wt + left * wl + middle * wm + right * wr + bottom * wb) / (wt + wl + wm + wr + wb);
+    // (No ringing past the nearest texels: the plain lookup's two by two, at the first level.)
+    let near = (base + 0.5) / size;
+    let a = surface_level0(word, near);
+    let b = surface_level0(word, near + vec2<f32>(1.0 / size, 0.0));
+    let e = surface_level0(word, near + vec2<f32>(0.0, 1.0 / size));
+    let g = surface_level0(word, near + vec2<f32>(1.0 / size));
+    c = clamp(c, min(min(a, b), min(e, g)), max(max(a, b), max(e, g)));
+    return mix(bilinear, c, sharp);
+}
 
 fn in_second_bank(layer: u32) -> bool {
     return SECOND_BANK != 0u && layer >= SECOND_BANK;
@@ -509,6 +561,59 @@ fn texture_mean(layer: u32, reborn: bool) -> vec3<f32> {
     return textureSampleLevel(textures, tex_sampler, vec2<f32>(0.5), layer, f32(textureNumLevels(textures) - 1u)).rgb;
 }
 
+// Reborn's finish of a model's own surface (Supreme Commander's units: model/surfaced.rs), from its
+// paint (linear), its specular map's texel (`finish`) and the same blurred over some six texels
+// round it (`wide`), and the player's colour (`player`), burnt out as far as `burnt`.
+struct SurfacedFinish {
+    albedo: vec3<f32>,
+    // Roughness and metalness.
+    material: vec2<f32>,
+};
+
+// How far greys lose their cast; the paint's level where its painted highlights start rising on a
+// shoulder, and how steeply they rise past it; and how bright the gloss map's outlines wear it.
+const SURFACED_GREYS: f32 = 0.75;
+const SURFACED_KNEE: f32 = 0.12;
+const SURFACED_SHOULDER: f32 = 0.6;
+const SURFACED_GAIN: f32 = 0.95;
+const SURFACED_EDGES: f32 = 0.45;
+
+fn surfaced_finish(paint: vec3<f32>, finish: vec4<f32>, wide: vec4<f32>, player: vec3<f32>, burnt: f32) -> SurfacedFinish {
+    var f: SurfacedFinish;
+    let team = finish.a;
+    // What mirrors its surroundings well (red) is polished metal (the Seraphim's chrome, the
+    // Aeon's): as bright as metal is, in its paint's tint (Forged Alliance added the mirrored sky
+    // over a dark paint).
+    let mirror = smoothstep(0.35, 0.9, finish.r) * (1.0 - team);
+    // The gloss map's outlines (glossier than round about): the panels' edges, where Forged
+    // Alliance's highlights catch, worn to bare metal; the rest is paint, as glossy as the gloss
+    // map is round about (its outlines left out: they glittered all over every panel).
+    let edge = saturate((finish.g - wide.g) * 3.0) * (1.0 - team) * (1.0 - mirror) * (1.0 - burnt);
+    let lum = dot(paint, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let hi = max(max(paint.r, paint.g), paint.b);
+    let chroma = (hi - min(min(paint.r, paint.g), paint.b)) / max(hi, 1e-3);
+    // Greys lose most of their cast (the UEF's blue-grey becomes gunmetal), coloured paint keeps
+    // it; the paint's own painted highlights (its sheen streaked over the panels, which under
+    // Reborn's light read as frost) rise on a shoulder, so the light shines on the metal itself.
+    // (Saturation reckoned in light's own measure, where a grey's cast is half again its painted
+    // one: the UEF's paint about 0.36.)
+    var base = mix(paint, vec3<f32>(lum), SURFACED_GREYS * (1.0 - smoothstep(0.3, 0.7, chroma)));
+    let shouldered = select(lum, SURFACED_KNEE + (lum - SURFACED_KNEE) * SURFACED_SHOULDER, lum > SURFACED_KNEE);
+    base *= SURFACED_GAIN * shouldered / max(lum, 1e-4);
+    // The player's colour as Forged Alliance lays it on (a little darker, as TA's units wear it in
+    // Reborn's light, so the light shapes it).
+    base = mix(base, player * 0.85, team);
+    base = mix(base, vec3<f32>(0.5) + paint * 0.7, mirror * 0.85);
+    base = mix(base, base * 1.3 + vec3<f32>(0.02), edge * SURFACED_EDGES);
+    // Matte paint (as glossy as the gloss map says round about), its edges smoother, polished
+    // metal smoothest; soot rough.
+    let gloss = saturate(wide.g * 1.4);
+    let rough = mix(mix(mix(0.8, 0.46, gloss), 0.3, edge * 0.8), 0.16, mirror);
+    f.albedo = base;
+    f.material = vec2<f32>(mix(rough, 0.9, burnt), max(mirror * 0.9, edge * 0.75) * (1.0 - burnt));
+    return f;
+}
+
 fn model_surface(in: VOut, front: bool) -> Surface {
     var s: Surface;
     var n = normalize(in.normal);
@@ -551,22 +656,37 @@ fn model_surface(in: VOut, front: bool) -> Surface {
             let paint = surface_texel(words.x, in.uv, duv_x, duv_y);
             let finish = surface_texel(words.y, in.uv, duv_x, duv_y);
             let relief = surface_texel(words.z, in.uv, duv_x, duv_y);
-            // (The player's colour as Forged Alliance lays it on: the paint blended into it as far
-            // as the alpha says, the colour as bright as TA's units wear it.)
-            var albedo = srgb_to_linear(paint.rgb);
-            albedo = mix(albedo, player_colour((in.tint >> 8u) & 255u, f32(in.tint >> 24u) / 255.0), finish.a);
-            // What mirrors its surroundings well (red) is polished metal: as bright as metal is,
-            // in its paint's tint (Forged Alliance added the mirrored sky over a dark paint: the
-            // Seraphim's chrome, the Aeon's).
-            let mirror = smoothstep(0.35, 0.9, finish.r) * (1.0 - finish.a);
-            albedo = mix(albedo, vec3<f32>(0.5) + albedo * 0.7, mirror * 0.85);
-            s.albedo = albedo;
-            s.material = vec2<f32>(mix(0.82, 0.2, max(finish.g, mirror * 0.8)), mirror * 0.9);
-            // (Its sheen where it is painted rather than polished: polished metal shines as
-            // metal does. A burnt-out wreck's sooted paint shines no more.)
-            s.sheen = finish.g * (1.0 - mirror) * (1.0 - f32(in.tint >> 24u) / 255.0);
+            let burnt = f32(in.tint >> 24u) / 255.0;
+            let player = player_colour((in.tint >> 8u) & 255u, burnt);
             let lit = 1.0 - f32(in.flags >> 24u) / 255.0;
-            s.glow += albedo * finish.b * lit * 2.5;
+            if (reborn_paint) {
+                // Reborn's: its paint sharp where it is magnified, finished as Reborn finishes
+                // TA's (see `surfaced_finish`), lit as every model is (no sheen of Forged
+                // Alliance's: its cool highlight over the paint read as frost).
+                let sharp = surface_sharp(words.x, in.uv, duv_x, duv_y, paint);
+                let wide = surface_texel(words.y, in.uv, duv_x * 6.0, duv_y * 6.0);
+                let f = surfaced_finish(srgb_to_linear(sharp.rgb), finish, wide, player, burnt);
+                s.albedo = f.albedo;
+                s.material = f.material;
+                s.glow += f.albedo * finish.b * lit * 2.5;
+            } else {
+                // Enhanced Classic's: Forged Alliance's look. The player's colour as Forged
+                // Alliance lays it on (the paint blended into it as far as the alpha says, the
+                // colour as bright as TA's units wear it).
+                var albedo = srgb_to_linear(paint.rgb);
+                albedo = mix(albedo, player, finish.a);
+                // What mirrors its surroundings well (red) is polished metal: as bright as metal
+                // is, in its paint's tint (Forged Alliance added the mirrored sky over a dark
+                // paint: the Seraphim's chrome, the Aeon's).
+                let mirror = smoothstep(0.35, 0.9, finish.r) * (1.0 - finish.a);
+                albedo = mix(albedo, vec3<f32>(0.5) + albedo * 0.7, mirror * 0.85);
+                s.albedo = albedo;
+                s.material = vec2<f32>(mix(0.82, 0.2, max(finish.g, mirror * 0.8)), mirror * 0.9);
+                // (Its sheen where it is painted rather than polished: polished metal shines as
+                // metal does. A burnt-out wreck's sooted paint shines no more.)
+                s.sheen = finish.g * (1.0 - mirror) * (1.0 - burnt);
+                s.glow += albedo * finish.b * lit * 2.5;
+            }
             // (Direct3D's way: x along u, y along v, down the picture.)
             let xy = vec2<f32>(relief.a, relief.g) * 2.0 - 1.0;
             let z = sqrt(max(1.0 - dot(xy, xy), 0.0));

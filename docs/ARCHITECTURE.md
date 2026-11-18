@@ -1252,14 +1252,23 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
     the fine array's; `u32::MAX` until read: the face in its colour on average, the vertex's;
     `surface_texel`).
     The shader takes the colour (in sRGB), the player's colour where the specular map's alpha
-    says, gloss and mirroring from its green and red (strong mirroring brightens the paint to
-    polished metal: Forged Alliance added the mirrored sky over dark paint), lights from its
-    blue (out when the unit's lights are), and the normal map's relief through the screen-space
-    tangent frame (`mapped_normal`). Ray-traced reflections take the vertex's colour. A model
-    whose surface names a `far` one is drawn as that one under `FAR_PIXELS` across, a unit or a
-    wreck drawn as itself the frame before (`DrawInstance::key`) down to `FAR_PIXELS_BACK`
-    (`detail_for`, in either art style; same pieces). A surface that does not read or fit leaves
-    its model drawn as TA draws its faces (`add_plain`: no kit, caps or halves).
+    says, lights from its blue (out when the unit's lights are), and the normal map's relief
+    through the screen-space tangent frame (`mapped_normal`); the rest by the art style. Enhanced
+    Classic: gloss and mirroring from its green and red (strong mirroring brightens the paint to
+    polished metal: Forged Alliance added the mirrored sky over dark paint) and Forged Alliance's
+    broad, cool sheen as strong as the green. Reborn (`surfaced_finish`): greys lose most of their
+    cast and the paint's painted highlights rise on a shoulder; matte paint as glossy as the green
+    over some six texels round (a second lookup of the specular map, its gradients six times
+    larger); the green's outlines worn to bright, smoother metal; strong red polished metal; no
+    sheen, lit by the physically based light as every model is; the colour map read through a
+    Catmull-Rom spline where it is magnified (`surface_sharp`: from a texel over a pixel and a
+    half, five lookups of its first level and four for its nearest texels, which bound it).
+    Ray-traced reflections take the vertex's colour (its material's on average, as Forged
+    Alliance's paint, in either art style). A model whose surface names a `far` one is drawn as
+    that one under `FAR_PIXELS` across, a unit or a wreck drawn as itself the frame before
+    (`DrawInstance::key`) down to `FAR_PIXELS_BACK` (`detail_for`, in either art style; same
+    pieces). A surface that does not read or fit leaves its model drawn as TA draws its faces
+    (`add_plain`: no kit, caps or halves).
 * **Sprites**: shelf-packed atlas, 4096² to begin with, growing 4096 texels at a time (taller,
   then wider: each widening a new column of shelves; a big mod's a little over 8192 × 16384 is
   12288 × 16384, not twice that) up to the largest texture the device takes, a big mod's

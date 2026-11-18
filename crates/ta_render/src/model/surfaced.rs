@@ -839,6 +839,85 @@ mod tests {
         assert_eq!(paint.memory(), 3 * layer_bytes(SIDE, compressed) + paint.fine_array.capacity as u64 * layer_bytes(FINE_SIDE, compressed));
     }
 
+    /// Reborn's finish of a model's own surface (`surfaced_finish` in unit.wgsl, run as it is in
+    /// a compute shader): a blue-grey paint's cast mostly gone and it matte; painted highlights
+    /// brought down on a shoulder; the player's colour where the alpha says, a little darker;
+    /// strong mirroring polished, bright metal; the gloss map's outlines brighter, smoother metal
+    /// edges; burnt out, rough and no metal.
+    #[test]
+    #[ignore = "requires a GPU; run with --ignored"]
+    fn reborn_finishes_a_surfaces_paint() {
+        use crate::gpu::CheckedBufferInit;
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("GPU adapter");
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("GPU device");
+        let unit = include_str!("../shaders/unit.wgsl");
+        let (start, end) = (unit.find("struct SurfacedFinish {").unwrap(), unit.find("fn model_surface(").unwrap());
+        let source = format!(
+            "{}\nstruct Case {{ paint: vec4<f32>, finish: vec4<f32>, wide: vec4<f32>, player: vec4<f32> }};
+@group(0) @binding(0) var<storage, read> cases: array<Case>;
+@group(0) @binding(1) var<storage, read_write> results: array<vec4<f32>, 12>;
+@compute @workgroup_size(1)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {{
+    let c = cases[id.x];
+    let f = surfaced_finish(c.paint.rgb, c.finish, c.wide, c.player.rgb, c.player.a);
+    results[id.x] = vec4<f32>(f.albedo, 0.0);
+    results[id.x + 6u] = vec4<f32>(f.material, 0.0, 0.0);
+}}",
+            &unit[start..end]
+        );
+        let grey = [0.10f32, 0.12, 0.16, 0.0];
+        let (plain, flat, player) = ([0.13f32, 0.27, 0.0, 0.0], [0.13f32, 0.27, 0.0, 0.0], [0.03f32, 0.1, 0.7, 0.0]);
+        let cases: [[[f32; 4]; 4]; 6] = [
+            [grey, plain, flat, player],
+            [[0.4, 0.4, 0.4, 0.0], plain, flat, player],
+            [grey, [0.13, 0.27, 0.0, 1.0], flat, player],
+            [grey, [1.0, 0.8, 0.0, 0.0], [1.0, 0.8, 0.0, 0.0], player],
+            [grey, [0.13, 0.9, 0.0, 0.0], flat, player],
+            [grey, [0.13, 0.9, 0.0, 0.0], flat, [0.03, 0.1, 0.7, 1.0]],
+        ];
+        let input = device.create_buffer_checked(&wgpu::util::BufferInitDescriptor { label: Some("finish cases"), contents: bytemuck::cast_slice(&cases), usage: wgpu::BufferUsages::STORAGE });
+        let bytes = 12 * 16;
+        let output = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: bytes, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+        let readback = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: bytes, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("surfaced finish fixture"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: None, layout: None, module: &shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
+        let layout = pipeline.get_bind_group_layout(0);
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() }],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(cases.len() as u32, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, bytes);
+        queue.submit([encoder.finish()]);
+        readback.slice(..).map_async(wgpu::MapMode::Read, |result| result.expect("finish fixture readback"));
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let data = readback.slice(..).get_mapped_range().unwrap();
+        let out: &[[f32; 4]] = bytemuck::cast_slice(&data);
+        let (albedo, material) = (&out[..6], &out[6..]);
+        let chroma = |c: [f32; 4]| (c[0].max(c[1]).max(c[2]) - c[0].min(c[1]).min(c[2])) / c[0].max(c[1]).max(c[2]);
+        let lum = |c: [f32; 4]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        // A blue-grey paint: greyer, as bright, matte, no metal.
+        assert!(chroma(albedo[0]) < chroma(grey) * 0.4 && (lum(albedo[0]) - lum(grey)).abs() < 0.02, "{:?}", albedo[0]);
+        assert!((0.55..0.75).contains(&material[0][0]) && material[0][1] < 0.01, "{:?}", material[0]);
+        // A painted highlight: brought down.
+        assert!(lum(albedo[1]) < 0.4 * 0.8, "{:?}", albedo[1]);
+        // The player's colour, a little darker.
+        assert!((0..3).all(|k| (albedo[2][k] - player[k] * 0.85).abs() < 1e-3), "{:?}", albedo[2]);
+        // Polished metal: bright, smooth, metal.
+        assert!(lum(albedo[3]) > 0.4 && material[3][0] < 0.2 && material[3][1] > 0.85, "{:?} {:?}", albedo[3], material[3]);
+        // An outline: brighter than the paint round it, smoother, metal; burnt out, none of that.
+        assert!(lum(albedo[4]) > lum(albedo[0]) && material[4][0] < material[0][0] - 0.2 && material[4][1] > 0.7, "{:?} {:?}", albedo[4], material[4]);
+        assert!((material[5][0] - 0.9).abs() < 1e-3 && material[5][1] == 0.0 && lum(albedo[5]) < lum(albedo[4]), "{:?} {:?}", albedo[5], material[5]);
+    }
+
     /// A hull and a turret on it, a triangle each: the turret's painted with the surface's
     /// material, the hull's in its palette colour (it names no material).
     #[test]

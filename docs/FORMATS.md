@@ -472,6 +472,10 @@ model, of the same name. Little-endian:
   in alpha and y in green (z made up), x along u and y along v down the picture, as Direct3D's are.
   Each is drawn at its own size, 512 or (with HD surfaces) 1024 texels a side (see DDS textures
   below): a material's three may differ.
+* How the channels are lit goes by the art style (docs/SUPCOM_UNITS.md, "Light"): Enhanced Classic
+  as Forged Alliance lights them (the green a broad, cool sheen); Reborn as a physically based
+  finish (the green, over some six texels round each, how glossy its paint is; where it is glossier
+  than round about, an edge worn to bare metal; strong red polished metal).
 * `far`: a lighter model (a 3DO with its own surface, of the same pieces in the same order) drawn
   in this one's place when it is under 48 pixels across on screen; a model drawn as itself the
   frame before stays so down to 42 (no swapping back and forth as the camera shakes).
