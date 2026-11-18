@@ -53,8 +53,10 @@ impl Sim {
         }
         let Some(goal) = world.nearest_in_component(spec, region, World::pos_to_anchor(to, spec.footprint), 8) else { return Vec::new() };
         let Some(regions) = world.components_of(spec) else { return Vec::new() };
-        let index = |c: (i32, i32)| c.1 as u32 * w as u32 + c.0 as u32;
-        let ground = |c: (i32, i32)| c.0 >= 0 && c.1 >= 0 && c.0 < w && c.1 < h && regions[index(c) as usize] == region;
+        // (A cell's index, none off the map: the searches look past the map's edges.)
+        let index = |c: (i32, i32)| (c.0 >= 0 && c.1 >= 0 && c.0 < w && c.1 < h).then(|| c.1 as u32 * w as u32 + c.0 as u32);
+        let ground = |c: (i32, i32)| index(c).is_some_and(|i| regions[i as usize] == region);
+        let (Some(goal_index), Some(start_index)) = (index(goal), index(start)) else { return Vec::new() };
         // The ground's way: steps from the goal to every cell near the way to the unit (A*
         // from the goal towards the unit, then on a little for the detours).
         let octile = |a: (i32, i32), b: (i32, i32)| {
@@ -65,8 +67,8 @@ impl Sim {
         let mut way: FxHashMap<u32, u32> = FxHashMap::default();
         let mut open: BinaryHeap<Reverse<(u32, u32, u32)>> = BinaryHeap::new();
         let mut best_g: FxHashMap<u32, u32> = FxHashMap::default();
-        best_g.insert(index(goal), 0);
-        open.push(Reverse((octile(goal, start), 0, index(goal))));
+        best_g.insert(goal_index, 0);
+        open.push(Reverse((octile(goal, start), 0, goal_index)));
         let mut to_unit: Option<u32> = None;
         let mut limit = u32::MAX;
         while let Some(Reverse((f, g, i))) = open.pop() {
@@ -93,7 +95,7 @@ impl Sim {
                     continue;
                 }
                 let ng = g + if dx != 0 && dz != 0 { DIAGONAL } else { STRAIGHT };
-                let ni = index(n);
+                let Some(ni) = index(n) else { continue };
                 if way.contains_key(&ni) || best_g.get(&ni).is_some_and(|&b| b <= ng) {
                     continue;
                 }
@@ -108,12 +110,12 @@ impl Sim {
         // Where the unit can get to, nearest the goal along the ground's way first: the front
         // of it is the cell nearest the goal it reaches.
         let passable = world.passable_for(spec);
-        let steps = |c: (i32, i32)| way.get(&index(c)).copied();
+        let steps = |c: (i32, i32)| index(c).and_then(|i| way.get(&i).copied());
         let mut seen: FxHashMap<u32, ()> = FxHashMap::default();
         let mut front = (from_unit, start);
         let mut queue: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
-        queue.push(Reverse((from_unit, index(start))));
-        seen.insert(index(start), ());
+        queue.push(Reverse((from_unit, start_index)));
+        seen.insert(start_index, ());
         let (mut looked, mut since_nearer) = (0usize, 0usize);
         while let Some(Reverse((d, i))) = queue.pop() {
             looked += 1;
@@ -132,8 +134,7 @@ impl Sim {
             }
             for (dx, dz) in NEIGHBOURS {
                 let n = (c.0 + dx, c.1 + dz);
-                let Some(nd) = steps(n) else { continue };
-                let ni = index(n);
+                let (Some(nd), Some(ni)) = (steps(n), index(n)) else { continue };
                 if seen.contains_key(&ni) || !passable(n, None) {
                     continue;
                 }

@@ -188,8 +188,9 @@ pub const RECORD_VERSION: u32 = 47;
 /// theirs has it), clear the wreckage shutting their ways (and a scenario's waves break up what
 /// shuts theirs), put up anti-nuclear cover, silos, heavy defences, long-range guns that shell the
 /// enemy's base and experimentals, and build or upgrade more of the top tier as their economy
-/// grows; a constructor's unit built in the field goes on with its own frame, however far it was
-/// pushed off its site, rather than starting another.
+/// grows; a constructor's unit built in the field goes on with the frame laid for its order's
+/// site, however far it was pushed off it, rather than starting another (and a frame laid for
+/// another order's site nearby is that order's).
 pub const SIMULATION_VERSION: u32 = 105;
 /// Records shorter than one year of simulated time are supported. Shared with the
 /// launcher's metadata reader so impossible durations cannot start endless save catch-up.

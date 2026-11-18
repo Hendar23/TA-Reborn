@@ -18,6 +18,12 @@ use super::*;
 /// which it can also put up new; a flat map, two players, `minutes` into the game on a grown
 /// economy.
 fn tech_fixture(minutes: u64) -> Sim {
+    tech_fixture_with(minutes, 160, &[])
+}
+
+/// [`tech_fixture`] on a map `cells` across, the advanced constructor offering `more` besides
+/// (MIDGUN: a long-range gun of 2,000 reach, cheaper than BIGGUN's 3,000).
+fn tech_fixture_with(minutes: u64, cells: u32, more: &[&str]) -> Sim {
     static NEXT: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!("ta-ai-projects-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
     std::fs::create_dir_all(dir.join("units")).unwrap();
@@ -34,6 +40,7 @@ fn tech_fixture(minutes: u64) -> Sim {
         ("SILO", "FootprintX=4; FootprintZ=4; Weapon1=NUKE; Category=LEVEL3; BuildCostMetal=1000;"),
         ("ANTI", "FootprintX=4; FootprintZ=4; Weapon1=ABM; Category=LEVEL3; BuildCostMetal=1500;"),
         ("BIGGUN", "FootprintX=4; FootprintZ=4; Weapon1=LONGGUN; Category=LEVEL3; BuildCostMetal=4000;"),
+        ("MIDGUN", "FootprintX=4; FootprintZ=4; Weapon1=MIDRANGE; Category=LEVEL3; BuildCostMetal=2000;"),
         ("HEAVY", "FootprintX=2; FootprintZ=2; Weapon1=GUN; Category=LEVEL2; BuildCostMetal=2000; MaxDamage=8000;"),
         ("BIGBOT", "CanMove=1; MaxVelocity=1; Weapon1=GUN; Category=LEVEL3; BuildCostMetal=9000; MaxDamage=40000; FootprintX=4; FootprintZ=4;"),
     ] {
@@ -43,7 +50,7 @@ fn tech_fixture(minutes: u64) -> Sim {
     std::fs::write(
         dir.join("weapons/test.tdf"),
         "[GUN] { range=200; reloadtime=1; weaponvelocity=400; [DAMAGE] { default=10; } } \
-         [LONGGUN] { range=3000; reloadtime=5; weaponvelocity=900; ballistic=1; [DAMAGE] { default=300; } } \
+         [LONGGUN] { range=3000; reloadtime=5; weaponvelocity=900; ballistic=1; [DAMAGE] { default=300; } }          [MIDRANGE] { range=2000; reloadtime=5; weaponvelocity=900; ballistic=1; [DAMAGE] { default=200; } } \
          [NUKE] { range=32000; reloadtime=30; weaponvelocity=400; stockpile=1; commandfire=1; targetable=1; [DAMAGE] { default=5000; } } \
          [ABM] { range=32000; reloadtime=30; weaponvelocity=900; stockpile=1; interceptor=1; coverage=1000; [DAMAGE] { default=500; } }",
     )
@@ -53,7 +60,7 @@ fn tech_fixture(minutes: u64) -> Sim {
     let mut data = GameData::load(&vfs);
     std::fs::remove_dir_all(dir).unwrap();
     let builder = data.unit_id("BUILD2").unwrap();
-    data.units[builder].build_options = ["EXTRACTOR", "POWER", "FACT2", "SILO", "ANTI", "BIGGUN", "HEAVY", "BIGBOT"].map(String::from).to_vec();
+    data.units[builder].build_options = ["EXTRACTOR", "POWER", "FACT2", "SILO", "ANTI", "BIGGUN", "HEAVY", "BIGBOT"].iter().chain(more).map(|s| s.to_string()).collect();
     let factory = data.unit_id("FACT2").unwrap();
     data.units[factory].build_options = ["BUILD2", "TANK1", "TANK2"].map(String::from).to_vec();
     let builder = data.unit_id("BUILD1").unwrap();
@@ -62,7 +69,7 @@ fn tech_fixture(minutes: u64) -> Sim {
     data.units[factory].build_options = ["BUILD1", "TANK1"].map(String::from).to_vec();
     let data = Arc::new(data);
     let types = Arc::new(UnitTypes::compile(&data, &|_| None));
-    let cells = 160u32;
+    let cells = cells.max(160);
     let n = (cells * cells) as usize;
     let map = TntMap { width: cells, height: cells, sea_level: 0, heights: vec![60; n], features: vec![FEATURE_NONE; n], tiles: vec![], tile_map: vec![], feature_names: vec![], minimap: Default::default(), flags: Vec::new() };
     let players: Vec<_> = (0..2).map(|color| PlayerSetup { side: "ARM".into(), color, start: FxVec3::ZERO, metal: fx(1000), energy: fx(1000), ai: false }).collect();
@@ -277,4 +284,32 @@ fn more_advanced_factories_come_by_upgrading_where_a_factory_upgrades() {
     let b = sim.unit(builder).unwrap();
     let opts = sim.unit_type(b).ai_build_options.clone();
     assert!(matches!(ai.more_adv_factory_task(&sim, &s, b, &opts, &plan, true), Some(Task::Build(t, _)) if t == id(&sim, "FACT2")));
+}
+
+/// With long-range guns of two reaches on offer, the cheapest that has a site within its reach of
+/// the enemy's base is put up: the short one has none at this distance (it rests a while, not
+/// tried by every constructor at every turn) and the longer one is taken in the same turn, and
+/// again while the short one rests (it was the short one, every time, and nothing was built).
+#[test]
+fn the_cheapest_long_range_gun_that_reaches_is_put_up() {
+    let mut sim = tech_fixture_with(30, 400, &["MIDGUN"]);
+    put(&mut sim, "FACT2", 0, 400, 400);
+    let builder = put(&mut sim, "BUILD2", 0, 500, 500);
+    let mut ai = SkirmishAi::new(0, &sim, Difficulty::Hard);
+    // (The enemy's base found, some 5,600 px off: past the short gun's reach from anywhere it may
+    // stand, never much past halfway; within the long one's.)
+    ai.enemy_bases = vec![FxVec3::from_ints(6000, 0, 500)];
+    ai.enemy_base_seen = vec![true];
+    ai.enemy_base_owners = vec![1];
+    let (short, long) = (id(&sim, "MIDGUN"), id(&sim, "BIGGUN"));
+    assert!(ai.info[short].long_range && ai.info[short].cost < ai.info[long].cost);
+    let s = ai.survey(&sim);
+    let (plan, _) = ai.start_builders(&sim, &s, &mut Vec::new());
+    let b = sim.unit(builder).unwrap();
+    let opts = sim.unit_type(b).ai_build_options.clone();
+    let task = ai.long_gun_task(&sim, &s, b, &opts, &plan);
+    assert!(matches!(task, Some(Task::Build(t, _)) if t == long), "the long one: {task:?}");
+    assert!(ai.place_failed.iter().any(|&(t, _)| t == short) && !ai.place_failed.iter().any(|&(t, _)| t == long), "the short one rests");
+    let task = ai.long_gun_task(&sim, &s, b, &opts, &plan);
+    assert!(matches!(task, Some(Task::Build(t, _)) if t == long), "again the long one: {task:?}");
 }

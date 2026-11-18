@@ -90,3 +90,81 @@ fn a_waves_units_break_up_the_wreckage_shutting_their_way() {
     assert!(broken > 0, "a wreck was broken up");
     assert!(through, "the wave got through the pass");
 }
+
+/// A 64 × 64-cell map open at two ends and, between them, only a pass six cells deep along one of
+/// its edges (`side`: "top", "bottom", "left", "right"): a kbot (2 × 2 cells), a scout (1 × 1), and
+/// wreckage. Where the way goes from (a corner of the first end) and to (the far corner of the
+/// other), and where three wrecks shut the pass.
+fn edge_pass(side: &str) -> (Sim, FxVec3, FxVec3, [FxVec3; 3]) {
+    let data = data_of(&[
+        unit("KBOT", "CanMove=1; MaxVelocity=2; FootprintX=2; FootprintZ=2;"),
+        unit("SCOUT", "CanMove=1; MaxVelocity=3; FootprintX=1; FootprintZ=1;"),
+        ("features/all/wreck.tdf".into(), "[WRECK] { footprintx=2; footprintz=2; blocking=1; reclaimable=1; metal=50; }".into()),
+    ]);
+    let mut map = flat_map();
+    // (Along the top: x is along the pass and z across it; the other sides turn it.)
+    let place = |along: i64, across: i64| -> (i64, i64) {
+        match side {
+            "top" => (along, across),
+            "bottom" => (along, 63 - across),
+            "left" => (across, along),
+            _ => (63 - across, along),
+        }
+    };
+    for along in 16..48 {
+        for across in 6..64 {
+            let (x, z) = place(along, across);
+            map.features[z as usize * 64 + x as usize] = FEATURE_VOID;
+        }
+    }
+    let sim = sim_on_map(data, 2, &map);
+    let at = |along: i64, across: i64| {
+        let (x, z) = place(along, across);
+        cell(x, z)
+    };
+    // (A 2 × 2 wreck stands on the cells round the corner it is put at, those before and after
+    // it each way: three, at corners 31 along and 1, 3 and 5 across, cover the pass. A corner's
+    // place, turned as the cells are: a cell `c` of a side counted from the far edge is 63 - c,
+    // a corner `b` is 64 - b.)
+    let wreck = |across: i64| {
+        let (x, z) = match side {
+            "top" => (31, across),
+            "bottom" => (31, 64 - across),
+            "left" => (across, 31),
+            _ => (64 - across, 31),
+        };
+        FxVec3::from_ints(x * 16, 0, z * 16)
+    };
+    (sim, at(1, 1), at(62, 1), [wreck(1), wreck(3), wreck(5)])
+}
+
+/// Along each edge of the map and from its corners, the wreckage shutting a pass by the edge is
+/// found, by a kbot's search and a scout's (one cell: it stands on the edge's own cells): both
+/// look at cells off the map, which are none of the way, and in a debug build reckoning such a
+/// cell's place overflowed.
+#[test]
+fn the_wreckage_shutting_a_pass_along_an_edge_of_the_map_is_found() {
+    for side in ["top", "bottom", "left", "right"] {
+        let (mut sim, from, to, wrecks) = edge_pass(side);
+        let specs: Vec<_> = ["KBOT", "SCOUT"].iter().map(|n| sim.move_spec(sim.types.id(n).unwrap())).collect();
+        for spec in &specs {
+            assert!(sim.way_blockers(spec, from, to).is_empty(), "{side}: the pass is open");
+            assert!(sim.way_blockers(spec, to, from).is_empty(), "{side}: the pass is open the other way");
+        }
+        let placed: Vec<usize> = wrecks.iter().filter_map(|&p| sim.place_feature("WRECK", p, 0)).collect();
+        assert_eq!(placed.len(), 3, "{side}: the wrecks stand");
+        for spec in &specs {
+            for (a, b) in [(from, to), (to, from)] {
+                let found = sim.way_blockers(spec, a, b);
+                assert!(!found.is_empty() && found.iter().all(|f| placed.contains(f)), "{side}, footprint {:?}: {found:?}", spec.footprint);
+            }
+        }
+        // From the map's own corners (the nearest cells a unit stands on there).
+        for corner in [FxVec3::ZERO, FxVec3::from_ints(64 * 16 - 1, 0, 0), FxVec3::from_ints(0, 0, 64 * 16 - 1), FxVec3::from_ints(64 * 16 - 1, 0, 64 * 16 - 1)] {
+            for spec in &specs {
+                let _ = sim.way_blockers(spec, corner, to);
+                let _ = sim.way_blockers(spec, from, corner);
+            }
+        }
+    }
+}

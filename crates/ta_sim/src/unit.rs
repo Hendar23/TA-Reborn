@@ -221,6 +221,10 @@ pub struct Unit {
     /// (`Sim::decay_abandoned_frames`). None for one nobody has worked on (a scene's or a
     /// mission's, placed unfinished).
     pub worked_at: Option<u64>,
+    /// The site a mobile unit built in the field (not in a factory) was laid on: the builders
+    /// ordered to build at that site work on it, wherever it has been pushed since; a frame laid
+    /// for another site, however near, is not theirs (`Sim::field_frame`).
+    pub field_site: Option<FxVec3>,
     pub activated: bool,
     /// The last economy tick charged its upkeep (or it has none): its conditional output (an
     /// extractor's, a metal maker's) came too. Without the energy, neither (`Sim::economy_end`).
@@ -432,6 +436,7 @@ impl Unit {
             taken_apart_at: None,
             reclaim_owed: Fx::ZERO,
             worked_at: None,
+            field_site: None,
             activated: false,
             upkeep_paid: true,
             in_build_stance: false,

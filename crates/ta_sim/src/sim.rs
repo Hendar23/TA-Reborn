@@ -3862,9 +3862,11 @@ impl Sim {
         let site = self.world.anchor_to_pos(anchor, bt.footprint);
         let reach = t.build_distance + t.radius;
         // A mobile unit built in the field (Forged Alliance's experimentals, by its engineers)
-        // takes no cells: its frame is found where it stands, near the site, wherever the crowd has
-        // pushed it, and the builder goes on with it (to it, out of reach). Not looked for, a new
-        // frame was laid on the site whenever the builder lost hold of the last: a pile of them.
+        // takes no cells: the frame laid for this site is found where it stands, wherever the
+        // crowd has pushed it, and the builder goes on with it (to it, out of reach). Not looked
+        // for, a new frame was laid on the site whenever the builder lost hold of the last: a pile
+        // of them. (Only the frame laid for this site: one laid for another order's site nearby is
+        // that order's, or the two orders would finish one unit between them.)
         if bt.locomotion != Locomotion::Static && let Some(frame) = self.field_frame(type_id, site, owner, Fx::from_int(bt.footprint.0.max(bt.footprint.1) as i64 * CELL) + reach * 2) {
             let (u, at) = (self.unit(id).unwrap(), self.unit(frame).unwrap().pos);
             if self.in_build_range(u, at, bt.footprint) {
@@ -3925,8 +3927,13 @@ impl Sim {
                 match self.spawn_unit(type_id, owner, site, 0, false) {
                     Some(n) => {
                         let tick = self.tick;
+                        let mobile = bt.locomotion != Locomotion::Static;
                         if let Some(frame) = self.unit_mut(n) {
                             frame.worked_at = Some(tick);
+                            // (The site it was laid for: `field_frame`.)
+                            if mobile {
+                                frame.field_site = Some(site);
+                            }
                         }
                         n
                     }
@@ -3961,19 +3968,18 @@ impl Sim {
         }
     }
 
-    /// The frame of a mobile unit of `type_id` built in the field (not in a factory) by `owner`'s
-    /// side within `near` of `site`, the nearest.
-    fn field_frame(&mut self, type_id: usize, site: FxVec3, owner: u8, near: Fx) -> Option<UnitId> {
-        let mut found = std::mem::take(&mut self.scratch);
-        self.grid.query(site, near, &mut found);
-        let frame = found
+    /// The frame of a mobile unit of `type_id` laid in the field (not in a factory) by `owner`'s
+    /// side for `site` (`Unit::field_site`), within `near` of it however it has been pushed: a
+    /// second builder ordered to that site helps with it, and one ordered to another site, however
+    /// near, lays a frame of its own. (Among all units, not those the unit grid had: one laid this
+    /// tick is not in it yet.)
+    fn field_frame(&self, type_id: usize, site: FxVec3, owner: u8, near: Fx) -> Option<UnitId> {
+        self.units
             .iter()
-            .filter_map(|&slot| self.units.get(slot as usize).and_then(|u| u.as_ref()))
-            .filter(|u| u.type_id == type_id && !u.dead && !u.is_complete() && u.factory.is_none() && self.allied(owner, u.owner) && u.pos.within_xz(site, near))
-            .min_by_key(|u| ((u.pos - site).xz().length_sq_raw(), u.id.slot))
-            .map(|u| u.id);
-        self.scratch = found;
-        frame
+            .flatten()
+            .filter(|u| u.type_id == type_id && u.field_site == Some(site) && !u.dead && !u.is_complete() && u.factory.is_none() && self.allied(owner, u.owner) && u.pos.within_xz(site, near))
+            .min_by_key(|u| u.id.slot)
+            .map(|u| u.id)
     }
 
     /// Mobile units (finished, on the ground or landed) standing on the blocking cells a
@@ -6032,6 +6038,7 @@ impl Sim {
             mix(u.taken_apart_at.map_or(-1, |t| t as i64));
             mix(u.reclaim_owed.0);
             mix(u.worked_at.map_or(-1, |t| t as i64));
+            target(&mut mix, u.field_site.map(Target::Ground));
             mix(u.capture_work as i64);
             mix(u.in_build_stance as i64);
             mix(u.yard_open as i64);

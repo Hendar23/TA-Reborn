@@ -158,28 +158,36 @@ impl SkirmishAi {
     /// within its reach (towards the enemy, in our half of the ground between), the cheapest
     /// that reaches; none with no enemy base found, or none in reach of any site we can put
     /// one on.
-    fn long_gun_task(&mut self, sim: &Sim, s: &Survey, b: &Unit, opts: &[usize], plan: &Plan) -> Option<Task> {
+    pub(crate) fn long_gun_task(&mut self, sim: &Sim, s: &Survey, b: &Unit, opts: &[usize], plan: &Plan) -> Option<Task> {
         let budget = s.m_inc.to_int() * 60 * LONG_GUN_INCOME_MINUTES;
-        let gun = opts.iter().copied().filter(|&o| self.info[o].long_range && self.info[o].land && self.info[o].cost <= budget).min_by_key(|&o| (self.info[o].cost, o))?;
         let seen = self.enemy_bases.iter().zip(&self.enemy_base_seen).filter(|&(_, &seen)| seen).map(|(&p, _)| p).min_by_key(|p| (dist(*p, self.base), p.x.0, p.z.0))?;
-        let reach = self.info[gun].range * 92 / 100;
         let d = dist(seen, self.base);
-        // (As far back as it can stand and still reach, never much past halfway.)
-        let out = (d - reach).max(200).min(d * 55 / 100);
         let toward = (seen - self.base).xz().normalize();
-        let near = Self::clamp_to_map(sim, self.base + toward.scale(fx(out)));
-        let r = fx(sim.types.get(gun).radius.to_int() + 16);
-        let ok = |p: FxVec3| p.within_xz(seen, fx(reach)) && plan.free(p, r) && self.threat.at(p) == 0 && self.builder_reaches(sim, b, p, gun);
-        if self.place_failed.iter().any(|&(t, until)| t == gun && sim.tick < until) {
-            return None;
+        // The cheapest that has a site from which it reaches (one too short for the distance
+        // has none: a pricier one with the reach is taken), none whose sites were not to be had
+        // a moment ago.
+        let mut guns: Vec<usize> = opts.iter().copied().filter(|&o| self.info[o].long_range && self.info[o].land && self.info[o].cost <= budget).collect();
+        guns.sort_by_key(|&o| (self.info[o].cost, o));
+        for gun in guns {
+            if self.place_failed.iter().any(|&(t, until)| t == gun && sim.tick < until) {
+                continue;
+            }
+            let reach = self.info[gun].range * 92 / 100;
+            // (As far back as it can stand and still reach, never much past halfway.)
+            let out = (d - reach).max(200).min(d * 55 / 100);
+            let near = Self::clamp_to_map(sim, self.base + toward.scale(fx(out)));
+            let r = fx(sim.types.get(gun).radius.to_int() + 16);
+            let ok = |p: FxVec3| p.within_xz(seen, fx(reach)) && plan.free(p, r) && self.threat.at(p) == 0 && self.builder_reaches(sim, b, p, gun);
+            match self.find_site(sim, gun, near, 24, &ok) {
+                Some(site) => {
+                    log::debug!("{} min: P{} puts up a long-range gun, {}, {} px from the enemy's base", s.minutes, self.player, sim.types.get(gun).name, dist(site, seen));
+                    return Some(Task::Build(gun, site));
+                }
+                // (Looked for again in a while, not by every constructor at every turn.)
+                None => self.place_failed.push((gun, sim.tick + 30 * SECOND)),
+            }
         }
-        let Some(site) = self.find_site(sim, gun, near, 24, &ok) else {
-            // (Looked for again in a while, not by every constructor at every turn.)
-            self.place_failed.push((gun, sim.tick + 30 * SECOND));
-            return None;
-        };
-        log::debug!("{} min: P{} puts up a long-range gun, {}, {} px from the enemy's base", s.minutes, self.player, sim.types.get(gun).name, dist(site, seen));
-        Some(Task::Build(gun, site))
+        None
     }
 
     /// Our long-range guns shell what we know of the enemy's buildings in their reach, worth the
