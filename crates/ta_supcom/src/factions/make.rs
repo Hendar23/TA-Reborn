@@ -18,8 +18,10 @@ pub const MOD_NAME: &str = "Supreme Commander factions";
 pub const DESCRIPTION: &str = "Supreme Commander: Forged Alliance's four factions, their units and buildings, made from your own copy of the game.";
 pub const TAGS: [&str; 3] = ["units", "factions", "supreme commander"];
 /// The converter's version, the mod's own (its manifest's `version`): a mod made by an older one
-/// is offered to be made again. Raised whenever what is made changes.
-pub const VERSION: u32 = 8;
+/// is offered to be made again. Raised whenever what is made changes (8: buildings' work and
+/// upgrade animations; 9: buildings' floats left out where Forged Alliance hides them, on the
+/// ground).
+pub const VERSION: u32 = 9;
 
 /// What was made.
 #[derive(Clone, Debug, Default)]
@@ -175,8 +177,15 @@ fn unit(files: &Files, u: &UnitBlueprint, extra: &units::Extra, extra_weapons: &
     };
     let lod0 = &u.display.lods[0];
     let mesh = &read.mesh;
+    // Forged Alliance hides a building's floats (its `Floatation` bones) where it stands on land,
+    // and shows them where it floats. TA Reborn stands every building but a floater (on the water
+    // alone, `Floater`) on the ground, on land or on the sea bed: its floats are left out of its
+    // model, and so of its wreck, its unit's own model at rest (drawn, they were dark slabs under
+    // the wrecks of the air factories, the radars, the anti-air and others, 29 buildings), and of
+    // what of it stands on the ground.
+    let floats = if u.motion == crate::unit::Motion::None && !(u.layers.water && !u.layers.land) { model::floats(mesh) } else { Vec::new() };
     // A building's footprint covers what of its model stands on the ground.
-    let footprint = units::fitted_footprint(u, model::ground_extent(mesh, u.display.uniform_scale));
+    let footprint = units::fitted_footprint(u, model::ground_extent_leaving_out(mesh, u.display.uniform_scale, &floats));
     let fitted = footprint.map(|f| UnitBlueprint { footprint: Some(f), ..u.clone() });
     let u = fitted.as_ref().unwrap_or(u);
     let name = u.id.to_ascii_lowercase();
@@ -199,12 +208,12 @@ fn unit(files: &Files, u: &UnitBlueprint, extra: &units::Extra, extra_weapons: &
         }
     }
     let material = Material { name: name.clone(), albedo: paint[0].0.clone(), specular: paint[1].0.clone(), normals: paint[2].0.clone(), mean: textures::mean(&paint[0].1) };
-    let mut near = match model::convert(mesh, u.display.uniform_scale, material.clone()) {
+    let mut near = match model::convert_leaving_out(mesh, u.display.uniform_scale, material.clone(), &floats) {
         Ok(m) => m,
         Err(why) => return Ok(Err(format!("{}: {why}", lod0.mesh))),
     };
     // (A far model that cannot be written is left out: the near one draws far off too.)
-    let far = read.far.as_ref().and_then(|far_mesh| model::convert_onto(far_mesh, mesh, &near, u.display.uniform_scale, material).ok());
+    let far = read.far.as_ref().and_then(|far_mesh| model::convert_onto_leaving_out(far_mesh, mesh, &near, u.display.uniform_scale, material, &floats).ok());
     for (path, bytes) in &paint {
         put(path, bytes)?;
     }
@@ -474,7 +483,7 @@ mod tests {
     }
 
     /// The hash of the test faction's mod (see the test above).
-    const EXPECTED: &str = "0f2178cfeffa30346cb138071ee7577d4e4bf8a2aa4079bb3a0fa59dbc22de3c";
+    const EXPECTED: &str = "835669907d733e0b0fb62fc41f6a7858d8f789041ca6cd1f2de7cb2da3cddbb6";
 
     /// A unit whose mesh does not read is left out, with its reason; the rest are made.
     #[test]

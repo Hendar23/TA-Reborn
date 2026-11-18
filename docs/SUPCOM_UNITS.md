@@ -147,6 +147,14 @@ Each unit's first level of detail becomes `objects3d/<id>.3do` with its surface
   rest less that place: the model at rest is the mesh exactly, and a piece a script turns turns
   about the model's axes there, as TA's do, whatever turn its bone rests in. z is negated (a 3DO
   holds it the other way round) and each triangle's corners taken the other way round with it.
+- **Floats:** 29 buildings (the air factories, the quantum gateways, radars, anti-air, point and
+  missile defences, an energy storage) carry pontoons, their `Floatation` bones, which Forged Alliance hides (with
+  every bone under them) where a building stands on land and shows where it floats. TA Reborn
+  stands every structure but a floater (`Floater`, on the water alone) on the ground, on land or on
+  the sea bed: their triangles are left out of the model and its far one (`model::floats`,
+  `convert_leaving_out`), the bones staying pieces that draw nothing, and out of what of the
+  building stands on the ground. Drawn, they hung under the buildings and lay under their wrecks
+  (the units' own models at rest) as dark slabs (converter version 9).
 - **Paint:** the colour, specular and team colour, and normal maps made BC3 of 512 × 512 with every
   level: Forged Alliance's blocks kept wherever a texture has a level of that size (most; 1024² and
   2048² ones from their smaller levels), the rest decoded and made again (256² and smaller grown,
