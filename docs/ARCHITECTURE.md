@@ -459,7 +459,9 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   `build_work`), with its own `work_rate` and that of builders helping it (guard and repair orders
   on it: `Sim::needs_work`, `apply_build_power`), paid by `Economy::spend_work` as construction is,
   so it stalls with the economy. A factory makes nothing meanwhile (`update_factory` returns while
-  its first order is an upgrade); anything else works on. The order taken off the front (Stop, an
+  its first order is an upgrade or an enhancement to install; a factory's orders take both,
+  `order_unit`); anything else works on. Its guards help with it, not with the unit on its pad
+  (`update_guard_order`; a guard's help with that gives way, `update_repair_order`). The order taken off the front (Stop, an
   order not queued, `DropOrder`) calls the work off at the unit's next `update_orders`, its metal
   back (`cancel_self_work`); a capture drops it. Done (`finish_upgrade`): the old unit is taken off
   the map as given up (`removed`, its ground released at once) and a unit of the new type spawned
@@ -480,8 +482,11 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   read their type's). Whatever reads those reads them through the unit (`Unit::max_health`,
   `weapon_slots`, `work_rate`, `build_options`, `ai_build_options`, `sight`, `radar`, `sonar`,
   `heal_ticks`, `cloak_costs`, `stealthy`), never the type's alone. Health rises with the most and
-  falls to it; a slot whose weapon changed starts afresh; the script's `SetEnhancement(index, on)`
-  is called; `SimEvent::UnitEnhanced` follows. `Unit::enhancements` is in the checksum.
+  falls to it; a slot whose weapon changed starts afresh, and a stockpiling launcher swapped or
+  gone takes its missiles and the one under way with it; the script's `SetEnhancement(index, on)`
+  is called; `SimEvent::UnitEnhanced` follows. `Unit::enhancements` is in the checksum. The
+  interface gives an enhancement chosen from a type's list to the selected units of that type
+  alone (`game::enhancement_orders`): the index is the type's.
 * **Standing orders** (`Command::SetStates`, never touching the queue): fire (hold, return,
   at will) and movement. Idle armed units hit from beyond their reach answer by movement
   state: Maneuver advances on the attacker within a 420 px leash and walks back afterwards,

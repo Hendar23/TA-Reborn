@@ -157,3 +157,66 @@ pub(crate) fn list(ui: &mut egui::Ui, game: &Game, u: &Unit, ty: &UnitType) -> O
     }
     click
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use ta_sim::{Command, Fx, FxVec3, Order, Sim};
+
+    use crate::game::enhancement_orders;
+
+    /// Two Commanders whose lists differ (the second's first is another part), each a part a tick
+    /// to install, and a battle on a flat map with two players.
+    fn battle() -> Sim {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!("ta-enhance-orders-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        let com = |name: &str, parts: &str| format!("[UNITINFO]\n{{\nUnitName={name};\nObjectname={name};\nMaxDamage=1000;\nSightDistance=300;\nBuilder=1;\nWorkerTime=100;\nCanMove=1;\nMaxVelocity=1;\n[ENHANCEMENTS]\n{{\n{parts}\n}}\n}}\n");
+        let files = [
+            ("units/coma.fbi", com("COMA", "[SUITE]\n{\nSlot=LCH;\nBuildCostMetal=1;\nBuildTime=1;\nWorkerTime=100;\n}\n[ARMOUR]\n{\nSlot=Back;\nBuildCostMetal=1;\nBuildTime=1;\nMaxDamage=500;\n}")),
+            ("units/comb.fbi", com("COMB", "[RADAR]\n{\nSlot=Back;\nBuildCostMetal=1;\nBuildTime=1;\nRadarDistance=500;\n}\n[SUITE]\n{\nSlot=LCH;\nBuildCostMetal=1;\nBuildTime=1;\nWorkerTime=100;\n}")),
+        ];
+        for (path, text) in &files {
+            let p = dir.join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        }
+        let mut vfs = ta_vfs::Vfs::new();
+        vfs.mount_mod_dir(&dir, "test").unwrap();
+        let data = Arc::new(ta_data::GameData::load(&vfs));
+        std::fs::remove_dir_all(&dir).ok();
+        let types = Arc::new(ta_sim::UnitTypes::compile(&data, &|_| None));
+        let cells = 64u32;
+        let n = (cells * cells) as usize;
+        let map = ta_formats::tnt::TntMap { width: cells, height: cells, sea_level: 0, heights: vec![60; n], features: vec![ta_formats::tnt::FEATURE_NONE; n], tiles: vec![], tile_map: vec![], feature_names: vec![], minimap: Default::default(), flags: Vec::new() };
+        let players: Vec<ta_sim::PlayerSetup> = (0..2).map(|color| ta_sim::PlayerSetup { side: "ARM".into(), color, start: FxVec3::ZERO, metal: Fx::from_int(1000), energy: Fx::from_int(1000), ai: false }).collect();
+        Sim::new(types, data, &map, &ta_data::MapInfo::default(), 0, &players, 7)
+    }
+
+    /// A choice from one type's list (the classic interface shows the first selected unit's) goes
+    /// to the selected units of that type alone: another Commander's list is its own (its first part
+    /// another), and an enemy's is no one's to give. Taking one out, likewise.
+    #[test]
+    fn an_enhancement_goes_to_the_units_of_the_type_whose_list_it_is() {
+        let mut sim = battle();
+        let (coma, comb) = (sim.types.id("COMA").unwrap(), sim.types.id("COMB").unwrap());
+        let a = sim.spawn_unit(coma, 0, FxVec3::from_ints(300, 60, 300), 0, true).unwrap();
+        let b = sim.spawn_unit(comb, 0, FxVec3::from_ints(400, 60, 300), 0, true).unwrap();
+        let theirs = sim.spawn_unit(coma, 1, FxVec3::from_ints(500, 60, 300), 0, true).unwrap();
+        let selection = [a, b, theirs];
+        let install = |index| Order::Enhance { index, remove: false };
+        // COMA's first (its suite): COMA's alone, not COMB's first (its radar) nor the enemy's.
+        assert_eq!(enhancement_orders(&sim, &selection, 0, coma, 0, false, false), vec![(a, vec![install(0)], false)]);
+        // COMB's first (its radar), queued: COMB's alone.
+        assert_eq!(enhancement_orders(&sim, &selection, 0, comb, 0, false, true), vec![(b, vec![install(0)], true)]);
+        // Both installed (a tick each): taking out COMA's first takes out COMA's suite alone.
+        sim.step(&[Command::Order { player: 0, units: vec![a, b], order: install(0), queue: false }]);
+        for _ in 0..5 {
+            sim.step(&[]);
+        }
+        assert_eq!((sim.unit(a).unwrap().enhancements.clone(), sim.unit(b).unwrap().enhancements.clone()), (vec![0], vec![0]));
+        assert_eq!(enhancement_orders(&sim, &selection, 0, coma, 0, true, false), vec![(a, vec![Order::Enhance { index: 0, remove: true }], false)]);
+        // Installed already: nothing more to give it.
+        assert!(enhancement_orders(&sim, &selection, 0, coma, 0, false, false).is_empty());
+    }
+}

@@ -1826,8 +1826,9 @@ impl Sim {
                     queue_order(&mut u.orders, order, queue, pos);
                 }
                 // An upgrade starts at once (queued, after the factory's other orders): it makes
-                // nothing meanwhile, its queue waiting.
-                Order::Upgrade(_) => {
+                // nothing meanwhile, its queue waiting. So does an enhancement (a removal is done at
+                // once).
+                Order::Upgrade(_) | Order::Enhance { .. } => {
                     if !queue {
                         u.orders.clear();
                     }
@@ -3062,7 +3063,10 @@ impl Sim {
         let (target_pos, target_job, needs_work) = (tu.pos, tu.build, self.needs_work(tu, tt));
         let follow = tt.radius + t.radius + Fx::from_int(40);
         if t.is_builder && self.allied(owner, tu.owner) && (self.tick + id.slot as u64).is_multiple_of(8) {
-            let assist = target_job.map(|j| j.target).filter(|&b| b != id && self.unit(b).is_some_and(|b| !b.dead && !b.is_complete() && b.carried_by.is_none() && self.allied(owner, b.owner)));
+            // (One working on itself, an upgrade or an enhancement, is helped with that: what it
+            // was building waits, as it does.)
+            let on_itself = tu.self_work.is_some() && tu.is_complete();
+            let assist = target_job.map(|j| j.target).filter(|&b| !on_itself && b != id && self.unit(b).is_some_and(|b| !b.dead && !b.is_complete() && b.carried_by.is_none() && self.allied(owner, b.owner)));
             let work = assist.or(needs_work.then_some(target));
             if let Some(w) = work {
                 let reachable = t.locomotion != Locomotion::Static || {
@@ -4511,6 +4515,20 @@ impl Sim {
             }
             return;
         }
+        // A guard's help with what the unit it guards was building (`update_guard_order`) gives
+        // way once that unit works on itself (an upgrade, an enhancement): the guard turns to help
+        // with that, and what it was building waits, as it does.
+        let guarded = self.unit(id).and_then(|u| match u.orders.get(1) {
+            Some(Order::Guard(g)) => Some(*g),
+            _ => None,
+        });
+        if guarded.is_some_and(|g| g != target && self.unit(g).is_some_and(|gu| gu.self_work.is_some() && gu.is_complete())) {
+            self.finish_build_job(id);
+            if let Some(u) = self.unit_mut(id) {
+                u.orders.pop_front();
+            }
+            return;
+        }
         let target_pos = tu.pos;
         let u = self.unit(id).unwrap();
         let reach = t.build_distance + t.radius;
@@ -4785,8 +4803,9 @@ impl Sim {
         let Some(f) = self.unit(id) else { return };
         let current = f.build;
         let has_queue = !f.factory_queue.is_empty();
-        // Upgrading in place it makes nothing: the unit on its pad and its queue wait.
-        if matches!(f.orders.front(), Some(Order::Upgrade(_))) {
+        // Upgrading in place, or installing an enhancement, it makes nothing: the unit on its pad
+        // and its queue wait.
+        if matches!(f.orders.front(), Some(Order::Upgrade(_) | Order::Enhance { remove: false, .. })) {
             return;
         }
 

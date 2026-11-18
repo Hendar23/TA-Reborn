@@ -1119,8 +1119,8 @@ impl Hud {
             }
             // An enhancement chosen in the ENHANCE tab: for each of the selection that may.
             match self.enhance_click.take() {
-                Some(super::enhance::EnhanceClick::Install { index, queue }) => game.enhance_selection(index, false, queue),
-                Some(super::enhance::EnhanceClick::Remove { index }) => game.enhance_selection(index, true, false),
+                Some(super::enhance::EnhanceClick::Install { index, queue }) => game.enhance_selection(ty.id, index, false, queue),
+                Some(super::enhance::EnhanceClick::Remove { index }) => game.enhance_selection(ty.id, index, true, false),
                 None => {}
             }
         }

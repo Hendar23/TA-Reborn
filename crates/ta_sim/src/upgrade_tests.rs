@@ -223,6 +223,34 @@ fn a_factory_makes_nothing_while_it_upgrades_and_carries_its_work_over() {
     assert!(sim.unit(frame).unwrap().is_complete(), "finished by the new one");
 }
 
+/// Builders guarding a factory that upgrades put their power into the upgrade, not into the unit on
+/// its pad, which waits for the factory as it does.
+#[test]
+fn guards_help_a_factorys_upgrade_not_the_unit_on_its_pad() {
+    let mut sim = base();
+    let lab = put(&mut sim, "LAB1", 600, 600);
+    sim.unit_mut(lab).unwrap().in_build_stance = true;
+    let tank = sim.types.id("TANK").unwrap();
+    sim.step(&[Command::Produce { player: 0, factory: lab, type_id: tank, count: 3 }]);
+    for _ in 0..60 {
+        sim.step(&[]);
+    }
+    let frame = sim.unit(lab).unwrap().build.map(|b| b.target).expect("a tank on the pad");
+    let builder = put(&mut sim, "BUILDER", 600, 700);
+    sim.step(&[Command::Order { player: 0, units: vec![builder], order: Order::Guard(lab), queue: false }]);
+    upgrade(&mut sim, lab, "LAB2", false);
+    let held = sim.unit(frame).unwrap().build_work;
+    let start = sim.unit(lab).unwrap().self_work.unwrap().work;
+    let ticks = 120;
+    for _ in 0..ticks {
+        sim.step(&[]);
+    }
+    assert_eq!(sim.unit(frame).unwrap().build_work, held, "the unit on the pad waits, guards and all");
+    let done = sim.unit(lab).unwrap().self_work.expect("still upgrading").work - start;
+    let alone = ticks * sim.types.by_name("LAB1").unwrap().work_rate;
+    assert!(done > alone * 3 / 2, "the guard's power in the upgrade: {done} against {alone} alone");
+}
+
 /// Builders helping (guarding it, or told to repair it) lend their build power to the upgrade,
 /// their side paying for their share.
 #[test]

@@ -1122,8 +1122,9 @@ sections is the order the menus show them in.
   place of the other's).
 - **`BuildCostMetal`, `BuildCostEnergy`, `BuildTime`**: its price and work, as a unit's. The unit
   stands and builds it on itself with its own build power, as an upgrade in place is built:
-  paid as construction pays, slowed by the economy, helped by builders guarding or repairing it;
-  called off by Stop or another order, its metal comes back.
+  paid as construction pays, slowed by the economy, helped by builders guarding or repairing it
+  (a factory's guards turn from the unit on its pad to it); called off by Stop or another order,
+  its metal comes back. A factory with enhancements makes nothing while it installs one.
 - **What it changes** while installed, added to the unit's own: `MaxDamage` (its health rises by as
   much), `HealRate` (hit points a second it mends), `WorkerTime` (build power), `SightDistance`,
   `RadarDistance`, `SonarDistance`, `BuildOptions` (units added to its menu, and to what the
@@ -1131,7 +1132,8 @@ sections is the order the menus show them in.
   cloak it may switch on), `Stealth=1` (radar does not show it).
 - **`Weapon1`** to **`Weapon8`**: the weapon a slot fires while it is installed, in place of the
   unit's own there; give the unit's file an empty slot (no `WeaponN`) for a weapon an
-  enhancement adds.
+  enhancement adds. A launcher that stockpiles its missiles, swapped for another or taken out,
+  loses the missiles built and the one under way.
 - **`Name`**, **`Description`** and **`Picture`** (`unitpics/<Picture>.pcx`, shown as a unit's) for
   the menus.
 

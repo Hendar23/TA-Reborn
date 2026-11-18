@@ -3769,41 +3769,14 @@ impl Game {
         }
     }
 
-    /// Installs enhancement `index` (`remove`: takes it out) on each unit of the selection whose
-    /// type has it and that may now (installed ones are left alone; one whose prerequisite is
-    /// missing gets the prerequisite first, queued before it, or waits for it where it is on its
-    /// way). `queue`: after its other orders.
-    pub fn enhance_selection(&mut self, index: u16, remove: bool, queue: bool) {
-        let mut orders: Vec<(UnitId, Vec<Order>, bool)> = Vec::new();
-        for u in self.selection.iter().filter_map(|&id| self.sim.unit(id)) {
-            if u.owner != self.local_player || self.spectator {
-                continue;
-            }
-            let ty = self.sim.unit_type(u);
-            let Some(e) = ty.enhancements.get(index as usize) else { continue };
-            if remove {
-                if u.enhancements.contains(&index) {
-                    orders.push((u.id, vec![Order::Enhance { index, remove: true }], queue));
-                }
-                continue;
-            }
-            let mut list = Vec::new();
-            let mut after = queue;
-            match self.sim.enhancement_fit(u, index) {
-                ta_sim::EnhancementFit::Free { .. } => {}
-                ta_sim::EnhancementFit::Needs(p) if !u.enhancements.contains(&p) && e.prerequisite == Some(p) => {
-                    // (Its prerequisite first; where that is on its way already, after it.)
-                    if u.orders.iter().any(|o| *o == Order::Enhance { index: p, remove: false }) {
-                        after = true;
-                    } else {
-                        list.push(Order::Enhance { index: p, remove: false });
-                    }
-                }
-                _ => continue,
-            }
-            list.push(Order::Enhance { index, remove: false });
-            orders.push((u.id, list, after));
+    /// Installs enhancement `index` of unit type `type_id` (`remove`: takes it out) on each unit
+    /// of the selection of that type that may now (`enhancement_orders`: the type's list is the
+    /// one shown, and another type's is its own). `queue`: after its other orders.
+    pub fn enhance_selection(&mut self, type_id: usize, index: u16, remove: bool, queue: bool) {
+        if self.spectator {
+            return;
         }
+        let orders = enhancement_orders(&self.sim, &self.selection, self.local_player, type_id, index, remove, queue);
         if orders.is_empty() {
             return;
         }
@@ -4784,6 +4757,46 @@ fn ghost_pose(poses: &mut rustc_hash::FxHashMap<usize, Vec<Mat4>>, t: &ta_sim::U
     out.extend(pose.iter().map(|m| if *m == Mat4::ZERO { Mat4::ZERO } else { root * *m }));
 }
 
+
+/// The orders installing enhancement `index` of unit type `type_id` (`remove`: taking it out)
+/// gives each of `units` that is `player`'s and of that type, and may: a unit of another type,
+/// whose list is its own (a mixed selection's other Commanders), is left alone, as is one with it
+/// installed already; one whose prerequisite is missing gets that first, queued before it, or
+/// waits for it where it is on its way. Each with whether it goes after its other orders
+/// (`queue`).
+pub(crate) fn enhancement_orders(sim: &Sim, units: &[UnitId], player: u8, type_id: usize, index: u16, remove: bool, queue: bool) -> Vec<(UnitId, Vec<Order>, bool)> {
+    let mut orders: Vec<(UnitId, Vec<Order>, bool)> = Vec::new();
+    for u in units.iter().filter_map(|&id| sim.unit(id)) {
+        if u.owner != player || u.type_id != type_id {
+            continue;
+        }
+        let ty = sim.unit_type(u);
+        let Some(e) = ty.enhancements.get(index as usize) else { continue };
+        if remove {
+            if u.enhancements.contains(&index) {
+                orders.push((u.id, vec![Order::Enhance { index, remove: true }], queue));
+            }
+            continue;
+        }
+        let mut list = Vec::new();
+        let mut after = queue;
+        match sim.enhancement_fit(u, index) {
+            ta_sim::EnhancementFit::Free { .. } => {}
+            ta_sim::EnhancementFit::Needs(p) if !u.enhancements.contains(&p) && e.prerequisite == Some(p) => {
+                // (Its prerequisite first; where that is on its way already, after it.)
+                if u.orders.iter().any(|o| *o == Order::Enhance { index: p, remove: false }) {
+                    after = true;
+                } else {
+                    list.push(Order::Enhance { index: p, remove: false });
+                }
+            }
+            _ => continue,
+        }
+        list.push(Order::Enhance { index, remove: false });
+        orders.push((u.id, list, after));
+    }
+    orders
+}
 
 /// Why the simulation refused an order (`SimEvent::OrderFailed`), for the translations: shown
 /// through `t`.

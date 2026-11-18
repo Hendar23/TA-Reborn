@@ -151,6 +151,11 @@ impl Sim {
         list.sort_unstable();
         let boost = boost(t, &list);
         let slots_before = *u.weapon_slots(t);
+        // The weapon that builds its missiles (`stockpile`), before and after: another one (or
+        // none) does not fire those built for this one, nor go on with the one under way.
+        let slots_after = boost.as_ref().map_or(t.weapons, |b| b.weapons);
+        let launcher = |slots: &[Option<usize>; MAX_WEAPONS]| slots.iter().flatten().copied().find(|&w| self.weapon_types.get(w).def.stockpile);
+        let restock = launcher(&slots_before) != launcher(&slots_after);
         if let Some(u) = self.unit_mut(id) {
             u.enhancements = list;
             u.boost = boost.map(Box::new);
@@ -160,7 +165,6 @@ impl Sim {
             }
             u.health = u.health.min(after);
             // A slot whose weapon changed starts afresh: no target, aim or reload of the other's.
-            let slots_after = *u.weapon_slots(t);
             for slot in 0..MAX_WEAPONS {
                 if slots_after[slot] != slots_before[slot] {
                     u.weapons[slot] = Default::default();
@@ -172,6 +176,11 @@ impl Sim {
             // (A cloak it no longer has is off.)
             if u.cloak_costs(t).is_none() {
                 u.cloak_on = false;
+            }
+            if restock {
+                u.stockpile = 0;
+                u.stockpile_work = 0;
+                u.stockpile_progress = Fx::ZERO;
             }
         }
         if t.callins.set_enhancement {

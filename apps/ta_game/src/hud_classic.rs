@@ -645,6 +645,8 @@ impl ClassicHud {
             return;
         };
         let ty = game.sim.unit_type(u);
+        // (Its type's list: a choice goes to the selected units of that type alone.)
+        let type_id = ty.id;
         let mut chosen = None;
         let mut close = false;
         let at = env.ta.pos(SIDE_W + 4.0, 128.0 + 40.0);
@@ -656,8 +658,8 @@ impl ClassicHud {
             });
         });
         match chosen {
-            Some(crate::hud::enhance::EnhanceClick::Install { index, queue }) => game.enhance_selection(index, false, queue),
-            Some(crate::hud::enhance::EnhanceClick::Remove { index }) => game.enhance_selection(index, true, false),
+            Some(crate::hud::enhance::EnhanceClick::Install { index, queue }) => game.enhance_selection(type_id, index, false, queue),
+            Some(crate::hud::enhance::EnhanceClick::Remove { index }) => game.enhance_selection(type_id, index, true, false),
             None => {}
         }
         if close {

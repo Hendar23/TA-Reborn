@@ -295,3 +295,94 @@ fn enhancements_are_the_same_on_every_computer() {
     without.unit_mut(id).unwrap().enhancements.clear();
     assert_ne!(without.checksum(), sim.checksum(), "its enhancements in the checksum");
 }
+
+/// A factory with enhancements (a mod's) installs them, and takes them out, as any unit does: its
+/// orders go through to it, and it makes nothing while it installs one (the unit on its pad waits,
+/// and goes on after).
+#[test]
+fn a_factory_installs_its_enhancements_and_makes_nothing_meanwhile() {
+    let data = data_of(&[
+        unit("LAB", "Builder=1; WorkerTime=30; TEDClass=PLANT; FootprintX=4; FootprintZ=4; BuildTime=100; YardMap=oooooooooooooooo; \
+            [ENHANCEMENTS] { [FAST] { Slot=Core; BuildCostMetal=30; BuildTime=30; WorkerTime=30; } }"),
+        unit("TANK", "CanMove=1; MaxVelocity=1; Acceleration=0.1; BuildTime=300; BuildCostMetal=60; FootprintX=1; FootprintZ=1;"),
+    ]);
+    let data = with_menu(data, "LAB", &["TANK"]);
+    let mut sim = sim_of(data, 2);
+    for p in &mut sim.players {
+        p.endless = true;
+    }
+    sim.set_starting_resources(0, Fx::from_int(100_000), Fx::from_int(1_000_000));
+    let lab = sim.spawn_unit(sim.types.id("LAB").unwrap(), 0, FxVec3::from_ints(600, 60, 600), 16384, true).unwrap();
+    // (No script here to ready it.)
+    sim.unit_mut(lab).unwrap().in_build_stance = true;
+    let tank = sim.types.id("TANK").unwrap();
+    sim.step(&[Command::Produce { player: 0, factory: lab, type_id: tank, count: 2 }]);
+    for _ in 0..60 {
+        sim.step(&[]);
+    }
+    let frame = sim.unit(lab).unwrap().build.map(|b| b.target).expect("a tank on the pad");
+    sim.step(&[Command::Order { player: 0, units: vec![lab], order: Order::Enhance { index: 0, remove: false }, queue: false }]);
+    let held = sim.unit(frame).unwrap().build_work;
+    assert!(sim.unit(lab).unwrap().self_work.is_some(), "the order went through: under way");
+    // FAST's 30 of build time at the lab's 30 a second: a second.
+    let mut installed = false;
+    for _ in 0..60 {
+        sim.step(&[]);
+        if sim.unit(lab).unwrap().enhancements == [0] {
+            installed = true;
+            break;
+        }
+        assert_eq!(sim.unit(frame).unwrap().build_work, held, "the unit on the pad waits");
+    }
+    assert!(installed, "installed");
+    let t = sim.types.by_name("LAB").unwrap().clone();
+    assert_eq!(sim.unit(lab).unwrap().work_rate(&t), Fx::from_int(60).0 as u64);
+    for _ in 0..30 {
+        sim.step(&[]);
+    }
+    assert!(sim.unit(frame).unwrap().build_work > held, "and goes on after");
+    sim.step(&[Command::Order { player: 0, units: vec![lab], order: Order::Enhance { index: 0, remove: true }, queue: false }]);
+    sim.step(&[]);
+    assert!(sim.unit(lab).unwrap().enhancements.is_empty(), "taken out");
+}
+
+/// A missile launcher swapped by an enhancement for another (the UEF's tactical launcher for its
+/// Billy), or taken out, takes the missiles built for it and the one under way with it: they were
+/// paid for as the other's. An enhancement that leaves the launcher as it was leaves them.
+#[test]
+fn a_launcher_swapped_or_taken_out_takes_its_missiles_with_it() {
+    let acu = "Builder=1; WorkerTime=100; CanMove=1; MaxVelocity=1; FootprintX=2; FootprintZ=2; Weapon1=GUN; \
+        [ENHANCEMENTS] { [TML] { Slot=Back; BuildCostMetal=1; BuildTime=1; Weapon2=TML; } \
+        [BILLY] { Slot=Back; Prerequisite=TML; BuildCostMetal=1; BuildTime=1; Weapon2=BILLY; } \
+        [SENSORS] { Slot=Head; BuildCostMetal=1; BuildTime=1; RadarDistance=500; } }";
+    let data = data_of(&[
+        unit("ACU", acu),
+        weapon_file("GUN", "range=300;"),
+        weapon_file("TML", "range=800; stockpile=1; commandfire=1;"),
+        weapon_file("BILLY", "range=900; stockpile=1; commandfire=1;"),
+    ]);
+    let mut sim = sim_of(data, 2);
+    let a = sim.spawn_unit(sim.types.id("ACU").unwrap(), 0, FxVec3::from_ints(400, 60, 400), 16384, true).unwrap();
+    let index = |sim: &Sim, id: &str| sim.types.by_name("ACU").unwrap().def.enhancements.iter().position(|e| e.id == id).unwrap() as u16;
+    let (tml, billy, sensors) = (index(&sim, "TML"), index(&sim, "BILLY"), index(&sim, "SENSORS"));
+    let stock = |sim: &mut Sim, n: u32| {
+        let u = sim.unit_mut(a).unwrap();
+        u.stockpile = n;
+        u.stockpile_work = 12_345;
+        u.stockpile_progress = Fx::from_ratio(1, 2);
+    };
+    let held = |sim: &Sim| sim.unit(a).map(|u| (u.stockpile, u.stockpile_work, u.stockpile_progress)).unwrap();
+    sim.set_enhancement(a, tml, true);
+    stock(&mut sim, 2);
+    // Another part, the launcher as it was: its missiles kept.
+    sim.set_enhancement(a, sensors, true);
+    assert_eq!(held(&sim), (2, 12_345, Fx::from_ratio(1, 2)));
+    // The Billy in the launcher's place: none of the launcher's missiles are its.
+    sim.set_enhancement(a, billy, true);
+    assert_eq!(sim.unit(a).unwrap().enhancements.iter().filter(|&&i| i == tml).count(), 0, "in its slot's place");
+    assert_eq!(held(&sim), (0, 0, Fx::ZERO), "swapped: the missiles and the one under way gone");
+    // Taken out: its missiles go with it.
+    stock(&mut sim, 1);
+    sim.set_enhancement(a, billy, false);
+    assert_eq!(held(&sim), (0, 0, Fx::ZERO), "taken out: its missiles gone");
+}
