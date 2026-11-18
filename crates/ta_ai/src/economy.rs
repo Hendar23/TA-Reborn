@@ -1183,6 +1183,12 @@ impl SkirmishAi {
     pub(crate) fn more_adv_factory_task(&mut self, sim: &Sim, s: &Survey, b: &Unit, opts: &[usize], plan: &Plan, more: bool) -> Option<Task> {
         let cands: Vec<usize> = opts.iter().copied().filter(|&o| self.advanced_factory(sim, o)).collect();
         let toward = self.toward_experimentals(sim, s);
+        // (Where a factory of ours upgrades into the one wanted, it is upgraded instead:
+        // `run_upgrades_in_place`. Built new only where none does.)
+        let upgrades_into = |want: &dyn Fn(usize) -> bool| s.factories.iter().any(|f| sim.next_upgrade(f).is_some_and(|to| want(to)));
+        if toward && upgrades_into(&|to| self.leads_to_experimentals(sim, to)) {
+            return None;
+        }
         if toward {
             let leading: Vec<usize> = cands.iter().copied().filter(|&f| self.leads_to_experimentals(sim, f)).collect();
             if !leading.is_empty() {
@@ -1193,7 +1199,7 @@ impl SkirmishAi {
                 return None;
             }
         }
-        if !more {
+        if !more || upgrades_into(&|to| self.advanced_factory(sim, to)) {
             return None;
         }
         self.tech_factory_task(sim, s, b, cands, plan)

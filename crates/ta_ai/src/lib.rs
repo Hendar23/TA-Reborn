@@ -251,6 +251,13 @@ struct Params {
     tower_cap: usize,
     sturdy_towers: bool,
     towers_first: bool,
+    /// Upgrades in place and enhancements (`upgrade.rs`, `enhance.rs`): the minute extractors
+    /// start upgrading, and whether we are eager for tech (a Tech persona): the engineering suites
+    /// past the first and a gun upgrade as soon as the tech economy allows, rather than once our
+    /// factories are of the suite's tier. (The factories' climb follows `tech_minute` and
+    /// `tech_income`.)
+    mex_upgrade_minute: u64,
+    tech_eager: bool,
     /// Wreckage closing our units' way is cleared (`clear.rs`; off for experiments).
     clear_way: bool,
 }
@@ -305,6 +312,8 @@ impl Params {
                 tower_cap: 8,
                 sturdy_towers: false,
                 towers_first: false,
+                mex_upgrade_minute: 4,
+                tech_eager: false,
                 clear_way: true,
             },
             Difficulty::Normal => Params {
@@ -354,6 +363,8 @@ impl Params {
                 tower_cap: 8,
                 sturdy_towers: false,
                 towers_first: false,
+                mex_upgrade_minute: 4,
+                tech_eager: false,
                 clear_way: true,
             },
             Difficulty::Hard => Params {
@@ -403,6 +414,8 @@ impl Params {
                 tower_cap: 8,
                 sturdy_towers: false,
                 towers_first: false,
+                mex_upgrade_minute: 4,
+                tech_eager: false,
                 clear_way: true,
             },
         }
@@ -426,6 +439,7 @@ impl Params {
                 self.max_factories += 1;
                 self.army_ratio = self.army_ratio.max(90);
                 self.tech_minute += 6;
+                self.mex_upgrade_minute += 6;
                 self.top_tier /= 3;
                 self.extra_towers = 0;
                 self.nuke_minute = later(self.nuke_minute, 10);
@@ -459,6 +473,8 @@ impl Params {
                 // tier's units, experimentals and missiles; later, bigger waves.
                 self.tech_minute = self.tech_minute.saturating_sub(3).max(4);
                 self.tech_income = (self.tech_income - 2).max(4);
+                self.mex_upgrade_minute = 3;
+                self.tech_eager = true;
                 self.adv_builders += 2;
                 self.top_tier = (self.top_tier + 30).min(95);
                 self.experimentals += (!easy) as usize;
@@ -914,6 +930,7 @@ impl SkirmishAi {
             "power_plants" => p.power_plants = n,
             "extra_towers" => p.extra_towers = n,
             "tower_cap" => p.tower_cap = n,
+            "mex_upgrade_minute" => p.mex_upgrade_minute = value.max(0) as u64,
             "transports" => p.transports = n,
             "air_doctrine" => p.air_doctrine = value != 0,
             "anti_minute" => p.anti_minute = value.max(0) as u64,
@@ -985,7 +1002,8 @@ impl SkirmishAi {
         info::mark_experimental_tree(sim, &mut info);
         // Whether an experimental (or a factory of them) is in our side's tree, from the builders
         // we start with, a few steps down (a factory, its constructor, an advanced factory, its
-        // constructor...).
+        // constructor...; a factory's upgrade, and what an engineering suite adds to a menu:
+        // Forged Alliance's tiers are climbed so).
         let experimentals_reachable = {
             let mut seen = vec![false; info.len()];
             let mut frontier: Vec<usize> = sim.units().filter(|u| u.owner == player && sim.unit_type(u).is_builder).map(|u| u.type_id).collect();
@@ -997,7 +1015,9 @@ impl SkirmishAi {
                         continue;
                     }
                     found |= info[t].experimental || info[t].experimental_factory;
-                    next.extend(sim.types.get(t).ai_build_options.iter().copied().filter(|&o| sim.is_allowed(o)));
+                    let ty = sim.types.get(t);
+                    let suites = ty.enhancements.iter().flat_map(|e| e.build_options.iter().copied());
+                    next.extend(ty.ai_build_options.iter().copied().chain(ty.upgrades_to).chain(suites).filter(|&o| sim.is_allowed(o)));
                 }
                 frontier = next;
             }

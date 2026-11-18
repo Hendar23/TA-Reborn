@@ -1623,7 +1623,9 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   tiers and projects late; Turtle puts up towers before its constructors help at the factories
   (more of them, one every three minutes, the strongest the budget buys), heavy defences,
   anti-nuclear cover and long-range guns early, and attacks late, in force; Tech climbs the tiers
-  and takes the experimentals and silos sooner; Air makes its next two factories air plants and
+  (its factories' upgrades with them), upgrades its extractors and takes its commander's deeper
+  engineering suites and gun as soon as the tech economy allows, and the experimentals and silos
+  sooner (Rush all of them later, with its tech minute); Air makes its next two factories air plants and
   builds more planes; Naval its shipyard first, where the sea reaches the enemy, and more ships
   (on dry land it plays as Balanced). Soak (`tests/skirmish.rs`, `TA_TEST_PERSONA`, Normal, 25
   minutes on Painted Desert against Balanced): Rush's army first at an enemy start at minute 7
@@ -1631,7 +1633,7 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   11 armed aircraft (none), Tech a silo at 24 and its army thin. The setup carries each computer
   player's difficulty and persona
   (`setup::Controller::Ai`, saved games and replays from record version 47; older ones play
-  Balanced) and a lobby's seat its persona (`ta_net::SlotKind::Ai`, protocol 109); missions,
+  Balanced) and a lobby's seat its persona (`ta_net::SlotKind::Ai`, protocol 110); missions,
   Conquest and scenarios keep their own settings, Balanced. The computer players' voices in the
   chat (`chatter.rs`: their names, tempers and taunts, `TA_RIVALS`) are a side of their own and
   do not follow the persona.
@@ -1649,8 +1651,11 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   there (TA's Core: the Gantry needs the advanced construction kbot's lab), that factory and
   constructor are made first (`toward_experimentals`). Factories lean to the top tier as the
   metal income grows (`top_tier_share`, a share of their orders: none on Easy), the army's
-  cap grows a quarter for a player at tech 2 or more, and more advanced factories go up as the
-  economy grows (`adv_factories_wanted`).
+  cap grows a quarter for a player at tech 2 or more, and more advanced factories come as the
+  economy grows (`adv_factories_wanted`): upgraded where a factory of ours upgrades into one
+  (`run_upgrades_in_place`, which also takes first the upgrade into a factory leading to
+  experimentals), built where none does. The way to experimentals (`experimentals_reachable`)
+  follows a factory's upgrades and an engineering suite's menu as well as what builds what.
 * Clearing the way (`clear.rs`): a unit whose route stops short of where it was sent though the
   ground leads there (`Unit::path_goal` far from the move's goal), or that has stood stalled on
   its way, has its way searched (`Sim::way_blockers`, `ta_sim`'s `sim/blockers.rs`: an A* back
@@ -1684,13 +1689,17 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   a factory of a higher tier (`factory_tier`), the tiers are climbed by upgrading it, one factory
   at a time, on the economy the first advanced factory waits for (`builder_task` then builds no
   factory of the next tier: `climbs_by_upgrading`), the land factory first; with metal piling up,
-  more of them; extractors upgrade into better ones (more `extracts_metal`), the safe ones nearest
+  or fewer advanced factories than the economy wants (`adv_factories_wanted`), more of them (toward
+  experimentals, first one that upgrades into a factory leading there); extractors (from
+  `mex_upgrade_minute`: the persona's, Tech's sooner, Rush's later) upgrade into better ones (more
+  `extracts_metal`), the safe ones nearest
   home first, a few at a time as the income allows and while power holds (the reclaim and rebuild of
   `upgrade_task` leaves those alone). Builders that help factories help one upgrading
   (`factory_to_help`). With no unit of ours that upgrades (TA's games), nothing of it runs.
 * Enhancements (`enhance.rs`, `run_enhancements`): the commander, near home and with no enemy
   close, installs an engineering suite once the economy reaches the tech climb's (the next suite
-  once a factory of tech 2 stands, or metal piles up), a gun upgrade some minutes into the game
+  once a factory of tech 2 stands, or metal piles up; a Tech persona's at once, `tech_eager`), a
+  gun upgrade some minutes into the game
   and more armour when rich, one at a time, only into an empty slot or over its prerequisite, when
   it can afford it. Its builders' menus are their own (`Unit::ai_build_options`), the suites' units
   among them. With no unit of ours with enhancements, nothing of it runs.

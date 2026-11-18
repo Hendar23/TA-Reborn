@@ -14,7 +14,9 @@ use super::*;
 /// The units: an advanced constructor (BUILD2) that puts up extractors, power, a mixed factory
 /// (FACT2: TANK1 of the first tier, cheap and good for its price, TANK2 of the second), a nuclear
 /// silo, an anti-nuclear defence, a long-range gun, a heavy tower and a field-built experimental
-/// (BIGBOT); a flat map, two players, `minutes` into the game on a grown economy.
+/// (BIGBOT); a constructor of the first tier (BUILD1) whose factory (FACT1) upgrades into FACT2,
+/// which it can also put up new; a flat map, two players, `minutes` into the game on a grown
+/// economy.
 fn tech_fixture(minutes: u64) -> Sim {
     static NEXT: AtomicU32 = AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!("ta-ai-projects-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
@@ -22,6 +24,8 @@ fn tech_fixture(minutes: u64) -> Sim {
     std::fs::create_dir_all(dir.join("weapons")).unwrap();
     for (name, keys) in [
         ("BUILD2", "Builder=1; WorkerTime=300; BuildDistance=200; CanMove=1; MaxVelocity=2; Category=LEVEL2;"),
+        ("BUILD1", "Builder=1; WorkerTime=100; BuildDistance=200; CanMove=1; MaxVelocity=2; Category=LEVEL1;"),
+        ("FACT1", "Builder=1; WorkerTime=60; FootprintX=4; FootprintZ=4; BuildTime=100; Category=LEVEL1; UpgradesTo=FACT2;"),
         ("FACT2", "Builder=1; WorkerTime=60; FootprintX=4; FootprintZ=4; BuildTime=100; Category=LEVEL2;"),
         ("EXTRACTOR", "ExtractsMetal=1; FootprintX=2; FootprintZ=2;"),
         ("POWER", "EnergyMake=20; FootprintX=2; FootprintZ=2;"),
@@ -52,6 +56,10 @@ fn tech_fixture(minutes: u64) -> Sim {
     data.units[builder].build_options = ["EXTRACTOR", "POWER", "FACT2", "SILO", "ANTI", "BIGGUN", "HEAVY", "BIGBOT"].map(String::from).to_vec();
     let factory = data.unit_id("FACT2").unwrap();
     data.units[factory].build_options = ["BUILD2", "TANK1", "TANK2"].map(String::from).to_vec();
+    let builder = data.unit_id("BUILD1").unwrap();
+    data.units[builder].build_options = ["EXTRACTOR", "POWER", "FACT1", "FACT2"].map(String::from).to_vec();
+    let factory = data.unit_id("FACT1").unwrap();
+    data.units[factory].build_options = ["BUILD1", "TANK1"].map(String::from).to_vec();
     let data = Arc::new(data);
     let types = Arc::new(UnitTypes::compile(&data, &|_| None));
     let cells = 160u32;
@@ -215,6 +223,9 @@ fn personas_shape_the_tuning_and_easy_stays_gentle() {
     assert!(turtle.wave_base > balanced.wave_base && turtle.extra_towers > balanced.extra_towers && turtle.heavy_towers > balanced.heavy_towers && turtle.long_guns > balanced.long_guns);
     assert!(turtle.tower_pace < balanced.tower_pace && turtle.tower_cap > balanced.tower_cap && turtle.sturdy_towers && turtle.towers_first && !balanced.towers_first);
     assert!(tech.tech_minute < balanced.tech_minute && tech.top_tier > balanced.top_tier && tech.experimentals > balanced.experimentals);
+    // Upgrades in place and the commander's suites: Tech's sooner, Rush's later.
+    assert!(tech.tech_eager && !balanced.tech_eager && !rush.tech_eager);
+    assert!(tech.mex_upgrade_minute < balanced.mex_upgrade_minute && rush.mex_upgrade_minute > balanced.mex_upgrade_minute && rush.tech_minute > balanced.tech_minute);
     assert!(tuned(Difficulty::Normal, Persona::Air).air_first && tuned(Difficulty::Normal, Persona::Naval).naval_first);
     for p in Persona::ALL {
         let easy = tuned(Difficulty::Easy, p);
@@ -229,4 +240,41 @@ fn personas_shape_the_tuning_and_easy_stays_gentle() {
         assert_eq!(Persona::from_key(p.key()), Some(p));
         assert_eq!(Persona::from_code(p.code()), Some(p));
     }
+}
+
+/// More advanced factories as the economy grows come by upgrading where a factory of ours
+/// upgrades into one (as the Supreme Commander factions' do, which nothing builds outright), not
+/// by building another, though the constructor could; built where nothing upgrades into one.
+#[test]
+fn more_advanced_factories_come_by_upgrading_where_a_factory_upgrades() {
+    let mut sim = tech_fixture(30);
+    // (An income for two advanced factories, one standing.)
+    sim.players[0].economy.metal_income = fx(60);
+    put(&mut sim, "FACT2", 0, 400, 400);
+    let lab = put(&mut sim, "FACT1", 0, 700, 400);
+    let builder = put(&mut sim, "BUILD1", 0, 550, 600);
+    let mut ai = SkirmishAi::new(0, &sim, Difficulty::Normal);
+    let s = ai.survey(&sim);
+    assert_eq!((s.adv_factories, ai.adv_factories_wanted(&s)), (1, 2), "one more advanced factory wanted");
+    // The constructor builds none...
+    let (mut plan, _) = ai.start_builders(&sim, &s, &mut Vec::new());
+    let b = sim.unit(builder).unwrap();
+    let opts = sim.unit_type(b).ai_build_options.clone();
+    assert!(ai.more_adv_factory_task(&sim, &s, b, &opts, &plan, true).is_none(), "not built: FACT1 upgrades into it");
+    plan.tech = false;
+    // ...the first-tier factory is upgraded.
+    let mut out = Vec::new();
+    ai.run_upgrades_in_place(&sim, &s, &mut out);
+    assert!(out.iter().any(|c| matches!(c, Command::Order { units, order: Order::Upgrade(to), .. } if units == &vec![lab] && *to == id(&sim, "FACT2"))), "{out:?}");
+    // Where nothing upgrades into one, it is built as before.
+    let mut sim = tech_fixture(30);
+    sim.players[0].economy.metal_income = fx(60);
+    put(&mut sim, "FACT2", 0, 400, 400);
+    let builder = put(&mut sim, "BUILD1", 0, 550, 600);
+    let mut ai = SkirmishAi::new(0, &sim, Difficulty::Normal);
+    let s = ai.survey(&sim);
+    let (plan, _) = ai.start_builders(&sim, &s, &mut Vec::new());
+    let b = sim.unit(builder).unwrap();
+    let opts = sim.unit_type(b).ai_build_options.clone();
+    assert!(matches!(ai.more_adv_factory_task(&sim, &s, b, &opts, &plan, true), Some(Task::Build(t, _)) if t == id(&sim, "FACT2")));
 }
