@@ -99,10 +99,12 @@ pub use transport::{Client, Host, HostEvent};
 /// upgraded in place, and the computer players' upgrades; `Order::Enhance`, enhancements installed
 /// and taken out, and the computer players' enhancements; 110: a computer player's seat carries its
 /// persona (`SlotKind::Ai::persona`), and the computer players of simulation 105 play by it, clear
-/// wreckage from their ways and put up the tech tree's projects.)
+/// wreckage from their ways and put up the tech tree's projects; 111: the computer players of
+/// simulation 106, strategic and tactical silos apart, experimentals helped and saved for, tech 3
+/// leaned to.)
 /// [`Msg::Hello`] and [`Refusal::Version`] keep their layout, so builds of other protocols are
 /// still told why they cannot meet.
-pub const PROTOCOL: u32 = 110;
+pub const PROTOCOL: u32 = 111;
 pub const DEFAULT_PORT: u16 = 7890;
 /// Ticks between state hash reports (which double as progress reports).
 pub const HASH_INTERVAL: u64 = 15;

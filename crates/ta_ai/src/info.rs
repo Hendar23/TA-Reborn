@@ -15,7 +15,8 @@ pub(crate) enum Role {
     /// Static weapon that can only engage aircraft.
     AntiAir,
     /// Missile launcher (stockpiled, command-fired, interceptable): TA's strategic silos, a mod's
-    /// tactical launchers too (`TypeInfo::silo_classes`).
+    /// tactical launchers too (`TypeInfo::silo_classes`: [`TypeInfo::strategic_silo`],
+    /// [`TypeInfo::tactical_silo`]).
     Silo,
     /// Anti-missile defence against what strategic silos fire (an interceptor of the strategic
     /// class: `ta_sim::STRATEGIC_CLASS`).
@@ -80,8 +81,13 @@ pub(crate) struct TypeInfo {
     pub coverage: Option<Fx>,
     pub cover_classes: u32,
     pub cover_unstocked: bool,
-    /// A silo's missiles' classes (`WeaponDef::targetable_classes`; 0 for any other unit).
+    /// A silo's missiles' classes (`WeaponDef::targetable_classes`; 0 for any other unit), and
+    /// how far they reach.
     pub silo_classes: u32,
+    pub missile_range: i64,
+    /// Energy per second its stockpiled missiles take while it builds them as fast as it can
+    /// (a silo's, an anti-missile defence's: TA's nuke 1,000, Forged Alliance's 4,500).
+    pub stock_energy: i64,
     pub worker: Fx,
     pub speed: Fx,
     /// Transports: how many units fit aboard (0: not a transport).
@@ -103,6 +109,29 @@ pub(crate) struct TypeInfo {
     pub builds_experimentals: bool,
     pub leads_to_experimentals: bool,
     pub opens_way_to_experimentals: bool,
+    /// A constructor whose options hold a strategic silo (`strategic_silo`): Forged Alliance's
+    /// tech 3 engineers and support commanders, TA's advanced constructors.
+    pub builds_strategic: bool,
+}
+
+impl TypeInfo {
+    /// A launcher of strategic missiles (the class anti-nuclear defences take: TA's every silo, its
+    /// nukes and the EMP and tactical missiles it fires, Forged Alliance's strategic launchers).
+    pub fn strategic_silo(&self) -> bool {
+        self.role == Role::Silo && self.silo_classes & ta_sim::STRATEGIC_CLASS != 0
+    }
+
+    /// A launcher of missiles of other classes alone (Forged Alliance's tactical launchers, which
+    /// its tactical missile defences take): strikes on what stands within its reach.
+    pub fn tactical_silo(&self) -> bool {
+        self.role == Role::Silo && self.silo_classes & ta_sim::STRATEGIC_CLASS == 0
+    }
+
+    /// A building that shoots down missiles of classes other than the strategic one, and none of
+    /// that (Forged Alliance's tactical missile defences): cover against tactical launchers.
+    pub fn tactical_cover(&self) -> bool {
+        self.kind == Locomotion::Static && self.coverage.is_some() && self.cover_classes & !ta_sim::STRATEGIC_CLASS != 0 && self.cover_classes & ta_sim::STRATEGIC_CLASS == 0
+    }
 }
 
 /// What a mobile unit costs (metal and energy / 60) to count as an experimental.
@@ -276,13 +305,18 @@ pub(crate) fn classify(sim: &Sim) -> Vec<TypeInfo> {
                 cover_classes,
                 cover_unstocked,
                 silo_classes,
+                missile_range: weapons.iter().filter(|w| w.def.stockpile && w.def.command_fire).map(|w| w.range.to_int()).max().unwrap_or(0),
+                stock_energy: weapons.iter().filter(|w| w.def.stockpile).map(|w| w.energy_per_shot.to_int().max(0) * 30 / w.reload_ticks.max(1) as i64).sum(),
                 worker: t.worker_rate * 30,
                 speed: t.max_speed,
                 transport: if t.locomotion != Locomotion::Static && !t.is_builder { t.transport_capacity } else { 0 },
-                experimental: experimental(t, ground_dps + air_dps, cost),
+                // (Not a constructor of buildings, however it is armed and whatever it costs: the
+                // factions' support commanders are constructors.)
+                experimental: experimental(t, ground_dps + air_dps, cost) && !builds_buildings(sim, t),
                 builds_experimentals: false,
                 leads_to_experimentals: false,
                 opens_way_to_experimentals: false,
+                builds_strategic: false,
                 fire_energy: weapons.iter().filter(|w| !w.def.stockpile).map(|w| w.energy_per_shot.to_int().max(0) * w.burst.max(1) as i64 * 30 / w.reload_ticks.max(1) as i64).sum(),
                 experimental_factory: false,
                 long_range: role == Role::Defense && range >= LONG_RANGE,
@@ -324,8 +358,37 @@ pub(crate) fn mark_experimental_tree(sim: &Sim, info: &mut [TypeInfo]) {
     }
 }
 
+/// Constructors of the first tier by their tags (or of none) that put up every building a
+/// constructor of the third tier puts up count as of that tier (the Supreme Commander factions'
+/// support commanders carry no tier, and build all a tech 3 engineer does); and which
+/// constructors put up a strategic silo. Once a game, before [`mark_experimental_tree`] (an
+/// advanced factory is one that turns out an advanced constructor). TA's constructors go no
+/// higher than the second tier: none of them changes.
+pub(crate) fn mark_constructors(sim: &Sim, info: &mut [TypeInfo]) {
+    let opts = |t: usize| &sim.types.get(t).ai_build_options;
+    let constructor = |i: &TypeInfo| i.role == Role::Builder && (i.builds_mex || i.builds_energy) && !i.commander && !i.experimental;
+    let top: Vec<usize> = (0..info.len()).filter(|&c| constructor(&info[c]) && info[c].tech >= 3 && !opts(c).is_empty()).collect();
+    let promoted: Vec<usize> = (0..info.len())
+        .filter(|&c| constructor(&info[c]) && info[c].tech == 1 && top.iter().any(|&t| opts(t).iter().all(|o| opts(c).contains(o))))
+        .collect();
+    for c in promoted {
+        info[c].tech = 3;
+    }
+    let strategic: Vec<bool> = info.iter().map(TypeInfo::strategic_silo).collect();
+    for (c, i) in info.iter_mut().enumerate() {
+        i.builds_strategic = i.role == Role::Builder && opts(c).iter().any(|&o| strategic[o]);
+    }
+}
+
 /// Whether a unit type is an experimental (see [`TypeInfo::experimental`]), from its damage (any
 /// of it) and cost.
 fn experimental(t: &UnitType, dps: i64, cost: i64) -> bool {
     t.locomotion != Locomotion::Static && !t.def.is_commander && dps > 0 && cost >= EXPERIMENTAL_COST
+}
+
+/// A builder that puts up buildings (a constructor: the Supreme Commander factions' support
+/// commanders among them), not one that only turns out units (Forged Alliance's Fatboy, a factory
+/// on tracks, which is an experimental all the same).
+fn builds_buildings(sim: &Sim, t: &UnitType) -> bool {
+    t.is_builder && t.ai_build_options.iter().any(|&o| sim.types.get(o).locomotion == Locomotion::Static)
 }

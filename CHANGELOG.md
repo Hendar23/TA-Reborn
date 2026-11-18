@@ -28,6 +28,17 @@
   anti-air, missile defences and others) drew their pontoons, which Forged Alliance hides on land,
   as dark slabs under the buildings and their wrecks; they are left out, and no longer widen the
   footprints of four of them. Make the factions' mod again (UPDATE) to have it.
+- Computer players use the whole tech tree in long games. With the Supreme Commander factions
+  they build strategic missile launchers with their tech 3 engineers, making those engineers when
+  they have none, and fire them at the enemy's bases: their tactical launchers had taken the
+  launcher's place, and no strategic missile was ever built. The tactical launchers are built
+  beside them now and strike the enemy's defences and most valuable buildings in reach, and
+  tactical missile defences go up once an enemy launcher is seen. TA's Core fields the Krogoth:
+  constructors help build it in the Gantry, which had built it alone in half an hour of work, the
+  other factories hold back part of their production meanwhile, and the Gantry goes on at the
+  army's size limit. Once tech 3 factories stand, production leans to tech 3, and more factories
+  are upgraded to it as the economy grows. The Tech persona does the most of this and the Rush
+  persona the least; Easy still builds no silos, long-range guns or experimentals.
 
 ## 1.0.8 — 2026-11-18
 

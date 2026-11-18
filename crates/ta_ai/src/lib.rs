@@ -226,7 +226,15 @@ struct Params {
     /// Projects (`projects.rs`): the first anti-nuclear defence with no enemy silo seen (from
     /// this minute); long-range guns (at most, from this minute); experimentals (at once,
     /// from this minute); heavy defences (Annihilators, Doomsday Machines: at most, from this
-    /// minute).
+    /// minute); tactical launchers (at most, from this minute: a mod's, Forged Alliance's);
+    /// tactical missile defences against an enemy launcher seen (at most).
+    tactical: usize,
+    tactical_minute: u64,
+    tactical_covers: usize,
+    /// While a project saved for is under way (an experimental, a strategic silo) on short
+    /// metal, the share (percent) of our factories that stand, the lowest tier first, leaving
+    /// it the metal (`economy.rs`: `standing_for_projects`).
+    save_share: usize,
     anti_minute: u64,
     long_guns: usize,
     long_gun_minute: u64,
@@ -296,6 +304,10 @@ impl Params {
                 extra_towers: 0,
                 transports: 2,
                 air_doctrine: false,
+                tactical: 0,
+                tactical_minute: u64::MAX,
+                tactical_covers: 1,
+                save_share: 0,
                 anti_minute: u64::MAX,
                 long_guns: 0,
                 long_gun_minute: u64::MAX,
@@ -347,6 +359,10 @@ impl Params {
                 extra_towers: 0,
                 transports: 8,
                 air_doctrine: false,
+                tactical: 1,
+                tactical_minute: 18,
+                tactical_covers: 2,
+                save_share: 34,
                 anti_minute: 22,
                 long_guns: 1,
                 long_gun_minute: 22,
@@ -398,6 +414,10 @@ impl Params {
                 extra_towers: 1,
                 transports: 12,
                 air_doctrine: true,
+                tactical: 2,
+                tactical_minute: 15,
+                tactical_covers: 3,
+                save_share: 34,
                 anti_minute: 18,
                 long_guns: 2,
                 long_gun_minute: 18,
@@ -447,6 +467,11 @@ impl Params {
                 self.long_guns = 0;
                 self.experimental_minute = later(self.experimental_minute, 8);
                 self.heavy_towers = self.heavy_towers.min(1);
+                // (The fewest missiles, the latest, and the least held back for the projects:
+                // its army comes first.)
+                self.tactical = self.tactical.min(1);
+                self.tactical_minute = later(self.tactical_minute, 10);
+                self.save_share = self.save_share.min(15);
             }
             Persona::Turtle => {
                 // Towers early and many, heavy defences, anti-nuclear cover and long-range guns;
@@ -467,6 +492,10 @@ impl Params {
                 self.anti_nukes += (!easy) as usize;
                 self.long_guns += (!easy) as usize;
                 self.long_gun_minute = sooner(self.long_gun_minute, 4);
+                // (Missiles at the towers that hold its enemy's army off, and cover against theirs.)
+                self.tactical += (!easy) as usize;
+                self.tactical_minute = sooner(self.tactical_minute, 4);
+                self.tactical_covers += (!easy) as usize;
             }
             Persona::Tech => {
                 // Up the tiers as soon as the economy allows: advanced constructors, the top
@@ -481,6 +510,13 @@ impl Params {
                 self.experimental_minute = sooner(self.experimental_minute, 8);
                 self.nuke_minute = sooner(self.nuke_minute, 4);
                 self.wave_base = self.wave_base * 5 / 4;
+                // (More silos and launchers, sooner, and the most held back for its projects.)
+                self.silos += (!easy) as usize;
+                self.tactical += (!easy) as usize;
+                self.tactical_minute = sooner(self.tactical_minute, 4);
+                if !easy {
+                    self.save_share = self.save_share.max(50);
+                }
             }
             Persona::Air => {
                 self.air_first = true;
@@ -559,6 +595,9 @@ pub struct SkirmishAi {
     enemy_air_tick: Option<u64>,
     enemy_air: usize,
     enemy_silo: bool,
+    /// When a tactical launcher of the enemy's (`TypeInfo::tactical_silo`) was first seen: cover
+    /// against its missiles is put up (`projects.rs`).
+    enemy_tactical: Option<u64>,
     /// Builders waiting on a job: front order, where they stood, since when.
     stuck: Vec<(UnitId, Order, FxVec3, u64)>,
     /// Build sites that failed (type, position, tick).
@@ -764,6 +803,16 @@ struct Survey<'a> {
     experimentals: usize,
     /// Advanced factories (`advanced_factory`), finished or not.
     adv_factories: usize,
+    /// Our missile silos, finished or not, strategic and tactical (`TypeInfo::strategic_silo`,
+    /// `tactical_silo`), and tactical missile defences (`TypeInfo::tactical_cover`).
+    strategic_silos: usize,
+    tactical_silos: usize,
+    tactical_covers: usize,
+    /// Energy per second our finished strategic silos take building their missiles (at most).
+    silo_draw: i64,
+    /// Experimentals under way in our factories' yards, and the factory of each (TA's Krogoth in
+    /// its Gantry): projects that hands help with at the factory (`help_project_task`).
+    yard_projects: Vec<(&'a Unit, UnitId)>,
 }
 
 /// Jobs handed out this think.
@@ -785,6 +834,10 @@ struct Plan {
     hands: Vec<UnitId>,
     /// An experimental (or a factory of them) was handed out this think.
     experimental: bool,
+    /// Missile silos ordered (strategic, tactical) and tactical missile defences, not yet
+    /// started.
+    silos: [usize; 2],
+    covers: usize,
 }
 
 /// A job a builder has to itself (a frame is another matter: any number of hands may build it).
@@ -902,7 +955,8 @@ impl SkirmishAi {
     /// `reach_pct`, `tech_minute`, `expanders`, `upgrades`, `power_plants`, `extra_towers`,
     /// `transports`, `nuke_minute`, `air_doctrine` (0 or 1), `anti_minute`, `long_guns`,
     /// `long_gun_minute`, `experimentals`, `experimental_minute`, `heavy_towers`,
-    /// `heavy_minute`, `top_tier` (percent), `clear_way` (0 or 1). False for an unknown name.
+    /// `heavy_minute`, `top_tier` (percent), `clear_way` (0 or 1), `tactical`,
+    /// `tactical_minute`, `tactical_covers`, `save_share` (percent). False for an unknown name.
     pub fn tweak(&mut self, name: &str, value: i64) -> bool {
         let p = &mut self.p;
         let n = value.max(0) as usize;
@@ -942,6 +996,10 @@ impl SkirmishAi {
             "heavy_minute" => p.heavy_minute = value.max(0) as u64,
             "top_tier" => p.top_tier = value.clamp(0, 100),
             "clear_way" => p.clear_way = value != 0,
+            "tactical" => p.tactical = n,
+            "tactical_minute" => p.tactical_minute = value.max(0) as u64,
+            "tactical_covers" => p.tactical_covers = n,
+            "save_share" => p.save_share = n.min(100),
             _ => return false,
         }
         true
@@ -999,6 +1057,7 @@ impl SkirmishAi {
         let enemy_base_owners: Vec<u8> = enemy_bases.iter().map(|_| u8::MAX).collect();
         let enemy_base_seen: Vec<bool> = enemy_bases.iter().map(|_| false).collect();
         let mut info = info::classify(sim);
+        info::mark_constructors(sim, &mut info);
         info::mark_experimental_tree(sim, &mut info);
         // Whether an experimental (or a factory of them) is in our side's tree, from the builders
         // we start with, a few steps down (a factory, its constructor, an advanced factory, its
@@ -1089,6 +1148,7 @@ impl SkirmishAi {
             enemy_air_tick: None,
             enemy_air: 0,
             enemy_silo: false,
+            enemy_tactical: None,
             stuck: Vec::new(),
             failed: Vec::new(),
             issued: Vec::new(),
@@ -1293,6 +1353,11 @@ impl SkirmishAi {
             long_guns: 0,
             experimentals: 0,
             adv_factories: 0,
+            strategic_silos: 0,
+            tactical_silos: 0,
+            tactical_covers: 0,
+            silo_draw: 0,
+            yard_projects: Vec::new(),
         };
         for u in sim.units() {
             if u.dead {
@@ -1323,6 +1388,19 @@ impl SkirmishAi {
                 s.heavy_towers += 1;
             }
             s.experimentals += (i.experimental || i.experimental_factory) as usize;
+            if i.strategic_silo() {
+                s.strategic_silos += 1;
+                if done {
+                    s.silo_draw += i.stock_energy;
+                }
+            } else if i.tactical_silo() {
+                s.tactical_silos += 1;
+            } else if i.tactical_cover() {
+                s.tactical_covers += 1;
+            }
+            if i.experimental && !u.is_complete() && let Some(f) = u.factory {
+                s.yard_projects.push((u, f));
+            }
             match i.role {
                 // (An experimental that builds, Forged Alliance's Fatboy: a factory on tracks,
                 // it fights with the army.)
@@ -1530,9 +1608,12 @@ impl SkirmishAi {
                     self.enemy_aa.add_disc(e.pos, 500, i.worth);
                 }
             }
-            // (Strategic missiles alone call for anti-nukes: a mod's tactical launcher's do not.)
-            if i.role == Role::Silo && i.silo_classes & ta_sim::STRATEGIC_CLASS != 0 {
+            // (Strategic missiles alone call for anti-nukes: a mod's tactical launcher's call for
+            // tactical cover.)
+            if i.strategic_silo() {
                 self.enemy_silo = true;
+            } else if i.tactical_silo() && self.enemy_tactical.is_none() {
+                self.enemy_tactical = Some(now);
             }
             if kind == Locomotion::Static {
                 if known_buildings.insert(e.id) {

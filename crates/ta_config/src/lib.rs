@@ -190,8 +190,13 @@ pub const RECORD_VERSION: u32 = 47;
 /// enemy's base and experimentals, and build or upgrade more of the top tier as their economy
 /// grows; a constructor's unit built in the field goes on with the frame laid for its order's
 /// site, however far it was pushed off it, rather than starting another (and a frame laid for
-/// another order's site nearby is that order's).
-pub const SIMULATION_VERSION: u32 = 105;
+/// another order's site nearby is that order's); 106, computer players tell strategic silos from
+/// tactical launchers (the Supreme Commander factions' strategic ones put up by their tech 3
+/// engineers, tactical ones beside them striking defences, tactical defences against an enemy
+/// launcher seen), help build the experimentals in their factories' yards and hold part of their
+/// production back for them and for strategic silos, build them at the army's size limit and only
+/// on an income that can pay for them, and lean to tech 3 once its factories stand.
+pub const SIMULATION_VERSION: u32 = 106;
 /// Records shorter than one year of simulated time are supported. Shared with the
 /// launcher's metadata reader so impossible durations cannot start endless save catch-up.
 pub const MAX_RECORD_TICKS: u64 = 30 * 3600 * 24 * 365;

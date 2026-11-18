@@ -1625,7 +1625,10 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   anti-nuclear cover and long-range guns early, and attacks late, in force; Tech climbs the tiers
   (its factories' upgrades with them), upgrades its extractors and takes its commander's deeper
   engineering suites and gun as soon as the tech economy allows, and the experimentals and silos
-  sooner (Rush all of them later, with its tech minute); Air makes its next two factories air plants and
+  sooner and more of them (a strategic silo and a tactical launcher more, half its factories
+  standing for its projects, ten minutes of income for an experimental); Rush all of them later
+  and fewer, with its tech minute (one tactical launcher, 15% standing, six minutes); Turtle a
+  tactical launcher and a tactical defence more; Air makes its next two factories air plants and
   builds more planes; Naval its shipyard first, where the sea reaches the enemy, and more ships
   (on dry land it plays as Balanced). Soak (`tests/skirmish.rs`, `TA_TEST_PERSONA`, Normal, 25
   minutes on Painted Desert against Balanced): Rush's army first at an enemy start at minute 7
@@ -1639,23 +1642,49 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   do not follow the persona.
 * Projects (`projects.rs`): the tech tree's big buildings, each put up by advanced constructors
   one at a time while the others help (`help_project_task`), once the economy can feed it (no
-  project while power or metal is short): anti-nuclear cover first once an enemy silo is seen (on
-  every level, Easy's only project) or from `anti_minute`; then by the persona's liking a nuclear
-  silo, a heavy defence on the approach (cost 1,500 or more, `HEAVY_COST`, as many as
-  `heavy_towers` allows, one more every 12 minutes, its power to fire four times over in our
-  income) and a long-range gun (`TypeInfo::long_range`: reach 2,000 or more) where it reaches
-  the enemy's base, which then shells what we know of that base (`run_long_guns`: a building's
-  guns fire of themselves only at what their side sees). Experimentals (`TypeInfo::experimental`:
-  armed, mobile, costing 5,000 or more) go up beside them, built by the constructor that builds
-  them or by a factory of them; where none of our factories turns out a constructor that leads
-  there (TA's Core: the Gantry needs the advanced construction kbot's lab), that factory and
-  constructor are made first (`toward_experimentals`). Factories lean to the top tier as the
-  metal income grows (`top_tier_share`, a share of their orders: none on Easy), the army's
-  cap grows a quarter for a player at tech 2 or more, and more advanced factories come as the
-  economy grows (`adv_factories_wanted`): upgraded where a factory of ours upgrades into one
+  project while power or metal is short; those saved for, below, on a metal income of 30 or more
+  however short the store is): anti-nuclear cover first once an enemy strategic silo is seen (on
+  every level, Easy's only project) or from `anti_minute`, and cover against tactical missiles (an
+  interceptor of their class alone, `TypeInfo::tactical_cover`: Forged Alliance's tactical
+  defences) once an enemy tactical launcher is seen (one, another every eight minutes, at most
+  `tactical_covers`); then by the persona's liking a strategic silo (`TypeInfo::strategic_silo`:
+  missiles of the class anti-nuclear defences take, TA's every silo; only by a constructor whose
+  options hold one, `builds_strategic`: Forged Alliance's tech 3 engineers, a factory turning one
+  out when none of ours can; within seven minutes of our metal income), a tactical launcher
+  (`TypeInfo::tactical_silo`: Forged Alliance's, by its tech 2 engineers, sited as a long-range gun
+  is, at most `tactical` from `tactical_minute`; never in the strategic silo's place), a heavy
+  defence on the approach (cost 1,500 or more, `HEAVY_COST`, as many as `heavy_towers` allows,
+  one more every 12 minutes, its power to fire four times over in our income) and a long-range
+  gun (`TypeInfo::long_range`: reach 2,000 or more) where it reaches the enemy's base, which then
+  shells what we know of that base (`run_long_guns`: a building's guns fire of themselves only at
+  what their side sees). Strategic missiles go at the richest cluster their salvo gets through the
+  cover over; tactical ones at buildings alone, defences and strategic weapons first
+  (`strike_value`), what a tactical defence covers left alone. The strategic silos standing add
+  what their missiles draw to the power wanted (`Survey::silo_draw`). Experimentals
+  (`TypeInfo::experimental`: armed, mobile, costing 5,000 or more, no constructor of buildings:
+  the factions' support commanders are constructors, of the third tier once their options hold a
+  tech 3 engineer's, `mark_constructors`) go up beside them, built by the constructor that builds
+  them or by a factory of them (sited at the back, once it and the cheapest it makes cost ten
+  minutes of our income at most), each within eight minutes of our income
+  (`experimental_budget`: ten for Tech, six for Rush); where none of our factories turns out a
+  constructor that leads there (TA's Core: the Gantry needs the advanced construction kbot's lab),
+  that factory and constructor are made from ten minutes before the level's minute
+  (`toward_experimentals`). Projects are helped by more hands the longer they take
+  (`help_project_task`: one more per 60,000 of build time, six more at most; TA's Krogoth nine on
+  Normal), an experimental in a factory's yard at the factory (`Survey::yard_projects`: guards,
+  whom the simulation sets to work on what it builds); a factory of experimentals builds at the
+  army's size limit; and while an experimental or a strategic silo with more metal left to pay
+  than two minutes of our income is under way on short metal, `save_share` of our factories stand
+  (`standing_for_projects`: the lowest tier first, none while the enemy's army seen outweighs
+  ours). Factories lean to the top tier as the metal income grows (`top_tier_share`, a share of
+  their orders: none on Easy; a third more at a factory of three tiers, Forged Alliance's tech 3),
+  the army's cap grows a quarter for a player at tech 2 or more, more advanced factories come as
+  the economy grows (`adv_factories_wanted`): upgraded where a factory of ours upgrades into one
   (`run_upgrades_in_place`, which also takes first the upgrade into a factory leading to
-  experimentals), built where none does. The way to experimentals (`experimentals_reachable`)
-  follows a factory's upgrades and an engineering suite's menu as well as what builds what.
+  experimentals, and once a tech 3 factory stands climbs more ground factories to it,
+  `top_factories_wanted`), built where none does; and more tech 3 engineers as the income grows.
+  The way to experimentals (`experimentals_reachable`) follows a factory's upgrades and an
+  engineering suite's menu as well as what builds what.
 * Clearing the way (`clear.rs`): a unit whose route stops short of where it was sent though the
   ground leads there (`Unit::path_goal` far from the move's goal), or that has stood stalled on
   its way, has its way searched (`Sim::way_blockers`, `ta_sim`'s `sim/blockers.rs`: an A* back
@@ -1865,7 +1894,11 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   approach to the enemy), `tests/duty_explore.rs` (ignored: the by-hand runs that found them) and
   the asset-free ones in `tests.rs`.
 * Soak test: `cargo test --release -p ta_ai --test skirmish -- --nocapture` (see the file
-  for `TA_TEST_*` options: map, length, difficulty, players, teams, logs). Ladder:
+  for `TA_TEST_*` options: map, length, difficulty, players, teams, logs, `TA_TEST_UNTIL_DECIDED`).
+  It reports each player's tech tree as used: what it finished of each kind, strategic and tactical
+  launches and missiles shot down, the experimentals finished, every five minutes the projects
+  under way (how far along, how many at them, the strategic silos' missiles), every ten the army by
+  tier, and who won. Ladder:
   `cargo test --release -p ta_ai --test ladder -- --ignored --nocapture` plays one level
   against another (`TA_LADDER_A`, `TA_LADDER_B`) on ten land maps, from both starts and on
   both sides, over every core (`TA_LADDER_MAPS=sea` for ten water and island maps, `all`
