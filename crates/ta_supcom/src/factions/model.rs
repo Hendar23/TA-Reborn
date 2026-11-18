@@ -59,8 +59,14 @@ pub const GROUND_OVER: f64 = 0.5;
 /// at `uniform_scale`: what lies from [`GROUND_UNDER`] under its foot (the mesh's y 0, the ground
 /// Forged Alliance stands it on) to [`GROUND_OVER`] over it. None when nothing does.
 pub fn ground_extent(mesh: &Mesh, uniform_scale: f64) -> Option<[f64; 2]> {
+    ground_extent_leaving_out(mesh, uniform_scale, &[])
+}
+
+/// [`ground_extent`] but for the vertices of the bones `left_out` (their indices in the mesh): a
+/// building's floats, which it does not stand on where they are hidden ([`floats`]).
+pub fn ground_extent_leaving_out(mesh: &Mesh, uniform_scale: f64, left_out: &[usize]) -> Option<[f64; 2]> {
     let mut reach: Option<[f64; 2]> = None;
-    for v in &mesh.vertices {
+    for v in mesh.vertices.iter().filter(|v| !left_out.contains(&v.bone)) {
         let y = v.position[1] as f64 * uniform_scale;
         if (-GROUND_UNDER..=GROUND_OVER).contains(&y) {
             let r = reach.get_or_insert([0.0; 2]);
@@ -69,6 +75,17 @@ pub fn ground_extent(mesh: &Mesh, uniform_scale: f64) -> Option<[f64; 2]> {
         }
     }
     reach.map(|[x, z]| [2.0 * x, 2.0 * z])
+}
+
+/// A building's floats: its `Floatation` bones and every bone under them (a mesh lists a bone's
+/// parent before it: one pass), their indices in the mesh. Forged Alliance hides them (with their
+/// children) on a building standing on land, and shows them where it floats on the water.
+pub fn floats(mesh: &Mesh) -> Vec<usize> {
+    let mut hidden = vec![false; mesh.bones.len()];
+    for (b, bone) in mesh.bones.iter().enumerate() {
+        hidden[b] = bone.name.eq_ignore_ascii_case("Floatation") || bone.parent.is_some_and(|p| hidden.get(p).copied().unwrap_or(false));
+    }
+    (0..mesh.bones.len()).filter(|&b| hidden[b]).collect()
 }
 
 /// Each triangle whose texture coordinates all lie within one repeat of the texture moved by whole
@@ -128,6 +145,13 @@ pub fn fit_uvs(pieces: &mut [Piece], faces: &mut [surface::Piece]) -> std::resul
 /// `Display.UniformScale`), painted with `material`. `Err` when a piece would hold more vertices
 /// than a 3DO can name.
 pub fn convert(mesh: &Mesh, uniform_scale: f64, material: Material) -> std::result::Result<Converted, String> {
+    convert_leaving_out(mesh, uniform_scale, material, &[])
+}
+
+/// [`convert`], the bones `left_out` (their indices in the mesh) left without the triangles bound
+/// to them: still pieces (a script or a clip may move them), drawing nothing. A building's floats
+/// where Forged Alliance hides them ([`floats`]).
+pub fn convert_leaving_out(mesh: &Mesh, uniform_scale: f64, material: Material, left_out: &[usize]) -> std::result::Result<Converted, String> {
     let scale = uniform_scale * UNIT_SCALE * 65536.0;
     let fixed = |v: f32| -> i32 { (v as f64 * scale).round() as i32 };
     // A place in the mesh as the 3DO holds it: z the other way round.
@@ -177,14 +201,19 @@ pub fn convert(mesh: &Mesh, uniform_scale: f64, material: Material) -> std::resu
         faces[piece].vertices.push(surface::Vertex { uv: vertex.uv0, normal: [unit(n[0]), unit(n[1]), unit(-n[2])] });
         Ok((pieces[piece].vertices.len() - 1) as u16)
     };
+    // (A vertex of a bone left out is in no piece of its own: a triangle of another bone's that
+    // has a corner there takes a copy of it, as a split triangle does.)
     let mut own: Vec<u16> = Vec::with_capacity(mesh.vertices.len());
     for (v, vertex) in mesh.vertices.iter().enumerate() {
-        own.push(add(piece_of[vertex.bone], v as u32, &mut pieces, &mut faces)?);
+        own.push(if left_out.contains(&vertex.bone) { u16::MAX } else { add(piece_of[vertex.bone], v as u32, &mut pieces, &mut faces)? });
     }
     let mut copies: BTreeMap<(usize, u32), u16> = BTreeMap::new();
     let mut split_triangles = 0;
     for tri in &mesh.triangles {
         let bone = mesh.vertices[tri[0] as usize].bone;
+        if left_out.contains(&bone) {
+            continue;
+        }
         let piece = piece_of[bone];
         let mut corners = [0u16; 3];
         let mut split = false;
@@ -218,6 +247,12 @@ pub fn convert(mesh: &Mesh, uniform_scale: f64, material: Material) -> std::resu
 /// with the first's piece matrices, far off. `first_mesh` is the mesh `first` was made from.
 /// `Err` when a piece would hold more vertices than a 3DO can name.
 pub fn convert_onto(mesh: &Mesh, first_mesh: &Mesh, first: &Converted, uniform_scale: f64, material: Material) -> std::result::Result<Converted, String> {
+    convert_onto_leaving_out(mesh, first_mesh, first, uniform_scale, material, &[])
+}
+
+/// [`convert_onto`], the pieces of `first_mesh`'s bones `left_out` (as [`convert_leaving_out`]
+/// left them out of `first`) drawing nothing of this mesh either.
+pub fn convert_onto_leaving_out(mesh: &Mesh, first_mesh: &Mesh, first: &Converted, uniform_scale: f64, material: Material, left_out: &[usize]) -> std::result::Result<Converted, String> {
     let scale = uniform_scale * UNIT_SCALE * 65536.0;
     let fixed = |v: f32| -> i32 { (v as f64 * scale).round() as i32 };
     let place = |p: [f32; 3]| -> [i32; 3] { [fixed(p[0]), fixed(p[1]), fixed(-p[2])] };
@@ -240,6 +275,9 @@ pub fn convert_onto(mesh: &Mesh, first_mesh: &Mesh, first: &Converted, uniform_s
     let mut index: BTreeMap<(usize, u32), u16> = BTreeMap::new();
     for tri in &mesh.triangles {
         let piece = piece_of[mesh.vertices[tri[0] as usize].bone];
+        if left_out.contains(&first.bones[piece]) {
+            continue;
+        }
         let mut corners = [0u16; 3];
         for (k, v) in [tri[0], tri[2], tri[1]].into_iter().enumerate() {
             corners[k] = match index.get(&(piece, v)) {
@@ -371,6 +409,56 @@ mod tests {
         let back = Model3do::parse(&out.model.to_bytes()).unwrap();
         assert_eq!(back.pieces.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Root", "A", "A1", "B"]);
         assert!(out.surface.fits(&back));
+    }
+
+    /// A building's floats (`Floatation` and the bones under it), which Forged Alliance hides on
+    /// land, are left out where asked: still pieces, drawing nothing, near and far, the rest of
+    /// the model as it was (a hull's triangle with a corner on a float keeping its copy of it),
+    /// and nothing of them standing on the ground.
+    #[test]
+    fn a_buildings_floats_are_left_out() {
+        let still = [1.0, 0.0, 0.0, 0.0];
+        let file = scm::tests::write(
+            &[("Building", -1, [0.0; 3], still), ("Floatation", 0, [0.0, -1.0, 0.0], still), ("Floatation_B01", 1, [4.0, 0.0, 0.0], still), ("Tower", 0, [0.0, 3.0, 0.0], still)],
+            &[
+                // The building's foot, 2 each way; its floats, 6 each way at the ground; a float's
+                // end; the tower.
+                ([-2.0, 0.0, -2.0], [0.0, 0.0], 0),
+                ([2.0, 0.0, -2.0], [1.0, 0.0], 0),
+                ([0.0, 0.0, 2.0], [0.5, 1.0], 0),
+                ([-6.0, 0.0, -6.0], [0.0, 0.0], 1),
+                ([6.0, 0.0, -6.0], [1.0, 0.0], 1),
+                ([0.0, 0.0, 6.0], [0.5, 1.0], 1),
+                ([6.0, -1.0, 6.0], [0.5, 0.5], 2),
+                ([0.0, 5.0, 0.0], [0.5, 0.5], 3),
+            ],
+            &[[0, 1, 2], [3, 4, 5], [6, 4, 5], [0, 1, 3], [0, 1, 7]],
+        );
+        let mesh = scm::parse(&file).unwrap();
+        let floats = floats(&mesh);
+        assert_eq!(floats, [1, 2], "the float and the bone under it");
+        let whole = convert(&mesh, 0.1, paint()).unwrap();
+        let out = convert_leaving_out(&mesh, 0.1, paint(), &floats).unwrap();
+        let names: Vec<&str> = out.model.pieces.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Building", "Floatation", "Floatation_B01", "Tower"], "still pieces");
+        for float in [1, 2] {
+            assert!(out.model.pieces[float].primitives.is_empty() && out.model.pieces[float].vertices.is_empty(), "{} draws nothing", names[float]);
+        }
+        for kept in [0, 3] {
+            assert_eq!(out.model.pieces[kept].vertices, whole.model.pieces[kept].vertices);
+            assert_eq!(out.model.pieces[kept].primitives.iter().map(|p| p.indices.clone()).collect::<Vec<_>>(), whole.model.pieces[kept].primitives.iter().map(|p| p.indices.clone()).collect::<Vec<_>>());
+        }
+        assert_eq!(out.model.pieces[0].primitives.len(), 3, "the foot, its triangle reaching a float and the one reaching the tower");
+        assert!(out.surface.fits(&out.model));
+        // Far off too.
+        let far = convert_onto_leaving_out(&mesh, &mesh, &out, 0.1, paint(), &floats).unwrap();
+        assert!(far.model.pieces[1].primitives.is_empty() && far.model.pieces[2].primitives.is_empty());
+        assert!(far.surface.fits(&far.model));
+        // What stands on the ground: the floats widened it to 12 by 12 (of ten mesh units an
+        // ogrid); left out, the foot and the triangle reaching a float's corner: 4 by 4.
+        let near = |a: Option<[f64; 2]>, b: [f64; 2]| a.is_some_and(|a| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6);
+        assert!(near(ground_extent(&mesh, 0.1), [1.2, 1.2]), "{:?}", ground_extent(&mesh, 0.1));
+        assert!(near(ground_extent_leaving_out(&mesh, 0.1, &floats), [0.4, 0.4]), "{:?}", ground_extent_leaving_out(&mesh, 0.1, &floats));
     }
 
     /// A lighter mesh whose skeleton kept only the hull (its root renamed) and the turret is laid

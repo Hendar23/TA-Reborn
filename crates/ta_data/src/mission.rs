@@ -462,6 +462,22 @@ impl Mission {
     }
 }
 
+/// A schema's placed units: its `[units]` section, or the one a mod's own engine read in its
+/// place. TA: Escalation's engine, patched to read `unitse` for TA's `units` folder, read its
+/// missions' units from `[unitsE]`, and Escalation's own copies of TA's campaigns have them
+/// there alone (all 175 of its missions): read only as `[units]`, they placed nothing, and every
+/// mission was lost at once to `AllUnitsKilled`. So where a schema has no `[units]`, its units
+/// are the section whose entries name units (`Unitname`), whatever it is called, as a mod's
+/// renamed folders are found from what they hold.
+fn units_section(s: &TdfSection) -> Option<&TdfSection> {
+    s.section("units").or_else(|| {
+        s.sections
+            .iter()
+            .filter(|sec| !sec.name.eq_ignore_ascii_case("specials") && !sec.name.eq_ignore_ascii_case("features"))
+            .find(|sec| sec.sections.iter().any(|u| u.get("Unitname").is_some_and(|n| !n.trim().is_empty())))
+    })
+}
+
 fn parse_schema(s: &TdfSection) -> MissionSchema {
     let f = |k: &str, d: f64| s.get_f64_or(k, d);
     let mut out = MissionSchema {
@@ -473,7 +489,7 @@ fn parse_schema(s: &TdfSection) -> MissionSchema {
         surface_metal: f("SurfaceMetal", 0.0),
         ..Default::default()
     };
-    if let Some(units) = s.section("units") {
+    if let Some(units) = units_section(s) {
         for u in &units.sections {
             let name = u.get_str("Unitname", "");
             if name.is_empty() {
@@ -707,6 +723,29 @@ mod tests {
         assert!(!u[2].ai_ignore && !u[2].critical);
         // The original fifty missions set no limit.
         assert_eq!(Mission::from_ota("T.ota", &tdf::parse("[GlobalHeader]{DestroyAllUnits=1;}")).max_units, None);
+    }
+
+    /// TA: Escalation's copies of TA's missions have their units in `[unitsE]`, as its engine
+    /// read them (the folder `unitse` for `units`): they are the schema's units all the same. A
+    /// schema's `[units]` comes first; its start positions and features are no units.
+    #[test]
+    fn a_mods_units_section_is_read_by_what_it_holds() {
+        let ota = |units: &str| {
+            tdf::parse(&format!(
+                "[GlobalHeader]{{MoveUnitToRadius=ANYTYPE, 992, 656, 64;AllUnitsKilled=1;[Schema 0]{{Type=Easy;{units}\
+                 [specials]{{[special0]{{specialwhat=StartPos1;XPos=5;ZPos=6;}}}}[features]{{[feature0]{{Featurename=Tree;XPos=1;ZPos=1;}}}}}}}}"
+            ))
+        };
+        let escalation = Mission::from_ota("AC01.ota", &ota("[unitsE]{[unit0]{Unitname=ARMFAV;XPos=1099;ZPos=2402;Player=1;}[unit1]{Unitname=mARMGATE;XPos=992;ZPos=656;Player=1;Immunity=1;}[unit2]{Unitname=CORAK;XPos=900;ZPos=700;Player=2;InitialMission=p 1 2;}}"));
+        let units = &escalation.schemas[0].units;
+        assert_eq!(units.iter().map(|u| (u.name.as_str(), u.player)).collect::<Vec<_>>(), [("ARMFAV", 1), ("mARMGATE", 1), ("CORAK", 2)]);
+        assert!(units[1].immune && units[2].script == [MissionCommand::Patrol(1.0, 2.0)]);
+        assert_eq!(escalation.schemas[0].start, Some((5.0, 6.0)));
+        // TA's own `[units]` wins over any other section.
+        let both = Mission::from_ota("T.ota", &ota("[units]{[unit0]{Unitname=ARMPW;Player=1;}}[unitsE]{[unit0]{Unitname=ARMFAV;Player=1;}}"));
+        assert_eq!(both.schemas[0].units.iter().map(|u| u.name.as_str()).collect::<Vec<_>>(), ["ARMPW"]);
+        // A map made for skirmishes places none (Total Mayhem lists some as missions).
+        assert!(Mission::from_ota("Sherwood.ota", &ota("")).schemas[0].units.is_empty());
     }
 
     /// Force the Strait's transport crosses `x = 6000` eastward, from where it starts; Lightning

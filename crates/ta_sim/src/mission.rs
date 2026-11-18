@@ -111,6 +111,37 @@ impl Objective {
             Goal::AnyUnitPasses(line) => Objective::AnyUnitPasses(Crossing::new(line)),
         })
     }
+
+    /// The goal as TA's mission files name it, its unit types by name (for the logs).
+    pub fn describe(&self, types: &UnitTypes) -> String {
+        let name = |t: usize| types.types.get(t).map_or_else(|| format!("#{t}"), |t| t.name.clone());
+        let at = |p: FxVec3| format!("({}, {})", p.x.to_int(), p.z.to_int());
+        match *self {
+            Objective::DestroyAllUnits => "DestroyAllUnits".into(),
+            Objective::KillAllMobileUnits => "KillAllMobileUnits".into(),
+            Objective::KillEnemyCommander => "KillEnemyCommander".into(),
+            Objective::KillUnitType { unit, count } => format!("KillUnitType {} x{count}", name(unit)),
+            Objective::KillAllOfType(unit) => format!("KillAllOfType {}", name(unit)),
+            Objective::KillAllOfTypeToCome(unit) => format!("KillAllOfType {} (waves too)", name(unit)),
+            Objective::CaptureUnitType(unit) => format!("CaptureUnitType {}", name(unit)),
+            Objective::BuildUnitType(unit) => format!("BuildUnitType {}", name(unit)),
+            Objective::MoveUnitToRadius { unit, pos, radius } => {
+                format!("MoveUnitToRadius {} to {} within {}", unit.map_or_else(|| "any unit".into(), name), at(pos), radius.to_int())
+            }
+            Objective::UnitTypePasses { unit, line } => format!("UnitTypePasses {} {:?} of {}", name(unit), line.toward, line.at.to_int()),
+            Objective::AnyUnitPasses(line) => format!("AnyUnitPasses {:?} of {}", line.toward, line.at.to_int()),
+            Objective::AllUnitsKilled => "AllUnitsKilled".into(),
+            Objective::CommanderKilled => "CommanderKilled".into(),
+            Objective::AllUnitsKilledOfType(unit) => format!("AllUnitsKilledOfType {}", name(unit)),
+            Objective::UnitTypeKilled { unit, count } => format!("UnitTypeKilled {} x{count}", name(unit)),
+            Objective::Timer(ticks) => format!("timer of {} s", ticks / crate::cob::TICKS_PER_SECOND as u64),
+            Objective::HoldArea { pos, radius, .. } => format!("hold {} within {}", at(pos), radius.to_int()),
+            Objective::EnemyHoldsArea { pos, radius, .. } => format!("the enemy holds {} within {}", at(pos), radius.to_int()),
+            Objective::MetalMade(metal) => format!("{} metal made", metal.to_int()),
+            Objective::EnemyMetalMade(metal) => format!("{} metal made by the enemy", metal.to_int()),
+            Objective::UnitLost(id) => format!("MissionCriticalUnit lost (unit {})", id.slot),
+        }
+    }
 }
 
 /// The active mission: the human player, goals, and the result once decided.
@@ -424,6 +455,15 @@ impl Sim {
             }
             self.events.push(SimEvent::MissionEnded { victory: won });
         }
+    }
+
+    /// The mission's goals met as things stand: its victory goals, then its defeat goals, each in
+    /// their order. Once the mission is decided, what decided it (the game's log says so). Reads
+    /// the game alone: nothing changes.
+    pub fn mission_goals_met(&self) -> (Vec<Objective>, Vec<Objective>) {
+        let Some(rules) = &self.mission else { return (Vec::new(), Vec::new()) };
+        let met = |goals: &[Objective]| goals.iter().filter(|o| self.objective_met(o, rules.human)).cloned().collect();
+        (met(&rules.victory), met(&rules.defeat))
     }
 
     fn objective_met(&self, o: &Objective, human: u8) -> bool {
@@ -1115,6 +1155,69 @@ fn compile_script(sim: &Sim, id: UnitId, script: &[MissionCommand], names: &Miss
     }
     flush(&mut steps, &mut orders);
     steps
+}
+
+/// Why a mission can't be played with the game's data as it stands (the mods that are on), when
+/// it can't: what it gives the player to play with, or what would win it, is not in the data.
+/// Placed, it would be decided at its first look at its goals (lost to `AllUnitsKilled`, or won
+/// against nobody), or never won. TA's own missions all play (a few of their placed units name
+/// types TA never made, left out as TA left them).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unplayable {
+    /// It places no unit for the player at all: Total Mayhem's own campaign lists maps made for
+    /// skirmishes as missions, their goals added and no unit in them.
+    NoUnits,
+    /// None of the units it places for the player is in the data (a total conversion's units in
+    /// place of TA's): the names it places for them that the data lacks.
+    UnitsMissing(Vec<String>),
+    /// It is lost with the player's Commander (`CommanderKilled`), and of what it places for the
+    /// player, what the data has holds no Commander: theirs is among these names the data lacks.
+    CommanderMissing(Vec<String>),
+    /// Nothing can win it: every one of its victory goals names a unit type the data lacks (these).
+    Unwinnable(Vec<String>),
+}
+
+/// Whether `mission` can be played, at the difficulty `schema` is, with the game's unit types as
+/// they stand (the mods that are on), and if not, why ([`Unplayable`]). The game asks before it
+/// offers a mission and before it starts one, and says why to the player rather than starting a
+/// mission decided at once.
+pub fn unplayable(mission: &ta_data::mission::Mission, schema: &ta_data::mission::MissionSchema, types: &UnitTypes) -> Option<Unplayable> {
+    // (Each name once, in upper case, in order.)
+    fn names<'a>(all: impl Iterator<Item = &'a str>) -> Vec<String> {
+        let mut names: Vec<String> = all.map(|n| n.trim().to_ascii_uppercase()).collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+    // (The unit type a goal names.)
+    fn goal_unit(g: &Goal) -> Option<&str> {
+        match g {
+            Goal::KillUnitType { unit, .. } | Goal::UnitTypePasses { unit, .. } => Some(unit),
+            Goal::KillAllOfType(unit) | Goal::CaptureUnitType(unit) | Goal::BuildUnitType(unit) => Some(unit),
+            Goal::MoveUnitToRadius { unit, .. } => unit.as_deref(),
+            _ => None,
+        }
+    }
+    // (TA player 1 is the player.)
+    let ours: Vec<&ta_data::mission::PlacedUnit> = schema.units.iter().filter(|u| u.player == 1).collect();
+    if ours.is_empty() {
+        return Some(Unplayable::NoUnits);
+    }
+    let known: Vec<usize> = ours.iter().filter_map(|u| types.id(u.name.trim())).collect();
+    let missing = names(ours.iter().filter(|u| types.id(u.name.trim()).is_none()).map(|u| u.name.as_str()));
+    if known.is_empty() {
+        return Some(Unplayable::UnitsMissing(missing));
+    }
+    let commander = known.iter().any(|&t| types.get(t).def.is_commander);
+    if !commander && !missing.is_empty() && mission.defeat.contains(&Goal::CommanderKilled) {
+        return Some(Unplayable::CommanderMissing(missing));
+    }
+    // (Every victory goal must be met: one the data can't resolve is left out, and the rest still
+    // win it; with none left, nothing would.)
+    if !mission.victory.is_empty() && mission.victory.iter().all(|g| Objective::from_goal(g, types).is_none()) {
+        return Some(Unplayable::Unwinnable(names(mission.victory.iter().filter_map(goal_unit))));
+    }
+    None
 }
 
 /// Result of placing a mission: script idents resolved to units.

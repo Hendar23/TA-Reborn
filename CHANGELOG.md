@@ -13,6 +13,21 @@
   (UPDATE) to have it. Any mod can use the same: a model's clips named `active`, `open` and
   `upgrade` play as its unit works, opens and upgrades (see
   [docs/MODDING.md](docs/MODDING.md#models-that-move-by-clips-of-their-own)).
+- Campaign missions with TA: Escalation on were lost the moment they began: Escalation's copies of
+  TA's missions keep their units under a name of their own engine's (`[unitsE]`), which was not
+  read, so nothing was placed and every mission failed to "all your units destroyed" half a second
+  in. A mission's units are now read wherever its file keeps them, and its log says what decided
+  it. A mission the mods that are on cannot play (a total conversion lacking the units it gives
+  you or your Commander, a mod's mission that gives you no units: three of Total Mayhem's own) is
+  marked MISSION NOT PLAYABLE on the campaign page with the reason, and is not started.
+- Some wrecks had a large black square at their base: the ground plate TA's editor laid under
+  23 of TA's wrecks (the Sea Serpents', the EMP launcher's, the Thud's...), unflagged in their
+  models, was drawn from above, and darkened the ground round them. It is left out, as TA's
+  camera never saw it, in both art styles.
+- The Supreme Commander factions' buildings that float on water (the air factories, radars,
+  anti-air, missile defences and others) drew their pontoons, which Forged Alliance hides on land,
+  as dark slabs under the buildings and their wrecks; they are left out, and no longer widen the
+  footprints of four of them. Make the factions' mod again (UPDATE) to have it.
 
 ## 1.0.8 — 2026-11-18
 

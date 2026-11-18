@@ -923,6 +923,9 @@ struct PreparedStartup {
     loaded_stage: Option<crate::stage::StageRun>,
     attract_ready: bool,
     menu_film: Option<crate::backdrop::Film>,
+    /// What the menu says as it opens: a mission `--mission` named that the mods that are on
+    /// can't play (the title menu's battle played in its place).
+    failure: Option<(&'static str, String)>,
 }
 enum Loaded {
     Startup(PreparedStartup),
@@ -1065,6 +1068,9 @@ impl App {
                 state.renderer.resize(size.width, size.height);
                 if error.is::<ShortOfGraphicsMemory>() {
                     state.menu.failure = Some((SHORT_OF_MEMORY_TITLE, format!("{error:#}")));
+                } else if let Some(not_playable) = error.downcast_ref::<crate::campaign::MissionNotPlayable>() {
+                    // (A mission the mods that are on can't play: why, over the page it came from.)
+                    state.menu.failure = Some((crate::campaign::NOT_PLAYABLE, not_playable.0.clone()));
                 } else {
                     state.menu.record_error = Some(format!("{error:#}"));
                 }
@@ -1678,7 +1684,7 @@ impl State {
             (setup, _) => setup,
         };
         let mut film_plan = None;
-        let (setup, screen) = match (&args.map, mission_setup) {
+        let (setup, mut screen) = match (&args.map, mission_setup) {
             (_, Some(setup)) => (setup, Screen::Playing),
             (Some(map), None) => {
                 let mut duel = GameSetup::duel(map);
@@ -1714,7 +1720,20 @@ impl State {
             setup.rules.give_way = false;
         }
         progress(&status, ta_ui::i18n::n("Preparing battlefield"), &setup.map);
-        let mut game = Game::new(&assets, &mut renderer, &setup)?;
+        let mut failure = None;
+        let mut game = match Game::new(&assets, &mut renderer, &setup) {
+            Ok(game) => game,
+            // (`--mission` naming one the mods that are on can't play: the menu says why, over the
+            // title menu's battle.)
+            Err(e) if e.is::<crate::campaign::MissionNotPlayable>() => {
+                failure = Some((crate::campaign::NOT_PLAYABLE, e.to_string()));
+                let (backdrop, plan) = backdrop_setup(&assets, &settings, None, seed);
+                film_plan = plan;
+                screen = Screen::Menu;
+                Game::new(&assets, &mut renderer, &backdrop)?
+            }
+            Err(e) => return Err(e),
+        };
         if screen == Screen::Playing {
             game.speed = lifecycle::starting_speed(settings.gameplay.speed, setup.local_player, benchmark.is_some() || staged.is_some());
             meet_the_enemy(&mut game, &settings, crate::profile_progress::ordinary_run(&args));
@@ -1724,11 +1743,11 @@ impl State {
             .map(|stage| crate::stage::StageRun::begin(stage, &mut game));
         let attract_ready = matches!(screen, Screen::Menu | Screen::Intro) && game.spectator;
         let menu_film = if attract_ready { prepare_attract(&mut game, film_plan, &status) } else { None };
-        Ok(PreparedStartup { renderer, assets, game, benchmark, screen, tutorial_lesson, settings, loaded_stage, attract_ready, menu_film })
+        Ok(PreparedStartup { renderer, assets, game, benchmark, screen, tutorial_lesson, settings, loaded_stage, attract_ready, menu_film, failure })
     }
 
     fn finish(window: Arc<Window>, args: &Args, prepared: PreparedStartup, profile: Option<ta_config::profiles::Profile>) -> Result<Self> {
-        let PreparedStartup { mut renderer, assets, game, benchmark, screen, tutorial_lesson, settings, loaded_stage, attract_ready, menu_film } = prepared;
+        let PreparedStartup { mut renderer, assets, game, benchmark, screen, tutorial_lesson, settings, loaded_stage, attract_ready, menu_film, failure } = prepared;
         if let Some(f) = &menu_film {
             renderer.lighting.moon_dir = f.moon_dir();
         }
@@ -2210,6 +2229,7 @@ impl State {
             }
         }
         let mut menu = Menu::new(&assets);
+        menu.failure = failure;
         menu.rules.unit_limit = config.gameplay.unit_limit;
         menu.connect = crate::lobby::ConnectForm::remembered(&config.gameplay);
         // `--host PORT` / `--join ADDRESS` go straight to the lobby.

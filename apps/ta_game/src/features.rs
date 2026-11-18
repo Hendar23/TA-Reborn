@@ -777,7 +777,10 @@ impl FeatureView {
                     // (A model registered already, a unit's own as its wreck, is not read again.)
                     v.model = models.library.id(&name).or_else(|| {
                         vfs.read_opt(&format!("objects3d/{name}.3do")).and_then(|b| ta_formats::model3do::Model3do::parse(&b).ok()).map(|mut m| {
-                            // A wreck's pads (an air plant's runway) clear of the ground.
+                            // The ground plate its file left unflagged left out, as TA's camera
+                            // never saw it (from above, a black square at the wreck's base); its
+                            // pads (an air plant's runway) clear of the ground.
+                            ta_render::model::flag_ground_plates(&mut m);
                             ta_render::model::lift_ground_pads(&mut m);
                             crate::scene::add_model(models, &|p| vfs.read_opt(p), &name, &m, palette)
                         })

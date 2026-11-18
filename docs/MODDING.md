@@ -878,6 +878,22 @@ box from a side before it drawn in the same panels (its `intgaf`), else from the
 may name its art and nothing more. The Supreme Commander factions add theirs so
 (`gamedata/sidedata_supcom.tdf`).
 
+#### Campaigns and missions
+
+A mod's `camps/` adds campaigns, and a mission OTA of its own in `maps/` takes the place of TA's of
+that name (TA: Escalation and Total Mayhem ship their copies of TA's). A schema's units are read
+from its `[units]` section, or, where it has none, from the section whose entries name units
+(`Unitname`) whatever it is called: TA: Escalation's patched engine read its missions' units from
+`[unitsE]`, as it read `unitse` for `units`. The units are those of the mod's data by name: TA's
+missions with a mod that redefines `ARMCOM` place the mod's.
+
+A mission the data with your mod cannot play is not started: the campaign page marks it
+**MISSION NOT PLAYABLE**, with why, when it gives the player no units (a map made for skirmishes
+listed as a mission), none the data has (a total conversion's units in place of TA's), no Commander
+where it is lost with one, or when every way to win it names a unit type the data lacks. `ta-tools
+--mod <folder> missions` lists the unit names a mod's data lacks mission by mission; the campaign
+smoke test plays every mission with a mod ([Testing in the game](#testing-in-the-game)).
+
 #### Models with surfaces of their own
 
 A 3DO can be painted beyond TA's palette and 64-pixel textures: with a **surface** beside it,
@@ -1252,10 +1268,12 @@ The game's options for trying a mod:
 | `--classic-ui` | The classic interface whatever the settings say (side panels made for 768-pixel screens, shared places) |
 | `--game-dir <folder>` | The original game's folder, when it is not found |
 | `--load <file.tasav>`, `--replay <file.tarep>`, with `--anyway` | Opens a saved game or replay; `--anyway` opens it as it is, though made with other mods |
+| `--mission "<campaign>:<n>"` | Starts a campaign's mission at once (`"arm campaign:0"`, the first; a campaign by its file's name or its title) |
 | `--screenshot <file.png> --frames <n>` | Saves a picture after n frames and closes |
 
 The game's log (`logs\game.log` in the settings folder) names the mods mounted, and the original
-game's archives they replace.
+game's archives they replace; for a mission, how many units it placed (and the names it left out,
+unknown), and once it is decided, the goals that decided it.
 
 #### From the source tree
 
@@ -1267,6 +1285,7 @@ names the mod's folder (an absolute path, with its `mod.toml`):
 | `cargo test --release -p ta_ai --test skirmish -- --nocapture` | Computer players fight a battle with the mod (`TA_TEST_SIDES=TAL,CORE` its sides, `TA_TEST_MAP`, `TA_TEST_MINUTES`) |
 | `cargo test --release -p ta_sim --test animation_scan -- --ignored --nocapture` | Every unit's animations, checked for pieces sunk into the ground, flown off or crossed over, and pieces standing on nothing (`TA_UNITS=a,b` for some) |
 | `cargo test --release -p ta_sim --test mod_upgrades -- --ignored --nocapture` | Each building and factory builds the module or upgrade its menu offers, and takes it on |
+| `cargo test --release -p ta_sim --test mission every_mission -- --ignored --nocapture` | Every campaign mission with the mod, 30 seconds each with the computer players: those decided early, and the goals that decided them; `every_campaign_mission_can_be_played` (not ignored) lists those the mod's data cannot play, and why |
 | `TA_LAYOUT_DIR=<dir> cargo test --release -p ta_game --bin ta-reborn scenario::placement_tests::scenario_layout_maps -- --ignored --nocapture` | Every scenario's layout pictured from above, with its faults listed |
 
 ### Publishing a mod
