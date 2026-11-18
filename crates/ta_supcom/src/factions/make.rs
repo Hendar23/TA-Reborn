@@ -20,8 +20,10 @@ pub const TAGS: [&str; 3] = ["units", "factions", "supreme commander"];
 /// The converter's version, the mod's own (its manifest's `version`): a mod made by an older one
 /// is offered to be made again. Raised whenever what is made changes (8: buildings' work and
 /// upgrade animations; 9: buildings' floats left out where Forged Alliance hides them, on the
-/// ground).
-pub const VERSION: u32 = 9;
+/// ground; 10: the paint as large as Forged Alliance paints it, its 1024s kept rather than halved
+/// to 512, smaller textures enlarged keeping their edges sharp, the colour maps BC1, the
+/// Seraphim's player's colour glowing).
+pub const VERSION: u32 = 10;
 
 /// What was made.
 #[derive(Clone, Debug, Default)]
@@ -189,9 +191,11 @@ fn unit(files: &Files, u: &UnitBlueprint, extra: &units::Extra, extra_weapons: &
     let fitted = footprint.map(|f| UnitBlueprint { footprint: Some(f), ..u.clone() });
     let u = fitted.as_ref().unwrap_or(u);
     let name = u.id.to_ascii_lowercase();
-    // Its paint: each texture made the surface's, or a plain one where it has none; the colour
-    // map as bright as Forged Alliance lights it (by its shader); the Seraphim's team colour moved
-    // from their albedo's alpha into the specular map's.
+    // Its paint: each texture made the surface's (as large as Forged Alliance paints it, 512 to
+    // 1024 texels a side), or a plain one where it has none; the colour map as bright as Forged
+    // Alliance lights it (by its shader); the Seraphim's team colour moved from their albedo's
+    // alpha into the specular map's, glowing as their ramp of light does; the colour map then BC1
+    // (its alpha not drawn: half the bytes).
     let mut paint: Vec<(String, Vec<u8>)> = Vec::new();
     for ((kind, plain), source) in [("albedo", textures::PLAIN_ALBEDO), ("specteam", textures::PLAIN_SPECULAR), ("normals", textures::PLAIN_NORMALS)].into_iter().zip(&read.paint) {
         let bytes = match source {
@@ -202,12 +206,13 @@ fn unit(files: &Files, u: &UnitBlueprint, extra: &units::Extra, extra_weapons: &
         paint.push((format!("textures/supcom/{name}_{kind}.dds"), bytes));
     }
     if lod0.shader.eq_ignore_ascii_case("seraphim") {
-        match textures::team_from_alpha(&paint[1].1, &paint[0].1) {
+        match textures::team_from_alpha(&paint[1].1, &paint[0].1, textures::SERAPHIM_GLOW) {
             Ok(both) => paint[1].1 = both,
             Err(e) => return Ok(Err(format!("{}: {e}", lod0.specular))),
         }
     }
     let material = Material { name: name.clone(), albedo: paint[0].0.clone(), specular: paint[1].0.clone(), normals: paint[2].0.clone(), mean: textures::mean(&paint[0].1) };
+    paint[0].1 = textures::opaque(&paint[0].1);
     let mut near = match model::convert_leaving_out(mesh, u.display.uniform_scale, material.clone(), &floats) {
         Ok(m) => m,
         Err(why) => return Ok(Err(format!("{}: {why}", lod0.mesh))),
@@ -314,7 +319,7 @@ mod tests {
             ("UEB0104", blueprint("'STRUCTURE', 'TECH2', 'BUILTBYTIER2COMMANDER'", "Economy = { BuildCostMass = 300, BuildCostEnergy = 3000, BuildTime = 600 }")),
             ("UEL0105", blueprint("'MOBILE', 'LAND', 'TECH1', 'ENGINEER', 'BUILTBYTIER1FACTORY', 'BUILTBYTIER2FACTORY'",
                 "Economy = { BuildCostMass = 52, BuildCostEnergy = 260, BuildTime = 260, BuildRate = 5, BuildableCategory = { 'BUILTBYTIER1ENGINEER UEF' } }, \
-                 Physics = { MotionType = 'RULEUMT_Land', MaxSpeed = 1.9, TurnRate = 120 }")),
+                 Physics = { MotionType = 'RULEUMT_Land', MaxSpeed = 1.9, TurnRate = 120 }, Display = { UniformScale = 0.05, Mesh = { LODs = { { ShaderName = 'Seraphim' } } } }")),
             ("UEL0201", blueprint("'MOBILE', 'LAND', 'TECH1', 'DIRECTFIRE', 'BUILTBYTIER1FACTORY', 'BUILTBYTIER2FACTORY'", &format!(
                 "Defense = {{ MaxHealth = 300 }}, Economy = {{ BuildCostMass = 56, BuildCostEnergy = 266, BuildTime = 280 }}, Physics = {{ MotionType = 'RULEUMT_Land', MaxSpeed = 3.4, TurnRate = 90 }}, \
                  Weapon = {{ {} }}",
@@ -363,6 +368,48 @@ mod tests {
         files.push(("units/UEB1103/UEB1103_pump.sca".into(), crate::sca::tests::write(&[("Turret", -1)], &[(0.0, vec![key(4.0)]), (0.5, vec![key(5.0)]), (1.0, vec![key(4.0)])], 1.0)));
         let s = std::f32::consts::FRAC_1_SQRT_2;
         files.push(("units/UEB1103/UEB1103_up.sca".into(), crate::sca::tests::write(&[("Turret_Barrel", -1)], &[(0.0, vec![([0.0, -0.5, 3.0], still)]), (2.0, vec![([0.0, -0.5, 3.0], [s, -s, 0.0, 0.0])])], 2.0)));
+        // Paint: the factory's colour map of 1024 texels (DXT1, every level, a quarter of its blocks
+        // of three colours, as Forged Alliance's are) and its specular map of 512 (DXT5); the
+        // tank's and the engineer's small and uncompressed (enlarged to 512), the engineer drawn as
+        // the Seraphim are (its player's colour in its colour map's alpha).
+        let dxt = |side: u32, fourcc: &[u8; 4], seed: u32| -> Vec<u8> {
+            let levels = side.ilog2() + 1;
+            let mut file = ta_formats::dds::header(side, side, levels, Some(fourcc));
+            let grey = |v: u32| (((v >> 3) << 11) | ((v >> 2) << 5) | (v >> 3)) as u16;
+            for l in 0..levels {
+                for i in 0..((side >> l).max(4) / 4).pow(2) {
+                    let k = i.wrapping_mul(2_654_435_761).wrapping_add(seed + l);
+                    if fourcc == b"DXT5" {
+                        file.extend_from_slice(&[(k >> 24) as u8, (k >> 16) as u8, (k >> 5) as u8, (k >> 13) as u8, (k >> 3) as u8, (k >> 9) as u8, (k >> 1) as u8, (k >> 19) as u8]);
+                    }
+                    let (c0, c1, bits) = if fourcc == b"DXT1" && i % 4 == 0 {
+                        // (Three colours: the ends and halfway, never the see-through black.)
+                        let bits = (0..16).fold(0u32, |b, t| b | (((k >> t) % 3) << (2 * t)));
+                        (grey(40 + i % 50), grey(110 + i % 60), bits)
+                    } else {
+                        (((k >> 16) as u16) | 0x8000, (k as u16) & 0x7FFF, k.rotate_left(7))
+                    };
+                    file.extend_from_slice(&c0.to_le_bytes());
+                    file.extend_from_slice(&c1.to_le_bytes());
+                    file.extend_from_slice(&bits.to_le_bytes());
+                }
+            }
+            file
+        };
+        let small = |seed: u32| -> Vec<u8> {
+            let mut file = ta_formats::dds::header(64, 64, 1, None);
+            for i in 0..64 * 64u32 {
+                let (x, y) = (i % 64, i / 64);
+                file.extend_from_slice(&[(x * 4 + seed) as u8, (y * 3) as u8, ((x ^ y) * 5) as u8, if (x / 8 + y / 8) % 3 == 0 { 255 } else { 0 }]);
+            }
+            file
+        };
+        files.push(("units/UEB0101/UEB0101_albedo.dds".into(), dxt(1024, b"DXT1", 1)));
+        files.push(("units/UEB0101/UEB0101_specteam.dds".into(), dxt(512, b"DXT5", 2)));
+        for (id, seed) in [("UEL0201", 3), ("UEL0105", 4)] {
+            files.push((format!("units/{id}/{id}_albedo.dds"), small(seed)));
+            files.push((format!("units/{id}/{id}_specteam.dds"), small(seed + 40)));
+        }
         // The engineering suite's button.
         let mut icon = ta_formats::dds::header(8, 8, 1, None);
         icon.extend(std::iter::repeat_n([40u8, 80, 160, 255], 64).flatten());
@@ -482,8 +529,55 @@ mod tests {
         assert!(fbi("ueb3101").contains("ActivateWhenBuilt=1;") && !fbi("ueb1101").contains("ActivateWhenBuilt"));
     }
 
+    /// The test faction's paint: the factory's colour map of 1024 kept at 1024 (BC1, its own
+    /// colours), its specular map of 512 at 512; the tank's small maps enlarged to 512; the
+    /// engineer, drawn as the Seraphim, with its player's colour moved from its colour map's alpha
+    /// into its specular map's and glowing there; the stand-in for a texture a unit lacks at 512.
+    #[test]
+    fn the_paint_keeps_its_own_size() {
+        use ta_formats::dds;
+        let dir = crate::tests::Temp::new("make-paint");
+        std::fs::write(dir.0.join("units.scd"), archive()).unwrap();
+        let files = Files::of(Vec::new(), vec![crate::scd::Scd::open(&dir.0.join("units.scd")).unwrap()]);
+        let units: Vec<UnitBlueprint> = crate::unit::catalogue(&files).unwrap().into_iter().filter(|u| u.playable()).collect();
+        let mut written: std::collections::BTreeMap<String, Vec<u8>> = Default::default();
+        make(&files, &units, "test", &mut |path, bytes| {
+            if path.starts_with("textures/") {
+                written.insert(path.to_string(), bytes.to_vec());
+            }
+            Ok(())
+        }, &mut |_, _| true).unwrap();
+        let header = |path: &str| {
+            let bytes = &written[path];
+            let h = dds::Header::parse(bytes).unwrap();
+            assert_eq!(h.levels_held(bytes), h.levels, "{path}: every level");
+            (h.width, h.format)
+        };
+        assert_eq!(header("textures/supcom/ueb0101_albedo.dds"), (1024, dds::Format::Dxt1));
+        assert_eq!(header("textures/supcom/ueb0101_specteam.dds"), (512, dds::Format::Dxt5));
+        assert_eq!(header("textures/supcom/ueb0101_normals.dds"), (512, dds::Format::Dxt5), "a stand-in");
+        assert_eq!(header("textures/supcom/uel0201_albedo.dds"), (512, dds::Format::Dxt1));
+        // (The factory's colours, its source's, its blocks of three colours to a step or two: no
+        // gain for a unit naming no shader.)
+        let source = files.read("units/ueb0101/ueb0101_albedo.dds").unwrap().unwrap();
+        let (was, now) = (dds::decode(&source, 0).unwrap(), dds::decode(&written["textures/supcom/ueb0101_albedo.dds"], 0).unwrap());
+        let mut off = 0u64;
+        for (a, b) in was.rgba.iter().zip(&now.rgba) {
+            assert!((0..3).all(|k| a[k].abs_diff(b[k]) <= 12), "{a:?} became {b:?}");
+            off += (0..3).map(|k| a[k].abs_diff(b[k]) as u64).sum::<u64>();
+        }
+        assert!(off * 2 < was.rgba.len() as u64 * 3, "{off} steps off over {} texels", was.rgba.len());
+        // (The engineer's player's colour where its colour map's alpha was, glowing.)
+        let spec = dds::decode(&written["textures/supcom/uel0105_specteam.dds"], 0).unwrap();
+        let marked = spec.rgba.iter().filter(|t| t[3] > 200).count();
+        assert!(marked > 512 * 512 / 5, "{marked}");
+        // (Glowing where marked, to the colour blocks' encoding where marked texels meet others.)
+        let glowing = spec.rgba.iter().filter(|t| t[3] > 200 && t[2] as u32 + 12 >= textures::SERAPHIM_GLOW).count();
+        assert!(glowing * 100 >= marked * 95, "{glowing} of {marked} marked texels glowing");
+    }
+
     /// The hash of the test faction's mod (see the test above).
-    const EXPECTED: &str = "835669907d733e0b0fb62fc41f6a7858d8f789041ca6cd1f2de7cb2da3cddbb6";
+    const EXPECTED: &str = "cfda6b9da5720392cac368162351532583fb2845fbd6e73675d8b27fd965dba5";
 
     /// A unit whose mesh does not read is left out, with its reason; the rest are made.
     #[test]

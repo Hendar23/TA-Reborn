@@ -1009,7 +1009,7 @@ mod tests {
         for _ in 0..4 { frame(&ctx, &mut app, size, Vec::new()); }
         let (_, texts) = frame(&ctx, &mut app, size, Vec::new());
         // (The mod holds the UEF and the Aeon: those are chosen at first.)
-        assert!(texts.iter().any(|(text, _, _)| text == "2 of 4 factions chosen, 178 units, about 0.2 GB on the disk"), "{:?}", texts_of(&texts));
+        assert!(texts.iter().any(|(text, _, _)| text == "2 of 4 factions chosen, 178 units, about 0.3 GB on the disk"), "{:?}", texts_of(&texts));
         assert!(texts.iter().any(|(text, _, _)| text.starts_with("Still to come: Forged Alliance's own sounds")), "{:?}", texts_of(&texts));
         // The keys stop at each faction's box once.
         let tab = egui::Event::Key { key: egui::Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };

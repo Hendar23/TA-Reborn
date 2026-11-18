@@ -1234,26 +1234,41 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
     vertices out with the surface's texture coordinates and normals, shared by the polygons
     round them (a vertex of the library's for each of the 3DO's and its material), none of
     Reborn's kit, caps or rounding. A face's `layer` is its material's slot with no frames (bits
-    16-23 zero): bit 9 of the shader's flags. The paint is one array of BC3 layers of 512² with
-    every mip (`SurfaceTextures`; decoded to RGBA8 where the card has no block compression),
-    three a material (colour; specular and team colour; normals), asked for the first time a
-    model of the material is drawn (`prepare`), read and made BC3 levels on workers of their own
-    (`make_paint`; a texture of another size, or uncompressed, decoded and encoded again), and put
-    in the array by the frames, `FRAME_SHARE` (2 ms) of a frame at most (a film on a fixed clock,
-    `set_paint_waits`, waits for all it asks); kept for the battle and let go as the next starts
-    (`Renderer::release_surface_paint`). The array grows `GROWTH` (32) materials at a time, what
-    it held copied over, in an error scope: refused, it stays as it was and the rest are drawn in
-    their colours on average. A storage buffer tells the shader each slot's layers (`u32::MAX`
-    until read: the face in its colour on average, the vertex's).
+    16-23 zero): bit 9 of the shader's flags. The paint is two arrays of BC3 layers with every
+    mip (`SurfaceTextures`; decoded to RGBA8 where the card has no block compression), one of 512²
+    and a fine one of 1024² (bindings 11 and 13), each of a material's three textures (colour;
+    specular and team colour; normals) a layer of either by its own size: a texture of 1024 or
+    more in the fine one while the paint is fine (`set_fine`: with HD surfaces, from the frame's
+    lighting; never as plain colour; a change lets the paint go), else its 512 levels in the other
+    (`dds::paint_side`). Asked for the first time a model of the material is drawn (`prepare`),
+    read and made BC3 levels on workers of their own (`make_paint`; a texture of another size, or
+    uncompressed, decoded and encoded again), and put in the arrays by the frames, `FRAME_SHARE`
+    (2 ms) of a frame at most (a film on a fixed clock, `set_paint_waits`, waits for all it asks);
+    kept for the battle and let go as the next starts (`Renderer::release_surface_paint`). Each
+    array grows about 32 MB at a time (`GROWTH_BYTES`: 96 layers of 512, 24 of 1024), what it held
+    copied over, in an error scope: the fine one refused, its textures go in the other at 512;
+    that refused, the rest are drawn in their colours on average. A storage buffer tells the
+    shader where each of a slot's three textures is (three words: a layer, `FINE` the top bit for
+    the fine array's; `u32::MAX` until read: the face in its colour on average, the vertex's;
+    `surface_texel`).
     The shader takes the colour (in sRGB), the player's colour where the specular map's alpha
-    says, gloss and mirroring from its green and red (strong mirroring brightens the paint to
-    polished metal: Forged Alliance added the mirrored sky over dark paint), lights from its
-    blue (out when the unit's lights are), and the normal map's relief through the screen-space
-    tangent frame (`mapped_normal`). Ray-traced reflections take the vertex's colour. A model
-    whose surface names a `far` one is drawn as that one under `FAR_PIXELS` across, a unit or a
-    wreck drawn as itself the frame before (`DrawInstance::key`) down to `FAR_PIXELS_BACK`
-    (`detail_for`, in either art style; same pieces). A surface that does not read or fit leaves
-    its model drawn as TA draws its faces (`add_plain`: no kit, caps or halves).
+    says, lights from its blue (out when the unit's lights are), and the normal map's relief
+    through the screen-space tangent frame (`mapped_normal`); the rest by the art style. Enhanced
+    Classic: gloss and mirroring from its green and red (strong mirroring brightens the paint to
+    polished metal: Forged Alliance added the mirrored sky over dark paint) and Forged Alliance's
+    broad, cool sheen as strong as the green. Reborn (`surfaced_finish`): greys lose most of their
+    cast and the paint's painted highlights rise on a shoulder; matte paint as glossy as the green
+    over some six texels round (a second lookup of the specular map, its gradients six times
+    larger); the green's outlines worn to bright, smoother metal; strong red polished metal; no
+    sheen, lit by the physically based light as every model is; the colour map read through a
+    Catmull-Rom spline where it is magnified (`surface_sharp`: from a texel over a pixel and a
+    half, five lookups of its first level and four for its nearest texels, which bound it).
+    Ray-traced reflections take the vertex's colour (its material's on average, as Forged
+    Alliance's paint, in either art style). A model whose surface names a `far` one is drawn as
+    that one under `FAR_PIXELS` across, a unit or a wreck drawn as itself the frame before
+    (`DrawInstance::key`) down to `FAR_PIXELS_BACK` (`detail_for`, in either art style; same
+    pieces). A surface that does not read or fit leaves its model drawn as TA draws its faces
+    (`add_plain`: no kit, caps or halves).
 * **Sprites**: shelf-packed atlas, 4096² to begin with, growing 4096 texels at a time (taller,
   then wider: each widening a new column of shelves; a big mod's a little over 8192 × 16384 is
   12288 × 16384, not twice that) up to the largest texture the device takes, a big mod's

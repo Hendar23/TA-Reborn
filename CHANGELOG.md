@@ -3,6 +3,19 @@
 ## Unreleased
 
 ### Fixed
+- The Supreme Commander factions' buildings and units looked pixelated and frosty: their paint was
+  halved to 512 texels a side, so at a normal battle zoom a factory was drawn from a quarter of
+  Forged Alliance's texels, blown up into soft DXT blocks. Their paint is now as large as Forged
+  Alliance paints it (most buildings', the commanders' and the large units' 1024 texels a side,
+  held with HD surfaces; at the Low level the graphics card holds what it did), smaller textures
+  are enlarged keeping their edges sharp, the colour maps' blocks keep their colours, and up close
+  the colour is read sharp rather than blurred between texels. In Reborn's art style the paint is
+  finished as TA's is: the pale blue-white the UEF's buildings wore and the white specks along
+  every panel line (Forged Alliance's sheen, painted into the paint and laid over it again) are
+  gone, the greys are gunmetal, the panels matte with their edges worn bright, the Aeon's and the
+  Seraphim's chrome polished, the Seraphim's markings glowing in their player's colour. Enhanced
+  Classic keeps Forged Alliance's look, at its full resolution. Make the factions' mod again
+  (UPDATE) to have it: it takes about 680 MB (440 MB before).
 - The Supreme Commander factions' buildings move as they work, as in Forged Alliance: extractors
   pump while they extract, stopping where they are when switched off; power generators, mass
   fabricators, radars and shield generators spin, swing and slide their parts; factories' arms

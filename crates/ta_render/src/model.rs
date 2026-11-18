@@ -2644,7 +2644,7 @@ impl ModelRenderer {
                 paint_array(9),
                 paint_array(10),
                 // The paint of models with surfaces of their own, and where each material's is
-                // (surfaced.rs).
+                // (surfaced.rs); its fine array.
                 paint_array(11),
                 wgpu::BindGroupLayoutEntry {
                     binding: 12,
@@ -2656,6 +2656,7 @@ impl ModelRenderer {
                     },
                     count: None,
                 },
+                paint_array(13),
             ],
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -2918,11 +2919,15 @@ impl ModelRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 11,
-                    resource: wgpu::BindingResource::TextureView(&surfaces.view),
+                    resource: wgpu::BindingResource::TextureView(surfaces.views().0),
                 },
                 wgpu::BindGroupEntry {
                     binding: 12,
                     resource: surfaces.table.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 13,
+                    resource: wgpu::BindingResource::TextureView(surfaces.views().1),
                 },
             ],
         })
