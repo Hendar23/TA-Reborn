@@ -111,6 +111,8 @@ pub struct Hud {
     /// enhancement last clicked there (for the selection, once the menu is drawn).
     enhancing: std::collections::HashSet<usize>,
     enhance_click: Option<enhance::EnhanceClick>,
+    /// The upgrade clicked in a factory's build menu (its first picture), with Shift or not.
+    upgrade_click: Option<bool>,
     /// Enhancements' pictures (`unitpics/<name>.pcx`), by name.
     enhancement_pics: HashMap<String, Option<TextureHandle>>,
     /// The building being placed whose tab the build menu last turned to: it turns there once,

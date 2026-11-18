@@ -1050,8 +1050,9 @@ every building of a mod that offers an upgrade ([testing](#from-the-source-tree)
 
 A unit may become another where it stands, as Supreme Commander's factories, extractors and radars
 do: `UpgradesTo=<UnitName>` in its `[UNITINFO]` names the unit it becomes. It is offered UPGRADE
-(in the modern interface's orders, with its own key, Alt+U; on the classic interface's orders
-page, among the buttons TA has no gadget for), and builds that unit on itself:
+(in the modern interface's orders, with its own key, Alt+U, and a factory's build menu offers the
+unit it becomes first among its pictures, as Forged Alliance's do; on the classic interface's
+orders page, among the buttons TA has no gadget for), and builds that unit on itself:
 
 - **With its own build power** (`WorkerTime`): give a unit that builds nothing else one for its
   upgrades. The upgrade takes the new unit's `BuildTime` at that power, and builders helping it

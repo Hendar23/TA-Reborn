@@ -5,10 +5,10 @@
 ### Added
 - Upgrading in place: the Supreme Commander factions' factories upgrade into the next tier, their
   extractors into richer ones, their radars and sonars into better ones, as in Forged Alliance.
-  Select one and press UPGRADE (Alt+U; with Shift, the step after the one under way): it builds its
-  upgrade on itself with its own build power, and builders guarding it help; it pays as
-  construction does, a factory making nothing meanwhile; Stop calls it off and gives its metal
-  back. Done, the new building stands in its place, keeping its queue, route, selection and control
+  Select one and press UPGRADE (Alt+U, or a factory's first build picture, the building it
+  becomes; with Shift, the step after the one under way): it builds its upgrade on itself with its
+  own build power, and builders guarding it help; it pays as construction does, a factory making
+  nothing meanwhile; Stop calls it off and gives its metal back. Done, the new building stands in its place, keeping its queue, route, selection and control
   groups. The computer players climb the tiers by upgrading their factories, and upgrade their
   extractors. Any mod can use it (`UpgradesTo`, see [docs/MODDING.md](docs/MODDING.md#units-that-upgrade-in-place));
   make the factions' mod again (UPDATE) to have it.

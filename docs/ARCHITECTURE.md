@@ -2509,7 +2509,10 @@ where the units go (`hud/domain.rs`, below).
     whatever it makes (an aircraft plant on grass). `Upright` and the `Amphibious` of TA's seaplanes play no part. The lists are ordered by
     it (`domain::menu_order`, a stable sort): land first, then both, then the sea, then aircraft,
     each group in the menu's own order (TA's pages and download entries, `GameData::build_menus`);
-    neither the player nor a mod has another way to order a menu. A picture with a ground of its
+    neither the player nor a mod has another way to order a menu. The list is the unit's own menu
+    (`Unit::build_options`: what its enhancements add, ordered with the rest), and a factory that
+    upgrades in place offers the unit it becomes first, on its ground, stamped UPGRADE
+    (`upgrade_tile`); the ENHANCE tab's pictures keep their own. A picture with a ground of its
     own keeps it: TA's `unitpics` (the classic interface, a portrait not drawn yet) and the Supreme
     Commander factions' build pictures (`own_picture`: their game's icon on its frame). The
     grounds are original art drawn by `tools/hud/grounds.py` into `apps/ta_game/hud/grounds.png`
