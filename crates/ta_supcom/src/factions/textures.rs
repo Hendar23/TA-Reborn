@@ -66,8 +66,23 @@ pub fn brightened(texture: &[u8], gain: u32) -> Vec<u8> {
     out
 }
 
-/// A colour block (BC3's colour half: two 565 ends, then sixteen 2-bit indices) brightened.
+/// A colour block (BC3's colour half: two 565 ends, then sixteen 2-bit indices) brightened: its
+/// ends multiplied where neither passes white, which brightens every texel the block gives as much
+/// (its other two colours are blends of the ends); else its texels brightened one by one, short of
+/// white, and the block encoded again. (An end held at white would darken the blends towards the
+/// other end: most of all in a block of three colours held as four (`ta_formats::dds`), its moved
+/// end far past the colours it gives.)
 fn brighten_block(colour: &mut [u8], gain: u32) {
+    let past_white = |c: u16| {
+        let over = |v: u16, most: u32| (v as u32 * gain + 128) >> 8 > most;
+        over(c >> 11, 31) || over((c >> 5) & 63, 63) || over(c & 31, 31)
+    };
+    if past_white(u16::from_le_bytes([colour[0], colour[1]])) || past_white(u16::from_le_bytes([colour[2], colour[3]])) {
+        let up = |v: u8| ((v as u32 * gain + 128) >> 8).min(255) as u8;
+        let bright = dds::decode_colour_block(colour, false).map(|[r, g, b, a]| [up(r), up(g), up(b), a]);
+        colour.copy_from_slice(&dds::encode_colour_block(&bright));
+        return;
+    }
     let scale = |c: u16| -> u16 {
         let up = |v: u16, most: u32| ((v as u32 * gain + 128) >> 8).min(most) as u16;
         (up(c >> 11, 31) << 11) | (up((c >> 5) & 63, 63) << 5) | up(c & 31, 31)
@@ -258,8 +273,8 @@ mod tests {
         assert_eq!((paint_gain("Unit"), paint_gain("INSECT"), paint_gain("Aeon"), paint_gain("Seraphim")), (371, 512, 256, 256));
     }
 
-    /// Ends whose order brightening turns round (both reds run past white, the second's green
-    /// does not) are swapped back with their indices: each texel the same colour.
+    /// A block whose ends brightening would turn round (both reds run past white, the second's
+    /// green does not) keeps its first end the greater, each texel its own colour brightened.
     #[test]
     fn a_brightened_block_keeps_its_ends_order() {
         // (First end red 20, no green; second red 19, green 10: the first the greater. Doubled,
@@ -280,6 +295,42 @@ mod tests {
         assert_eq!(after[0][..3], [255, 0, 0]);
         assert_eq!(after[1][..3], [255, 81, 0]);
         assert!(before[2][1] < before[3][1] && after[2][1] < after[3][1] && after[3][1] < after[1][1]);
+    }
+
+    /// A block of three colours held as four (its moved end far past the colours it gives: greys
+    /// 99, 165 and 231 as the ends 231 and 33 and the thirds between), brightened past white, has
+    /// each of its colours brightened as much, short of white: not darkened by its end held at
+    /// white (multiplied, the ends gave 129, 192 and 255 for 198, 255 and 255).
+    #[test]
+    fn a_block_brightened_past_white_keeps_its_colours() {
+        let grey = |v: u16| (v >> 3 << 11) | (v >> 2 << 5) | (v >> 3);
+        let (c0, c1) = (grey(230), grey(35));
+        let mut block = [0u8; 8];
+        block[..2].copy_from_slice(&c0.to_le_bytes());
+        block[2..4].copy_from_slice(&c1.to_le_bytes());
+        // (Indices 3, 2 and 0: two thirds of the way, a third of the way and the first end.)
+        let indices: u32 = (0..16).map(|i| [3u32, 2, 0][i % 3] << (2 * i)).sum();
+        block[4..].copy_from_slice(&indices.to_le_bytes());
+        let before = dds::decode_colour_block(&block, false);
+        assert_eq!([before[0][0], before[1][0], before[2][0]], [99, 165, 231]);
+        let mut bright = block;
+        brighten_block(&mut bright, 512);
+        let after = dds::decode_colour_block(&bright, false);
+        for (b, a) in before.iter().zip(&after) {
+            for k in 0..3 {
+                let want = (b[k] as i32 * 2).min(255);
+                assert!((a[k] as i32 - want).abs() <= 8, "{} brightened to {}, not about {want}", b[k], a[k]);
+            }
+        }
+        // Where no end passes white, the ends are multiplied as they were: the texels exactly so.
+        let (c0, c1) = (grey(100), grey(40));
+        block[..2].copy_from_slice(&c0.to_le_bytes());
+        block[2..4].copy_from_slice(&c1.to_le_bytes());
+        let mut bright = block;
+        brighten_block(&mut bright, 512);
+        let up = |c: u16| (((c >> 11) * 2) << 11) | ((((c >> 5) & 63) * 2) << 5) | ((c & 31) * 2);
+        assert_eq!((u16::from_le_bytes([bright[0], bright[1]]), u16::from_le_bytes([bright[2], bright[3]])), (up(c0), up(c1)));
+        assert_eq!(bright[4..], block[4..]);
     }
 
     /// The Seraphim's team colour, from the albedo's alpha into the specular map's, glowing as far
