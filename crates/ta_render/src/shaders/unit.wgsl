@@ -23,12 +23,23 @@ struct Affine {
 @group(1) @binding(9) var reborn_textures_2: texture_2d_array<f32>;
 @group(1) @binding(10) var reborn_physical_2: texture_2d_array<f32>;
 override SECOND_BANK: u32 = 0u;
-// The paint of models with surfaces of their own (model/surfaced.rs): three layers a material
-// (its colour, its specular and team colour, its normals), and where each material's are (the
-// first of its layers over three; u32's largest where they are not read yet: the faces in their
-// colour on average).
+// The paint of models with surfaces of their own (model/surfaced.rs): three textures a material
+// (its colour, its specular and team colour, its normals), each a layer of the array of 512
+// texels a side or of the fine one of 1024, and where each material's are (three words a
+// material: a layer, the top bit set for the fine array's; u32's largest where they are not read
+// yet: the faces in their colour on average).
 @group(1) @binding(11) var surface_paint: texture_2d_array<f32>;
 @group(1) @binding(12) var<storage, read> surface_slots: array<u32>;
+@group(1) @binding(13) var surface_paint_fine: texture_2d_array<f32>;
+
+// A texel of a model's own surface's texture, by its table word (`surface_slots`).
+fn surface_texel(word: u32, uv: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
+    if ((word & 0x80000000u) != 0u) {
+        return textureSampleGrad(surface_paint_fine, tex_sampler, uv, word & 0x7FFFFFFFu, dx, dy);
+    }
+    return textureSampleGrad(surface_paint, tex_sampler, uv, word, dx, dy);
+}
+
 
 fn in_second_bank(layer: u32) -> bool {
     return SECOND_BANK != 0u && layer >= SECOND_BANK;
@@ -535,12 +546,11 @@ fn model_surface(in: VOut, front: bool) -> Surface {
         // A model's own surface: its material's colour, the player's colour where its specular
         // map's alpha says, its gloss and mirroring (green and red), its lights (blue), and its
         // normal map's relief (x in alpha, y in green). Not read yet: its colour on average.
-        let group = surface_slots[layer];
-        if (group != 0xFFFFFFFFu) {
-            let first = group * 3u;
-            let paint = textureSampleGrad(surface_paint, tex_sampler, in.uv, first, duv_x, duv_y);
-            let finish = textureSampleGrad(surface_paint, tex_sampler, in.uv, first + 1u, duv_x, duv_y);
-            let relief = textureSampleGrad(surface_paint, tex_sampler, in.uv, first + 2u, duv_x, duv_y);
+        let words = vec3<u32>(surface_slots[layer * 3u], surface_slots[layer * 3u + 1u], surface_slots[layer * 3u + 2u]);
+        if (all(words != vec3<u32>(0xFFFFFFFFu))) {
+            let paint = surface_texel(words.x, in.uv, duv_x, duv_y);
+            let finish = surface_texel(words.y, in.uv, duv_x, duv_y);
+            let relief = surface_texel(words.z, in.uv, duv_x, duv_y);
             // (The player's colour as Forged Alliance lays it on: the paint blended into it as far
             // as the alpha says, the colour as bright as TA's units wear it.)
             var albedo = srgb_to_linear(paint.rgb);

@@ -181,6 +181,12 @@ Each unit's first level of detail becomes `objects3d/<id>.3do` with its surface
   maps are Direct3D's (x along u, y along v, down the picture): across the meshes' seams, where
   the two sides' texture coordinates run different ways, the normals they give agree best read
   so (the meshes' own tangents and binormals run against u and v).
+- **Drawn:** the game holds a battle's paint in two arrays (docs/ARCHITECTURE.md, "Models with
+  surfaces of their own"): the 1024s in one of their own with HD surfaces (1.3 MB a texture on the
+  graphics card), else at their 512 level as every texture was before (a third of a megabyte), so
+  a small graphics card at the Low level holds what it did. On a scene of the four factions'
+  bases (each its three land factories, an air factory, power, extraction, a defence and four
+  units) the paint takes 126 MB with HD surfaces, and 31 MB without, as before.
 - **Light:** Forged Alliance lights its paint in its texels' own (gamma) space, by its map's
   lighting multiplier and sun (about 1.3 each on its maps): a lit face of the UEF's (`Unit`, the
   sky its specular map's red mirrors on top) some 1.6 times as bright as its texel, of the Cybran's
