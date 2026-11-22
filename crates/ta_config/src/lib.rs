@@ -195,8 +195,13 @@ pub const RECORD_VERSION: u32 = 47;
 /// engineers, tactical ones beside them striking defences, tactical defences against an enemy
 /// launcher seen), help build the experimentals in their factories' yards and hold part of their
 /// production back for them and for strategic silos, build them at the army's size limit and only
-/// on an income that can pay for them, and lean to tech 3 once its factories stand.
-pub const SIMULATION_VERSION: u32 = 106;
+/// on an income that can pay for them, and lean to tech 3 once its factories stand; 107, a
+/// factory with ways out (`[EXITS]`, Supreme Commander's roll-off points) builds its units facing
+/// the one nearest where they go (or as a unit's `BuildHeading` says) and sends them out along it,
+/// on its floor and down its ramp; a script may hold its unit still (`IMMOBILE`, told
+/// `StartMoving` when it has somewhere to go); a weapon naming its only targets
+/// (`OnlyTargetCategory<n>`) takes no other, by order too.
+pub const SIMULATION_VERSION: u32 = 107;
 /// Records shorter than one year of simulated time are supported. Shared with the
 /// launcher's metadata reader so impossible durations cannot start endless save catch-up.
 pub const MAX_RECORD_TICKS: u64 = 30 * 3600 * 24 * 365;
