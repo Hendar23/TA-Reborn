@@ -63,6 +63,27 @@
   army's size limit. Once tech 3 factories stand, production leans to tech 3, and more factories
   are upgraded to it as the economy grows. The Tech persona does the most of this and the Rush
   persona the least; Easy still builds no silos, long-range guns or experimentals.
+- The Supreme Commander factions' factories built their units sinking into the build platform as
+  they were done, then drove them out through the factory's front wall. A unit is now built on the
+  platform facing the way it will leave by, and rolls off as in Forged Alliance: along the factory's
+  roll-off lane nearest its rally point, on the platform and down its ramp (the land factories' to
+  either side, the naval factories' along their docks, the quantum gateways' to the front or the
+  back); the long transports are built along their air factories' platforms, not through the
+  factory. Any mod's factory can name its ways out the same (`[EXITS]`, and a unit the way it faces
+  as it is built, `BuildHeading`: see [docs/MODDING.md](docs/MODDING.md#factories-ways-out)); TA's
+  own factories send their units out of the front as ever.
+- The Supreme Commander factions' missile trucks (the Flapjack, the Spearhead), missile launchers,
+  silos and heavy artillery fired without deploying. Each weapon that unpacks in Forged Alliance
+  now plays its unpack animation first (the launcher raised, the silo's doors opened, the
+  artillery's feet set down) and fires once it is done, packing up again a moment after its target
+  is gone; the heavy artillery, the Scathis and the Aeon sniper bot hold still while deployed and
+  pack up before they move off. A script can hold its unit still so (`IMMOBILE`, see
+  [docs/MODDING.md](docs/MODDING.md#scripts-and-ta-31s-questions)).
+- The Supreme Commander factions' anti-air towers (and their other anti-air, ships' and
+  interceptors' guns) fired on land and sea units, and on the ground, when told to attack them.
+  They now take on aircraft alone, by order too. Any mod's weapon can be kept to its targets the
+  same (`OnlyTargetCategory<n>`, see [docs/MODDING.md](docs/MODDING.md#units-weapons-and-features));
+  TA's own units keep their rules. Make the factions' mod again (UPDATE) to have these three.
 
 ## 1.0.8 — 2026-11-18
 

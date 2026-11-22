@@ -352,7 +352,10 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   (`projectiles::torpedo_aim`), as one sent along the straight line up from a submarine ran into
   the sea bed rising to the shallows, and runs at least as far as its range.
   `toairweapon` weapons engage only aircraft, other direct-fire and guided weapons both,
-  shells and bombs only the ground. A weapon takes its bad targets on last, only when no other
+  shells and bombs only the ground; an attack order fires any of them at what it names, but a
+  weapon naming its only targets (`OnlyTargetCategory<n>`, `UnitType::weapon_only_masks`,
+  `Sim::only_allows`, part of `Sim::takes_order`) takes no other, by order either: Supreme
+  Commander's anti-air. A weapon takes its bad targets on last, only when no other
   enemy is in reach, and turns to a better one coming into reach (`Sim::bad_target`,
   `Sim::can_engage`, `Sim::find_target`'s first key): the categories its unit's
   `BadTargetCategory` names, or the weapon's own `wpri_`/`wsec_`/`wspe_badTargetCategory`
@@ -505,7 +508,11 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   production off the queue takes its frame apart, its metal back. The unit in production rides
   the factory's pad (`QueryBuildInfo`'s piece, `Sim::follow_build_pad`), turned as the pad is
   turned (TA's plants spin it while they build: docs/FORMATS.md; `unit::piece_world_heading`) and
-  keeping the heading it was left with when done, but a ship is built at
+  keeping the heading it was left with when done. A factory with ways out (`[EXITS]`,
+  `UnitType::exits`: Supreme Commander's roll-off points) builds it facing the one nearest where it
+  goes next (`Sim::choose_exit`), on the pad from its first tick, and sends it to that way's end
+  instead of past its front, on the factory's floor as it goes (`Unit::roll_off`, `unit::Way`,
+  `Sim::settle`: the pad's height to the ramp's top, down the ramp to the ground); a ship is built at
   the surface, where it floats once done (a shipyard's pad is under the water, the Core's yard
   22 px deep), and a hovercraft on a pad under the water on it too. Construction aircraft at work
   face what they build and sway round it, as TA's do (`Sim::drift_round`, `Unit::drift`): once

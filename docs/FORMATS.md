@@ -994,6 +994,36 @@ take up to all 32 bits of a texel.
   health rises with its most and falls to it, no further, when one is taken out (at once, for
   nothing). The script's `SetEnhancement(index, on)` hears of each (the index in the file's order).
   None of TA's units has any; the state is in the checksum (`Unit::enhancements`).
+* **`[EXITS]`** (TA Reborn's, for mods; Supreme Commander's `RollOffPoints`), a section within a
+  factory's `[UNITINFO]`, a section a way out in order (`ta_data::ExitDef`): `X` and `Z` where it
+  leads (px from the factory's middle at its heading 0, turned with it), `Heading` the way a unit
+  built for it faces (degrees, 0 the factory's front, 90 its +x; beside the pad's own turn), and
+  `Ramp` (two numbers, px along the way from the pad: the pad's height kept to the first, the
+  ground at the second). A unit begun takes the way nearest the first place of the factory's route
+  (else its front), of those whose end it may stand on, the first of equals, and stands on the pad
+  from its first tick facing it (one that never moves takes none: it is made as the pad faces);
+  done, it is sent to the way's end (`Order::Move`, then the route), its height on the way the
+  pad's to the ramp's top, down evenly to the ground at its foot (the higher of that and the
+  ground, and tipped by it: `unit::Way::floor`, `Sim::settle`), until it is out of the footprint.
+  Aircraft lift off the pad as before. A unit's own `BuildHeading` (degrees, as a way's `Heading`)
+  is the way it faces while built by such a factory, whichever way it takes
+  (`UnitType::build_heading`: Supreme Commander's `ForcedBuildSpin`). None of TA's factories has
+  any: they play as ever. The way is in the checksum (`Unit::roll_off`, only where there is one).
+* **`OnlyTargetCategory<n>`** (Spring's name; TA Reborn reads it for any slot, `n` from 1): the
+  categories of the only units the weapon in slot `n` takes on, automatically, firing back and by
+  order: an attack order on another unit, or on the ground, is not that weapon's (and ends when no
+  weapon of the unit's takes it), nor is a unit it names where it cannot hit it
+  (`Sim::only_allows`: `toairweapon` and a landed aircraft). None of TA's units names any: TA's
+  `toairweapon=1` weapons still fire on what an order names (`Sim::takes_order`).
+* **`TARGET_ID`** (unit value 83, Spring's: `get TARGET_ID(n)`): weapon `n`'s target (from 1), a
+  unit's script id, -1 none, -2 a place, -3 a missile it intercepts, -4 no such weapon.
+* **`IMMOBILE`** (unit value 200, TA Reborn's own): set by a script, its unit is held still
+  (`Unit::immobile`, in the checksum where set; a unit on the ground or the water: aircraft fly
+  on): no movement, no turning, not pushed by the crowd, its orders waiting. With a way to go it
+  counts as setting off for its script (`StartMoving`, once, `Unit::moving`), so that the script
+  can let it go; its way given up, `StopMoving`. From then until it is let go it fires nothing
+  (`Unit::packing_to_go`: an aim answered before no longer fires). The Supreme Commander
+  factions' weapons that lock their unit's motion while unpacked set it.
 * Build menus: `guis/<BUILDER><page>.gui` + `download/*.tdf`. The 3.1 patch's `[CANBUILD]` in
   sidedata is the computer players' list, never a player's menu: mods list units of their AI
   there (TA: The Final Frontier's AI Boost: `AAISOLAR` beside the `ARMSOLAR` a player builds,

@@ -138,6 +138,15 @@ fn air_only(w: &WeaponBlueprint) -> bool {
     !w.target_layers.is_empty() && w.target_layers.iter().all(|(_, to)| to.split('|').all(|l| l.trim().eq_ignore_ascii_case("air")))
 }
 
+/// Whether it is anti-air that takes on aircraft alone in Forged Alliance, of its own accord or by
+/// order: 'Air' from every layer ([`air_only`]: the anti-air towers, mobile and ships' anti-air),
+/// or none but `AIR` units (`TargetRestrictOnlyAllow`: the aircraft's guns and missiles, an
+/// interceptor's among them, whose layers name the land as well). Not a missile defence, whose
+/// 'Air' is the missiles it shoots down (TA Reborn's interceptors take nothing else anyway).
+pub fn aircraft_alone(w: &WeaponBlueprint) -> bool {
+    kind(w) == Kind::AntiAir && (air_only(w) || restricts_to(w, "AIR"))
+}
+
 /// Whether it may shoot at aircraft (its `FireTargetLayerCapsTable` names 'Air' from some layer;
 /// none given, it may).
 pub fn shoots_air(w: &WeaponBlueprint) -> bool {
@@ -885,6 +894,113 @@ fn winged(u: &UnitBlueprint) -> bool {
 pub struct Extra<'a> {
     pub upgrades_to: Option<&'a str>,
     pub enhancements: String,
+    /// The weapons its enhancements switch on, in the slots after its own
+    /// (`factions::enhance::extra_weapons`): what of theirs holds for a slot whatever fills it.
+    pub weapons: Vec<&'a WeaponBlueprint>,
+    /// A factory's ways out ([`exits`]: they need its mesh).
+    pub exits: Vec<Exit>,
+}
+
+/// One of a factory's ways out, for its unit file's `[EXITS]` (docs/MODDING.md; `ta_data`'s
+/// `ExitDef`): where it leads (px from the factory's middle, the factory facing south), the
+/// heading a unit made for it takes (degrees, as TA counts headings), and its ramp (px along the
+/// way from the pad: the pad's height kept to the first, the ground reached at the second).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Exit {
+    pub x: i64,
+    pub z: i64,
+    pub heading: i64,
+    pub ramp: (i64, i64),
+}
+
+/// How far past a factory's footprint (px) a way out leads at least: TA's plants send their units
+/// as far past their front (`Sim::factory_exit`), and a unit is let go once it is out of the
+/// footprint (the factory's walls are its way out until then).
+pub const CLEAR: f64 = 48.0;
+
+/// How near (px) a way's floor must stand to the pad's height to count as level with it, and to
+/// the ground to count as down.
+const LEVEL: f64 = 1.5;
+
+/// A factory's ways out ([`Exit`]), from its roll-off points (`Physics.RollOffPoints`, ogrids from
+/// its middle; Forged Alliance sends a unit to the one nearest its rally point, and turns its build
+/// bone for it by its `UnitSpin` as it is built, `FactoryUnit:CalculateRollOffPoint` and
+/// `CreateBuildRotator`):
+///
+/// - **Where:** the point, as far out along the way from the pad (its `BuildAttachBone`) as clears
+///   the factory's footprint by [`CLEAR`] at least: in TA Reborn a unit is let go once out of the
+///   footprint, which a fitted one (`fitted_footprint`) may reach past Forged Alliance's points.
+/// - **Heading:** the build bone's own at rest (the Cybran quantum gateway's rests turned half
+///   round) and the point's `UnitSpin` (by the right hand about y: 90 towards +x, as TA's headings).
+/// - **Ramp:** as far along the way as the floor of its model (under the pad's height: its build
+///   platform; `model::floor_under`, the floats `left_out`) stands level with the pad, and where it
+///   has come down to the ground or the model ends: the unit keeps the platform's height that far
+///   and comes down its ramp, rather than dropping through it.
+///
+/// Integer roots and plain arithmetic: the same on every computer.
+pub fn exits(u: &UnitBlueprint, mesh: &crate::scm::Mesh, left_out: &[usize]) -> Vec<Exit> {
+    if u.roll_off.is_empty() || builds(u) != Builds::Factory {
+        return Vec::new();
+    }
+    let px = u.display.uniform_scale * UNIT_SCALE;
+    if px <= 0.0 {
+        return Vec::new();
+    }
+    let rest = mesh.rest_poses();
+    let bone = u.display.build_attach_bone.as_deref().and_then(|b| mesh.bone(b));
+    let pad = bone.map_or([0.0; 3], |b| rest[b].0.map(|v| v as f64 * px));
+    let rest_heading = bone.map_or(0, |b| super::script::rest_aim(mesh, b).heading as i64);
+    let (fx, fz) = footprint(u);
+    let half = [fx as f64 * 8.0 + CLEAR, fz as f64 * 8.0 + CLEAR];
+    u.roll_off
+        .iter()
+        .map(|p| {
+            let mut end = [p.x * UNIT_SCALE, p.z * UNIT_SCALE];
+            let dir = [end[0] - pad[0], end[1] - pad[2]];
+            // (Out along the way to the edge of the footprint cleared, where the point is short of it.)
+            if end[0].abs() < half[0] && end[1].abs() < half[1] {
+                let from = [pad[0], pad[2]];
+                let reach = (0..2).filter(|&a| dir[a] != 0.0).map(|a| (half[a] * dir[a].signum() - from[a]) / dir[a]).fold(f64::INFINITY, f64::min);
+                if reach.is_finite() && reach > 1.0 {
+                    end = [from[0] + dir[0] * reach, from[1] + dir[1] * reach];
+                }
+            }
+            let end = [end[0].round(), end[1].round()];
+            let way = [end[0] - pad[0], end[1] - pad[2]];
+            let length = ((way[0] * way[0] + way[1] * way[1]).round() as i64).max(0) as u64;
+            let length = length.isqrt() as i64;
+            // The floor under the way, a pixel at a time, under the pad's height.
+            let ramp = if pad[1] <= LEVEL || length == 0 {
+                (0, 0)
+            } else {
+                let points: Vec<[f64; 2]> = (0..=length).map(|s| [(pad[0] + way[0] * s as f64 / length as f64) / px, (pad[2] + way[1] * s as f64 / length as f64) / px]).collect();
+                let floor: Vec<Option<f64>> = super::model::floor_under(mesh, left_out, &points, (pad[1] + LEVEL) / px).into_iter().map(|h| h.map(|h| h * px)).collect();
+                let level = floor.iter().take_while(|h| h.is_some_and(|h| h >= pad[1] - LEVEL)).count() as i64;
+                let top = (level - 1).max(0);
+                let foot = (top..=length).find(|&s| floor[s as usize].is_none_or(|h| h <= LEVEL)).unwrap_or(length);
+                (top, foot.max(top))
+            };
+            let spin = (p.spin * 65536.0 / 360.0).round() as i64;
+            let heading = (rest_heading + spin).rem_euclid(65536);
+            // (Degrees, whole, from -180 to 180.)
+            let degrees = (heading * 360 + 32768).div_euclid(65536);
+            let degrees = if degrees > 180 { degrees - 360 } else { degrees };
+            Exit { x: end[0] as i64, z: end[1] as i64, heading: degrees, ramp }
+        })
+        .collect()
+}
+
+/// A factory's `[EXITS]` section (within its `[UNITINFO]`), or nothing.
+pub fn exits_section(exits: &[Exit]) -> String {
+    if exits.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("\t[EXITS]\n\t\t{\n");
+    for (k, e) in exits.iter().enumerate() {
+        let _ = write!(s, "\t\t[EXIT{}]\n\t\t\t{{\n\t\t\tX={};\n\t\t\tZ={};\n\t\t\tHeading={};\n\t\t\tRamp={} {};\n\t\t\t}}\n", k + 1, e.x, e.z, e.heading, e.ramp.0, e.ramp.1);
+    }
+    s.push_str("\t\t}\n");
+    s
 }
 
 /// The unit's file.
@@ -980,9 +1096,18 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
         let reach = u.table.path(&["Economy"]).and_then(|e| e.get_ci("MaxBuildDistance")).and_then(|v| v.num()).unwrap_or(5.0);
         put("BuildDistance", ((reach * UNIT_SCALE).round() as i64).max(64).to_string());
         put("CanReclamate", "1".into());
+        // (A factory with ways out is solid, as Forged Alliance's are: its units leave by them,
+        // through its walls as TA Reborn has a factory's units leave, and no other walks over
+        // its platform; TA's open their yards to the front.)
         if builds == Builds::Factory {
-            put("YardMap", yard_map(fx, fz));
+            put("YardMap", if extra.exits.is_empty() { yard_map(fx, fz) } else { "o".repeat((fx * fz).max(1) as usize) });
         }
+    }
+    // Built facing a way of its own on a factory with ways out, whichever it takes (its
+    // `ForcedBuildSpin`, the turn its air factory's build bone is given for it: those bones all rest
+    // facing their factory's front, so it is a heading from there, docs/MODDING.md).
+    if let Some(spin) = u.display.forced_build_spin {
+        put("BuildHeading", (spin.round() as i64).to_string());
     }
     // Upgrading in place (`UpgradesTo`): on its own build power, which a building that builds
     // nothing else is given for it (an extractor's, a radar's: Forged Alliance's `BuildRate`).
@@ -1032,6 +1157,16 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
     }
     if !weapons.slots.is_empty() && !chases_air {
         put("NoChaseCategory", "VTOL".into());
+    }
+    // Anti-air that takes on aircraft alone in Forged Alliance ([`aircraft_alone`]) takes none but
+    // aircraft on, by order too (`OnlyTargetCategory<n>`: an anti-air tower or an interceptor told
+    // to attack a tank or the ground does not; `toairweapon` alone keeps TA's rule, its own choice
+    // of targets aircraft, an order firing on anything). Its own slots and those its enhancements
+    // fill after them (the Cybran support commander's anti-air missiles).
+    for (slot, w) in weapons.slots.iter().chain(&extra.weapons).take(MAX_WEAPONS).enumerate() {
+        if aircraft_alone(w) {
+            put(&format!("OnlyTargetCategory{}", slot + 1), "VTOL".into());
+        }
     }
     if weapons.dgun.is_some() {
         put("canDgun", "1".into());
@@ -1195,7 +1330,7 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
             }
         }
     }
-    format!("[UNITINFO]\n\t{{\n{f}{}\t}}\n", extra.enhancements)
+    format!("[UNITINFO]\n\t{{\n{f}{}{}\t}}\n", extra.enhancements, exits_section(&extra.exits))
 }
 
 /// TA's sound category for the unit's kind (TA's own sounds, `gamedata/sound.tdf`'s: Forged
@@ -1712,6 +1847,98 @@ mod tests {
         let five: Vec<WeaponBlueprint> = (0..5).map(|k| gun(&format!("G{k}"), "Land")).collect();
         let file = unit_file(&u, &Weapons { slots: five.iter().collect(), death: None, dgun: None, kamikaze: None }, None, &Extra::default());
         assert!(file.contains("BadTargetCategory5=VTOL;") && file.contains("wspe_badTargetCategory=VTOL;") && file.contains("NoChaseCategory=VTOL;"), "{file}");
+    }
+
+    /// Anti-air that takes on aircraft alone in Forged Alliance (`FireTargetLayerCapsTable` 'Air' from
+    /// every layer, or `TargetRestrictOnlyAllow = 'AIR'` as the interceptors' guns say beside the land
+    /// in their layers) names them its only targets, by order too, in its own slot or one an
+    /// enhancement fills; a gun that also shoots the ground names none, nor does a missile defence
+    /// (its 'Air' the missiles it shoots down).
+    #[test]
+    fn anti_air_takes_no_other_target() {
+        let weapon = |label: &str, layers: &[(&str, &str)]| WeaponBlueprint {
+            label: label.into(),
+            category: "Anti Air".into(),
+            damage: 50.0,
+            rate_of_fire: 1.0,
+            max_radius: 40.0,
+            target_layers: layers.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect(),
+            ..Default::default()
+        };
+        let (gun, aa) = (weapon("Gun", &[("Land", "Land|Air")]), weapon("AA", &[("Land", "Air"), ("Water", "Air")]));
+        let defence = WeaponBlueprint { category: "Defense".into(), only_allow: "TACTICAL MISSILE".into(), ..weapon("AntiMissile", &[("Land", "Air")]) };
+        let interceptor = WeaponBlueprint { only_allow: "AIR".into(), ..weapon("Railgun", &[("Air", "Air|Land"), ("Land", "Air|Land")]) };
+        assert_eq!((kind(&aa), kind(&defence), kind(&interceptor)), (Kind::AntiAir, Kind::AntiMissile, Kind::AntiAir));
+        assert!(aircraft_alone(&aa) && aircraft_alone(&interceptor) && !aircraft_alone(&gun) && !aircraft_alone(&defence));
+        let tower = UnitBlueprint { id: "UEB2104".into(), faction: Faction::Uef, ..Default::default() };
+        let file = unit_file(&tower, &Weapons { slots: vec![&gun, &aa, &defence, &interceptor], death: None, dgun: None, kamikaze: None }, None, &Extra::default());
+        let only: Vec<&str> = file.lines().filter(|l| l.contains("OnlyTargetCategory")).map(str::trim).collect();
+        assert_eq!(only, ["OnlyTargetCategory2=VTOL;", "OnlyTargetCategory4=VTOL;"], "{file}");
+        let fbi = ta_formats::tdf::parse(&file);
+        assert_eq!(fbi.section("UNITINFO").and_then(|u| u.get("OnlyTargetCategory2")), Some("VTOL"));
+        // A support commander's gun, and the anti-air missiles an enhancement brings in the slot after it.
+        let commander = UnitBlueprint { id: "URL0301".into(), faction: Faction::Cybran, ..Default::default() };
+        let file = unit_file(&commander, &Weapons { slots: vec![&gun], death: None, dgun: None, kamikaze: None }, None, &Extra { weapons: vec![&aa], ..Extra::default() });
+        let only: Vec<&str> = file.lines().filter(|l| l.contains("OnlyTargetCategory")).map(str::trim).collect();
+        assert_eq!(only, ["OnlyTargetCategory2=VTOL;"], "{file}");
+    }
+
+    /// A factory's ways out, from its roll-off points and its model: a platform 16 px up (its build
+    /// bone's height) over the middle, a ramp down to the ground on its east side. The east way (its
+    /// point 96 px out, short of the footprint cleared: 64 and 48) is made to lead 112 px out, its
+    /// unit facing east (`UnitSpin` 90), keeping the platform's height to where the ramp starts down
+    /// and on the ground where it ends; the south one (160 px out, past the footprint) is kept as it
+    /// is, its floor ending with the platform. Written as the unit file's `[EXITS]`, read back as the
+    /// game reads it; the factory solid.
+    #[test]
+    fn a_factorys_ways_out_follow_its_roll_off_points_and_its_platform() {
+        let still = [1.0f32, 0.0, 0.0, 0.0];
+        let corners = [
+            ([-10.0f32, 5.0, -10.0], 0u8),
+            ([10.0, 5.0, -10.0], 0),
+            ([10.0, 5.0, 10.0], 0),
+            ([-10.0, 5.0, 10.0], 0),
+            ([20.0, 0.0, -10.0], 0),
+            ([20.0, 0.0, 10.0], 0),
+        ];
+        let vertices: Vec<([f32; 3], [f32; 2], u8)> = corners.iter().map(|&(p, b)| (p, [0.0, 0.0], b)).collect();
+        let file = crate::scm::tests::write(&[("Factory", -1, [0.0; 3], still), ("Attachpoint", 0, [0.0, 5.0, 0.0], still)], &vertices, &[[0, 1, 2], [0, 2, 3], [1, 4, 5], [1, 5, 2]]);
+        let mesh = crate::scm::parse(&file).unwrap();
+        let u = crate::unit::parse(
+            "UEB0101",
+            "UnitBlueprint { Categories = { 'PRODUCTSC1', 'UEF', 'STRUCTURE', 'FACTORY', 'LAND', 'TECH1', 'BUILTBYTIER1ENGINEER' }, \
+             General = { FactionName = 'UEF' }, Economy = { BuildRate = 20, BuildableCategory = { 'BUILTBYTIER1FACTORY UEF MOBILE' } }, \
+             Footprint = { SizeX = 4, SizeZ = 4 }, Display = { UniformScale = 0.1, BuildAttachBone = 'Attachpoint' }, \
+             Physics = { MotionType = 'RULEUMT_None', RollOffPoints = { { UnitSpin = 90, X = 3, Y = 0, Z = 0 }, { UnitSpin = 0, X = 0, Y = 0, Z = 5 } } } }",
+        )
+        .unwrap();
+        assert_eq!(builds(&u), Builds::Factory);
+        let ways = exits(&u, &mesh, &[]);
+        assert_eq!(ways.len(), 2);
+        let east = ways[0];
+        assert_eq!((east.x, east.z, east.heading), (112, 0, 90), "{east:?}");
+        // (The platform 32 px out at 16 px; the ramp down to the ground at 64 px.)
+        assert!((32..=36).contains(&east.ramp.0) && (60..=64).contains(&east.ramp.1), "{east:?}");
+        let south = ways[1];
+        assert_eq!((south.x, south.z, south.heading), (0, 160, 0), "{south:?}");
+        assert!((31..=33).contains(&south.ramp.0) && south.ramp.1 <= 34, "the floor ends with the platform: {south:?}");
+        let file = unit_file(&u, &weapons(&u), None, &Extra { exits: ways.clone(), ..Extra::default() });
+        let info = ta_formats::tdf::parse(&file).section("UNITINFO").cloned().unwrap();
+        let section = info.sections.iter().find(|s| s.name == "EXITS").expect("[EXITS]");
+        assert_eq!(section.sections.len(), 2);
+        assert_eq!((section.sections[0].get("X"), section.sections[0].get("Heading")), (Some("112"), Some("90")));
+        assert_eq!(section.sections[0].get("Ramp"), Some(format!("{} {}", east.ramp.0, east.ramp.1).as_str()));
+        assert!(info.get("YardMap").is_some_and(|y| y.chars().all(|c| c == 'o')), "solid: {file}");
+        // A factory without roll-off points has none, and its yard open to its front, as TA's.
+        let plain = UnitBlueprint { roll_off: Vec::new(), ..u.clone() };
+        assert!(exits(&plain, &mesh, &[]).is_empty());
+        assert!(unit_file(&plain, &weapons(&plain), None, &Extra::default()).contains('c'));
+        // A transport whose factory's build bone is turned a quarter for it, whatever way it takes,
+        // faces so as it is built (`BuildHeading`); a tank names nothing.
+        let transport = UnitBlueprint { id: "UEA0104".into(), display: crate::unit::Display { forced_build_spin: Some(90.0), ..Default::default() }, ..Default::default() };
+        let file = unit_file(&transport, &weapons(&transport), None, &Extra::default());
+        assert_eq!(ta_formats::tdf::parse(&file).section("UNITINFO").and_then(|u| u.get("BuildHeading")), Some("90"), "{file}");
+        assert!(!unit_file(&plain, &weapons(&plain), None, &Extra::default()).contains("BuildHeading"));
     }
 
     #[test]

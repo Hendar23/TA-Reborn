@@ -101,10 +101,11 @@ pub use transport::{Client, Host, HostEvent};
 /// persona (`SlotKind::Ai::persona`), and the computer players of simulation 105 play by it, clear
 /// wreckage from their ways and put up the tech tree's projects; 111: the computer players of
 /// simulation 106, strategic and tactical silos apart, experimentals helped and saved for, tech 3
-/// leaned to.)
+/// leaned to; 112: simulation 107, factories' ways out, scripts holding their units still, weapons'
+/// only targets.)
 /// [`Msg::Hello`] and [`Refusal::Version`] keep their layout, so builds of other protocols are
 /// still told why they cannot meet.
-pub const PROTOCOL: u32 = 111;
+pub const PROTOCOL: u32 = 112;
 pub const DEFAULT_PORT: u16 = 7890;
 /// Ticks between state hash reports (which double as progress reports).
 pub const HASH_INTERVAL: u64 = 15;

@@ -60,10 +60,11 @@ fn played_sound_key(key: &str) -> bool {
 
 /// The unit values Reborn's engine answers when a script asks for one (`get`) or sets one
 /// (`set`), as `ta_sim`'s script host does: TA's own 1 to 20, the veteran level (32), TA 3.1's
-/// questions about units by id (69 to 75) and a later patch's cloak (111). A script asking for
-/// another reads 0, and one setting another sets nothing (`script.value`). (A test in `ta_sim`
-/// holds this list to the host's.)
-pub const ANSWERED_VALUES: &[i32] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 32, 69, 70, 71, 72, 73, 74, 75, 111];
+/// questions about units by id (69 to 75), Spring's weapon target (83, `TARGET_ID`), a later
+/// patch's cloak (111) and TA Reborn's own hold (200, `IMMOBILE`: the script keeps its unit
+/// still). A script asking for another reads 0, and one setting another sets nothing
+/// (`script.value`). (A test in `ta_sim` holds this list to the host's.)
+pub const ANSWERED_VALUES: &[i32] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 32, 69, 70, 71, 72, 73, 74, 75, 83, 111, 200];
 
 /// Of [`ANSWERED_VALUES`], those of TA's later patches: TA 3.1's questions about units by id (69
 /// to 75) and a later patch's cloak (111). A mod's scripts asking them are told

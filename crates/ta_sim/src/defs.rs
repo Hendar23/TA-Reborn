@@ -265,6 +265,11 @@ pub struct UnitType {
     /// charges, `NOTSUB`). Such a weapon past the first keeps to its own targets on an attack
     /// order naming one of them (`Sim::keeps_to_own_targets`).
     pub own_bad_targets: [bool; MAX_WEAPONS],
+    /// The only units each weapon takes on, of its own accord or by order (`OnlyTargetCategory<n>`):
+    /// none, any (TA's own). A weapon with some never fires on the ground or on a unit of none of
+    /// them, nor on one where it cannot hit it (an anti-air gun on an aircraft landed):
+    /// [`crate::Sim::only_allows`].
+    pub weapon_only_masks: [Option<CategorySet>; MAX_WEAPONS],
     /// What it never goes after (`NoChaseCategory`: TA's ground units list VTOL).
     pub no_chase_mask: CategorySet,
     /// Gunships: aircraft that hover at range while attacking.
@@ -286,6 +291,35 @@ pub struct UnitType {
     pub enhancements: Vec<Enhancement>,
     /// The slots they take, by name, in the order first named (an [`Enhancement::slot`] indexes it).
     pub enhancement_slots: Vec<String>,
+    /// A factory's ways out (`UnitDef::exits`, in their order), compiled: none, its units drive
+    /// out of its front, as TA's do.
+    pub exits: Vec<Exit>,
+    /// The way it faces while a factory with ways out builds it, whichever way it leaves by
+    /// (`UnitDef::build_heading`, angle units from the pad's heading): none, it faces its way.
+    pub build_heading: Option<i32>,
+}
+
+/// One of a factory's ways out (`ta_data::ExitDef`), compiled: where it leads (pixels from the
+/// factory's middle, at its heading 0), the heading a unit made for it takes beside the pad's, and
+/// its ramp (pixels along the way from the pad: the pad's height kept to the first, the ground
+/// reached at the second).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Exit {
+    pub to: FxVec3,
+    pub heading: i32,
+    pub ramp: (Fx, Fx),
+}
+
+impl Exit {
+    fn of(e: &ta_data::ExitDef) -> Exit {
+        let px = |v: f64| Fx::from_f64(v.clamp(-1.0e6, 1.0e6));
+        Exit { to: FxVec3::new(px(e.x), Fx::ZERO, px(e.z)), heading: heading_of_degrees(e.heading), ramp: (px(e.ramp.0.max(0.0)), px(e.ramp.1.max(e.ramp.0).max(0.0))) }
+    }
+}
+
+/// A heading in degrees as a unit file gives it (0 the front, 90 towards +x), in angle units.
+fn heading_of_degrees(degrees: f64) -> i32 {
+    crate::fixed::wrap_angle(((degrees.clamp(-1.0e6, 1.0e6) * 65536.0 / 360.0).round() as i64).rem_euclid(65536) as i32)
 }
 
 /// One of a unit type's enhancements (`ta_data::EnhancementDef`, its `def` beside it in the unit
@@ -588,6 +622,7 @@ impl UnitTypes {
                     list => token_set(&categories, target_tags(u, list)),
                 }),
                 own_bad_targets: std::array::from_fn(|k| !u.weapon_bad_target_category[k].trim().is_empty()),
+                weapon_only_masks: std::array::from_fn(|k| u.weapon_only_target_category[k].as_deref().map(|list| token_set(&categories, list))),
                 no_chase_mask: token_set(&categories, target_tags(u, &u.no_chase_category)),
                 hover_attack: u.hover_attack,
                 transport_capacity: if u.transport_capacity == 0 { 0 } else if locomotion == Locomotion::Air { 1 } else { u.transport_capacity },
@@ -598,6 +633,9 @@ impl UnitTypes {
                 upgrades_to: data.unit_id(&u.upgrades_to).filter(|&to| to != id),
                 enhancements,
                 enhancement_slots,
+                // (A factory's alone: a building that makes nothing has no unit to see out.)
+                exits: if is_factory { u.exits.iter().map(Exit::of).collect() } else { Vec::new() },
+                build_heading: u.build_heading.map(heading_of_degrees),
                 def: u.clone(),
             });
         }

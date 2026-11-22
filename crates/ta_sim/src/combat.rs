@@ -490,7 +490,7 @@ impl Sim {
             let Some(u) = self.unit(id) else { continue };
             let t = types.get(u.type_id);
             let Some(w) = u.weapon_slots(t)[slot].map(|w| weapons.get(w)) else { continue };
-            if u.weapons[slot].reload > 0 || !(u.activated || !t.def.on_offable) || !self.weapon_can_fire_from(u, w) {
+            if u.weapons[slot].reload > 0 || !(u.activated || !t.def.on_offable) || !self.weapon_can_fire_from(u, w) || u.packing_to_go() {
                 continue;
             }
             let coverage = w.interceptor_coverage();
@@ -703,7 +703,10 @@ impl Sim {
                 Trajectory::Dropped => self.bomb_on_target(id, from, tp, w, target),
                 _ => heading.abs() <= if w.tolerance > 0 { w.tolerance } else { 3000 },
             };
-            if aimed_now && ready && dist <= reach && lined_up {
+            // Nothing fired by a unit its script holds still and packs up to go (an aim answered
+            // before it was told to go answers no more).
+            let packing = self.unit(id).is_some_and(Unit::packing_to_go);
+            if aimed_now && ready && dist <= reach && lined_up && !packing {
                 // A shot the ground would stop: automatic targeting passes over that target
                 // for a while (another may be in the open); an ordered target is fired at
                 // regardless, as in TA.
@@ -923,7 +926,22 @@ impl Sim {
     /// without the order while the others fire as ordered.
     pub(crate) fn takes_order(&self, t: &crate::defs::UnitType, slot: usize, w: &WeaponType, target: Target, owner: u8) -> bool {
         self.weapon_reaches(w, target)
+            && self.only_allows(t, slot, w, target)
             && !matches!(target, Target::Unit(id) if self.unit(id).is_some_and(|tu| self.keeps_to_own_targets(t, slot, w, tu.type_id, owner)))
+    }
+
+    /// Whether the weapon in `slot` of a unit of type `t` may take `target` on at all, by the only
+    /// targets it names (`OnlyTargetCategory<n>`: [`crate::defs::UnitType::weapon_only_masks`]):
+    /// any, where it names none (TA's own weapons); else only a unit of a category it names, where
+    /// it can hit it ([`Sim::can_engage`]: an anti-air gun takes no aircraft landed), never a place
+    /// on the ground, whatever it is told: Supreme Commander's anti-air, which shoots aircraft
+    /// alone, by order too (`FireTargetLayerCapsTable`).
+    pub(crate) fn only_allows(&self, t: &crate::defs::UnitType, slot: usize, w: &WeaponType, target: Target) -> bool {
+        let Some(only) = t.weapon_only_masks[slot] else { return true };
+        match target {
+            Target::Unit(id) => self.unit(id).is_some_and(|tu| self.types.get(tu.type_id).category_mask.intersects(&only) && self.can_engage(w, tu)),
+            Target::Ground(_) | Target::Projectile(_) => false,
+        }
     }
 
     /// Whether the weapon in `slot` of a unit of type `t` (`owner`'s) leaves an attack order on a
@@ -1018,6 +1036,8 @@ impl Sim {
         let u = self.unit(id)?;
         let (pos, radar_guided) = (u.pos, self.fires_on_radar(u));
         let bad_mask = self.types.get(u.type_id).weapon_bad_masks[weapon_slot];
+        // (Of its only targets, where it names some: `Sim::only_allows`.)
+        let only = self.types.get(u.type_id).weapon_only_masks[weapon_slot];
         let attacker = u.last_attacker.filter(|_| self.tick <= u.last_hit_tick + 2 * TICKS_PER_SECOND as u64);
         // (Shells: from about where the gun stands, to the target's middle.)
         let gun_y = u.model_pos(self.unit_type(u)).y + self.unit_type(u).model.height / 2;
@@ -1050,7 +1070,7 @@ impl Sim {
             let seen = self.seen_by(o, owner);
             if seen == crate::vision::Seen::Hidden || seen == crate::vision::Seen::Radar && !radar_guided { continue; }
             // (What it hits, only torpedoes and depth charges under the water.)
-            if !self.can_engage(w, o) {
+            if !self.can_engage(w, o) || only.is_some_and(|m| !ot.category_mask.intersects(&m)) {
                 continue;
             }
             // A shell must also carry that far (to the target's middle).
@@ -1576,7 +1596,7 @@ impl Sim {
             .filter(|&s| {
                 own[s].is_some_and(|w| {
                     let w = self.weapon_types.get(w);
-                    !w.command_fire && !w.def.stockpile && self.weapon_can_fire_from(u, w) && self.can_engage(w, attacker) && u.weapons[s].target.is_none_or(|tg| harmless(tg) && u.pos.within_xz(apos, w.range + at.radius))
+                    !w.command_fire && !w.def.stockpile && self.weapon_can_fire_from(u, w) && self.can_engage(w, attacker) && self.only_allows(t, s, w, Target::Unit(source)) && u.weapons[s].target.is_none_or(|tg| harmless(tg) && u.pos.within_xz(apos, w.range + at.radius))
                 })
             })
             .collect();
@@ -1677,6 +1697,7 @@ impl Sim {
                         && yu.factory == Some(id)
                     {
                         yu.factory = None;
+                        yu.roll_off = None;
                     }
                 }
             }
@@ -2025,9 +2046,11 @@ impl Sim {
         // (Its own slots: its enhancements fill and swap them.)
         let own = *u.weapon_slots(t);
         // Nothing it carries reaches the target where it is (torpedoes a unit or a place out of
-        // the water; surface guns, bombs and missiles what is wholly under it): the order ends,
-        // as a failed one, rather than following the target about for ever.
-        if own.iter().flatten().next().is_some() && !own.iter().flatten().any(|&w| self.weapon_reaches(weapons.get(w), target)) {
+        // the water; surface guns, bombs and missiles what is wholly under it), or may take it on
+        // at all (a weapon's only targets: anti-air told to attack a tank or the ground,
+        // `Sim::only_allows`): the order ends, as a failed one, rather than following the target
+        // about for ever.
+        if own.iter().flatten().next().is_some() && !(0..MAX_WEAPONS).any(|s| own[s].is_some_and(|w| self.weapon_reaches(weapons.get(w), target) && self.only_allows(t, s, weapons.get(w), target))) {
             self.halt(id);
             if let Some(u) = self.unit_mut(id) {
                 u.orders.pop_front();
