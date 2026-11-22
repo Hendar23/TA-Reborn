@@ -220,6 +220,17 @@ Each unit's first level of detail becomes `objects3d/<id>.3do` with its surface
     over a pixel and a half) its colour map is read through a Catmull-Rom spline of its four by
     four texels (`surface_sharp`), its panel lines staying sharp rather than blurring between
     texels.
+  - **In the rain** (either style) the film of water that mirrors the sky over every wet model
+    (`rain_film`) lies on the paint's faces rather than on its normal map's relief, mirrors the
+    ground below the horizon as the paint's own reflection does, and is a third as strong as on
+    TA's paint (`SURFACED_FILM`), as the selection's lift is: the paint wears it as TA's does,
+    darker and with a sheen. Forged Alliance's normal maps are baked from finer models: on 134 of
+    the 357 units more than a tenth of the painted texels turn more than 44 degrees off their
+    faces (a fifth of the UEF's land factory's; its air factory's are nearly flat), so the film
+    on them was grazing, near white, along every bevel and panel line, a building's sides seen
+    from above mirrored the bright haze, and over the dark paint it all read as a white frost:
+    the whiter as a shower passed and the sky cleared while the paint was still wet, the most at
+    dawn and dusk.
 - **Texture coordinates** run 0 to 1 (TA Reborn keeps them in 16 bits, and a texture's edge
   clamps): a triangle the mesh paints from a repeat of its texture is moved by whole textures to
   lie within it (the same texels), its corners copied where other triangles share them: 229 of
