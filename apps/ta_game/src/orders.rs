@@ -62,21 +62,45 @@ impl Def {
 /// UPGRADE's words: into what, its cost and how long it takes on the unit's own build power,
 /// what it does meanwhile, and how many of the selection upgrade.
 /// What a unit of type `from` upgrades into, by name: the new type's, with its tech level where
-/// the two share a name (Supreme Commander's factories are all "Land Factory": "Land Factory T2").
+/// the two share a name (Supreme Commander's factories are all "Land Factory": "Land Factory T2"),
+/// or, where they share that too, its step along the upgrades (the Cybran's Hives are all an
+/// engineering station of tech 2, "The Hive": "The Hive II", "The Hive III").
 pub fn upgrade_name(sim: &ta_sim::Sim, from: usize, to: usize) -> String {
     let name = crate::chat::unit_label(sim, to);
     if name != crate::chat::unit_label(sim, from) {
         return name;
     }
     // (Its tech level by its category's LEVELn or LEVn, as the computer players read it.)
-    let level = sim.types.get(to).def.category.split_whitespace().filter_map(|token| {
-        let token = token.to_ascii_uppercase();
-        token.strip_prefix("LEVEL").or_else(|| token.strip_prefix("LEV"))?.parse::<u8>().ok()
-    }).max();
-    match level {
-        Some(n) => tf("{name} T{n}", &[("name", &name), ("n", &n)]),
-        None => name,
+    let level = |t: usize| {
+        sim.types.get(t).def.category.split_whitespace().filter_map(|token| {
+            let token = token.to_ascii_uppercase();
+            token.strip_prefix("LEVEL").or_else(|| token.strip_prefix("LEV"))?.parse::<u8>().ok()
+        }).max()
+    };
+    match level(to) {
+        Some(n) if level(from) != Some(n) => tf("{name} T{n}", &[("name", &name), ("n", &n)]),
+        _ => match upgrade_step(sim, to) {
+            Some(step) => tf("{name} {step}", &[("name", &name), ("step", &step)]),
+            None => name,
+        },
     }
+}
+
+/// How far along its upgrades a type is, in Roman numerals (the second "II", the third "III"):
+/// none for one nothing upgrades into.
+fn upgrade_step(sim: &ta_sim::Sim, type_id: usize) -> Option<&'static str> {
+    const STEPS: [&str; 9] = ["II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"];
+    let mut at = type_id;
+    let mut before = 0;
+    // (Back down the chain to the type nothing upgrades into, a step at a time.)
+    while let Some(from) = sim.types.types.iter().find(|t| t.upgrades_to == Some(at) && t.id != type_id) {
+        before += 1;
+        at = from.id;
+        if before >= STEPS.len() {
+            break;
+        }
+    }
+    before.checked_sub(1).and_then(|i| STEPS.get(i).copied())
 }
 
 pub fn upgrade_tip(game: &Game, key: &str) -> String {
@@ -176,5 +200,41 @@ mod tests {
         let seven: Vec<Def> = (0..7).map(|_| def(Group::Command, Glyph::Move)).collect();
         assert_eq!(super::rows(&seven, 6).iter().map(Vec::len).collect::<Vec<_>>(), [6, 1]);
         assert!(super::rows(&[], 6).is_empty());
+    }
+
+    /// What an upgrade is called: the new type's name where it has its own, its tech level where
+    /// only that tells the two apart (the factories), its step along the upgrades where neither
+    /// does (the Hives, all of tech 2).
+    #[test]
+    fn an_upgrade_is_named_by_what_tells_it_apart() {
+        use std::sync::Arc;
+        let dir = std::env::temp_dir().join(format!("ta-game-upgrade-names-{}", std::process::id()));
+        for (name, keys) in [
+            ("HIVE1", "Name=The Hive; Category=CORE LEVEL2; UpgradesTo=HIVE2;"),
+            ("HIVE2", "Name=The Hive; Category=CORE LEVEL2; UpgradesTo=HIVE3;"),
+            ("HIVE3", "Name=The Hive; Category=CORE LEVEL2;"),
+            ("LAB1", "Name=Land Factory; Category=ARM LEVEL1; UpgradesTo=LAB2;"),
+            ("LAB2", "Name=Land Factory; Category=ARM LEVEL2;"),
+            ("SOLAR", "Name=Solar Collector; UpgradesTo=FUSION;"),
+            ("FUSION", "Name=Fusion Reactor;"),
+        ] {
+            let path = dir.join("units").join(format!("{}.fbi", name.to_ascii_lowercase()));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, format!("[UNITINFO]\n{{\nUnitName={name};\nObjectname={name};\nWorkerTime=10;\n{keys}\n}}\n")).unwrap();
+        }
+        let mut vfs = ta_vfs::Vfs::new();
+        vfs.mount_mod_dir(&dir, "test").unwrap();
+        let data = Arc::new(ta_data::GameData::load(&vfs));
+        std::fs::remove_dir_all(&dir).ok();
+        let types = Arc::new(ta_sim::UnitTypes::compile(&data, &|_| None));
+        let map = ta_formats::tnt::TntMap { width: 16, height: 16, sea_level: 0, tiles: Vec::new(), tile_map: Vec::new(), heights: vec![0; 256], features: vec![ta_formats::tnt::FEATURE_NONE; 256], feature_names: Vec::new(), minimap: Default::default(), flags: Vec::new() };
+        let player = ta_sim::PlayerSetup { side: "ARM".into(), color: 0, start: ta_sim::FxVec3::ZERO, metal: ta_sim::Fx::ZERO, energy: ta_sim::Fx::ZERO, ai: false };
+        let sim = ta_sim::Sim::new(types, data, &map, &Default::default(), 0, &[player], 7);
+        let id = |name: &str| sim.types.id(name).unwrap();
+        assert_eq!(upgrade_name(&sim, id("HIVE1"), id("HIVE2")), "The Hive II");
+        assert_eq!(upgrade_name(&sim, id("HIVE2"), id("HIVE3")), "The Hive III");
+        assert_eq!(upgrade_name(&sim, id("HIVE1"), id("HIVE3")), "The Hive III", "a step queued past the next");
+        assert_eq!(upgrade_name(&sim, id("LAB1"), id("LAB2")), "Land Factory T2");
+        assert_eq!(upgrade_name(&sim, id("SOLAR"), id("FUSION")), "Fusion Reactor");
     }
 }

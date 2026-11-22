@@ -95,6 +95,7 @@
 //!                            #   map's edge) until ordered
 //! altitude = 70              # an aircraft's flying height over the ground, its own (default its
 //!                            #   type's: a Thunder's 200): low passes, close to the lens
+//! health = 0.4               # a finished unit worn to that share of its most health (one to mend)
 //!
 //! [[order]]
 //! t = 1.5                    # seconds after the scene starts
@@ -543,6 +544,9 @@ pub struct UnitSpec {
     pub airborne: bool,
     #[serde(default)]
     pub altitude: Option<f32>,
+    /// What share of its most health it has (finished units: one worn, for a repair to show).
+    #[serde(default)]
+    pub health: Option<f32>,
 }
 
 /// What an order tells units to do.
@@ -1049,6 +1053,9 @@ impl Stage {
             }
             if u.altitude.is_some_and(|a| a.is_nan() || a <= 0.0) {
                 bail!("{}: `altitude` is px over the ground, more than 0", what());
+            }
+            if u.health.is_some_and(|h| !(h > 0.0 && h <= 1.0)) || u.health.is_some() && u.built < 1.0 {
+                bail!("{}: `health` is a finished unit's share of its most health, over 0 and 1 at most", what());
             }
         }
         for (i, o) in self.orders.iter().enumerate() {
@@ -1836,6 +1843,10 @@ impl StageRun {
                 run.cast.push(Member { id, label: spec.label.clone(), kind: kind.clone() });
                 if spec.stockpile > 0 {
                     sim.grant_stockpile(id, spec.stockpile);
+                }
+                if let Some(share) = spec.health.filter(|_| complete) {
+                    let most = sim.types.get(type_id).max_health;
+                    sim.set_health(id, most * Fx::from_f32(share.clamp(0.0, 1.0)));
                 }
                 if spec.hold {
                     run.held.push(id);

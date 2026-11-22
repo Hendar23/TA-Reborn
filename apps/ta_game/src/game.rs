@@ -3631,8 +3631,9 @@ impl Game {
                 let t = self.sim.unit_type(u);
                 t.is_builder && !t.is_factory
             })
-            // (One on duty has its own work, and waits for it when there is none.)
-            .filter(|u| !self.on_duty(u.id))
+            // (One on duty has its own work, and waits for it when there is none; so does a
+            // building that works round it by itself, an engineering station.)
+            .filter(|u| !self.on_duty(u.id) && !Sim::works_by_itself(self.sim.unit_type(u)))
             .map(|u| u.id)
             .collect()
     }
@@ -4823,7 +4824,7 @@ pub(crate) fn enhancement_orders(sim: &Sim, units: &[UnitId], player: u8, type_i
 /// Why the simulation refused an order (`SimEvent::OrderFailed`), for the translations: shown
 /// through `t`.
 #[allow(dead_code)]
-const ORDER_FAILURES: [&str; 11] = [
+const ORDER_FAILURES: [&str; 12] = [
     ta_ui::i18n::n("cannot carry that"),
     ta_ui::i18n::n("out of reach"),
     ta_ui::i18n::n("no room to unload"),
@@ -4834,6 +4835,7 @@ const ORDER_FAILURES: [&str; 11] = [
     ta_ui::i18n::n("no captures in the ceasefire"),
     ta_ui::i18n::n("it has no build power"),
     ta_ui::i18n::n("cannot upgrade into that"),
+    ta_ui::i18n::n("no room to upgrade into that"),
     ta_ui::i18n::n("needs another enhancement first"),
 ];
 

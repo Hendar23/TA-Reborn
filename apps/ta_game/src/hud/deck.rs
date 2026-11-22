@@ -780,6 +780,8 @@ impl Hud {
         let rank = (many == 1 && u.kills > 0).then(|| (u.rank(), u.kills));
         let stockpile = crate::hud::stockpile(&game.sim, u);
         let cargo = (many == 1 && ty.transport_capacity > 0).then_some((u.cargo.len(), ty.transport_capacity));
+        // (One building of ours: what the buildings beside it give it, and how many it helps.)
+        let adjacency = if many == 1 && game.may_inspect(owner) && u.is_complete() { super::adjacency::card_lines(game, u) } else { Vec::new() };
         let queue: Vec<usize> = u.factory_queue.iter().copied().collect();
         let queued: HashMap<usize, usize> = queue.iter().fold(HashMap::new(), |mut m, &q| {
             *m.entry(q).or_default() += 1;
@@ -1059,12 +1061,19 @@ impl Hud {
                     more = key_button(ui, game.keys.text("help")).on_hover_text(t("Information on the selected unit (with none, the controls reference)")).clicked();
                 });
                 let about = if many == 1 { t("What it makes and uses a second now") } else { t("What they make and use a second now, all together") };
+                // (With what the buildings beside it give it, which follows them too where the plate
+                // has room: not under a factory's queue.)
+                let about = if adjacency.is_empty() { about.to_string() } else { format!("{about}\n{}", adjacency.join("\n")) };
                 // (Side by side where they fit, the metal's then the energy's: in a short plate a
                 // line apiece pushed the figures below out of sight.)
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 18.0;
                     for row in &output {
-                        ui.label(super::figure_job(row)).on_hover_text(about);
+                        ui.label(super::figure_job(row)).on_hover_text(about.as_str());
+                    }
+                    // Adjacency: what the buildings beside it give it, and how many it helps.
+                    if !adjacency.is_empty() && !queues {
+                        ui.label(RichText::new(adjacency.join("  ·  ")).font(body(11.5)).color(pal().good));
                     }
                 });
                 if summary {
