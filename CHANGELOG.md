@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 1.0.9 — 2026-11-23
+
+The game no longer crashes when zoomed all the way out on some maps, and a battle it does crash in
+is kept as a replay. The Supreme Commander factions are painted at Forged Alliance's full
+resolution, no longer turn white in the rain, and move as they work; their factories roll their
+units out down their ramps, missile trucks deploy before they fire, anti-air takes on aircraft
+alone, adjacency gives its bonuses, and engineering stations upgrade and work round them by
+themselves. The computer players use the whole tech tree, strategic missiles and the Krogoth
+included. With TA: Escalation its campaign missions play and its vertically launched missiles fly,
+and wrecks no longer have a black square at their base.
 
 ### Added
 - A battle the game crashes in is kept as a replay, as a battle finished or left is, and the crash
