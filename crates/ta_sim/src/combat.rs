@@ -21,6 +21,9 @@ use crate::world::{CELL, Occupant, World};
 mod projectiles;
 
 #[cfg(test)]
+mod launch_tests;
+
+#[cfg(test)]
 mod targeting_tests;
 
 #[cfg(test)]
@@ -1400,8 +1403,9 @@ impl Sim {
             // Straight up out of its tube at its start speed, none for most: it gathers speed as
             // it climbs (`weaponacceleration`). At full speed through the whole climb a Merl's
             // rocket rose 2,000 px, out of sight, and came down short of its target as its fuel
-            // ran out; a nuke climbed 1,750 px, an anti-nuke 3,200.
-            let rise = if w.acceleration > Fx::ZERO { w.start_velocity } else { speed };
+            // ran out; a nuke climbed 1,750 px, an anti-nuke 3,200. A negative start sends it
+            // straight down (TA: Escalation's bombers drop their pulse bombs so).
+            let rise = if w.acceleration > Fx::ZERO || !w.start_velocity.is_zero() { w.start_velocity } else { speed };
             vel = FxVec3::new(Fx::ZERO, rise, Fx::ZERO);
         }
         if w.trajectory == Trajectory::Dropped {

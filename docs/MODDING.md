@@ -873,6 +873,14 @@ details. What mod makers ask about most:
   them there. The no-nukes mutator leaves out
   what fires or stops the strategic class (bit 1), and the computer players build anti-nukes
   against strategic silos alone and count only the defences of a missile's classes in its way.
+- **Missile speeds.** A missile leaves at its `startvelocity` (none: at its `weaponvelocity`, or
+  launched upright with a `weaponacceleration`, at rest) and its `weaponacceleration` takes its
+  speed towards its `weaponvelocity`, stopping there: up to it, or (a negative acceleration) down
+  to it. One launched faster than its `weaponvelocity` is never pulled down to it, and with a
+  negative acceleration slows as it flies (no slower than half a pixel a tick, never turned
+  about): TA: Escalation's vertical missiles say `weaponvelocity=-10` and slow from their start
+  speed. Launched upright (`vlaunch=1`) at a negative `startvelocity`, a missile goes straight
+  down. Its `flighttime` is its life: give one that slows the time to get where it is sent.
 
 #### Sides of a mod's own
 

@@ -852,6 +852,26 @@ impl WeaponType {
     pub fn strikes_a_place(&self) -> bool {
         self.trajectory == Trajectory::Guided && self.def.stockpile && !self.def.interceptor && !self.def.tracks
     }
+
+    /// The speed (px a tick) a missile's `weaponacceleration` takes it to and holds it at: gathering
+    /// speed, its top speed (`weaponvelocity`), or the speed it was launched at (`startvelocity`) if
+    /// that is higher; losing it (a negative acceleration), its top speed, or its launch speed if
+    /// that is lower. A missile launched faster than its top speed is not pulled down to it: TA:
+    /// Escalation's vertical missiles (its missile batteries', battleships', submarines') leave
+    /// their tubes at 360 to 1,280 px a second with a `weaponvelocity` of -1 to -10 and slow down as
+    /// they fly (their flight times end before they would stop); held to their top speed, a
+    /// fifteenth of a pixel a tick and less, they hung over their launchers until their time was up
+    /// and went off there. Its pulse bombs, launched "upright" at -400 px a second, fall at that.
+    pub fn speed_limit(&self) -> Fx {
+        if self.acceleration < Fx::ZERO { self.velocity.min(self.start_velocity) } else { self.velocity.max(self.start_velocity) }
+    }
+
+    /// A missile's speed a tick on from `speed` (px a tick along its way; a vertically launched one's
+    /// climb counts up): its acceleration added, as far as its [`WeaponType::speed_limit`].
+    pub fn speed_after(&self, speed: Fx) -> Fx {
+        let next = speed + self.acceleration;
+        if self.acceleration < Fx::ZERO { next.max(self.speed_limit()) } else { next.min(self.speed_limit()) }
+    }
 }
 
 pub struct WeaponTypes {
