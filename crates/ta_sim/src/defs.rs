@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 use ta_data::unit::{MAX_WEAPONS, WeaponFunction};
-use ta_data::{GameData, UnitDef};
+use ta_data::{AdjacencyAffect, GameData, UnitDef};
 use ta_formats::cob::CobScript;
 use ta_formats::model3do::Model3do;
 
@@ -169,6 +169,12 @@ impl CategorySet {
         self.0.iter().zip(&other.0).fold(0, |m, (a, b)| m | a & b) != 0
     }
 
+    /// Whether this set has every token of `other`.
+    #[inline]
+    pub fn contains_all(&self, other: &CategorySet) -> bool {
+        self.0.iter().zip(&other.0).all(|(a, b)| a & b == *b)
+    }
+
     pub fn is_empty(&self) -> bool {
         *self == CategorySet::EMPTY
     }
@@ -297,6 +303,11 @@ pub struct UnitType {
     /// The way it faces while a factory with ways out builds it, whichever way it leaves by
     /// (`UnitDef::build_heading`, angle units from the pad's heading): none, it faces its way.
     pub build_heading: Option<i32>,
+    /// What it gives the buildings of its player beside it (`UnitDef::adjacency`: Supreme
+    /// Commander's adjacency), compiled; those of an affect not played left out. None of TA's.
+    pub adjacency: Vec<AdjacencyBonus>,
+    /// Its size class for what it takes of them (`AdjacencySize`; 0: none).
+    pub adjacency_size: u32,
 }
 
 /// One of a factory's ways out (`ta_data::ExitDef`), compiled: where it leads (pixels from the
@@ -320,6 +331,19 @@ impl Exit {
 /// A heading in degrees as a unit file gives it (0 the front, 90 towards +x), in angle units.
 fn heading_of_degrees(degrees: f64) -> i32 {
     crate::fixed::wrap_angle(((degrees.clamp(-1.0e6, 1.0e6) * 65536.0 / 360.0).round() as i64).rem_euclid(65536) as i32)
+}
+
+/// One bonus a building gives the buildings beside it (`ta_data::AdjacencyDef`), compiled: what it
+/// changes in them, the share it adds (16.16), and which take it (`sim/adjacency.rs`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdjacencyBonus {
+    pub affect: AdjacencyAffect,
+    pub add: Fx,
+    /// The size class of those that take it (0: any).
+    pub size: u32,
+    /// The `Category` tokens a building that takes it must have, every one; none where one of
+    /// them no unit's `Category` names (or past what a [`CategorySet`] holds): nothing takes it.
+    pub category: Option<CategorySet>,
 }
 
 /// One of a unit type's enhancements (`ta_data::EnhancementDef`, its `def` beside it in the unit
@@ -481,6 +505,9 @@ pub struct UnitTypes {
     pub(crate) target_reach: Fx,
     /// Whether any type mends itself ([`UnitType::heal_ticks`]).
     pub(crate) heals: bool,
+    /// Whether any type gives the buildings beside it a bonus ([`UnitType::adjacency`]): without,
+    /// nothing of adjacency runs (TA's own games).
+    pub(crate) adjacency: bool,
     by_name: FxHashMap<String, usize>,
     /// Upper-case `Category` token → its number in a [`CategorySet`].
     categories: FxHashMap<String, usize>,
@@ -636,6 +663,14 @@ impl UnitTypes {
                 // (A factory's alone: a building that makes nothing has no unit to see out.)
                 exits: if is_factory { u.exits.iter().map(Exit::of).collect() } else { Vec::new() },
                 build_heading: u.build_heading.map(heading_of_degrees),
+                adjacency: u
+                    .adjacency
+                    .iter()
+                    .filter_map(|a| {
+                        Some(AdjacencyBonus { affect: a.affect?, add: Fx::from_f64(a.add), size: a.size, category: all_tokens(&categories, &a.category) }).filter(|b| !b.add.is_zero())
+                    })
+                    .collect(),
+                adjacency_size: u.adjacency_size,
                 def: u.clone(),
             });
         }
@@ -646,7 +681,8 @@ impl UnitTypes {
         let target_reach = types.iter().map(|t| t.radius).max().unwrap_or(Fx::ZERO);
         // (A unit mends itself by its type's `HealTime`, or by an enhancement's `HealRate`.)
         let heals = types.iter().any(|t| t.heal_ticks > 0 || t.enhancements.iter().any(|e| e.heal_rate > Fx::ZERO));
-        UnitTypes { types, by_name, categories, airbase_reach, collision_reach, target_reach, heals }
+        let adjacency = types.iter().any(|t| !t.adjacency.is_empty());
+        UnitTypes { types, by_name, categories, airbase_reach, collision_reach, target_reach, heals, adjacency }
     }
 
     pub fn get(&self, id: usize) -> &UnitType {
@@ -701,6 +737,18 @@ fn token_set(categories: &FxHashMap<String, usize>, list: &str) -> CategorySet {
         }
     }
     set
+}
+
+/// The set of every `Category`-style token in `list`: none where one of them is unknown (no
+/// unit's `Category` names it) or past the set's capacity, as nothing could then have them all.
+fn all_tokens(categories: &FxHashMap<String, usize>, list: &str) -> Option<CategorySet> {
+    let mut set = CategorySet::EMPTY;
+    for t in list.split_whitespace() {
+        if !set.insert(*categories.get(&t.to_ascii_uppercase())?) {
+            return None;
+        }
+    }
+    Some(set)
 }
 
 /// TA yard maps list one character per footprint cell: y stays free, c opens with

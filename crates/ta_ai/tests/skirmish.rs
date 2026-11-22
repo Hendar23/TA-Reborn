@@ -775,6 +775,38 @@ fn ai_vs_ai_plays_a_game() {
         }
         println!("P{p} ({} units{}): {}", sim.players[p].unit_count, if sim.players[p].defeated { ", defeated" } else { "" }, counted.join(", "));
     }
+    // Adjacency (a mod's: the Supreme Commander factions'): the buildings taking their
+    // neighbours' bonuses at the end, how many links, and what the bonuses come to on average.
+    for p in 0..n {
+        let taking: Vec<&ta_sim::Unit> = sim.units().filter(|u| u.owner == p as u8 && u.adjacency.is_some()).collect();
+        if taking.is_empty() {
+            continue;
+        }
+        let links: usize = taking.iter().map(|u| u.adjacency.as_ref().map_or(0, |a| a.from.len())).sum();
+        let mut by: Vec<String> = Vec::new();
+        for a in ta_sim::AdjacencyAffect::ALL {
+            let changed: Vec<f64> = taking.iter().filter_map(|u| u.adjacency.as_ref()).map(|j| j.change[a.index()].to_f64()).filter(|&c| c != 0.0).collect();
+            if !changed.is_empty() {
+                by.push(format!("{} {} ({:+.1}% on average)", a.key(), changed.len(), changed.iter().sum::<f64>() / changed.len() as f64 * 100.0));
+            }
+        }
+        let mut pairs: Vec<String> = Vec::new();
+        for u in &taking {
+            for (g, _) in &u.adjacency.as_ref().unwrap().from {
+                if let Some(g) = sim.unit(*g) {
+                    pairs.push(format!("{}>{}", sim.unit_type(g).name, sim.unit_type(u).name));
+                }
+            }
+        }
+        pairs.sort();
+        let mut kinds: Vec<String> = Vec::new();
+        for pair in &pairs {
+            if kinds.last().is_none_or(|k| !k.starts_with(&format!("{pair} "))) {
+                kinds.push(format!("{pair} x{}", pairs.iter().filter(|q| *q == pair).count()));
+            }
+        }
+        println!("P{p} adjacency: {} buildings take {links} neighbours' bonuses: {}; {}", taking.len(), by.join(", "), kinds.join(", "));
+    }
     assert_eq!(dupes, 0, "a unit must be destroyed once");
     assert_eq!(refinished, 0, "a unit must be finished once");
     assert!(built.iter().all(|&b| b > 10), "every AI should build (built {built:?})");

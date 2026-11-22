@@ -14,6 +14,7 @@ use crate::game::Game;
 use crate::hud_skin;
 use ta_ui::i18n::n;
 
+pub(crate) mod adjacency;
 pub(crate) mod anchors;
 mod cast;
 mod ground_line;
@@ -989,6 +990,10 @@ impl Hud {
         // and for the unit under the pointer; otherwise the battlefield stays clear of them.
         let ground_at = |x: f32, z: f32| game.sim.world.height_at(ta_sim::Fx::from_f32(x), ta_sim::Fx::from_f32(z)).to_f32().max(game.sim.world.sea_level.to_f32());
         let clock = ctx.input(|i| i.time) as f32;
+        // Adjacency: the links between the buildings that help each other, under everything else
+        // drawn over the battlefield (and those to come of one being placed).
+        let placing = game.placement.as_ref().filter(|pl| pl.row.is_empty()).and_then(|pl| pl.pos.map(|p| (pl.type_id, p)));
+        adjacency::draw(&painter, game, &project, &ground_at, camera.zoom / ppp, clock, placing);
         let planning = ctx.input(|i| i.modifiers.shift);
         let since_order = game.last_order.map_or(f32::MAX, |t| t.elapsed().as_secs_f32());
         let routes = if planning { 1.0 } else { 1.0 - ((since_order - 1.6) / 1.2).clamp(0.0, 1.0) };
@@ -1539,6 +1544,12 @@ impl Hud {
                 if duty.is_some() && let Some(line) = game.duty_line(id) {
                     lines.push((line, pal().info, 11.0));
                 }
+                // What the buildings beside it give it, and how many it helps (adjacency).
+                if game.may_inspect(u.owner) && u.is_complete() {
+                    for line in adjacency::card_lines(game, u) {
+                        lines.push((line, pal().good, 11.0));
+                    }
+                }
                 // What a finished unit of ours (or an ally's) makes and uses of metal and energy
                 // now, under its health; the type's storage and sensors in the lines below.
                 let figures = if game.may_inspect(u.owner) && u.is_complete() { figure_rows(&game.sim.unit_flows(u)) } else { Vec::new() };
@@ -1640,7 +1651,7 @@ impl Hud {
                     let (text, color) = if off_ore {
                         (ta_ui::i18n::t("Needs a metal deposit").to_string(), bad)
                     } else if rate > 0.0 {
-                        (ghost_figures(&game.sim.type_flows(type_id, crate::game::fx_vec(pos))), Color32::from_rgb(205, 220, 240))
+                        (ghost_figures(&game.sim.type_flows_beside(type_id, crate::game::fx_vec(pos), game.hud_player())), Color32::from_rgb(205, 220, 240))
                     } else {
                         (ta_ui::i18n::t("No metal here").to_string(), bad)
                     };
@@ -1649,13 +1660,29 @@ impl Hud {
                     painter.text(p, egui::Align2::CENTER_BOTTOM, text, font, color);
                 }
             } else {
-                // Any other building: what it would make and use there.
-                let flows = game.sim.type_flows(type_id, crate::game::fx_vec(pos));
+                // Any other building: what it would make and use there (with what the buildings
+                // it would touch give it).
+                let flows = game.sim.type_flows_beside(type_id, crate::game::fx_vec(pos), game.hud_player());
                 if flows.any() && let Some(p) = label_at(pos, t) {
                     let (text, font) = (ghost_figures(&flows), egui::FontId::proportional(15.0));
                     painter.text(p + EVec2::new(1.0, 1.0), egui::Align2::CENTER_BOTTOM, &text, font.clone(), Color32::from_black_alpha(200));
                     painter.text(p, egui::Align2::CENTER_BOTTOM, text, font, Color32::from_rgb(205, 220, 240));
                 }
+            }
+            // Adjacency: what the buildings it would touch give it, and how many it would help.
+            let (taken, given) = game.sim.adjacency_preview(type_id, crate::game::fx_vec(pos), game.hud_player());
+            let mut words: Vec<String> = Vec::new();
+            if let Some(a) = taken.as_ref() {
+                words.push(adjacency::bonus_words(&a.change).join("  ·  "));
+            }
+            if !given.is_empty() {
+                words.push(if given.len() == 1 { ta_ui::i18n::t("Helps 1 building beside it").to_string() } else { ta_ui::i18n::tf("Helps {n} buildings beside it", &[("n", &given.len())]) });
+            }
+            if !words.is_empty() && let Some(p) = label_at(pos, t) {
+                let (text, font) = (words.join("  ·  "), egui::FontId::proportional(13.0));
+                let below = p + EVec2::new(0.0, -19.0);
+                painter.text(below + EVec2::new(1.0, 1.0), egui::Align2::CENTER_BOTTOM, &text, font.clone(), Color32::from_black_alpha(200));
+                painter.text(below, egui::Align2::CENTER_BOTTOM, text, font, pal().good);
             }
         }
         // Pending targeted order: label the cursor like TA's order cursors.

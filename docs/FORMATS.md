@@ -1024,6 +1024,22 @@ take up to all 32 bits of a texel.
   can let it go; its way given up, `StopMoving`. From then until it is let go it fires nothing
   (`Unit::packing_to_go`: an aim answered before no longer fires). The Supreme Commander
   factions' weapons that lock their unit's motion while unpacked set it.
+* **`[ADJACENCY]`** and **`AdjacencySize`** (TA Reborn's, for mods; Supreme Commander's
+  `Adjacency` and its `SIZE4` to `SIZE20` categories): a section within `[UNITINFO]`, one section a
+  bonus (any name), each `Affects` (`BuildEnergy`, `BuildMetal`, `EnergyUse`, `EnergyPerShot`,
+  `ReloadTime`, `EnergyMake`, `MetalMake`), `Add` (the share added: -0.0625 a sixteenth less),
+  `Size` (the size class it reaches; none, any) and `Category` (tokens a receiver's `Category`
+  must all have). A finished building gives its bonuses to the finished buildings of its player
+  whose footprints meet its own along an edge, that have what the bonus changes; the shares of every
+  neighbour are summed, the figure times one and the sum (never below none), from at most
+  `AdjacencySize` neighbours (those along the most of its edge first; none given, any number).
+  Looked at again whenever a building there is finished, lost, upgraded or changes hands
+  (`sim/adjacency.rs`; docs/MODDING.md). None of TA's units has any.
+* **`DefaultMissionType=AssistPatrol`** (TA Reborn's, for mods; Supreme Commander's engineering
+  stations): a builder that, with no orders, helps build what its player puts up within its
+  `BuildDistance`, else mends its side's and its allies' damaged units there, else reclaims the
+  wreckage there, standing where it is (`sim/repair_round.rs`; docs/MODDING.md). None of TA's
+  units gives it.
 * Build menus: `guis/<BUILDER><page>.gui` + `download/*.tdf`. The 3.1 patch's `[CANBUILD]` in
   sidedata is the computer players' list, never a player's menu: mods list units of their AI
   there (TA: The Final Frontier's AI Boost: `AAISOLAR` beside the `ARMSOLAR` a player builds,

@@ -58,6 +58,7 @@ impl Hud {
                     ui.set_width(ui.available_width());
                     head(ui, game, ty, unit, pic);
                     facts(ui, game, ty, unit);
+                    adjacency(ui, game, ty, unit);
                     enhancements(ui, game, ty, unit);
                 })
                 .inner_rect;
@@ -439,6 +440,26 @@ pub(crate) fn facts(ui: &mut egui::Ui, game: &Game, ty: &UnitType, unit: Option<
         for c in can {
             line(ui, &c);
         }
+    }
+}
+
+/// Its adjacency (Supreme Commander's: `[ADJACENCY]`, `AdjacencySize`): its size class, what it
+/// gives the buildings beside it, and, one in play of ours, what those give it now and how many it
+/// helps.
+pub(crate) fn adjacency(ui: &mut egui::Ui, game: &Game, ty: &UnitType, unit: Option<&ta_sim::Unit>) {
+    // Its size class, then what the buildings beside it give it and how many it helps, then
+    // what it gives.
+    let mut lines = super::adjacency::type_lines(ty);
+    if let Some(u) = unit.filter(|u| game.may_inspect(u.owner) && u.is_complete()) {
+        let at = usize::from(ty.adjacency_size > 0);
+        lines.splice(at..at, super::adjacency::card_lines(game, u));
+    }
+    if lines.is_empty() {
+        return;
+    }
+    panel::section(ui, n("ADJACENCY"));
+    for l in lines {
+        line(ui, &l);
     }
 }
 

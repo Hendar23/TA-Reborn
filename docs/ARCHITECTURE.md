@@ -464,7 +464,9 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   so it stalls with the economy. A factory makes nothing meanwhile (`update_factory` returns while
   its first order is an upgrade or an enhancement to install; a factory's orders take both,
   `order_unit`); anything else works on. Its guards help with it, not with the unit on its pad
-  (`update_guard_order`; a guard's help with that gives way, `update_repair_order`). The order taken off the front (Stop, an
+  (`update_guard_order`; a guard's help with that gives way, `update_repair_order`). A type whose
+  footprint is larger than the unit's upgrades only while no other building stands on the ground it
+  takes besides (`Sim::room_to_become`: refused, or called off, its metal back). The order taken off the front (Stop, an
   order not queued, `DropOrder`) calls the work off at the unit's next `update_orders`, its metal
   back (`cancel_self_work`); a capture drops it. Done (`finish_upgrade`): the old unit is taken off
   the map as given up (`removed`, its ground released at once) and a unit of the new type spawned
@@ -619,6 +621,25 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   missions and look again a second later. Mended, or its deck lost or switched off, it takes
   off and carries on with its orders (`Sim::end_repair_trip`); a new order (not one queued)
   calls the trip off. Idle aircraft, and those only moved somewhere, don't go looking for a pad.
+* **Adjacency** (`sim/adjacency.rs`; a unit type's `[ADJACENCY]` bonuses and `AdjacencySize`,
+  Supreme Commander's structures'): a finished building gives the finished buildings of its player
+  whose footprints meet its own along an edge (`adjacency::contact`; through `World::building_at`,
+  the cells round a footprint) the bonuses they take: of their size class, every token of the
+  bonus's category theirs, and something of theirs for it to change (`Sim::takes_affect`). Each
+  receiver keeps the shares summed by what they change and who gives them (`Unit::adjacency`, an
+  `Adjacency`; none for TA's units), from at most `AdjacencySize` neighbours, those along the most of
+  its edge first. Found at the economy's end (`Sim::update_adjacency`): the buildings standing
+  otherwise than when last looked at (`Unit::adjacency_key`: finished, alive, of a player, on a
+  footprint) are found in one pass, and they and the buildings round where they stood and stand are
+  looked at again in slot order; with no type giving a bonus (TA's games) nothing of it runs, the
+  game's sums as before. The factor (`Unit::adjacency_factor`: one and the shares, never below none)
+  scales what a builder pays for its work (`apply_build_power`, `work_on_self`, `update_stockpile`;
+  `Unit::metal_saved`, `SelfWork::metal_saved` keep what it was spared, so a frame or an upgrade
+  given up, and a unit its side takes apart (`update_reclaim_unit_order`; an upgraded one keeps its
+  upgrade's), gives back what was paid), upkeep and what is made (`economy_end`), a shot's energy
+  (`Sim::shot_energy`) and a reload (`Sim::fire`), and the unit figures (`flows.rs`) say the same.
+  `Sim::adjacency_given` and `Sim::adjacency_preview` (a building being placed) answer the
+  interface, `Sim::adjacency_bonus` the computer players.
 * **Repair patrols** (`sim/repair_round.rs`): a builder whose `DefaultMissionType` is
   `RepairPatrol` (TA: Escalation's repair tower upgrades, which its air repair pads make) mends,
   whenever it has no orders, the nearest damaged unit of its side or an ally's whose footprint is
@@ -626,7 +647,15 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   half second, an `Order::Repair` put first, standing where it is. A module its pad has taken on (a
   unit carried by one that carries none, `Sim::module_at_work`) works where it rides: its orders and
   its nano-lathe's piece go on, where a transport's passengers' don't. (The mission was read and
-  never acted on: the towers, which can neither move, patrol nor guard, stood idle.)
+  never acted on: the towers, which can neither move, patrol nor guard, stood idle.) A builder
+  whose `DefaultMissionType` is `AssistPatrol` (Supreme Commander's engineering stations) works
+  round it so (`Sim::work_round`): its player's unfinished units and units upgrading in place
+  first (an `Order::Repair` helps build them), then its side's and its allies' damaged units, then
+  wreckage (`Order::Reclaim`), the nearest of each within its reach, none it found out of reach
+  lately (`Unit::unreachable`). What either finds is marked its own (`Unit::auto_work`): the
+  player's next order, queued or not, takes its place (`order_unit`), and its failing is no
+  refusal (`give_up`). Neither kind is an idle builder while it waits for work
+  (`Sim::works_by_itself`; `Game::idle_builders`).
 * **Cheats** (`cheats.rs`): `Command::Cheat { player, cheat }`, taken only when
   `Sim::cheats_allowed` (the client sets it for games with at most one human, so replays of
   them agree). Standing cheats live in `Player::cheats`: double or half damage from the
@@ -1759,6 +1788,13 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   home first, a few at a time as the income allows and while power holds (the reclaim and rebuild of
   `upgrade_task` leaves those alone). Builders that help factories help one upgrading
   (`factory_to_help`). With no unit of ours that upgrades (TA's games), nothing of it runs.
+* Adjacency (`adjacency.rs`): a power plant whose bonuses reach a factory of ours goes up beside it
+  (`plant_beside_factory`, from `plant_task`: the factory nearest the builder first, a site along
+  the most of a side, out of the way out and off the ground its upgrades take, the lane round the
+  block kept free, `site_beside`), and storage whose bonuses raise what an extractor, plant or
+  maker of ours makes beside it (`storage_beside_task`: the best for its price, near home and out of
+  danger, where the more it makes pays for it within eight minutes), one at a time. With no unit
+  giving a bonus (TA's games), nothing of it runs. Engineering stations are not built.
 * Enhancements (`enhance.rs`, `run_enhancements`): the commander, near home and with no enemy
   close, installs an engineering suite once the economy reaches the tech climb's (the next suite
   once a factory of tech 2 stands, or metal piles up; a Tech persona's at once, `tech_eager`), a
@@ -2095,7 +2131,14 @@ clear ground the HUD sets on a gunmetal backdrop, or in a build menu on the grou
 goes, `hud/domain.rs`; TA's `unitpics` with the classic panels, for
 players' pictures and while a portrait is not drawn yet), order and state buttons, a hover card per unit (after the pointer rests;
 more after longer; under its health, a finished unit of ours or an ally's shows what it makes and
-uses of metal and energy a second now, `Sim::unit_flows`), the time left over what is being built
+uses of metal and energy a second now, `Sim::unit_flows`, and a building's adjacency, what the
+buildings beside it give it and how many it helps, as the selection's details say of one building,
+`hud/deck.rs`), adjacency's links (`hud/adjacency.rs`: between
+two buildings of ours or our allies that help each other, a line along the seam where their
+footprints meet and a chevron for each kind of bonus pointing at the one helped, in energy's or
+metal's colour or a warm red for a reload; faint, bright with a spark crossing the seam for the
+building under the pointer and the selected; a building being placed shows those it would make,
+dashed, and what it would take under its figures; none far out), the time left over what is being built
 (`hud/eta.rs`: from the builders working on it, scaled by how the work has really gone, so that a
 stall or a builder joining shows; our own and our allies' only, not far out nor in photo mode),
 the selection's routes (for a moment after an order, `Game::last_order`,

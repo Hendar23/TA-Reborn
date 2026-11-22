@@ -684,6 +684,11 @@ impl SkirmishAi {
                 return Some(t);
             }
         }
+        // Storage beside what it makes more of, where that pays (adjacency: Forged Alliance's
+        // storage round its extractors and plants), short of metal too: it is more metal.
+        if !e_low && pending(Role::Storage) == 0 && s.minutes >= 5 && let Some(t) = self.storage_beside_task(sim, s, b, &opts, plan) {
+            return Some(t);
+        }
         if let Some(t) = self.aa_task(sim, s, b, &opts, plan) {
             return Some(t);
         }
@@ -1023,6 +1028,11 @@ impl SkirmishAi {
     /// builder: never a geothermal plant (see [`SkirmishAi::geo_task`]).
     pub(crate) fn plant_task(&mut self, sim: &Sim, s: &Survey, b: &Unit, opts: &[usize], plan: &Plan) -> Option<Task> {
         let g = self.best_generator(sim, s, opts)?;
+        // Beside a factory of ours its bonuses reach, where one is near (adjacency: Forged
+        // Alliance's power round its factories, cutting what they pay to build).
+        if let Some(site) = self.plant_beside_factory(sim, s, b, g, plan) {
+            return Some(Task::Build(g, site));
+        }
         let big = self.info[g].energy >= fx(300);
         let first = self.place(sim, b, g, Zone::Back, if big { 260 } else { 150 }, plan);
         if let Some(site) = first.filter(|&p| dist(p, b.pos) <= 600) {

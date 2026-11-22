@@ -2,7 +2,39 @@
 
 ## Unreleased
 
+### Added
+- Adjacency: the Supreme Commander factions' structures give the structures of their player beside
+  them bonuses, as in Forged Alliance. Power generators cut what the factories, upgrading buildings
+  and silos beside them pay to build, the upkeep of radars, fabricators and extractors, the energy
+  guns' shots cost, and quicken artillery; mass extractors and fabricators cut what the factories
+  beside them pay in metal; storage raises what the generators, extractors and fabricators beside it
+  make (four mass storages round an extractor: half as much again). The bonuses are Forged
+  Alliance's own, read from your copy of the game, by the size of the building that takes them; two
+  buildings touch where their footprints meet along an edge. A link shows across the seam between
+  two buildings that help each other (bright for the one under the pointer and the selected, and for
+  one being placed, before it is put down), the hover card, the selection's details and the
+  information page (F1) say what the buildings beside it give a building and how many it helps, and
+  the figures over it what it makes and uses with them. What a building was built or upgraded for
+  comes back when it is given up unfinished or taken apart, not its price. The computer players put
+  their power generators beside their factories and mass storage beside their upgraded extractors.
+  Any mod can use it (`[ADJACENCY]`, `AdjacencySize`: see
+  [docs/MODDING.md](docs/MODDING.md#adjacency)); make the factions' mod again (UPDATE) to have it.
+
 ### Fixed
+- The Kennel and the Hive (the UEF's and the Cybran's engineering stations) offered no upgrade and
+  stood idle unless told what to do. Their next tiers, which Forged Alliance makes only by
+  upgrading (the tech 3 Kennel, the Hives of tech 2 and 3), were not made at all, nor were the
+  Cybran shield generator's four upgrades: they are now, so UPGRADE is offered as in Forged
+  Alliance. Left alone, an engineering station now works round it by itself: it helps build what
+  is going up within its reach (a frame, a factory's unit, a building upgrading), then mends the
+  damaged units of its side and its allies there, then reclaims the wrecks there; any order you
+  give it comes first, and waiting for work it is no idle builder. The Kennel works with its own
+  beams, as far round it as its drone would go (its drone is not made yet). Any mod can use it
+  (`DefaultMissionType=AssistPatrol`: see
+  [docs/MODDING.md](docs/MODDING.md#buildings-that-work-round-them-by-themselves)); make the
+  factions' mod again (UPDATE) to have it.
+- A building upgrading in place into a larger one (the Cybran tech 1 land factory's tech 2, a row
+  longer) grew into whatever stood beside it; it now upgrades only with room for what it becomes.
 - The Supreme Commander factions' buildings and units looked pixelated and frosty: their paint was
   halved to 512 texels a side, so at a normal battle zoom a factory was drawn from a quarter of
   Forged Alliance's texels, blown up into soft DXT blocks. Their paint is now as large as Forged

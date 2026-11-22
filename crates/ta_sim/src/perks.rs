@@ -59,8 +59,10 @@ impl Sim {
         if instructed { xp * 3 / 2 } else { xp }
     }
 
-    /// The energy a shot of `w` costs `shooter`: half a D-gun's with capacitors.
+    /// The energy a shot of `w` costs `shooter`: half a D-gun's with capacitors; less beside a
+    /// building that cuts it (adjacency).
     pub fn shot_energy(&self, shooter: UnitId, w: &WeaponType) -> Fx {
-        if w.command_fire && self.commander_perks(shooter).is_some_and(|p| p.capacitors) { w.energy_per_shot / 2 } else { w.energy_per_shot }
+        let energy = if w.command_fire && self.commander_perks(shooter).is_some_and(|p| p.capacitors) { w.energy_per_shot / 2 } else { w.energy_per_shot };
+        crate::sim::adjacency::scaled(energy, self.unit(shooter).and_then(|u| u.adjacency_factor(ta_data::AdjacencyAffect::EnergyPerShot)))
     }
 }

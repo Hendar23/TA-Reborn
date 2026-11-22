@@ -23,6 +23,7 @@
 //! lifts over water and cliffs. Allies (`Sim::allied`) are never targets and are kept out
 //! of the line of fire; only our own units are commanded.
 
+mod adjacency;
 mod ally;
 mod army;
 mod clear;

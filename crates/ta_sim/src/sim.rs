@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use ta_data::{GameData, MapInfo};
+use ta_data::{AdjacencyAffect, GameData, MapInfo};
 use ta_formats::tnt::TntMap;
 
 use crate::cob::{CobHost, CobInstance, ThreadTag, TICKS_PER_SECOND};
@@ -17,6 +17,7 @@ use crate::unit::{BuildJob, Drift, Economy, MAX_PLAYERS, Order, Player, PlayerSe
 use crate::vision::{self, Seen, Sensor, Vision};
 use crate::world::{CELL, MoveSpec, Occupant, Region, World};
 
+pub mod adjacency;
 mod air;
 mod blockers;
 pub mod enhance;
@@ -1854,6 +1855,10 @@ impl Sim {
             return;
         }
         let Some(u) = self.unit_mut(id) else { return };
+        // (Work a building found itself, its only order, gives way to the player's: queued after
+        // it, an order would wait on the building's own choice.)
+        let queue = queue && !(u.auto_work && u.orders.len() <= 1);
+        u.auto_work = false;
         if queue && !has_order_room(&u.orders, order) {
             return;
         }
@@ -2635,6 +2640,8 @@ impl Sim {
         let Some(order) = self.unit(id).and_then(|u| u.orders.front().cloned()) else {
             if Self::repairs_round(t) {
                 self.repair_round(id, t);
+            } else if Self::works_round(t) {
+                self.work_round(id, t);
             }
             self.idle_response(id, t);
             return;
@@ -2978,8 +2985,8 @@ impl Sim {
     /// work picked up while patrolling or guarding fails silently.
     fn give_up(&mut self, id: UnitId, key: u64) {
         // (A repair round's own work, its only order, is as automatic: a unit walking out of a
-        // repair tower's reach is no refusal.)
-        let round = self.unit(id).is_some_and(|u| u.orders.len() == 1 && Self::repairs_round(self.types.get(u.type_id)));
+        // repair tower's reach is no refusal; an engineering station's too.)
+        let round = self.unit(id).is_some_and(|u| u.orders.len() == 1 && u.auto_work);
         let Some(u) = self.unit_mut(id) else { return };
         let automatic = round || matches!(u.orders.get(1), Some(Order::Patrol(_) | Order::Guard(_)));
         if u.unreachable.len() >= 8 {
@@ -4199,7 +4206,7 @@ impl Sim {
         };
         let types = self.types.clone();
         let tt = types.get(tu.type_id);
-        let (target_pos, work) = (tu.pos, tu.build_work);
+        let (target_pos, work, saved) = (tu.pos, tu.build_work, tu.metal_saved);
         let u = self.unit(id).unwrap();
         let reach = t.build_distance + t.radius;
         if Self::distance_to_footprint(u.pos, target_pos, tt.footprint) > reach {
@@ -4248,13 +4255,17 @@ impl Sim {
         let rate = self.unit(id).map_or(t.work_rate, |u| u.work_rate(t));
         let step = ((rate.max(1) as u128 * total as u128) / reclaim_total as u128).clamp(1, u64::MAX as u128) as u64;
         let left = work.saturating_sub(step);
-        let refund = tt.cost_metal.share(work, total) - tt.cost_metal.share(left, total);
+        // (Less its share of what adjacency spared its builders: one built for less gives back
+        // what was paid for it, not its price.)
+        let spared = saved.share(work - left, work.max(1));
+        let refund = (tt.cost_metal.share(work, total) - tt.cost_metal.share(left, total) - spared).max(Fx::ZERO);
         let tick = self.tick;
         let mut owed = Fx::ZERO;
         if let Some(tu) = self.unit_mut(target) {
             tu.set_build_work(left, total);
             tu.health = tu.health.min(tt.max_health * tu.build_progress).max(Fx::ONE);
             tu.taken_apart_at = Some(tick);
+            tu.metal_saved -= spared;
             tu.reclaim_owed += refund;
             owed = tu.reclaim_owed;
             // Taken apart: it stops working.
@@ -4307,9 +4318,12 @@ impl Sim {
         for id in decaying {
             let Some(u) = self.unit(id) else { continue };
             let tt = self.types.get(u.type_id);
-            let (total, work, owner, cost, max_health) = (tt.build_work, u.build_work, u.owner, tt.cost_metal, tt.max_health);
+            let (total, work, owner, cost, max_health, saved) = (tt.build_work, u.build_work, u.owner, tt.cost_metal, tt.max_health, u.metal_saved);
             let left = work.saturating_sub((total / FRAME_DECAY).max(1));
-            let mut refund = cost.share(work, total) - cost.share(left, total);
+            // (What the work undone was worth, less its share of what adjacency spared its
+            // builders.)
+            let spared = saved.share(work - left, work.max(1));
+            let mut refund = (cost.share(work, total) - cost.share(left, total) - spared).max(Fx::ZERO);
             // (Gone: what its side's reclaiming took off it before comes too.)
             if left == 0 {
                 refund += u.reclaim_owed;
@@ -4321,6 +4335,7 @@ impl Sim {
             }
             if let Some(u) = self.unit_mut(id) {
                 u.set_build_work(left, total);
+                u.metal_saved -= spared;
                 u.health = u.health.min(max_health * u.build_progress).max(Fx::ONE);
                 if left == 0 {
                     // Gone without a Killed script, wreck or blast; given up, so no battle loss.
@@ -4751,7 +4766,7 @@ impl Sim {
         let own = self.unit(builder).map_or(t.work_rate, |b| b.work_rate(t));
         if tu.self_work.is_some() && tu.is_complete() {
             let rate = self.mutator_work_rate(self.perk_work_rate(builder, own));
-            self.work_on_self(target, rate, owner);
+            self.work_on_self(target, rate, owner, builder);
             return;
         }
         // A unit is finished once. While its own side takes it apart, work on it mends it and
@@ -4794,13 +4809,20 @@ impl Sim {
         if full == 0 {
             return;
         }
+        // (A builder beside a building that cuts what building costs it pays less: adjacency. What
+        // it was spared is no metal of the frame's, given up.)
+        let (metal_factor, energy_factor) = self.unit(builder).map_or((None, None), |b| (b.adjacency_factor(AdjacencyAffect::BuildMetal), b.adjacency_factor(AdjacencyAffect::BuildEnergy)));
+        let (metal_price, energy_price) = (adjacency::scaled(tt.cost_metal, metal_factor), adjacency::scaled(tt.cost_energy, energy_factor));
         let eco = &mut self.players[owner as usize].economy;
-        let work = eco.spend_work(done, total, full, tt.cost_metal, tt.cost_energy, eco.build_factor);
+        let work = eco.spend_work(done, total, full, metal_price, energy_price, eco.build_factor);
+        let worth = |price: Fx| price.share(done + work, total) - price.share(done, total);
+        let saved = if metal_factor.is_some() { worth(tt.cost_metal) - worth(metal_price) } else { Fx::ZERO };
         let heal = tt.max_health.share(done + work, total) - tt.max_health.share(done, total);
         let mut completed = false;
         if let Some(tu) = self.unit_mut(target) {
             tu.set_build_work(done + work, total);
             tu.health = (tu.health + heal).min(tt.max_health);
+            tu.metal_saved += saved;
             completed = tu.is_complete();
         }
         if completed && !finished {
@@ -4821,8 +4843,9 @@ impl Sim {
         let Some(frame) = self.unit(factory).and_then(|f| f.build).map(|b| b.target) else { return };
         let Some(u) = self.unit(frame).filter(|u| u.factory == Some(factory) && !u.is_complete() && !u.dead) else { return };
         let tt = self.types.get(u.type_id);
-        // What was put into it, and what its side's reclaiming took off it before.
-        let (owner, refund) = (u.owner, tt.cost_metal.share(u.build_work, tt.build_work) + u.reclaim_owed);
+        // What was put into it (less what adjacency spared its builders), and what its side's
+        // reclaiming took off it before.
+        let (owner, refund) = (u.owner, (tt.cost_metal.share(u.build_work, tt.build_work) - u.metal_saved).max(Fx::ZERO) + u.reclaim_owed);
         let e = &mut self.players[owner as usize].economy;
         e.metal = (e.metal + refund).min(e.metal_capacity.max(e.metal));
         e.tick_metal_in += refund;
@@ -5595,6 +5618,8 @@ impl Sim {
     }
 
     fn economy_end(&mut self) {
+        // (What the buildings give those beside them, for what they make and pay now.)
+        self.update_adjacency();
         let types = self.types.clone();
         let n = self.players.len();
         let mut metal_cap: Vec<Fx> = self.players.iter().map(|p| p.base_storage.0).collect();
@@ -5651,7 +5676,8 @@ impl Sim {
                 if t.energy_use < Fx::ZERO {
                     energy_in -= t.energy_use;
                 } else {
-                    upkeep = t.energy_use;
+                    // (Less beside a building that cuts it: adjacency.)
+                    upkeep = adjacency::scaled(t.energy_use, u.adjacency_factor(AdjacencyAffect::EnergyUse));
                 }
             }
             let paid = upkeep.is_zero() || e.energy >= upkeep;
@@ -5675,6 +5701,9 @@ impl Sim {
                     metal_in += t.makes_metal;
                 }
             }
+            // (More beside a building that raises it: adjacency.)
+            let energy_in = adjacency::scaled(energy_in, u.adjacency_factor(AdjacencyAffect::EnergyMake));
+            let metal_in = adjacency::scaled(metal_in, u.adjacency_factor(AdjacencyAffect::MetalMake));
             // (The resources mutator's flow.)
             let (energy_in, metal_in) = (crate::mutators::income(energy_in, resources), crate::mutators::income(metal_in, resources));
             e.energy += energy_in;
@@ -6155,12 +6184,23 @@ impl Sim {
                     crate::unit::SelfJob::Enhance(i) => { mix(-22); mix(i as i64); }
                 }
                 mix(w.work as i64);
+                if !w.metal_saved.is_zero() { mix(-24); mix(w.metal_saved.0); }
             }
             if !u.enhancements.is_empty() {
                 mix(-23);
                 mix(u.enhancements.len() as i64);
                 for &i in &u.enhancements { mix(i as i64); }
             }
+            // (Adjacency, and work a building found itself, only where there is some: TA's games
+            // sum as before.)
+            if !u.metal_saved.is_zero() { mix(-25); mix(u.metal_saved.0); }
+            if let Some(a) = &u.adjacency {
+                mix(-26);
+                for c in a.change { mix(c.0); }
+                mix(a.from.len() as i64);
+                for &(g, bits) in &a.from { target(&mut mix, Some(Target::Unit(g))); mix(bits as i64); }
+            }
+            if u.auto_work { mix(-27); }
             target(&mut mix, u.factory.map(Target::Unit));
             // (A way out only where there is one: a game without, TA's, sums as before.)
             if let Some(r) = u.roll_off {

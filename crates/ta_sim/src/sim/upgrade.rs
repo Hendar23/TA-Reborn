@@ -14,10 +14,12 @@
 //! paid for the upgrade comes back, as a frame given up gives its metal back, and its energy is
 //! lost.
 
+use ta_data::AdjacencyAffect;
+
 use crate::events::SimEvent;
 use crate::fixed::Fx;
 use crate::unit::{BuildJob, Order, SelfJob, SelfWork, Unit, UnitId};
-use crate::world::Occupant;
+use crate::world::{Occupant, World};
 
 use super::Sim;
 
@@ -69,23 +71,34 @@ impl Sim {
             }
             return;
         }
+        // (No room for what it becomes, where that takes more ground than it stands on: another
+        // building is in the way, put up beside it.)
+        if !self.room_to_become(id, to) {
+            self.events.push(SimEvent::OrderFailed { unit: id, reason: "no room to upgrade into that" });
+            self.cancel_self_work(id, true);
+            if let Some(u) = self.unit_mut(id) {
+                u.orders.pop_front();
+            }
+            return;
+        }
         if u.self_work.is_none_or(|w| w.job != SelfJob::Upgrade(to)) {
             // (Another job's metal back first: none is under way but this order's.)
             self.cancel_self_work(id, true);
             self.stop(id);
             if let Some(u) = self.unit_mut(id) {
-                u.self_work = Some(SelfWork { job: SelfJob::Upgrade(to), work: 0 });
+                u.self_work = Some(SelfWork { job: SelfJob::Upgrade(to), work: 0, metal_saved: Fx::ZERO });
             }
         }
         let rate = self.mutator_work_rate(self.perk_work_rate(id, t.work_rate));
         let owner = self.unit(id).map_or(0, |u| u.owner);
-        self.work_on_self(id, rate, owner);
+        self.work_on_self(id, rate, owner, id);
     }
 
     /// `rate` of work put into what a unit builds on itself (its own, or a helper's), paid for by
     /// `payer` (the one whose work it is) as construction is (a share of the price for the share
-    /// of the work, slowed by its economy's stall); done, it takes effect.
-    pub(crate) fn work_on_self(&mut self, id: UnitId, rate: u64, payer: u8) {
+    /// of the work, slowed by its economy's stall; less for a worker `by` beside a building that
+    /// cuts what building costs it: adjacency); done, it takes effect.
+    pub(crate) fn work_on_self(&mut self, id: UnitId, rate: u64, payer: u8, by: UnitId) {
         let Some(u) = self.unit(id).filter(|u| !u.dead) else { return };
         let Some(w) = u.self_work else { return };
         let owner = payer as usize;
@@ -93,6 +106,8 @@ impl Sim {
             return;
         }
         let (metal, energy, total) = self.self_job_price(u.type_id, w.job);
+        let (metal_factor, energy_factor) = self.unit(by).map_or((None, None), |b| (b.adjacency_factor(AdjacencyAffect::BuildMetal), b.adjacency_factor(AdjacencyAffect::BuildEnergy)));
+        let (metal_price, energy_price) = (super::adjacency::scaled(metal, metal_factor), super::adjacency::scaled(energy, energy_factor));
         let done = w.work.min(total);
         let work = if self.players.get(owner).is_some_and(|p| p.cheats.instant_build) {
             // (The instant-build cheat: done at once, for nothing.)
@@ -104,10 +119,12 @@ impl Sim {
             }
             let eco = &mut self.players[owner].economy;
             let factor = eco.build_factor;
-            eco.spend_work(done, total, full, metal, energy, factor)
+            eco.spend_work(done, total, full, metal_price, energy_price, factor)
         };
+        let worth = |price: Fx| price.share(done + work, total) - price.share(done, total);
+        let saved = if metal_factor.is_some() { worth(metal) - worth(metal_price) } else { Fx::ZERO };
         if let Some(u) = self.unit_mut(id) {
-            u.self_work = Some(SelfWork { work: done + work, ..w });
+            u.self_work = Some(SelfWork { work: done + work, metal_saved: w.metal_saved + saved, ..w });
         }
         if done + work >= total {
             match w.job {
@@ -115,6 +132,19 @@ impl Sim {
                 SelfJob::Enhance(index) => self.finish_enhancement(id, index),
             }
         }
+    }
+
+    /// Whether a unit of type `to` would stand where `id` stands with no other building in its way
+    /// (`World::building_at`): where its footprint is no larger, always; where it is (the Cybran
+    /// tech 1 land factory's tech 2, a row longer), what it takes besides must be free of others.
+    pub fn room_to_become(&self, id: UnitId, to: usize) -> bool {
+        let Some(u) = self.unit(id) else { return false };
+        let (from, into) = (self.types.get(u.type_id), self.types.get(to));
+        if u.occupied_origin.is_none() || into.def.takes_no_ground || from.footprint == into.footprint && World::pos_to_anchor(u.pos, from.footprint) == World::pos_to_anchor(u.pos, into.footprint) {
+            return true;
+        }
+        let (x0, z0) = World::footprint_origin(World::pos_to_anchor(u.pos, into.footprint), into.footprint);
+        (z0..z0 + into.footprint.1 as i32).all(|z| (x0..x0 + into.footprint.0 as i32).all(|x| self.world.building_at(x, z).is_none_or(|s| s == id.slot)))
     }
 
     /// Calls off what a unit builds on itself: with `refund`, the metal paid for it so far comes
@@ -125,7 +155,8 @@ impl Sim {
             return;
         }
         let (metal, _, total) = self.self_job_price(of, w.job);
-        let back = metal.share(w.work.min(total), total.max(1));
+        // (What was paid for it: its share of the price, less what adjacency spared those at it.)
+        let back = (metal.share(w.work.min(total), total.max(1)) - w.metal_saved).max(Fx::ZERO);
         if let Some(owner) = self.unit(id).map(|u| u.owner as usize)
             && let Some(p) = self.players.get_mut(owner)
         {
@@ -153,6 +184,9 @@ impl Sim {
         let yard = std::mem::take(&mut old.yard);
         let job = old.build.take();
         let (repeat, fire, movement, activated, kills, xp, guided) = (old.factory_repeat, old.fire_state, old.move_state, old.activated, old.kills, old.xp, old.radar_guided);
+        // (What adjacency spared those who worked on the upgrade: the new one, taken apart by its
+        // side, gives back what was paid for it, not its price.)
+        let saved = old.self_work.map_or(Fx::ZERO, |w| w.metal_saved);
         // Taken off the map as given up: no Killed script, wreck, blast or loss. Its ground is the
         // new one's from now (its slot goes at the end of the tick).
         old.self_work = None;
@@ -171,6 +205,7 @@ impl Sim {
         let products: Vec<UnitId> = yard.iter().copied().chain(job.map(|j| j.target)).collect();
         if let Some(u) = self.unit_mut(new) {
             u.health = (nt.max_health * share).max(Fx::ONE).min(nt.max_health);
+            u.metal_saved = saved;
             u.orders = orders;
             u.fire_state = fire;
             u.move_state = movement;

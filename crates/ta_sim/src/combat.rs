@@ -407,6 +407,9 @@ impl Sim {
             return;
         }
         let owner = u.owner as usize;
+        // (Less for a silo beside a building that cuts what building costs it: adjacency.)
+        let metal_per_shot = crate::sim::adjacency::scaled(w.metal_per_shot, u.adjacency_factor(ta_data::AdjacencyAffect::BuildMetal));
+        let energy_per_shot = crate::sim::adjacency::scaled(w.energy_per_shot, u.adjacency_factor(ta_data::AdjacencyAffect::BuildEnergy));
         // A missile takes its reload time of full ticks (each a fraction of a tick by the stall
         // factor, kept whole in 16.16), and each tick pays what its share of the missile's price
         // is worth, so the missile costs exactly that price.
@@ -415,21 +418,21 @@ impl Sim {
         let worth = |amount: Fx, work: u64| amount.share(before + work, total) - amount.share(before, total);
         let full = (Fx::ONE.0 as u64).min(total - before.min(total));
         let e = &mut self.players[owner].economy;
-        e.metal_demand_next += worth(w.metal_per_shot, full);
-        e.energy_demand_next += worth(w.energy_per_shot, full);
-        e.tick_metal_wanted += worth(w.metal_per_shot, full);
-        e.tick_energy_wanted += worth(w.energy_per_shot, full);
+        e.metal_demand_next += worth(metal_per_shot, full);
+        e.energy_demand_next += worth(energy_per_shot, full);
+        e.tick_metal_wanted += worth(metal_per_shot, full);
+        e.tick_energy_wanted += worth(energy_per_shot, full);
         let mut work = (e.build_factor.0.max(0) as u64).min(full);
         // Last tick's demand cannot predict a newly started silo or what another builder
         // has already spent. Limit work to the stores that remain, including rounding at
         // fractional progress, so an empty store never pays for free missile progress.
-        if w.metal_per_shot > Fx::ZERO && e.metal <= Fx::ZERO || w.energy_per_shot > Fx::ZERO && e.energy <= Fx::ZERO {
+        if metal_per_shot > Fx::ZERO && e.metal <= Fx::ZERO || energy_per_shot > Fx::ZERO && e.energy <= Fx::ZERO {
             work = 0;
-        } else if worth(w.metal_per_shot, work) > e.metal || worth(w.energy_per_shot, work) > e.energy {
+        } else if worth(metal_per_shot, work) > e.metal || worth(energy_per_shot, work) > e.energy {
             let (mut lo, mut hi) = (0, work);
             while lo < hi {
                 let mid = lo + (hi - lo).div_ceil(2);
-                if worth(w.metal_per_shot, mid) <= e.metal && worth(w.energy_per_shot, mid) <= e.energy {
+                if worth(metal_per_shot, mid) <= e.metal && worth(energy_per_shot, mid) <= e.energy {
                     lo = mid;
                 } else {
                     hi = mid - 1;
@@ -437,7 +440,7 @@ impl Sim {
             }
             work = lo;
         }
-        let (metal, energy) = (worth(w.metal_per_shot, work), worth(w.energy_per_shot, work));
+        let (metal, energy) = (worth(metal_per_shot, work), worth(energy_per_shot, work));
         e.metal -= metal;
         e.energy -= energy;
         e.tick_metal_out += metal;
@@ -1382,6 +1385,7 @@ impl Sim {
         // Direction: heading to the target plus accuracy error; launch pitch as solved.
         // Veterans aim better (up to 60% less scatter).
         let vet = self.unit(id).map_or(Fx::ZERO, |u| u.veterancy());
+        let quicker = self.unit(id).and_then(|u| u.adjacency_factor(ta_data::AdjacencyAffect::ReloadTime));
         let spread = ((Fx::from_int(w.spread as i64 / 4) * (Fx::ONE - vet * 6 / 10)).to_int()) as i32;
         let err_h = if spread > 0 { self.rng.range_i32(-spread, spread) } else { 0 };
         let err_p = if spread > 0 { self.rng.range_i32(-spread / 2, spread / 2) } else { 0 };
@@ -1434,8 +1438,10 @@ impl Sim {
                 // Stockpile reload is the missile's build time; launches only need the
                 // silo to cycle.
                 let reload = if w.def.stockpile { w.reload_ticks.min(90) } else { w.reload_ticks };
-                // Veterans reload up to 30% faster.
-                ws.reload = (Fx::from_int(reload as i64) * (Fx::ONE - vet * 3 / 10)).to_int().max(1) as u32;
+                // Veterans reload up to 30% faster; a building beside one that quickens its reload
+                // (adjacency) faster still.
+                let reload = crate::sim::adjacency::scaled(Fx::from_int(reload as i64), quicker);
+                ws.reload = (reload * (Fx::ONE - vet * 3 / 10)).to_int().max(1) as u32;
             } else {
                 ws.burst_left -= 1;
             }
