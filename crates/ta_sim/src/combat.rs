@@ -490,7 +490,7 @@ impl Sim {
             let Some(u) = self.unit(id) else { continue };
             let t = types.get(u.type_id);
             let Some(w) = u.weapon_slots(t)[slot].map(|w| weapons.get(w)) else { continue };
-            if u.weapons[slot].reload > 0 || !(u.activated || !t.def.on_offable) || !self.weapon_can_fire_from(u, w) {
+            if u.weapons[slot].reload > 0 || !(u.activated || !t.def.on_offable) || !self.weapon_can_fire_from(u, w) || u.packing_to_go() {
                 continue;
             }
             let coverage = w.interceptor_coverage();
@@ -703,7 +703,10 @@ impl Sim {
                 Trajectory::Dropped => self.bomb_on_target(id, from, tp, w, target),
                 _ => heading.abs() <= if w.tolerance > 0 { w.tolerance } else { 3000 },
             };
-            if aimed_now && ready && dist <= reach && lined_up {
+            // Nothing fired by a unit its script holds still and packs up to go (an aim answered
+            // before it was told to go answers no more).
+            let packing = self.unit(id).is_some_and(Unit::packing_to_go);
+            if aimed_now && ready && dist <= reach && lined_up && !packing {
                 // A shot the ground would stop: automatic targeting passes over that target
                 // for a while (another may be in the open); an ordered target is fired at
                 // regardless, as in TA.

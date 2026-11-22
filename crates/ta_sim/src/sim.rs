@@ -5147,6 +5147,21 @@ impl Sim {
     /// unit, so every unit's step can be taken at once; returns the goal to plan a new route
     /// to when the unit got stuck.
     fn ground_step(u: &mut Unit, t: &UnitType, spec: MoveSpec, world: &World, steer: crate::avoid::Steer, tick: u64) -> Option<FxVec3> {
+        // Held still by its script (`IMMOBILE`: a weapon unpacked that keeps its unit where it
+        // stands, Supreme Commander's `WeaponUnpackLocksMotion`): it neither moves nor turns, its
+        // way waiting. With somewhere to go it is on its way as far as its script is told
+        // (`StartMoving`, once), which packs up and lets it go; its way given up, `StopMoving`.
+        if u.immobile {
+            u.speed = Fx::ZERO;
+            let wants = u.path_goal.is_some();
+            if wants != u.moving {
+                u.moving = wants;
+                if let Some(c) = &mut u.cob {
+                    c.start(if wants { "StartMoving" } else { "StopMoving" }, &[], ThreadTag::None);
+                }
+            }
+            return None;
+        }
         let Some(goal) = u.path_goal else {
             // Standing in a building (a constructor left on a site as the building went up round
             // it, its way off blocked; a unit pushed into one): onto the nearest free cell, as a
@@ -6151,6 +6166,10 @@ impl Sim {
                     mix(w.ramp.0.0);
                     mix(w.ramp.1.0);
                 }
+            }
+            // (A script's hold likewise.)
+            if u.immobile {
+                mix(-24);
             }
             mix(u.orders.len() as i64);
             for o in &u.orders { order(&mut mix, o); }

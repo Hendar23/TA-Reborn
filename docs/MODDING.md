@@ -1049,7 +1049,8 @@ draws nothing.
 
 Scripts read (`get`) and set (`set`) unit values. TA Reborn answers TA's own (1 to 20),
 `VETERAN_LEVEL` (32: kills × 100), TA 3.1's questions about units by id, which the later mods'
-scripts ask (`exthead.h`), and `UNIT_CLOAKED` from a later patch:
+scripts ask (`exthead.h`), Spring's `TARGET_ID`, `UNIT_CLOAKED` from a later patch, and a value of
+its own, `IMMOBILE`:
 
 | Value | Name | Answer |
 | --- | --- | --- |
@@ -1060,13 +1061,21 @@ scripts ask (`exthead.h`), and `UNIT_CLOAKED` from a later patch:
 | 73 | `UNIT_BUILD_PERCENT_LEFT` | How much of that unit is left to build |
 | 74 | `UNIT_ALLIED` | Whether that unit is an ally of the unit asking |
 | 75 | `UNIT_IS_ON_THIS_COMP` | 1: every computer plays the whole battle |
+| 83 | `TARGET_ID` | Spring's: the target of the unit's weapon given (from 1): a unit's id, -1 none, -2 a place on the ground, -3 a missile it intercepts, -4 no such weapon |
 | 111 | `UNIT_CLOAKED` | Whether the unit is cloaked; setting it cloaks or uncloaks the unit |
+| 200 | `IMMOBILE` | TA Reborn's own: whether the script holds its unit still; setting it holds it or lets it go |
 
-Asked about an id no unit has, 72 to 75 read 0. Any other value reads 0, and setting it does
-nothing. The mod check names such values
-(`script.value`) where a script names them outright. The answers are in `crates/ta_sim/src/host.rs`;
-the check's list, `ANSWERED_VALUES` in `crates/ta_data/src/validation.rs`, is held to them by a
-test.
+Asked about an id no unit has, 72 to 75 read 0. A unit held still (`IMMOBILE` set to 1, as a
+weapon of the Supreme Commander factions does while it is unpacked: `WeaponUnpackLocksMotion`)
+neither moves nor turns, its orders waiting, and nothing pushes it (a unit on the ground or the
+water: aircraft fly on); told to go somewhere meanwhile, its script is told `StartMoving` at once
+(once), as though it were setting off, so that it can pack up and let it go, and `StopMoving` if
+the way is given up before then. From then until it is let go, its weapons fire nothing, though
+they aimed before (Supreme Commander's weapons fire nothing as they pack up). Let go, it sets off
+without being told again. Any other value reads 0, and setting it does nothing. The mod check
+names such values (`script.value`) where a script names them outright. The answers are in
+`crates/ta_sim/src/host.rs`; the check's list, `ANSWERED_VALUES` in
+`crates/ta_data/src/validation.rs`, is held to them by a test.
 
 #### Buildings that build their own upgrade modules
 

@@ -43,17 +43,28 @@ pub mod value {
     pub const UNIT_BUILD_PERCENT_LEFT: i32 = 73;
     pub const UNIT_ALLIED: i32 = 74;
     pub const UNIT_IS_ON_THIS_COMP: i32 = 75;
+    /// Spring's: the target of the unit's weapon given (from 1): a unit's script id, -1 none, -2 a
+    /// place on the ground, -3 a missile it intercepts, -4 no such weapon. The Supreme Commander
+    /// factions' weapons that unpack watch theirs, to pack up once it is gone.
+    pub const TARGET_ID: i32 = 83;
     /// Whether the unit is cloaked, from a later patch: Total Mayhem's mines cloak themselves
     /// with it while they wait, and uncloak to go off. (Free: TA's cloak costs the energy the
     /// unit's `CloakCost` says, which a mine's file does not.)
     pub const UNIT_CLOAKED: i32 = 111;
+    /// TA Reborn's own: whether the unit's script holds it still (Supreme Commander's
+    /// `SetImmobile`, as its weapons that unpack before they fire and keep their unit where it
+    /// stands meanwhile do: `WeaponUnpackLocksMotion`). Set, the unit neither moves nor turns, its
+    /// way waiting; with somewhere to go, its script is told `StartMoving` (once), so that it can
+    /// pack up and let it go, its weapons firing nothing until then (`Unit::immobile`,
+    /// `Unit::packing_to_go`).
+    pub const IMMOBILE: i32 = 200;
     /// Every value the host answers a script that asks for it, in order (and keeps, those a
     /// script may set): what the mod check tells a mod's scripts Reborn answers
     /// (`ta_data::validation::ANSWERED_VALUES`, held to this by a test).
     pub const ANSWERED: &[i32] = &[
         ACTIVATION, STANDING_MOVE_ORDERS, STANDING_FIRE_ORDERS, HEALTH, IN_BUILD_STANCE, BUSY, PIECE_XZ, PIECE_Y, UNIT_XZ, UNIT_Y,
         UNIT_HEIGHT, XZ_ATAN, XZ_HYPOT, ATAN, HYPOT, GROUND_HEIGHT, BUILD_PERCENT_LEFT, YARD_OPEN, BUGGER_OFF, ARMORED, VETERAN_LEVEL,
-        MIN_ID, MAX_ID, MY_ID, UNIT_TEAM, UNIT_BUILD_PERCENT_LEFT, UNIT_ALLIED, UNIT_IS_ON_THIS_COMP, UNIT_CLOAKED,
+        MIN_ID, MAX_ID, MY_ID, UNIT_TEAM, UNIT_BUILD_PERCENT_LEFT, UNIT_ALLIED, UNIT_IS_ON_THIS_COMP, TARGET_ID, UNIT_CLOAKED, IMMOBILE,
     ];
 }
 
@@ -237,6 +248,16 @@ impl CobHost for UnitHost<'_> {
             ARMORED => u.armored as i32,
             VETERAN_LEVEL => u.kills.saturating_mul(100).min(i32::MAX as u64) as i32,
             UNIT_CLOAKED => u.cloak_on as i32,
+            IMMOBILE => u.immobile as i32,
+            TARGET_ID => match usize::try_from(args[0] - 1).ok().and_then(|k| u.weapons.get(k)) {
+                Some(w) => match w.target {
+                    Some(crate::unit::Target::Unit(id)) => id.script_id(),
+                    None => -1,
+                    Some(crate::unit::Target::Ground(_)) => -2,
+                    Some(crate::unit::Target::Projectile(_)) => -3,
+                },
+                None => -4,
+            },
             // Script ids are the units' places, from 1.
             MIN_ID => 1,
             MAX_ID => self.max_id,
@@ -289,6 +310,7 @@ impl CobHost for UnitHost<'_> {
             }
             ARMORED => u.armored = v != 0,
             UNIT_CLOAKED => u.cloak_on = v != 0,
+            IMMOBILE => u.immobile = v != 0,
             _ => {}
         }
     }

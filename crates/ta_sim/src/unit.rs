@@ -281,6 +281,11 @@ pub struct Unit {
     pub yard_open: bool,
     pub armored: bool,
     pub busy: bool,
+    /// Its script holds it still (`IMMOBILE`: a weapon of Supreme Commander's unpacked that keeps
+    /// its unit where it stands, `WeaponUnpackLocksMotion`): it neither moves nor turns, its way
+    /// waiting; with somewhere to go, its script is told `StartMoving` so that it packs up and
+    /// lets it go (`Sim::ground_step`), firing nothing meanwhile ([`Unit::packing_to_go`]).
+    pub immobile: bool,
     pub fire_state: u8,
     /// Fires at will on what its side has on radar or sonar as well as on what it sees: guns a
     /// spotter directs, a scenario's (`radar_guided`: Iron Rain's battery, which a radar post
@@ -492,6 +497,7 @@ impl Unit {
             yard_open: false,
             armored: false,
             busy: false,
+            immobile: false,
             fire_state: 2,
             radar_guided: false,
             move_state: 1,
@@ -664,6 +670,13 @@ impl Unit {
     /// after a job, the stance raised, and do not raise it again for a job that comes meanwhile.
     pub fn stance_is_scripted(&self) -> bool {
         self.cob.as_ref().is_some_and(|c| c.has_function("StartBuilding"))
+    }
+
+    /// Held still by its script (`IMMOBILE`) and told to go: its script is packing it up so that
+    /// it can, and its weapons fire nothing meanwhile, as Supreme Commander's fire nothing as
+    /// they pack (`WeaponPackingState`).
+    pub fn packing_to_go(&self) -> bool {
+        self.immobile && self.moving
     }
 
     /// Physical model root. Naval movement keeps a surface anchor; submarine

@@ -426,6 +426,61 @@ fn a_weapon_naming_its_only_targets_takes_no_other_by_order_either() {
     assert!(!sim.takes_order(t, 0, w, Target::Unit(jet), 0), "a jet landed, which it cannot hit");
 }
 
+/// A unit its script holds still (`IMMOBILE`: a Supreme Commander weapon deployed) fires as it
+/// stands; told to go, it fires nothing while its script packs it up, though its weapon's aim
+/// answered before; let go, it fires again as any other unit.
+#[test]
+fn a_unit_held_still_fires_nothing_while_it_packs_up_to_go() {
+    use crate::host::value::IMMOBILE;
+    use ta_formats::cob::{CobFunction, CobScript, op};
+    let mut sim = game_of(&[
+        ("ARTY", "Weapon1=LASER; CanMove=1; MaxVelocity=2; Acceleration=0.2; BrakeRate=0.2; TurnRate=900;"),
+        ("TARGET", "Category=TARGET;"),
+    ]);
+    // Create: held. AimPrimary: aimed at once. StartMoving: a second's packing, then let go.
+    let mut script = CobScript { pieces: vec!["base".into()], ..Default::default() };
+    let mut function = |name: &str, code: &[u32]| {
+        script.functions.push(CobFunction { name: name.into(), offset: script.code.len() as u32 });
+        script.code.extend_from_slice(code);
+    };
+    let hold = |on: u32| [op::PUSH_CONSTANT, IMMOBILE as u32, op::PUSH_CONSTANT, on, op::SET_VALUE];
+    function("Create", &[&hold(1)[..], &[op::PUSH_CONSTANT, 0, op::RETURN]].concat());
+    function("AimPrimary", &[op::PUSH_CONSTANT, 1, op::RETURN]);
+    function("StartMoving", &[&[op::PUSH_CONSTANT, 1000, op::SLEEP][..], &hold(0), &[op::PUSH_CONSTANT, 0, op::RETURN]].concat());
+    let arty_type = sim.types.id("ARTY").unwrap();
+    Arc::get_mut(&mut sim.types).unwrap().types[arty_type].script = Some(Arc::new(crate::cob::CobProgram::new(script, &["base".to_string()])));
+    let arty = spawn(&mut sim, "ARTY", 0, 300, 300);
+    spawn(&mut sim, "TARGET", 1, 450, 300);
+    sim.vision.set_all(0, crate::vision::LOS);
+    let mut seen = std::collections::BTreeSet::new();
+    let mut shots = |sim: &Sim| sim.projectiles.iter().filter(|p| p.owner == arty && seen.insert(p.id)).count();
+    let mut fired = 0;
+    for _ in 0..30 {
+        sim.step(&[]);
+        fired += shots(&sim);
+    }
+    let start_at = sim.unit(arty).unwrap().pos;
+    assert!(fired > 0 && sim.unit(arty).unwrap().immobile, "held, it fires as it stands");
+    // Told to go (the target still in reach all the way): its second of packing, nothing fired.
+    let order = crate::Command::Order { player: 0, units: vec![arty], order: Order::Move(FxVec3::from_ints(300, 0, 560)), queue: false };
+    sim.step(&[order]);
+    shots(&sim);
+    for tick in 0..25 {
+        sim.step(&[]);
+        let u = sim.unit(arty).unwrap();
+        assert!(u.packing_to_go() && u.pos == start_at, "tick {tick}: held, packing up to go");
+        assert_eq!(shots(&sim), 0, "tick {tick}: nothing fired while it packs up");
+    }
+    // Let go: it sets off and fires again.
+    let mut fired = 0;
+    for _ in 0..60 {
+        sim.step(&[]);
+        fired += shots(&sim);
+    }
+    let u = sim.unit(arty).unwrap();
+    assert!(!u.immobile && u.pos != start_at && fired > 0, "let go, off it goes, firing");
+}
+
 /// A weapon whose bad targets are every unit it could hit would never fire of its own accord,
 /// which mods' tags of their own make (Total Mayhem's flak towers list `ALL`, which all its units
 /// carry; Escalation's anti-air missiles a tag all its aircraft carry): its bad targets are

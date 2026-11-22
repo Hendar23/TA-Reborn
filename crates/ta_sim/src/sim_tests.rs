@@ -118,6 +118,10 @@ fn checksums_detect_missile_inventory_production_reload_and_flight_divergence() 
     assert_ne!(before, expected, "a way out");
     leaving.unit_mut(silo).unwrap().roll_off.as_mut().unwrap().way.as_mut().unwrap().ramp.1 += Fx::ONE;
     assert_ne!(leaving.checksum(), before, "its ramp");
+    // So does a script's hold.
+    let mut held = sim.clone();
+    held.unit_mut(silo).unwrap().immobile = true;
+    assert_ne!(held.checksum(), expected, "a hold");
 }
 
 #[test]
@@ -3003,6 +3007,33 @@ fn the_mod_check_knows_the_values_the_engine_answers() {
     assert_eq!(crate::host::value::ANSWERED, ta_data::validation::ANSWERED_VALUES);
 }
 
+/// A script asks its weapon's target (`TARGET_ID`, Spring's, the weapon from 1): a unit's script
+/// id, -1 for none, -2 for a place on the ground, -3 for a missile, -4 for no such weapon.
+#[test]
+fn a_script_asks_its_weapons_target() {
+    use crate::host::value::TARGET_ID;
+    use ta_formats::cob::{CobFunction, CobScript, op};
+    let data = data_of(&[unit("GUN", ""), unit("TANK", "")]);
+    let mut sim = sim_of(data, 2);
+    let mut script = CobScript { static_var_count: 1, ..Default::default() };
+    script.functions.push(CobFunction { name: "Ask".into(), offset: 0 });
+    script.code.extend([op::CREATE_LOCAL, op::PUSH_CONSTANT, TARGET_ID as u32, op::PUSH_LOCAL, 0, op::PUSH_CONSTANT, 0, op::PUSH_CONSTANT, 0, op::PUSH_CONSTANT, 0, op::GET, op::POP_STATIC, 0, op::PUSH_CONSTANT, 0, op::RETURN]);
+    Arc::get_mut(&mut sim.types).unwrap().types[0].script = Some(Arc::new(crate::cob::CobProgram::new(script, &[])));
+    let gun = sim.spawn_unit(0, 0, FxVec3::from_ints(400, 60, 400), 0, true).unwrap();
+    let tank = sim.spawn_unit(1, 1, FxVec3::from_ints(500, 60, 400), 0, true).unwrap();
+    let ask = |sim: &mut Sim, weapon: i32| -> i32 {
+        sim.with_script(gun, |cob, host| {
+            cob.call(host, "Ask", &[weapon]).expect("runs");
+        });
+        sim.unit(gun).unwrap().cob.as_ref().unwrap().statics[0]
+    };
+    let u = sim.unit_mut(gun).unwrap();
+    u.retarget(0, Some(Target::Unit(tank)));
+    u.retarget(1, Some(Target::Ground(FxVec3::from_ints(450, 60, 450))));
+    u.retarget(2, Some(Target::Projectile(7)));
+    assert_eq!([ask(&mut sim, 1), ask(&mut sim, 2), ask(&mut sim, 3), ask(&mut sim, 4), ask(&mut sim, 0), ask(&mut sim, 9)], [tank.script_id(), -2, -3, -1, -4, -4]);
+}
+
 /// A script cloaks its own unit (`UNIT_CLOAKED`, a later patch's: Total Mayhem's mines while they
 /// wait), at no cost when its file gives none, and uncloaks it.
 #[test]
@@ -3319,6 +3350,104 @@ fn a_factory_with_ways_out_takes_one_it_can_leave_by() {
     }
     let u = sim.unit(module.expect("the plant begins the module")).unwrap();
     assert_eq!((u.heading, u.roll_off), (0, None), "made as the pad faces");
+}
+
+/// A unit its script holds still (`IMMOBILE`) is not pushed about by the crowd: one standing on it
+/// is pushed off it alone.
+#[test]
+fn a_unit_its_script_holds_still_is_not_pushed_about() {
+    use crate::cob::CobProgram;
+    use crate::host::value::IMMOBILE;
+    use ta_formats::cob::{CobFunction, CobScript, op};
+    let keys = "CanMove=1; MaxVelocity=2; Acceleration=0.2; BrakeRate=0.2; TurnRate=900; FootprintX=2; FootprintZ=2;";
+    let data = data_of(&[unit("TANK", keys), unit("BUGGY", keys)]);
+    let mut sim = sim_of(data, 1);
+    let (tank_type, buggy_type) = (sim.types.id("TANK").unwrap(), sim.types.id("BUGGY").unwrap());
+    let script = CobScript {
+        pieces: vec!["base".into()],
+        functions: vec![CobFunction { name: "Create".into(), offset: 0 }],
+        code: vec![op::PUSH_CONSTANT, IMMOBILE as u32, op::PUSH_CONSTANT, 1, op::SET_VALUE, op::PUSH_CONSTANT, 0, op::RETURN],
+        ..Default::default()
+    };
+    Arc::get_mut(&mut sim.types).unwrap().types[tank_type].script = Some(Arc::new(CobProgram::new(script, &["base".to_string()])));
+    let tank = sim.spawn_unit(tank_type, 0, FxVec3::from_ints(300, 60, 300), 0, true).unwrap();
+    let buggy = sim.spawn_unit(buggy_type, 0, FxVec3::from_ints(304, 60, 300), 0, true).unwrap();
+    let (held_at, buggy_at) = (sim.unit(tank).unwrap().pos, sim.unit(buggy).unwrap().pos);
+    for _ in 0..15 {
+        sim.step(&[]);
+    }
+    let (t, b) = (sim.unit(tank).unwrap(), sim.unit(buggy).unwrap().pos);
+    assert!(t.immobile && t.pos.xz() == held_at.xz(), "held where it stood: {:?}", t.pos);
+    assert!((b - t.pos).xz().length_xz() > (buggy_at - held_at).xz().length_xz() + Fx::from_int(8), "the other pushed off it: {b:?} from {:?}", t.pos);
+}
+
+/// A script holding its unit still (`IMMOBILE`, as a Supreme Commander weapon unpacked does): the
+/// unit given somewhere to go stays where it stands, facing as it was, and its script is told
+/// `StartMoving` once; the script letting it go (packed up a second later), it sets off. Its way
+/// given up while held, `StopMoving`.
+#[test]
+fn a_unit_its_script_holds_still_waits_to_be_let_go() {
+    use crate::cob::CobProgram;
+    use crate::host::value::{ARMORED, IMMOBILE};
+    use ta_formats::cob::{CobFunction, CobScript, op};
+    let data = data_of(&[unit("TANK", "CanMove=1; MaxVelocity=2; Acceleration=0.2; BrakeRate=0.2; TurnRate=900; FootprintX=1; FootprintZ=1;")]);
+    let mut sim = sim_of(data, 1);
+    let tank_type = sim.types.id("TANK").unwrap();
+    let mut script = CobScript { pieces: vec!["base".into()], ..Default::default() };
+    let function = |script: &mut CobScript, name: &str, code: &[u32]| {
+        script.functions.push(CobFunction { name: name.into(), offset: script.code.len() as u32 });
+        script.code.extend_from_slice(code);
+    };
+    let set = |id: i32, v: u32| [op::PUSH_CONSTANT, id as u32, op::PUSH_CONSTANT, v, op::SET_VALUE];
+    // Create: held. StartMoving: marked (ARMORED, as a witness), a second's packing, let go.
+    // StopMoving: the packing called off (its signal), the mark taken off.
+    let mut create = set(IMMOBILE, 1).to_vec();
+    create.extend([op::PUSH_CONSTANT, 0, op::RETURN]);
+    function(&mut script, "Create", &create);
+    let mut start = vec![op::PUSH_CONSTANT, 1, op::SIGNAL, op::PUSH_CONSTANT, 1, op::SET_SIGNAL_MASK];
+    start.extend(set(ARMORED, 1));
+    start.extend([op::PUSH_CONSTANT, 1000, op::SLEEP]);
+    start.extend(set(IMMOBILE, 0));
+    start.extend([op::PUSH_CONSTANT, 0, op::RETURN]);
+    function(&mut script, "StartMoving", &start);
+    let mut stop = vec![op::PUSH_CONSTANT, 1, op::SIGNAL];
+    stop.extend(set(ARMORED, 0));
+    stop.extend([op::PUSH_CONSTANT, 0, op::RETURN]);
+    function(&mut script, "StopMoving", &stop);
+    Arc::get_mut(&mut sim.types).unwrap().types[tank_type].script = Some(Arc::new(CobProgram::new(script, &["base".to_string()])));
+    // Given somewhere to go, then the way given up while it is held: StartMoving, then StopMoving.
+    let tank = sim.spawn_unit(tank_type, 0, FxVec3::from_ints(300, 60, 300), 0, true).unwrap();
+    sim.step(&[]);
+    assert!(sim.unit(tank).unwrap().immobile, "held from its making");
+    let start_at = sim.unit(tank).unwrap().pos;
+    let away = FxVec3::from_ints(300, 60, 700);
+    sim.step(&[Command::Order { player: 0, units: vec![tank], order: Order::Move(FxVec3::from_ints(700, 60, 300)), queue: false }]);
+    for _ in 0..3 {
+        sim.step(&[]);
+    }
+    let u = sim.unit(tank).unwrap();
+    assert!(u.moving && u.armored, "told StartMoving");
+    assert_eq!((u.pos, u.heading), (start_at, 0), "held where it stood, as it faced");
+    sim.step(&[Command::Order { player: 0, units: vec![tank], order: Order::Stop, queue: false }]);
+    for _ in 0..3 {
+        sim.step(&[]);
+    }
+    let u = sim.unit(tank).unwrap();
+    assert!(!u.moving && !u.armored && u.pos == start_at, "told StopMoving, still where it stood");
+    // Somewhere to go again: held for its script's second, then off.
+    sim.step(&[Command::Order { player: 0, units: vec![tank], order: Order::Move(away), queue: false }]);
+    let mut set_off = None;
+    for tick in 0..30 * 10 {
+        sim.step(&[]);
+        let u = sim.unit(tank).unwrap();
+        if set_off.is_none() && u.pos != start_at {
+            set_off = Some(tick);
+        }
+    }
+    let set_off = set_off.expect("let go, it sets off");
+    assert!((28..=36).contains(&set_off), "a second after it was told: tick {set_off}");
+    let u = sim.unit(tank).unwrap();
+    assert!(!u.immobile && u.pos.within_xz(away, Fx::from_int(24)), "gone where it was sent: {:?}", u.pos);
 }
 
 /// TA's `HealTime` (its Commanders', 27): a finished unit of a type that has one mends itself, 100

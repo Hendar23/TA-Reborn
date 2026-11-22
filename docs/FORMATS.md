@@ -1015,6 +1015,15 @@ take up to all 32 bits of a texel.
   weapon of the unit's takes it), nor is a unit it names where it cannot hit it
   (`Sim::only_allows`: `toairweapon` and a landed aircraft). None of TA's units names any: TA's
   `toairweapon=1` weapons still fire on what an order names (`Sim::takes_order`).
+* **`TARGET_ID`** (unit value 83, Spring's: `get TARGET_ID(n)`): weapon `n`'s target (from 1), a
+  unit's script id, -1 none, -2 a place, -3 a missile it intercepts, -4 no such weapon.
+* **`IMMOBILE`** (unit value 200, TA Reborn's own): set by a script, its unit is held still
+  (`Unit::immobile`, in the checksum where set; a unit on the ground or the water: aircraft fly
+  on): no movement, no turning, not pushed by the crowd, its orders waiting. With a way to go it
+  counts as setting off for its script (`StartMoving`, once, `Unit::moving`), so that the script
+  can let it go; its way given up, `StopMoving`. From then until it is let go it fires nothing
+  (`Unit::packing_to_go`: an aim answered before no longer fires). The Supreme Commander
+  factions' weapons that lock their unit's motion while unpacked set it.
 * Build menus: `guis/<BUILDER><page>.gui` + `download/*.tdf`. The 3.1 patch's `[CANBUILD]` in
   sidedata is the computer players' list, never a player's menu: mods list units of their AI
   there (TA: The Final Frontier's AI Boost: `AAISOLAR` beside the `ARMSOLAR` a player builds,

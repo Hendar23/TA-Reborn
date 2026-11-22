@@ -195,8 +195,9 @@ const PARALLEL_BODIES: usize = 1_500;
 /// side meeting so, one of them slipping past (`Body::squeeze`), go through each other.
 fn body_push(grid: &CrowdGrid, units: &[Option<crate::unit::Unit>], i: usize) -> Option<Push> {
     let a = grid.sorted[i];
-    // Units leaving a factory pass through the yard freely.
-    if units[a.slot as usize].as_ref().is_some_and(|u| u.factory.is_some()) {
+    // Units leaving a factory pass through the yard freely; one its script holds still
+    // (`IMMOBILE`: dug in to fire) is not pushed about.
+    if units[a.slot as usize].as_ref().is_some_and(|u| u.factory.is_some() || u.immobile) {
         return None;
     }
     let (cx, cz) = grid.cell(a.x, a.z);
