@@ -192,12 +192,41 @@ pub struct WeaponBlueprint {
     /// What it may aim at alone (`TargetRestrictOnlyAllow`: 'TACTICAL MISSILE', 'AIR'...), as
     /// written.
     pub only_allow: String,
+    /// It unpacks before it fires (`WeaponUnpacks`): see [`Unpack`].
+    pub unpack: Option<Unpack>,
     /// Its projectile's blueprint (`ProjectileId`'s), where the game has it.
     pub shot: Option<crate::projectile::ProjectileBlueprint>,
     /// What its projectile splits into as it lands, all its splits followed (the Salvation's
     /// shell into six, each of those into six more: 36 pieces, each with the shell's damage).
     pub split: Option<Split>,
     pub table: Table,
+}
+
+/// How a weapon that unpacks before it fires does (`WeaponUnpacks = true`; Forged Alliance's
+/// `lua/sim/defaultweapons.lua`, its `WeaponUnpackingState` and `WeaponPackingState`): given a
+/// target it plays its unpack animation (`WeaponUnpackAnimation`, at `WeaponUnpackAnimationRate`)
+/// and fires once it is done; with none left (or, a weapon whose missiles are counted, once it has
+/// fired) it waits `WeaponRepackTimeout` seconds and plays the animation back. One that locks its
+/// unit's motion (`WeaponUnpackLocksMotion`) keeps the unit where it stands from the moment it
+/// starts unpacking until it is packed up again.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Unpack {
+    /// The animation (the game's path, lower case); none named, it unpacks at once.
+    pub animation: Option<String>,
+    pub rate: f64,
+    pub repack: f64,
+    pub locks_motion: bool,
+}
+
+/// One of a factory's roll-off points (`Physics.RollOffPoints`): where a unit it makes is sent
+/// as it is done (ogrids from the factory's middle: `X`, `Z`; `Y` is never other than 0), and how
+/// its build bone is turned for it as it is built (`UnitSpin`, degrees by the right hand about y:
+/// 90 towards +x). The factory takes the one nearest its rally point (`CalculateRollOffPoint`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RollOffPoint {
+    pub x: f64,
+    pub z: f64,
+    pub spin: f64,
 }
 
 /// A projectile's pieces once it has split, all the way down: how many reach the ground, and the
@@ -254,6 +283,10 @@ pub struct Display {
     pub walk: Option<(String, f64)>,
     pub deaths: Vec<String>,
     pub build_attach_bone: Option<String>,
+    /// The turn its factory's build bone is given for it, whichever roll-off point it takes
+    /// (`ForcedBuildSpin`, degrees by the right hand about y as a point's `UnitSpin`): the long
+    /// transports and gunships, built along their air factories' platforms.
+    pub forced_build_spin: Option<f64>,
     /// Every animation it names by a key of its own (`AnimationOpen`, `AnimationUpgrade`,
     /// `LoopingAnimation`...: the key and the path, lower case), which its classes and its script
     /// play as it works ([`crate::motions`]).
@@ -309,6 +342,8 @@ pub struct UnitBlueprint {
     pub size: [f64; 3],
     pub footprint: Option<[f64; 2]>,
     pub skirt: Option<[f64; 2]>,
+    /// A factory's roll-off points (`Physics.RollOffPoints`), in their order.
+    pub roll_off: Vec<RollOffPoint>,
     pub max_slope: Option<f64>,
     pub elevation: Option<f64>,
     pub max_airspeed: Option<f64>,
@@ -397,6 +432,19 @@ pub fn parse(id: &str, text: &str) -> Result<UnitBlueprint> {
     let size = [num(&[], "SizeX").unwrap_or(1.0), num(&[], "SizeY").unwrap_or(1.0), num(&[], "SizeZ").unwrap_or(1.0)];
     let footprint = num(&["Footprint"], "SizeX").zip(num(&["Footprint"], "SizeZ")).map(|(x, z)| [x, z]);
     let skirt = num(&["Physics"], "SkirtSizeX").zip(num(&["Physics"], "SkirtSizeZ")).map(|(x, z)| [x, z]);
+    let roll_off = table
+        .path(&["Physics", "RollOffPoints"])
+        .map(|t| {
+            t.array
+                .iter()
+                .filter_map(Value::table)
+                .map(|p| {
+                    let n = |k: &str| p.get_ci(k).and_then(Value::num).unwrap_or(0.0);
+                    RollOffPoint { x: n("X"), z: n("Z"), spin: n("UnitSpin") }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let intel = table.get_ci("Intel").and_then(Value::table).map_or_else(Intel::default, |t| {
         let n = |k: &str| t.get_ci(k).and_then(Value::num).unwrap_or(0.0);
         let b = |k: &str| t.get_ci(k).and_then(Value::bool).unwrap_or(false);
@@ -454,6 +502,7 @@ pub fn parse(id: &str, text: &str) -> Result<UnitBlueprint> {
         size,
         footprint,
         skirt,
+        roll_off,
         max_slope: num(&["Footprint"], "MaxSlope"),
         elevation: num(&["Physics"], "Elevation"),
         max_airspeed: num(&["Air"], "MaxAirspeed"),
@@ -542,6 +591,12 @@ fn weapon(t: &Table) -> WeaponBlueprint {
         counted: b("CountedProjectile"),
         max_storage: n("MaxProjectileStorage").max(0.0) as u32,
         only_allow: s("TargetRestrictOnlyAllow").unwrap_or_default(),
+        unpack: b("WeaponUnpacks").then(|| Unpack {
+            animation: s("WeaponUnpackAnimation").map(|a| a.trim().trim_start_matches('/').to_ascii_lowercase()),
+            rate: t.get_ci("WeaponUnpackAnimationRate").and_then(Value::num).filter(|r| *r > 0.0).unwrap_or(1.0),
+            repack: n("WeaponRepackTimeout").max(0.0),
+            locks_motion: b("WeaponUnpackLocksMotion"),
+        }),
         shot: None,
         split: None,
         table: t.clone(),
@@ -603,6 +658,7 @@ fn display(id: &str, t: Option<&Table>) -> Display {
         walk,
         deaths,
         build_attach_bone: t.get_ci("BuildAttachBone").and_then(Value::str).map(str::to_string),
+        forced_build_spin: t.get_ci("ForcedBuildSpin").and_then(Value::num).filter(|v| v.is_finite()),
         animations,
     }
 }
@@ -790,6 +846,39 @@ UnitBlueprint {
         assert_eq!(bp.display.lods[0].mesh, "units/uel0201/uel0201_lod0.scm");
         assert_eq!(bp.display.lods[1].albedo, "units/uel0201/uel0201_lod1_albedo.dds");
         assert_eq!(bp.wreckage, Some(Wreckage { mass: 0.9, energy: 0.0, health: 0.9 }));
+    }
+
+    /// A factory's roll-off points (in their order, `Y` not kept) and a weapon that unpacks: its
+    /// animation's path as the game's files name it (lower case, from the archive's root), its
+    /// rate (1 where none or none above 0 is given), its repack timeout and its hold on its unit;
+    /// a weapon that says it does not unpack, or says nothing, does not.
+    #[test]
+    fn roll_off_points_and_unpacking_weapons_read() {
+        let bp = parse(
+            "UEL0111",
+            "UnitBlueprint { Categories = { 'UEF', 'MOBILE' }, \
+             Physics = { RollOffPoints = { { UnitSpin = 90, X = 3, Y = 0, Z = 0.5 }, { UnitSpin = -90, X = -3, Y = 0, Z = 0 } } }, \
+             Weapon = { \
+               { Label = 'Launcher', WeaponUnpacks = true, WeaponUnpackAnimation = ' /units/UEL0111/UEL0111_aopen01.sca', \
+                 WeaponUnpackAnimationRate = 0, WeaponRepackTimeout = 1.5, WeaponUnpackLocksMotion = true }, \
+               { Label = 'Phalanx', WeaponUnpacks = true }, \
+               { Label = 'Gun', WeaponUnpacks = false, WeaponUnpackAnimation = '/units/x/x_aopen.sca' }, \
+               { Label = 'Plain' } } }",
+        )
+        .unwrap();
+        assert_eq!(bp.roll_off, [RollOffPoint { x: 3.0, z: 0.5, spin: 90.0 }, RollOffPoint { x: -3.0, z: 0.0, spin: -90.0 }]);
+        let unpack = |k: usize| bp.weapons[k].unpack.clone();
+        assert_eq!(
+            unpack(0),
+            Some(Unpack { animation: Some("units/uel0111/uel0111_aopen01.sca".into()), rate: 1.0, repack: 1.5, locks_motion: true })
+        );
+        assert_eq!(unpack(1), Some(Unpack { animation: None, rate: 1.0, repack: 0.0, locks_motion: false }), "unpacking at once");
+        assert_eq!((unpack(2), unpack(3)), (None, None));
+        let tank = parse("UEL0201", TANK).unwrap();
+        assert!(tank.roll_off.is_empty() && tank.display.forced_build_spin.is_none());
+        // A transport's turn on its factory's build bone, whatever point it takes.
+        let transport = parse("UEA0104", "UnitBlueprint { Categories = { 'UEF', 'AIR' }, Display = { UniformScale = 0.1, ForcedBuildSpin = 90 } }").unwrap();
+        assert_eq!(transport.display.forced_build_spin, Some(90.0));
     }
 
     #[test]

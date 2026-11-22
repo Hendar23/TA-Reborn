@@ -77,6 +77,54 @@ pub fn ground_extent_leaving_out(mesh: &Mesh, uniform_scale: f64, left_out: &[us
     reach.map(|[x, z]| [2.0 * x, 2.0 * z])
 }
 
+/// How high the floor of `mesh` stands under each of `points` (the mesh's x and z, its units), no
+/// higher than `ceiling` (its units): the highest of its triangles there at or under it (a triangle
+/// goes with its first corner's bone, as the model has it; those of the bones `left_out` are not
+/// looked at), none where no triangle is (beyond the model). What a factory's units roll off its
+/// build platform over (`units::exits`). Plain arithmetic: the same on every computer.
+pub fn floor_under(mesh: &Mesh, left_out: &[usize], points: &[[f64; 2]], ceiling: f64) -> Vec<Option<f64>> {
+    // (Each triangle's corners and its extent across the ground.)
+    let corner = |i: u32| mesh.vertices.get(i as usize).map(|v| [v.position[0] as f64, v.position[1] as f64, v.position[2] as f64]);
+    let triangles: Vec<([[f64; 3]; 3], [f64; 4])> = mesh
+        .triangles
+        .iter()
+        .filter(|t| mesh.vertices.get(t[0] as usize).is_some_and(|v| !left_out.contains(&v.bone)))
+        .filter_map(|t| {
+            let c = [corner(t[0])?, corner(t[1])?, corner(t[2])?];
+            let (x0, x1) = (c[0][0].min(c[1][0]).min(c[2][0]), c[0][0].max(c[1][0]).max(c[2][0]));
+            let (z0, z1) = (c[0][2].min(c[1][2]).min(c[2][2]), c[0][2].max(c[1][2]).max(c[2][2]));
+            Some((c, [x0, x1, z0, z1]))
+        })
+        .collect();
+    points
+        .iter()
+        .map(|&[x, z]| {
+            let mut best: Option<f64> = None;
+            for (c, [x0, x1, z0, z1]) in &triangles {
+                if x < *x0 || x > *x1 || z < *z0 || z > *z1 {
+                    continue;
+                }
+                let [a, b, d] = c;
+                let det = (b[2] - d[2]) * (a[0] - d[0]) + (d[0] - b[0]) * (a[2] - d[2]);
+                if det == 0.0 {
+                    continue;
+                }
+                let l1 = ((b[2] - d[2]) * (x - d[0]) + (d[0] - b[0]) * (z - d[2])) / det;
+                let l2 = ((d[2] - a[2]) * (x - d[0]) + (a[0] - d[0]) * (z - d[2])) / det;
+                let l3 = 1.0 - l1 - l2;
+                if l1 < -1e-9 || l2 < -1e-9 || l3 < -1e-9 {
+                    continue;
+                }
+                let y = l1 * a[1] + l2 * b[1] + l3 * d[1];
+                if y <= ceiling && best.is_none_or(|h| y > h) {
+                    best = Some(y);
+                }
+            }
+            best
+        })
+        .collect()
+}
+
 /// A building's floats: its `Floatation` bones and every bone under them (a mesh lists a bone's
 /// parent before it: one pass), their indices in the mesh. Forged Alliance hides them (with their
 /// children) on a building standing on land, and shows them where it floats on the water.
@@ -502,6 +550,42 @@ mod tests {
         assert_eq!(uvs(1), [[1.25, 0.5], [1.5, 0.9], [0.5, 0.5]], "straddling, left as it was");
         assert_eq!(piece.vertices.len(), 8, "the moved triangle's corners copied");
         assert!(out.surface.fits(&out.model));
+    }
+
+    /// The floor under a point: the highest triangle there at or under the ceiling (a roof over it
+    /// is not), what of a ramp lies under it in between, nothing beyond the model; the bones left
+    /// out are not looked at.
+    #[test]
+    fn the_floor_under_a_point_is_the_highest_triangle_under_the_ceiling() {
+        let still = [1.0, 0.0, 0.0, 0.0];
+        let corners: [([f32; 3], u8); 10] = [
+            // A platform 2 up from -2 to 2 each way.
+            ([-2.0, 2.0, -2.0], 0),
+            ([2.0, 2.0, -2.0], 0),
+            ([2.0, 2.0, 2.0], 0),
+            ([-2.0, 2.0, 2.0], 0),
+            // Its ramp down to the ground 2 further along +x.
+            ([4.0, 0.0, -2.0], 0),
+            ([4.0, 0.0, 2.0], 0),
+            // A roof 5 up over its middle, on a bone of its own.
+            ([-1.0, 5.0, -1.0], 1),
+            ([1.0, 5.0, -1.0], 1),
+            ([1.0, 5.0, 1.0], 1),
+            ([-1.0, 5.0, 1.0], 1),
+        ];
+        let vertices: Vec<([f32; 3], [f32; 2], u8)> = corners.iter().map(|&(p, b)| (p, [0.0, 0.0], b)).collect();
+        let file = scm::tests::write(
+            &[("Root", -1, [0.0; 3], still), ("Roof", 0, [0.0, 5.0, 0.0], still)],
+            &vertices,
+            &[[0, 1, 2], [0, 2, 3], [1, 4, 5], [1, 5, 2], [6, 7, 8], [6, 8, 9]],
+        );
+        let mesh = scm::parse(&file).unwrap();
+        let points = [[0.0, 0.0], [3.0, 1.0], [5.0, 0.0], [-2.0, 0.0]];
+        let near = |got: Vec<Option<f64>>, want: &[Option<f64>]| got.len() == want.len() && got.iter().zip(want).all(|(g, w)| g.zip(*w).map_or(g == w, |(g, w)| (g - w).abs() < 1e-9));
+        assert!(near(floor_under(&mesh, &[], &points, 3.0), &[Some(2.0), Some(1.0), None, Some(2.0)]), "under the roof, the platform; on the ramp, half way down");
+        assert!(near(floor_under(&mesh, &[], &points[..1], 6.0), &[Some(5.0)]), "the roof, under a higher ceiling");
+        assert!(near(floor_under(&mesh, &[1], &points[..1], 6.0), &[Some(2.0)]), "the roof's bone left out");
+        assert!(near(floor_under(&mesh, &[], &points[..1], 1.0), &[None]), "nothing under a ceiling under the platform");
     }
 
     /// The model written as a 3DO reads back with the same tree.

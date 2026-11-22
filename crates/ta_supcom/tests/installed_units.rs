@@ -679,3 +679,143 @@ fn buildings_at_work() {
     assert!(!has("UAB2301", "open"), "a turret unfolding before it aims is left as it rests");
     assert!(left_out.iter().all(|w| w.contains("BuildAttachBone")), "{left_out:?}");
 }
+
+/// Every factory, every weapon that unpacks and every anti-air weapon, as the mod has them (made
+/// whole once): each factory's ways out (`[EXITS]`) one for each of its roll-off points, each past
+/// its footprint, its ramp within its way, the units built facing them (`UnitSpin` and the build
+/// bone's own turn: the Cybran quantum gateway's rests turned half round); each weapon whose
+/// unpack animation the game has unpacks in its script (`UnpackWeapon<n>`, `PackWeapon<n>`, its
+/// aim waiting for it), those that lock their unit's motion holding it still (`StartMoving`); every
+/// anti-air weapon that takes on aircraft alone takes no other target (`OnlyTargetCategory<n>=VTOL`):
+/// the anti-air towers (2104, 2204, 2304 of each faction), the interceptors' guns, an enhancement's
+/// missiles; not the missile defences. `--nocapture` lists them.
+#[test]
+#[ignore]
+fn factories_roll_off_weapons_unpack_and_anti_air_shoots_aircraft_alone() {
+    let Some(game) = the_game() else {
+        eprintln!("no copy of Forged Alliance found: nothing to read");
+        return;
+    };
+    let files = Files::own(&game).unwrap();
+    let units: Vec<_> = unit::catalogue(&files).unwrap().into_iter().filter(|u| u.playable()).collect();
+    let mut texts: BTreeMap<String, String> = BTreeMap::new();
+    let mut scripts: BTreeMap<String, ta_formats::cob::CobScript> = BTreeMap::new();
+    make::make(&files, &units, "test", &mut |path, bytes| {
+        if let Some(id) = path.strip_prefix("units/").and_then(|p| p.strip_suffix(".fbi")) {
+            texts.insert(id.to_ascii_uppercase(), String::from_utf8_lossy(bytes).into_owned());
+        } else if let Some(id) = path.strip_prefix("scripts/").and_then(|p| p.strip_suffix(".cob")) {
+            scripts.insert(id.to_ascii_uppercase(), ta_formats::cob::CobScript::parse(bytes).unwrap());
+        }
+        Ok(())
+    }, &mut |_, _| true)
+    .unwrap();
+    let info = |id: &str| ta_formats::tdf::parse(&texts[&id.to_ascii_uppercase()]).section("UNITINFO").cloned().unwrap();
+    // Factories: their ways out.
+    let mut factories = 0;
+    for u in units.iter().filter(|u| units::builds(u) == units::Builds::Factory) {
+        let fbi = info(&u.id);
+        let exits = ta_data::ExitDef::of_unit(&fbi);
+        assert_eq!(exits.len(), u.roll_off.len(), "{}: a way out for each roll-off point", u.id);
+        if exits.is_empty() {
+            continue;
+        }
+        factories += 1;
+        let (fx, fz) = (fbi.get_f64_or("FootprintX", 1.0) * 8.0, fbi.get_f64_or("FootprintZ", 1.0) * 8.0);
+        for e in &exits {
+            assert!(e.x.abs() >= fx + units::CLEAR - 1.0 || e.z.abs() >= fz + units::CLEAR - 1.0, "{}: {e:?} past its footprint", u.id);
+            assert!(e.ramp.0 <= e.ramp.1, "{}: {e:?}", u.id);
+        }
+        assert!(fbi.get("YardMap").is_some_and(|y| !y.contains('c')), "{}: solid", u.id);
+        let ways: Vec<String> = exits.iter().map(|e| format!("({}, {}) facing {} ramp {}-{}", e.x, e.z, e.heading, e.ramp.0, e.ramp.1)).collect();
+        eprintln!("{} ({}): {}", u.id, u.description, ways.join("; "));
+    }
+    assert!(factories >= 40, "{factories} factories with ways out");
+    let heading = |id: &str| ta_data::ExitDef::of_unit(&info(id)).iter().map(|e| e.heading as i64).collect::<Vec<_>>();
+    assert_eq!(heading("UEB0101"), [90, -90], "out to either side, facing the way");
+    assert_eq!(heading("URB0304"), [180, 0], "its build bone rests turned half round");
+    let ramp = |id: &str| ta_data::ExitDef::of_unit(&info(id))[0].ramp;
+    assert!(ramp("UEB0101").0 >= 24.0 && ramp("UEB0101").1 <= 72.0, "the UEF land factory's platform and ramp: {:?}", ramp("UEB0101"));
+    assert_eq!(ramp("UEB0103"), (0.0, 0.0), "a naval factory's ships are built at the water");
+    // Weapons that unpack.
+    let mut unpacking = 0;
+    for u in &units {
+        let own = units::weapons(u);
+        for (slot, w) in own.slots.iter().enumerate() {
+            let Some(up) = &w.unpack else { continue };
+            let Some(path) = &up.animation else { continue };
+            let Some(bytes) = files.read(path).unwrap() else {
+                eprintln!("{} {}: its unpack animation {path} is not in the game", u.id, w.label);
+                continue;
+            };
+            let animation = sca::parse(&bytes).unwrap();
+            let mesh = scm::parse(&files.read(&u.display.lods[0].mesh).unwrap().unwrap()).unwrap();
+            let material = Material { name: "m".into(), albedo: "a".into(), specular: "s".into(), normals: "n".into(), mean: [0; 3] };
+            let near = model::convert(&mesh, u.display.uniform_scale, material).unwrap();
+            let Some(made) = make::unpacking(w, &[(path.clone(), animation.clone())], &mesh, &near.bones, u.display.uniform_scale * 32.0) else {
+                eprintln!("{} {}: its unpack animation moves nothing", u.id, w.label);
+                continue;
+            };
+            unpacking += 1;
+            let script = &scripts[&u.id.to_ascii_uppercase()];
+            for f in [format!("UnpackWeapon{}", slot + 1), format!("PackWeapon{}", slot + 1), "TargetCleared".to_string()] {
+                assert!(script.function(&f).is_some(), "{}: {f}", u.id);
+            }
+            let aim = ["AimPrimary", "AimSecondary", "AimTertiary"].get(slot).map_or(format!("AimWeapon{}", slot + 1), |s| s.to_string());
+            assert!(script.function(&aim).is_some(), "{}: it aims ({aim})", u.id);
+            if up.locks_motion {
+                assert!(script.function("StartMoving").is_some() && script.function("StopMoving").is_some(), "{}: held still", u.id);
+            }
+            // (What it moves, and whether that is what a weapon of the unit aims.)
+            let names: Vec<String> = made.clip.pieces.iter().map(|&p| near.model.pieces[p as usize].name.clone()).collect();
+            let aimed: Vec<&str> = u.weapons.iter().flat_map(|w| [w.yaw_bone.as_deref(), w.pitch_bone.as_deref()]).flatten().collect();
+            let aims: Vec<&String> = names.iter().filter(|n| aimed.iter().any(|a| a.eq_ignore_ascii_case(n))).collect();
+            let kept = ta_supcom::factions::script::kept_frames(&made.clip);
+            eprintln!(
+                "{} {} (slot {}): {} over {:.2} s ({} of {} frames), repacks after {} ms{}{}: {}{}",
+                u.id,
+                w.label,
+                slot + 1,
+                path,
+                made.clip.seconds,
+                kept.len(),
+                made.clip.times.len(),
+                made.repack_ms,
+                if up.locks_motion { ", holding its unit still" } else { "" },
+                if made.after_launch { ", after each launch" } else { "" },
+                names.join(", "),
+                if aims.is_empty() { String::new() } else { format!(" (aimed: {aims:?})") },
+            );
+        }
+    }
+    assert!(unpacking >= 14, "{unpacking} weapons unpack");
+    for id in ["UEL0111", "XEL0306"] {
+        assert!(scripts[id].function("UnpackWeapon1").is_some() && scripts[id].function("AimPrimary").is_some(), "{id}: its launcher raised before it fires");
+    }
+    // Anti-air: aircraft alone.
+    let mut air_only = 0;
+    for u in &units {
+        let fbi = info(&u.id);
+        for slot in 0..units::MAX_WEAPONS {
+            if fbi.get(&format!("OnlyTargetCategory{}", slot + 1)) == Some("VTOL") {
+                air_only += 1;
+            }
+        }
+    }
+    for faction in ["UEB", "URB", "UAB", "XSB"] {
+        for tower in ["2104", "2204", "2304"] {
+            let id = format!("{faction}{tower}");
+            assert_eq!(info(&id).get("OnlyTargetCategory1"), Some("VTOL"), "{id}: aircraft alone");
+        }
+    }
+    // The interceptors' guns (their layers name the land too, but none but `AIR` units), and the
+    // Cybran support commander's anti-air missiles in the slot its enhancement fills; not the
+    // missile defences, nor the Striker's gun.
+    for id in ["UEA0102", "URA0102", "UAA0102", "XSA0102"] {
+        assert_eq!(info(id).get("OnlyTargetCategory1"), Some("VTOL"), "{id}: aircraft alone");
+    }
+    assert_eq!(info("URL0301").get("OnlyTargetCategory2"), Some("VTOL"), "URL0301: its enhancement's missiles");
+    for id in ["UEB4201", "UEB4302", "UEL0201"] {
+        assert!((1..=units::MAX_WEAPONS).all(|slot| info(id).get(&format!("OnlyTargetCategory{slot}")).is_none()), "{id}");
+    }
+    eprintln!("{factories} factories with ways out, {unpacking} weapons unpacking, {air_only} weapons shooting aircraft alone");
+}

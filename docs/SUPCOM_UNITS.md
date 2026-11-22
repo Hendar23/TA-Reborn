@@ -75,11 +75,11 @@ typed in [`UnitBlueprint`] (and the whole table beside it):
 | `General` | FactionName, UnitName, BuildBones, UpgradesTo/From | |
 | `Defense` | MaxHealth, RegenRate | |
 | `Economy` | BuildCostMass/Energy, BuildTime, BuildRate, BuildableCategory, ProductionPerSecondMass/Energy, MaintenanceConsumptionPerSecondEnergy, StorageMass/Energy | a builder makes the units with every category of one of its `BuildableCategory` entries ('BUILTBYTIER1ENGINEER UEF') |
-| `Physics` | MotionType, MaxSpeed (and reverse), MaxAcceleration, MaxBrake, TurnRate, BuildOnLayerCaps, Elevation, SkirtSize | speeds in ogrids a second, turns in degrees a second |
+| `Physics` | MotionType, MaxSpeed (and reverse), MaxAcceleration, MaxBrake, TurnRate, BuildOnLayerCaps, Elevation, SkirtSize, RollOffPoints | speeds in ogrids a second, turns in degrees a second |
 | `SizeX/Y/Z`, `Footprint` | sizes, MaxSlope | ogrids |
 | `Intel` | Vision, WaterVision, Radar, Sonar, Omni radii; stealth, cloak, stealth fields, jamming | ogrids |
 | `Air` | MaxAirspeed | |
-| `Weapon` | per weapon: label, WeaponCategory, damage and its radius, Min/MaxRadius, RateOfFire, MuzzleVelocity, BallisticArc, salvo (MuzzleSalvoSize, MuzzleSalvoDelay, MuzzleChargeDelay), RackFireTogether, RackSalvoReloadTime and RackSalvoChargeTime, DoTPulses and DoTTime, ProjectileId, FireTargetLayerCapsTable, TargetRestrictOnlyAllow, the turret's bones (TurretBoneYaw/Pitch/Muzzle) and RackBones (rack, muzzles), its arcs and speeds, beams (BeamLifetime, BeamCollisionDelay), energy, CountedProjectile and MaxProjectileStorage, nukes' rings, ManualFire | |
+| `Weapon` | per weapon: label, WeaponCategory, damage and its radius, Min/MaxRadius, RateOfFire, MuzzleVelocity, BallisticArc, salvo (MuzzleSalvoSize, MuzzleSalvoDelay, MuzzleChargeDelay), RackFireTogether, RackSalvoReloadTime and RackSalvoChargeTime, DoTPulses and DoTTime, ProjectileId, FireTargetLayerCapsTable, TargetRestrictOnlyAllow, the turret's bones (TurretBoneYaw/Pitch/Muzzle) and RackBones (rack, muzzles), its arcs and speeds, beams (BeamLifetime, BeamCollisionDelay), energy, CountedProjectile and MaxProjectileStorage, nukes' rings, ManualFire, WeaponUnpacks (WeaponUnpackAnimation and its rate, WeaponRepackTimeout, WeaponUnpackLocksMotion) | |
 | `Display` | UniformScale, Mesh.LODs (or the game's own names), AnimationWalk and its rate, AnimationDeath, BuildAttachBone, MeshBlueprint | |
 | `Wreckage` | MassMult, EnergyMult, HealthMult | |
 
@@ -356,10 +356,76 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
 - **Anti-air** homes on its aircraft (TA Reborn's guns lead nothing: an unguided shot at where a
   plane is now misses it), `toairweapon`: missiles at their projectile's speeds and turn (TA's
   missile towers' turn at least), guns and flak as homing shots, flak bursting over its real
-  area. A weapon that shoots no aircraft in FA (its `FireTargetLayerCapsTable` names no `Air`)
+  area. Anti-air that takes on aircraft alone in FA (`units::aircraft_alone`: its
+  `FireTargetLayerCapsTable` names `Air` from every layer, as the anti-air towers', 2104, 2204 and
+  2304 of each faction, mobile and ships' anti-air; or its `TargetRestrictOnlyAllow` is `AIR`, as
+  the aircraft's guns and missiles, the interceptors' among them, whose layers name the land as
+  well; and the Cybran support commander's missiles in the slot its enhancement fills: all 108
+  anti-air weapons, on 66 units) takes none but aircraft in flight on, by order too
+  (`OnlyTargetCategory<n>=VTOL`, docs/MODDING.md): told to attack a tank, a ship or the ground, its
+  order ends and it holds its fire. `toairweapon` alone kept TA's rule, its own choice of targets
+  aircraft but an attack order firing it at anything, and the towers fired on the land units and
+  the ground they were told to attack. A missile defence names none (its `Air` the missiles it
+  shoots down; TA Reborn's interceptors take nothing else). A weapon that shoots no aircraft in FA
+  (its `FireTargetLayerCapsTable` names no `Air`)
   and could hit one in TA Reborn (a straight shot, a laser, a guided missile) takes aircraft
   last (its slot's bad targets, `VTOL`: TA's rule, bad targets last), and a unit none of whose
   weapons shoots aircraft chases none (`NoChaseCategory=VTOL`).
+- **Weapons that unpack** before they fire (`WeaponUnpacks`, FA's `lua/sim/defaultweapons.lua`:
+  its `WeaponUnpackingState` and `WeaponPackingState`) play their unpack animation
+  (`WeaponUnpackAnimation`, at `WeaponUnpackAnimationRate`) in their script, as keys of the model's
+  pieces (`factions::anims`, its frames thinned to those a straight line between their neighbours
+  misses by more than a quarter of a pixel or half a degree, `script::kept_frames`): told to aim,
+  the script raises the launcher (opens the silo's doors, sets the artillery's feet down) and
+  answers only once it is done, so the weapon fires no sooner; its target gone (TA Reborn's
+  `TargetCleared`, else found so by its restore, which asks every half second after its last aim,
+  `TARGET_ID`: the engine says nothing of an ordered target gone), or a counted missile launched,
+  it waits its `WeaponRepackTimeout`, turns its turret back to rest and plays the animation back;
+  aimed again meanwhile, it unpacks from where it is (an aim waiting on its unpacking declines
+  once it starts packing up). In the script, not
+  as a clip the game draws: the simulation runs it, so it takes the same time on every computer,
+  and what it moves carries the muzzles (the Flapjack's missiles leave its raised launcher) and the
+  turrets the weapon aims. Each step moves a piece from one frame's key to the next at the speed
+  that takes the step's time, so the pieces start at the first frame's keys, put there as the unit
+  is made (`PackedPose`: as Forged Alliance's animator holds them once it has unpacked; the
+  Suthanus's first frame has its torso 4 px off the model at rest), and the turns a weapon's aim
+  gives its turrets are the aim's, which the animation leaves be (turned back to rest before the
+  animation plays back, they would be at none of its keys): from anywhere else, at those speeds, a
+  piece would come to its key long after its step, the unit unpacking (and held still) all that
+  while. A weapon that locks its unit's motion (`WeaponUnpackLocksMotion`: the
+  tech 3 mobile artillery of three factions, the Scathis, the Aeon sniper bot) holds its unit still
+  from the moment it starts unpacking until it is packed up (`IMMOBILE`, docs/MODDING.md), declines
+  to aim while the unit is on its way, and packs up as soon as the unit is told to go somewhere,
+  firing nothing meanwhile, then lets it go (FA's `PackAndMove`). The missile trucks lock nothing:
+  told to go, they drive with their launchers raised, firing on a target still in reach, and pack
+  up a second after losing it, as in Forged Alliance. 15 weapons unpack so: the Flapjack (UEL0111, 3.3 s) and
+  the Spearhead (XEL0306, 1.5 s), the four factions' tactical and strategic launchers but the
+  Cybran tactical one, the Aeon tactical defence, the artillery, the Scathis (16.7 s) and the
+  sniper bot; the parts a building's own clips move as it works are left to them (the Aeon
+  strategic launcher's arm, held open by its opening). Those that unpack without an animation
+  (phalanx guns spinning their barrels up, the commanders' missiles) fire at once, as before; the
+  Yolona Oss names the Aeon silo's launch sequence, whose bones its mesh has not.
+- **Factories' ways out** (`[EXITS]`, docs/MODDING.md; `units::exits`), from their roll-off points
+  (`Physics.RollOffPoints`): FA builds a unit on its factory's build platform, at the bone its
+  blueprint attaches units to (`BuildAttachBone`, as high as the platform's floor), the bone turned
+  by the roll-off point's `UnitSpin` towards the point nearest the factory's rally point, and once
+  it is done sends it there, off the platform (`FactoryUnit:CalculateRollOffPoint`,
+  `CreateBuildRotator`, `RollOffUnit`). Each point is a way out: where it leads (past the
+  footprint, as TA Reborn lets the unit go once out of it: along the way from the pad to 48 px past
+  it where FA's point is nearer), the heading a unit built for it faces (the build bone's own at
+  rest and the `UnitSpin`: the Cybran quantum gateway's bone rests turned half round), and its ramp,
+  measured from the model under the way (`model::floor_under`): how far the platform keeps its
+  height, and where the ramp meets the ground. The land factories' units leave to either side, down
+  their ramps (the UEF land factory's platform 16 px up, level 36 px out and on the ground 60 px
+  out), the naval factories' along their docks, the quantum gateways' out of their front or back.
+  A unit whose blueprint forces its spin (`Display.ForcedBuildSpin`: the transports and the UEF's
+  gunships, nine aircraft) faces that way while it is built, whichever point it takes
+  (`BuildHeading`, docs/MODDING.md; the air factories' build bones all rest facing the front): the
+  Star Lifter, longer than the platform is deep, lies along it rather than through the factory's
+  back. The factories are solid (`YardMap` all `o`): no other unit walks across their platforms. Before
+  version 11 a unit was built facing the factory's front, dropped through the platform to the
+  ground as it was done and drove out of the front through the factory's walls, as TA's plants
+  send theirs.
 - **A crawling bomb** (the Fire Beetle, its `Kamikaze` weapon) is TA's: `Kamikaze=1`, blowing
   itself up as its blast (`SelfDestructAs`) within its weapon's reach of an enemy
   (`KamikazeDistance`).
@@ -371,7 +437,8 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
   TA's functions (`AimPrimary`... `FireTertiary`), the fourth to the eighth the numbered ones
   (`AimWeapon4`... `FireWeapon8`). Each weapon's turrets turn
   back to rest twice the longest reload after its last aim, by a restore of its own that any
-  weapon turning the same pieces stops when it aims. Engineers and commanders lift their build
+  weapon turning the same pieces stops when it aims (a weapon that unpacks packs up instead, its
+  target gone: below). Engineers and commanders lift their build
   stance and spray from their build effect bones, and reclaim; a weapon turning the pieces the
   build turns (a commander's torso) declines to aim while it builds, as TA's Commander's does,
   and leaves them to the build; factories open their yards and build on the bone their blueprint
@@ -488,8 +555,9 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
   (19 `active`, 13 `open`, 44 `upgrade`) and 46 move parts in their scripts, every part but those
   build points made so (`cargo test --release -p ta_supcom --test installed_units
   buildings_at_work -- --ignored --nocapture` lists them). Mobile units' (an engineer's arms, an
-  aircraft's hatches) are not yet, nor what a weapon moves as it fires (a silo's doors, the UEF
-  tactical defence's spinning barrels).
+  aircraft's hatches) are not yet, nor what a weapon moves as it fires but its unpacking (above:
+  a silo's doors open before its missile goes): not the UEF tactical defence's spinning barrels,
+  nor reload animations (the Spearhead's).
 
 The computer players play them (`cargo test --release -p ta_ai --test skirmish` with
 `TA_TEST_MOD` and `TA_TEST_SIDES=UEF,CYBRAN`): each builds an economy, land, air and naval
@@ -535,6 +603,8 @@ Seen across the 357 (the installed test lists them); the conversion steps round 
   UES0202's deaths move 17 bones of an older mesh).
 - Weapons naming bones their mesh has not (UAA0203's rack, the Czar's `Right_Turret01_Barrel03`,
   UES0202's missile hatches, XRL0403's missile turret, two Seraphim ships' racks).
+- An unpack animation borrowed from another unit whose bones the mesh has not: the Yolona Oss
+  (XSB2401) names the Aeon strategic launcher's launch sequence.
 - Animations named that are not there (URL0103's and XSL0304's deaths, UAS0103's third, named
   `uas00103`; the UEF hydrocarbon plant's opening, `ueb1102_Aopen`, which its script plays as it
   starts: it opens no hatch; the tech 3 extractors' upgrades, which they never make).

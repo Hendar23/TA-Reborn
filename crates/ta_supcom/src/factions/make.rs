@@ -22,8 +22,12 @@ pub const TAGS: [&str; 3] = ["units", "factions", "supreme commander"];
 /// upgrade animations; 9: buildings' floats left out where Forged Alliance hides them, on the
 /// ground; 10: the paint as large as Forged Alliance paints it, its 1024s kept rather than halved
 /// to 512, smaller textures enlarged keeping their edges sharp, the colour maps BC1, the
-/// Seraphim's player's colour glowing).
-pub const VERSION: u32 = 10;
+/// Seraphim's player's colour glowing; 11: factories' ways out, `[EXITS]` from their roll-off
+/// points, their yards solid; weapons that unpack before they fire play their unpack animations in
+/// their scripts, from their first frames, those that lock their unit's motion holding it still;
+/// anti-air, the towers' and the aircraft's, takes aircraft alone, by order too,
+/// `OnlyTargetCategory<n>`).
+pub const VERSION: u32 = 11;
 
 /// What was made.
 #[derive(Clone, Debug, Default)]
@@ -84,7 +88,7 @@ pub fn make(files: &Files, units: &[UnitBlueprint], reborn: &str, write: &mut dy
                 None => e.icon = None,
             }
         }
-        let extra = units::Extra { upgrades_to: faction::upgrade_of(u, &faction).map(|t| t.id.as_str()), enhancements: enhance::section(u, &list) };
+        let extra = units::Extra { upgrades_to: faction::upgrade_of(u, &faction).map(|t| t.id.as_str()), enhancements: enhance::section(u, &list), weapons: extra_weapons.clone(), exits: Vec::new() };
         let shown: Vec<Vec<String>> = list.iter().map(|e| enhance::shown_bones(u, e)).collect();
         match unit(files, u, &extra, &extra_weapons, shown, &mut |path, bytes| put(path, bytes, &mut made))? {
             Ok(footprint) => {
@@ -125,6 +129,9 @@ struct Read {
     deaths: Vec<sca::Animation>,
     /// What it plays as it works ([`work::clips`]): those the game has.
     work: Vec<(work::Source, sca::Animation)>,
+    /// What its weapons that unpack play (`WeaponUnpackAnimation`), by the game's path: those the
+    /// game has.
+    unpacks: Vec<(String, sca::Animation)>,
     icon: Option<Vec<u8>>,
     frame: Option<Vec<u8>>,
 }
@@ -159,12 +166,20 @@ fn read(files: &Files, u: &UnitBlueprint, upgrades: bool) -> std::result::Result
             work.push((source, a));
         }
     }
+    let mut unpacks: Vec<(String, sca::Animation)> = Vec::new();
+    for path in u.weapons.iter().filter_map(|w| w.unpack.as_ref()?.animation.clone()) {
+        if !unpacks.iter().any(|(p, _)| *p == path)
+            && let Some(a) = animation(&path)?
+        {
+            unpacks.push((path, a));
+        }
+    }
     let icon = get(&pictures::icon_path(u))?;
     let frame = match pictures::frame_path(u) {
         Some(p) => get(&p)?,
         None => None,
     };
-    Ok(Read { mesh, paint, far, walk, deaths, work, icon, frame })
+    Ok(Read { mesh, paint, far, walk, deaths, work, unpacks, icon, frame })
 }
 
 /// One unit's files: its model with its surface and its model for far off, its paint, its build
@@ -244,18 +259,28 @@ fn unit(files: &Files, u: &UnitBlueprint, extra: &units::Extra, extra_weapons: &
     {
         put(&format!("unitpics/{name}.pcx"), &picture)?;
     }
-    // Its unit file and its script.
+    // Its unit file and its script (a factory's ways out from its model: `units::exits`).
     let weapons = units::weapons(u);
-    put(&format!("units/{name}.fbi"), units::unit_file(u, &weapons, units::transport(mesh), extra).as_bytes())?;
+    let extra = units::Extra { exits: units::exits(u, mesh, &floats), ..extra.clone() };
+    put(&format!("units/{name}.fbi"), units::unit_file(u, &weapons, units::transport(mesh), &extra).as_bytes())?;
     let builds = units::builds(u);
     let pieces: Vec<String> = near.model.pieces.iter().map(|p| p.name.clone()).collect();
     let motions = work::motions(u, mesh, &pieces, u.display.uniform_scale * UNIT_SCALE);
+    // (Its own weapons, then those its enhancements switch on, in the slots after them.)
+    let slots: Vec<&crate::unit::WeaponBlueprint> = weapons.slots.iter().copied().chain(extra_weapons.iter().copied()).take(units::MAX_WEAPONS).collect();
+    // What those that unpack before they fire play: their animations as keys of the model's
+    // pieces (`script::Unpacking`), but for the parts its own clips move as it works (they would
+    // be moved twice: the Aeon silo's arm, held open by its opening and in its launch sequence).
+    let worked: Vec<u32> = clips.clips.iter().filter(|c| matches!(c.name.as_str(), ta_formats::anims::ACTIVE | ta_formats::anims::OPEN)).flat_map(|c| c.pieces.iter().copied()).collect();
+    let unpacks = slots
+        .iter()
+        .map(|w| unpacking(w, &read.unpacks, mesh, &near.bones, u.display.uniform_scale * UNIT_SCALE).and_then(|up| up.leaving_out(&worked)))
+        .collect();
     let plan = script::Plan {
         unit: u,
         mesh,
         pieces,
-        // (Its own weapons, then those its enhancements switch on, in the slots after them.)
-        weapons: weapons.slots.iter().copied().chain(extra_weapons.iter().copied()).take(units::MAX_WEAPONS).collect(),
+        weapons: slots,
         factory: builds == units::Builds::Factory,
         // (An air staging platform's repair work sprays as a builder's does.)
         builder: builds != units::Builds::No || u.is("AIRSTAGINGPLATFORM"),
@@ -263,9 +288,22 @@ fn unit(files: &Files, u: &UnitBlueprint, extra: &units::Extra, extra_weapons: &
         enhancements: shown,
         motions,
         switched: units::activated_when_built(u),
+        unpacks,
     };
     put(&format!("scripts/{name}.cob"), &script::script(&plan).to_bytes())?;
     Ok(Ok(footprint))
+}
+
+/// What weapon `w` plays to unpack before it fires, where it unpacks and the game has its
+/// animation (`animations`, by path) and that moves a piece of the model (`pieces`: each piece's
+/// bone; mesh units `pixels` pixels): its animation as keys of the pieces, at its rate.
+pub fn unpacking(w: &crate::unit::WeaponBlueprint, animations: &[(String, sca::Animation)], mesh: &Mesh, pieces: &[usize], pixels: f64) -> Option<script::Unpacking> {
+    let u = w.unpack.as_ref()?;
+    let path = u.animation.as_ref()?;
+    let (_, animation) = animations.iter().find(|(p, _)| p == path)?;
+    let clips = anims::anims(mesh, pieces, pixels, None, &[], &[anims::Work { name: "unpack", animation, rate: u.rate, cycle: false }]);
+    let clip = clips.clips.into_iter().find(|c| c.name == "unpack")?;
+    Some(script::Unpacking { clip, repack_ms: (u.repack * 1000.0).round() as i32, locks_motion: u.locks_motion, after_launch: w.counted })
 }
 
 #[cfg(test)]
@@ -312,7 +350,8 @@ mod tests {
             ))),
             ("UEB0101", blueprint("'STRUCTURE', 'FACTORY', 'LAND', 'TECH1', 'BUILTBYCOMMANDER', 'BUILTBYTIER1ENGINEER'",
                 "Economy = { BuildCostMass = 240, BuildCostEnergy = 2100, BuildTime = 300, BuildRate = 20, BuildableCategory = { 'BUILTBYTIER1FACTORY UEF MOBILE', 'BUILTBYTIER1FACTORY UEF STRUCTURE LAND' } }, \
-                 General = { FactionName = 'UEF', UpgradesTo = 'ueb0201' }, Footprint = { SizeX = 4, SizeZ = 4 }, Display = { UniformScale = 0.05, BuildAttachBone = 'Turret' }")),
+                 General = { FactionName = 'UEF', UpgradesTo = 'ueb0201' }, Footprint = { SizeX = 4, SizeZ = 4 }, Display = { UniformScale = 0.05, BuildAttachBone = 'Turret' }, \
+                 Physics = { MotionType = 'RULEUMT_None', RollOffPoints = { { UnitSpin = 90, X = 3, Y = 0, Z = 0 }, { UnitSpin = -90, X = -3, Y = 0, Z = 0 } } }")),
             ("UEB0201", blueprint("'STRUCTURE', 'FACTORY', 'LAND', 'TECH2', 'BUILTBYTIER1FACTORY'",
                 "Economy = { BuildCostMass = 1040, BuildCostEnergy = 12000, BuildTime = 2400, BuildRate = 40, BuildableCategory = { 'BUILTBYTIER2FACTORY UEF MOBILE' } }, \
                  General = { FactionName = 'UEF', UpgradesFrom = 'ueb0101' }, Footprint = { SizeX = 4, SizeZ = 4 }")),
@@ -345,6 +384,18 @@ mod tests {
             ("UEB1101", blueprint("'STRUCTURE', 'ENERGYPRODUCTION', 'TECH1', 'BUILTBYTIER1ENGINEER'", "Economy = { BuildCostMass = 75, BuildCostEnergy = 750, BuildTime = 125, ProductionPerSecondEnergy = 20 }")),
             ("UEB3101", blueprint("'STRUCTURE', 'RADAR', 'INTELLIGENCE', 'TECH1', 'BUILTBYTIER1ENGINEER'",
                 "Economy = { BuildCostMass = 60, BuildCostEnergy = 600, BuildTime = 120, MaintenanceConsumptionPerSecondEnergy = 20 }, Intel = { RadarRadius = 115, VisionRadius = 20 }")),
+            ("UEL0111", blueprint("'MOBILE', 'LAND', 'TECH2', 'INDIRECTFIRE', 'BUILTBYTIER1FACTORY'",
+                "Economy = { BuildCostMass = 200, BuildCostEnergy = 1500, BuildTime = 1000 }, Physics = { MotionType = 'RULEUMT_Land', MaxSpeed = 2.8, TurnRate = 60 }, \
+                 Weapon = { { Label = 'MissileWeapon', WeaponCategory = 'Missile', Damage = 300, MaxRadius = 60, RateOfFire = 0.1, MuzzleVelocity = 3, Turreted = false, \
+                   RackBones = { { RackBone = 'Turret_Barrel', MuzzleBones = { 'Turret_Barrel' } } }, ProjectileId = '/projectiles/Tactical/Tactical_proj.bp', \
+                   FireTargetLayerCapsTable = { Land = 'Land|Water' }, WeaponUnpacks = true, WeaponUnpackAnimation = '/units/UEL0111/UEL0111_aopen.sca', \
+                   WeaponUnpackAnimationRate = 1, WeaponRepackTimeout = 1, WeaponUnpackLocksMotion = true } }")),
+            ("UEB2104", blueprint("'STRUCTURE', 'ANTIAIR', 'TECH1', 'BUILTBYTIER1ENGINEER'",
+                "Economy = { BuildCostMass = 70, BuildCostEnergy = 400, BuildTime = 100 }, \
+                 Weapon = { { Label = 'AAGun', WeaponCategory = 'Anti Air', Damage = 20, MaxRadius = 44, RateOfFire = 3, MuzzleVelocity = 45, Turreted = true, \
+                   TurretBoneYaw = 'Turret', TurretBonePitch = 'Turret_Barrel', TurretYawSpeed = 180, TurretPitchSpeed = 90, \
+                   RackBones = { { RackBone = 'Turret_Barrel', MuzzleBones = { 'Turret_Barrel' } } }, ProjectileId = '/projectiles/Shell/Shell_proj.bp', \
+                   FireTargetLayerCapsTable = { Land = 'Air', Water = 'Air' } } }")),
         ];
         let projectile = |cats: &str, rest: &str| format!("ProjectileBlueprint {{ Categories = {{ 'PROJECTILE', {cats} }}, {rest} }}");
         let mut files: Vec<(String, Vec<u8>)> = Vec::new();
@@ -368,6 +419,8 @@ mod tests {
         files.push(("units/UEB1103/UEB1103_pump.sca".into(), crate::sca::tests::write(&[("Turret", -1)], &[(0.0, vec![key(4.0)]), (0.5, vec![key(5.0)]), (1.0, vec![key(4.0)])], 1.0)));
         let s = std::f32::consts::FRAC_1_SQRT_2;
         files.push(("units/UEB1103/UEB1103_up.sca".into(), crate::sca::tests::write(&[("Turret_Barrel", -1)], &[(0.0, vec![([0.0, -0.5, 3.0], still)]), (2.0, vec![([0.0, -0.5, 3.0], [s, -s, 0.0, 0.0])])], 2.0)));
+        let (c, n) = ((std::f32::consts::PI / 8.0).cos(), (std::f32::consts::PI / 8.0).sin());
+        files.push(("units/UEL0111/UEL0111_aopen.sca".into(), crate::sca::tests::write(&[("Turret", -1)], &[(0.0, vec![([0.0, 4.0, -3.0], still)]), (0.5, vec![([0.0, 4.5, -3.0], [c, -n, 0.0, 0.0])]), (1.0, vec![([0.0, 5.0, -3.0], [s, -s, 0.0, 0.0])])], 1.0)));
         // Paint: the factory's colour map of 1024 texels (DXT1, every level, a quarter of its blocks
         // of three colours, as Forged Alliance's are) and its specular map of 512 (DXT5); the
         // tank's and the engineer's small and uncompressed (enlarged to 512), the engineer drawn as
@@ -435,7 +488,7 @@ mod tests {
         std::fs::write(dir.0.join("units.scd"), archive()).unwrap();
         let files = Files::of(Vec::new(), vec![crate::scd::Scd::open(&dir.0.join("units.scd")).unwrap()]);
         let units: Vec<UnitBlueprint> = crate::unit::catalogue(&files).unwrap().into_iter().filter(|u| u.playable()).collect();
-        assert_eq!(units.len(), 12);
+        assert_eq!(units.len(), 14);
         let run = || {
             let mut hash = Sha256::new();
             let mut paths: Vec<String> = Vec::new();
@@ -450,7 +503,7 @@ mod tests {
             (made, paths, hex)
         };
         let (made, paths, first) = run();
-        assert_eq!((made.units, made.skipped.len()), (12, 0), "{:?}", made.skipped);
+        assert_eq!((made.units, made.skipped.len()), (14, 0), "{:?}", made.skipped);
         // The tech 1 factory upgrades into the tech 2 one, which no builder builds.
         let mut texts: std::collections::BTreeMap<String, String> = Default::default();
         make(&files, &units, "test", &mut |path, bytes| {
@@ -481,6 +534,12 @@ mod tests {
         assert_eq!(amplified.get("range"), Some("960"), "30 ogrids");
         assert!(weapons.section("UEL0001_MISSILE").is_some());
         // Its script shows the gun's barrel once amplified.
+        // The factory's ways out to either side; the truck unpacks before it fires, holding still;
+        // the tower shoots aircraft alone.
+        let factory = ta_formats::tdf::parse(&texts["units/ueb0101.fbi"]);
+        let ways = factory.section("UNITINFO").and_then(|u| u.sections.iter().find(|s| s.name == "EXITS")).expect("its ways out");
+        assert_eq!(ways.sections.iter().map(|s| s.get("Heading").unwrap_or("")).collect::<Vec<_>>(), ["90", "-90"]);
+        assert!(texts["units/ueb2104.fbi"].contains("OnlyTargetCategory1=VTOL;") && !texts["units/uel0111.fbi"].contains("OnlyTargetCategory"));
         let menus = &texts["download/supcom_uef.tdf"];
         assert!(!menus.contains("UNITNAME=UEB0104;"), "the station not on its menu: its suite's");
         assert!(paths.iter().any(|p| p == "units/ueb0201.fbi") && paths.iter().any(|p| p == "weapons/supcom_uef.tdf"), "{paths:?}");
@@ -527,6 +586,15 @@ mod tests {
         assert!(listing.contains("push-const       -8192") && listing.contains("stop-spin        1 1"), "45 degrees a second the other way, stopped: {listing}");
         let fbi = |id: &str| String::from_utf8(written[&format!("units/{id}.fbi")].clone()).unwrap();
         assert!(fbi("ueb3101").contains("ActivateWhenBuilt=1;") && !fbi("ueb1101").contains("ActivateWhenBuilt"));
+        // The missile truck raises its launcher before it fires (an aim of its own, though it has no
+        // turret), lowers it again its target gone, and holds still meanwhile.
+        let truck = script("uel0111");
+        for f in ["AimPrimary", "UnpackWeapon1", "PackWeapon1", "TargetCleared", "RestoreAfterDelay", "StartMoving", "StopMoving"] {
+            assert!(truck.function(f).is_some(), "{f}");
+        }
+        let listing = ta_formats::cob::disassemble(&truck);
+        assert!(listing.contains("turn             1 0") && listing.contains("move             1 1"), "its turret turned up and lifted: {listing}");
+        assert!(script("uel0201").function("UnpackWeapon1").is_none(), "a tank fires at once");
     }
 
     /// The test faction's paint: the factory's colour map of 1024 kept at 1024 (BC1, its own
@@ -577,7 +645,7 @@ mod tests {
     }
 
     /// The hash of the test faction's mod (see the test above).
-    const EXPECTED: &str = "cfda6b9da5720392cac368162351532583fb2845fbd6e73675d8b27fd965dba5";
+    const EXPECTED: &str = "06fc094884aba1b036502f2c18fbaef5c7eead12e348c7c021fe5c542a30f40e";
 
     /// A unit whose mesh does not read is left out, with its reason; the rest are made.
     #[test]
