@@ -12,7 +12,8 @@
 //! help build what their player is building within their reach (a frame, a factory's unit, a
 //! building upgrading in place), else mend the damaged units of their side and its allies there,
 //! else reclaim the wreckage there (wrecks and their heaps: not trees and rocks, so the ground round
-//! a base stays as its player left it). The nearest first, and nothing found out of reach again.
+//! a base stays as its player left it). The nearest first; what leaves their reach while they work
+//! on it is let go, and taken up again once it is back within it.
 //! What they find is their only order; the player's next order, queued or not, takes its place
 //! (`Unit::auto_work`).
 
@@ -86,14 +87,16 @@ impl Sim {
     /// An idle builder that works round itself (`AssistPatrol`): what it finds within its reach,
     /// put first among its orders: the nearest of its player's units unfinished or upgrading in
     /// place (not one its side is taking apart), else the nearest damaged unit of its side or an
-    /// ally's (finished, not carried), else the nearest wreck worth reclaiming; none it found out
-    /// of reach lately.
+    /// ally's (finished, not carried), else the nearest wreck worth reclaiming. Only what is within
+    /// its reach now, by the measure its order keeps to (`distance_to_footprint`): what went out of
+    /// it, given up (`give_up`, its `unreachable` kept for builders on patrol, which pass it by on
+    /// their way), is found again once it comes back, and a unit born in its slot is no stranger.
     pub(super) fn work_round(&mut self, id: UnitId, t: &UnitType) {
         if !(self.tick + id.slot as u64).is_multiple_of(LOOK_EVERY) {
             return;
         }
         let Some(u) = self.unit(id).filter(|u| u.is_complete() && !u.dead && u.orders.is_empty()) else { return };
-        let (pos, owner, skip) = (u.pos, u.owner, u.unreachable.clone());
+        let (pos, owner) = (u.pos, u.owner);
         let reach = t.build_distance + t.radius;
         let mut near = std::mem::take(&mut self.scratch);
         self.grid.query(pos, reach + Fx::from_int(FOOTPRINT_REACH), &mut near);
@@ -101,7 +104,7 @@ impl Sim {
         let mut best: Option<(u8, Fx, u32, UnitId)> = None;
         for &slot in &near {
             let Some(o) = self.units.get(slot as usize).and_then(|o| o.as_ref()) else { continue };
-            if o.id == id || o.dead || o.carried_by.is_some() || !self.allied(owner, o.owner) || self.being_taken_apart(o) || skip.contains(&Self::work_key(true, o.id.slot)) {
+            if o.id == id || o.dead || o.carried_by.is_some() || !self.allied(owner, o.owner) || self.being_taken_apart(o) {
                 continue;
             }
             let ot = self.types.get(o.type_id);
@@ -128,7 +131,7 @@ impl Sim {
                 let mut best: Option<(Fx, usize)> = None;
                 for i in found {
                     let (i, f) = (i as usize, &self.features[i as usize]);
-                    if !f.alive || !self.is_wreckage(f.def) || !self.data.features[f.def].reclaimable || skip.contains(&Self::work_key(false, i as u32)) || self.reclaim_value(f.def).0 <= Fx::ZERO {
+                    if !f.alive || !self.is_wreckage(f.def) || !self.data.features[f.def].reclaimable || self.reclaim_value(f.def).0 <= Fx::ZERO {
                         continue;
                     }
                     let def = &self.data.features[f.def];
@@ -174,6 +177,8 @@ mod tests {
             unit("TANK", "BuildTime=3000; FootprintX=2; FootprintZ=2; CanMove=1; MaxVelocity=1;"),
             // (A fast one, mended slowly: it leaves the tower's reach long before it is whole.)
             unit("RUNNER", "BuildTime=30000; FootprintX=2; FootprintZ=2; CanMove=1; MaxVelocity=4; Acceleration=1; BrakeRate=1;"),
+            // (The same, turning round as it is told: it leaves a station's reach and comes back.)
+            unit("ROVER", "BuildTime=30000; FootprintX=2; FootprintZ=2; CanMove=1; MaxVelocity=4; Acceleration=1; BrakeRate=1; TurnRate=1200;"),
             // An engineering station as the Supreme Commander factions' are made (`AssistPatrol`),
             // a building it may help put up, and wrecks and a rock to reclaim.
             unit("STATION", "BuildTime=100; FootprintX=2; FootprintZ=2; WorkerTime=300; Builder=1; BuildDistance=300; CanReclamate=1; canguard=1; DefaultMissionType=AssistPatrol;"),
@@ -390,6 +395,40 @@ mod tests {
         assert!(sim.unit(tower).unwrap().orders.is_empty(), "the tower let it go");
         assert!(!failed, "and said nothing of it");
         assert!(health(&sim, tank) < sim.types.get(sim.unit(tank).unwrap().type_id).max_health, "out of reach, it was mended no more");
+    }
+
+    /// A unit walking out of a station's reach while it is mended is let go, and mended again once
+    /// it is back within it: what went out of reach is no stranger for good (nor is a unit born in
+    /// its slot).
+    #[test]
+    fn a_station_mends_a_unit_again_once_it_comes_back() {
+        let mut sim = sim();
+        let station = spawn(&mut sim, "STATION", 0, 600, 600);
+        let runner = spawn(&mut sim, "ROVER", 0, 760, 600);
+        sim.set_health(runner, Fx::from_int(300));
+        for _ in 0..30 {
+            sim.step(&[]);
+        }
+        assert_eq!(sim.unit(station).unwrap().orders.front(), Some(&Order::Repair(runner)), "mending it");
+        // Out of its reach: let go.
+        sim.step(&[Command::Order { player: 0, units: vec![runner], order: Order::Move(FxVec3::from_ints(600, 60, 1100)), queue: false }]);
+        let mut ticks = 0;
+        while sim.unit(runner).unwrap().pos.z < Fx::from_int(1050) || !sim.unit(station).unwrap().orders.is_empty() {
+            sim.step(&[]);
+            ticks += 1;
+            assert!(ticks < 1500, "the runner leaves the station's reach, and the station lets it go");
+        }
+        let left = health(&sim, runner);
+        assert!(left < sim.types.get(sim.unit(runner).unwrap().type_id).max_health, "not whole");
+        // Back within its reach: mended again.
+        sim.step(&[Command::Order { player: 0, units: vec![runner], order: Order::Move(FxVec3::from_ints(760, 60, 600)), queue: false }]);
+        let mut ticks = 0;
+        while health(&sim, runner) <= left {
+            sim.step(&[]);
+            ticks += 1;
+            assert!(ticks < 1500, "back within its reach, it is mended again");
+        }
+        assert_eq!(sim.unit(station).unwrap().orders.front(), Some(&Order::Repair(runner)));
     }
 
     /// On the pad that took it on (TA: Escalation's Core pad attaches its tower), it works where it

@@ -1159,8 +1159,9 @@ it has no orders, standing where it is, within its `BuildDistance`:
 | `AssistPatrol` | Helps build what its player is putting up (a frame, a factory's unit, a building upgrading in place), else mends the damaged units of its side and its allies, else reclaims wreckage (wrecks and their heaps, not trees or rocks), the nearest of each first: as a builder on patrol does on its way, and as Supreme Commander's engineering stations, the Kennel and the Hive, do |
 
 What it finds itself is its only order, and gives way to its player's: any order, queued or not,
-takes its place, and once that is done it goes back to its own work. Something it found out of its
-reach is passed over for a while, without a word, and waiting for work it is no idle builder (the
+takes its place, and once that is done it goes back to its own work. Something that leaves its reach
+while it works on it is let go, without a word, and taken up again once it is back within it;
+waiting for work it is no idle builder (the
 idle builders' button and the coach pass it over). It needs build power: the mod check tells an
 `AssistPatrol` without a `WorkerTime` (`unit.assist_patrol`). Give it `canguard=1` to let players
 tell it to help a unit of theirs. The Supreme Commander factions' engineering stations work so
