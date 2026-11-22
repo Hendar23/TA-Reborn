@@ -371,6 +371,61 @@ fn each_weapon_keeps_its_own_bad_targets() {
     assert_eq!(sim.find_target(twin, 1, weapons.get(w1), 0, None, weapons.get(w1).range), Some(Target::Unit(decoy)), "the second leaves the target");
 }
 
+/// A weapon naming its only targets (`OnlyTargetCategory1=VTOL`: Supreme Commander's anti-air
+/// towers) takes no other, by order either: told to attack a tank or the ground, its order ends
+/// and it never fires; an aircraft in flight it takes on, of its own accord or told to, but not
+/// one landed (which it cannot hit). TA's own anti-air (`toairweapon` alone) fires on the tank
+/// when told to, as ever.
+#[test]
+fn a_weapon_naming_its_only_targets_takes_no_other_by_order_either() {
+    let mut sim = game_of(&[
+        ("TOWER", "Weapon1=AAGUN; OnlyTargetCategory1=VTOL; Category=NOTAIR;"),
+        ("FLAKKER", "Weapon1=AAGUN; Category=NOTAIR;"),
+        ("TANK", "CanMove=1; MaxVelocity=1; Category=NOTAIR TANK;"),
+        ("JET", "CanFly=1; CanMove=1; MaxVelocity=5; Category=VTOL;"),
+    ]);
+    let tower = spawn(&mut sim, "TOWER", 0, 300, 300);
+    let flakker = spawn(&mut sim, "FLAKKER", 0, 300, 600);
+    let tank = spawn(&mut sim, "TANK", 1, 420, 450);
+    let types = sim.types.clone();
+    assert!(types.by_name("TOWER").unwrap().weapon_only_masks[0].is_some() && types.by_name("FLAKKER").unwrap().weapon_only_masks[0].is_none());
+    let order = |units: Vec<UnitId>, target: Target| crate::Command::Order { player: 0, units, order: Order::Attack(target), queue: false };
+    let (mut tower_fired, mut flakker_fired) = (false, false);
+    sim.step(&[order(vec![tower, flakker], Target::Unit(tank))]);
+    for _ in 0..60 {
+        sim.step(&[]);
+        tower_fired |= sim.projectiles.iter().any(|p| p.owner == tower);
+        flakker_fired |= sim.projectiles.iter().any(|p| p.owner == flakker);
+        assert_ne!(sim.unit(tower).unwrap().weapons[0].target, Some(Target::Unit(tank)), "the tower never takes the tank on");
+    }
+    assert!(!tower_fired && sim.unit(tower).unwrap().orders.is_empty(), "its order on the tank ended, nothing fired");
+    assert!(flakker_fired, "TA's anti-air fires on the tank when told to");
+    // The ground: the same.
+    sim.step(&[order(vec![tower], Target::Ground(FxVec3::from_ints(380, 60, 330)))]);
+    for _ in 0..30 {
+        sim.step(&[]);
+        tower_fired |= sim.projectiles.iter().any(|p| p.owner == tower);
+    }
+    assert!(!tower_fired && sim.unit(tower).unwrap().orders.is_empty(), "its order on the ground ended, nothing fired");
+    // An aircraft in flight it takes, of its own accord or told to; landed, not.
+    let jet = spawn(&mut sim, "JET", 1, 360, 380);
+    {
+        let u = sim.unit_mut(jet).unwrap();
+        u.landed = false;
+        u.pos.y += Fx::from_int(120);
+    }
+    sim.grid.rebuild(sim.units.iter().flatten());
+    sim.vision.set_all(0, crate::vision::LOS);
+    let weapons = sim.weapon_types.clone();
+    let t = types.by_name("TOWER").unwrap();
+    let w = weapons.get(t.weapons[0].unwrap());
+    assert_eq!(sim.find_target(tower, 0, w, 0, None, w.range), Some(Target::Unit(jet)), "the jet in flight, of its own accord");
+    assert!(sim.takes_order(t, 0, w, Target::Unit(jet), 0), "the jet in flight, by order");
+    assert!(!sim.takes_order(t, 0, w, Target::Unit(tank), 0) && !sim.takes_order(t, 0, w, Target::Ground(FxVec3::from_ints(380, 60, 330)), 0));
+    sim.unit_mut(jet).unwrap().landed = true;
+    assert!(!sim.takes_order(t, 0, w, Target::Unit(jet), 0), "a jet landed, which it cannot hit");
+}
+
 /// A weapon whose bad targets are every unit it could hit would never fire of its own accord,
 /// which mods' tags of their own make (Total Mayhem's flak towers list `ALL`, which all its units
 /// carry; Escalation's anti-air missiles a tag all its aircraft carry): its bad targets are

@@ -994,6 +994,12 @@ take up to all 32 bits of a texel.
   health rises with its most and falls to it, no further, when one is taken out (at once, for
   nothing). The script's `SetEnhancement(index, on)` hears of each (the index in the file's order).
   None of TA's units has any; the state is in the checksum (`Unit::enhancements`).
+* **`OnlyTargetCategory<n>`** (Spring's name; TA Reborn reads it for any slot, `n` from 1): the
+  categories of the only units the weapon in slot `n` takes on, automatically, firing back and by
+  order: an attack order on another unit, or on the ground, is not that weapon's (and ends when no
+  weapon of the unit's takes it), nor is a unit it names where it cannot hit it
+  (`Sim::only_allows`: `toairweapon` and a landed aircraft). None of TA's units names any: TA's
+  `toairweapon=1` weapons still fire on what an order names (`Sim::takes_order`).
 * Build menus: `guis/<BUILDER><page>.gui` + `download/*.tdf`. The 3.1 patch's `[CANBUILD]` in
   sidedata is the computer players' list, never a player's menu: mods list units of their AI
   there (TA: The Final Frontier's AI Boost: `AAISOLAR` beside the `ARMSOLAR` a player builds,

@@ -141,6 +141,11 @@ pub struct UnitDef {
     /// for the third), or for any slot `BadTargetCategory<n>` (Spring's, `n` from 1); empty, the
     /// unit's [`UnitDef::bad_target_category`] goes for it.
     pub weapon_bad_target_category: [String; MAX_WEAPONS],
+    /// The categories of the only units each weapon may take on, of its own accord or by order
+    /// (`OnlyTargetCategory<n>`, Spring's, `n` from 1): none given, any (TA's own name none).
+    /// A weapon that names some never fires on the ground, nor on a unit of no category named,
+    /// whatever it is told: Supreme Commander's anti-air (`VTOL`).
+    pub weapon_only_target_category: [Option<String>; MAX_WEAPONS],
     /// The categories of the units it never goes after (TA: `NoChaseCategory`).
     pub no_chase_category: String,
     pub category: String,
@@ -328,6 +333,7 @@ impl UnitDef {
                 };
                 if ta.is_empty() { st(&format!("BadTargetCategory{}", slot + 1)) } else { ta }
             }),
+            weapon_only_target_category: std::array::from_fn(|slot| Some(st(&format!("OnlyTargetCategory{}", slot + 1))).filter(|v| !v.is_empty())),
             no_chase_category: st("NoChaseCategory"),
             category: st("Category"),
             tedclass: st("TEDClass").to_ascii_uppercase(),
@@ -432,6 +438,17 @@ mod tests {
         assert!(!x.builder, "yes is no number: 0, as TA read it");
         assert!(u.upgrades_to.is_empty(), "TA's units upgrade into nothing");
         assert_eq!(read("[UNITINFO]{UnitName=UEB0101; UpgradesTo= ueb0201 ;}").unwrap().upgrades_to, "UEB0201", "the unit it upgrades into, in capitals");
+        // TA's units restrict no weapon's targets.
+        assert!(u.weapon_only_target_category.iter().all(Option::is_none));
+    }
+
+    /// A weapon's only targets (`OnlyTargetCategory<n>`, by slot from 1).
+    #[test]
+    fn only_targets_are_read() {
+        let u = read("[UNITINFO]{UnitName=TOWER; Weapon1=GUN; Weapon3=AA; OnlyTargetCategory3= VTOL ; OnlyTargetCategory1=; }").unwrap();
+        assert_eq!(u.weapon_only_target_category[2].as_deref(), Some("VTOL"));
+        assert!(u.weapon_only_target_category[0].is_none(), "an empty list is none");
+        assert!(u.weapon_only_target_category[1].is_none(), "none given");
     }
 
     /// The mods' upgrade modules: a footprint of none, or a speed with an acceleration of none (a

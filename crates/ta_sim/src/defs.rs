@@ -265,6 +265,11 @@ pub struct UnitType {
     /// charges, `NOTSUB`). Such a weapon past the first keeps to its own targets on an attack
     /// order naming one of them (`Sim::keeps_to_own_targets`).
     pub own_bad_targets: [bool; MAX_WEAPONS],
+    /// The only units each weapon takes on, of its own accord or by order (`OnlyTargetCategory<n>`):
+    /// none, any (TA's own). A weapon with some never fires on the ground or on a unit of none of
+    /// them, nor on one where it cannot hit it (an anti-air gun on an aircraft landed):
+    /// [`crate::Sim::only_allows`].
+    pub weapon_only_masks: [Option<CategorySet>; MAX_WEAPONS],
     /// What it never goes after (`NoChaseCategory`: TA's ground units list VTOL).
     pub no_chase_mask: CategorySet,
     /// Gunships: aircraft that hover at range while attacking.
@@ -588,6 +593,7 @@ impl UnitTypes {
                     list => token_set(&categories, target_tags(u, list)),
                 }),
                 own_bad_targets: std::array::from_fn(|k| !u.weapon_bad_target_category[k].trim().is_empty()),
+                weapon_only_masks: std::array::from_fn(|k| u.weapon_only_target_category[k].as_deref().map(|list| token_set(&categories, list))),
                 no_chase_mask: token_set(&categories, target_tags(u, &u.no_chase_category)),
                 hover_attack: u.hover_attack,
                 transport_capacity: if u.transport_capacity == 0 { 0 } else if locomotion == Locomotion::Air { 1 } else { u.transport_capacity },

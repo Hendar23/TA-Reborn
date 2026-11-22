@@ -352,7 +352,10 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   (`projectiles::torpedo_aim`), as one sent along the straight line up from a submarine ran into
   the sea bed rising to the shallows, and runs at least as far as its range.
   `toairweapon` weapons engage only aircraft, other direct-fire and guided weapons both,
-  shells and bombs only the ground. A weapon takes its bad targets on last, only when no other
+  shells and bombs only the ground; an attack order fires any of them at what it names, but a
+  weapon naming its only targets (`OnlyTargetCategory<n>`, `UnitType::weapon_only_masks`,
+  `Sim::only_allows`, part of `Sim::takes_order`) takes no other, by order either: Supreme
+  Commander's anti-air. A weapon takes its bad targets on last, only when no other
   enemy is in reach, and turns to a better one coming into reach (`Sim::bad_target`,
   `Sim::can_engage`, `Sim::find_target`'s first key): the categories its unit's
   `BadTargetCategory` names, or the weapon's own `wpri_`/`wsec_`/`wspe_badTargetCategory`

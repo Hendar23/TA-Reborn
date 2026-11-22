@@ -850,6 +850,14 @@ details. What mod makers ask about most:
   targets are `wpri_`, `wsec_` or `wspe_badTargetCategory` for the first three, or
   `BadTargetCategory<n>` for any slot (`n` from 1), else the unit's `BadTargetCategory`. TA
   itself never fires a fourth weapon, and the mod check reads the numbered functions too.
+- **A weapon's only targets.** `OnlyTargetCategory<n>` (Spring's name; `n` the weapon's slot,
+  from 1) names the categories of the only units the weapon takes on: of its own accord, firing
+  back, and by order too. Told to attack any other unit, or a place on the ground, it does not
+  fire (an attack order none of the unit's weapons may take ends at once); nor does it take on a
+  unit it names where it cannot hit it (an aircraft landed, for a `toairweapon=1` weapon). TA's
+  `toairweapon=1` alone keeps a weapon's own choice of targets to aircraft, an attack order still
+  firing it at anything, as TA Reborn plays TA's own units. The Supreme Commander factions'
+  anti-air, which shoots aircraft alone in its game, says `OnlyTargetCategory<n>=VTOL` beside it.
 - **Missile defences by class.** A weapon's `interceptor` and a missile's `targetable` are read
   as sets of classes, bits of a number, as the Spring engine reads them: an interceptor shoots
   down a missile whose `targetable` shares a bit with its `interceptor`. TA's own all say 1 (its
