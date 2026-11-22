@@ -207,8 +207,13 @@ pub const RECORD_VERSION: u32 = 47;
 /// `DefaultMissionType` is `AssistPatrol` (the factions' engineering stations) help build, mend and
 /// reclaim wreckage round them by themselves, the work a building found itself gives way to its
 /// player's next order, and the computer players put their power generators up beside their
-/// factories and their storage beside their extractors where that pays.
-pub const SIMULATION_VERSION: u32 = 108;
+/// factories and their storage beside their extractors where that pays; 109, a missile's speed
+/// goes from its `startvelocity` by its `weaponacceleration` towards its `weaponvelocity` (one
+/// launched faster than its top speed is not pulled down to it: TA: Escalation's vertical
+/// missiles slow as they fly instead of hanging over their launchers; launched upright at a
+/// negative speed, one drops), and a shot leaves from where its firing piece is once the weapon's
+/// fire function has run as far as its first wait.
+pub const SIMULATION_VERSION: u32 = 109;
 /// Records shorter than one year of simulated time are supported. Shared with the
 /// launcher's metadata reader so impossible durations cannot start endless save catch-up.
 pub const MAX_RECORD_TICKS: u64 = 30 * 3600 * 24 * 365;

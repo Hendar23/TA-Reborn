@@ -129,6 +129,21 @@
   They now take on aircraft alone, by order too. Any mod's weapon can be kept to its targets the
   same (`OnlyTargetCategory<n>`, see [docs/MODDING.md](docs/MODDING.md#units-weapons-and-features));
   TA's own units keep their rules. Make the factions' mod again (UPDATE) to have these three.
+- TA: Escalation's vertically launched missiles were invisible and blew up at their launchers: those
+  of its missile batteries, the Raptor, the battleships, mobile fortresses and hover battleships,
+  the Deluge, Hammerhead, Arbitrator, Talos and others. They leave their tubes faster than their top
+  speed and slow down as they fly, and were held to that top speed (which the mod writes as a
+  negative number) from the moment they were launched, so they hung inside their launchers until
+  their flight time was up and went off there; the Abyssal's and the Vortex's strategic missiles
+  went off on the submarine itself. A missile now leaves at its start speed and gathers or loses
+  speed towards its top speed, as its weapon's file describes, so these climb out of their
+  launchers, turn over and fly at their targets. The C.O.R.E.'s rockets left from far off the map
+  and were gone at once, only their launch flashes to be seen: its script moves its launch points
+  away as it aims and brings the one firing back as it fires. A shot now leaves from where the
+  weapon's fire script puts its firing piece, so the C.O.R.E.'s rockets fly from its pods. TA's own
+  units fire as before, except that the few whose fire script kicks the barrel back at once (the
+  Guardian, the Punisher, the Sumo, flak and a few more) fire from the kicked-back barrel, where the
+  flash shows.
 
 ## 1.0.8 — 2026-11-18
 

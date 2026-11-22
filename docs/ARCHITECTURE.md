@@ -288,7 +288,10 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   untouched (`Sim::throw_clear`: sending each off it and back made thousands of new routes
   in a big battle).
 * **Combat** (`combat.rs`): targets via a uniform grid; aiming through the unit's own
-  `AimPrimary` script; muzzle from `QueryPrimary`; ballistic launch angles solved
+  `AimPrimary` script; the muzzle the piece `QueryPrimary` names, where it is once `FirePrimary`
+  has run as far as its first wait (see FORMATS.md: tried on a copy of the script,
+  `Sim::trial_script` and `host::TrialHost`, which changes nothing; the function itself runs with
+  the unit's other threads, as ever); ballistic launch angles solved
   analytically; projectiles swept against unit spheres, going off where they meet the first
   unit along the tick's flight, or the ground or the sea (`Sim::spent` keeps those that ended,
   and the explosion event says how far through the tick, for the client to draw the last
@@ -429,6 +432,18 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   back to it first): steered straight at the target from the top of the climb they came in a
   few degrees above the ground and went off against the first hill, building or tall unit in
   front of it, 100 to 500 px short (`tests/nuclear.rs`).
+  A missile's speed goes from its `startvelocity` by its `weaponacceleration` towards its
+  `weaponvelocity` and stops there (`WeaponType::speed_after`, `speed_limit`): TA's gather speed
+  up to their top speed; one launched faster than its top speed is never pulled down to it, and
+  with a negative acceleration slows as it flies, no slower than its top speed (and never turned
+  about). TA: Escalation makes its vertical missiles so (its missile batteries', the Raptor's,
+  battleships', the Abyssal's and Vortex's: 360 to 1,280 px a second out of the tube, a
+  `weaponvelocity` of -1 to -10, slowing by 12 to 300 px a second each second); held to their top
+  speed from the first tick, half a pixel a tick, they hung over their launchers until their
+  flight time was up and went off there, an Abyssal's on itself. Launched upright at a negative
+  speed, a missile goes straight down (its pulse bombs). `tests/mod_missiles.rs` (ignored, with
+  `TA_TEST_MOD`) fires every missile of a mod at an enemy and reports how far they got and where
+  they went off.
 * **Vision** (`vision.rs`): per-player line of sight, radar, sonar and jamming on 32 px
   cells, rebuilt from precomputed disc spans every 6 ticks, plus sticky "explored" bits.
   `Sim::seen_by` gives Visible / Radar / Hidden; automatic targeting ignores hidden units

@@ -165,14 +165,16 @@ impl Sim {
                 p.vel.y -= self.gravity;
             } else if w.trajectory == Trajectory::Guided || w.torpedo && (w.def.tracks || w.def.guidance) {
                 if w.vlaunch && p.age < w.launch_ticks {
-                    p.vel = FxVec3::new(Fx::ZERO, (p.vel.y + w.acceleration).min(w.velocity), Fx::ZERO);
+                    p.vel = FxVec3::new(Fx::ZERO, w.speed_after(p.vel.y), Fx::ZERO);
                 } else {
                     let to = p.target_pos - p.pos;
                     // TA's `cruise` missiles launched upright (its strategic ones: the nukes, the
                     // EMP and tactical missiles) cross the map level, high over everything, and
                     // dive onto their target from above (see `cruise_aim`).
                     let aim = if w.vlaunch && w.def.cruise { cruise_aim(&self.world, p.pos, to) } else if w.torpedo { torpedo_aim(to) } else { to };
-                    let speed = (p.vel.length() + w.acceleration).min(w.velocity);
+                    // (Gathering speed to its top, or a missile launched faster than that losing it;
+                    // never turned about by its slowing: `WeaponType::speed_after`.)
+                    let speed = w.speed_after(p.vel.length()).max(Fx::ZERO);
                     let turn = w.turn_rate.max(if w.torpedo { 1 } else { 200 });
                     // (Straight up, at the top of its climb, a missile has no heading: it takes
                     // its target's and turns over towards it. Taking north's, it turned over

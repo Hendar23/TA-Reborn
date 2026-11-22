@@ -1694,6 +1694,25 @@ impl Sim {
         out
     }
 
+    /// `name(args)` tried on a copy of the unit's script, as far as its first wait, nothing it
+    /// does reaching the game or the script itself (`host::TrialHost`): the copy, its pieces where
+    /// the function put them. None without the function.
+    pub(crate) fn trial_script(&self, id: UnitId, name: &str, args: &[i32]) -> Option<CobInstance> {
+        let u = self.unit(id)?;
+        let cob = u.cob.as_ref().filter(|c| c.has_function(name))?;
+        let mut trial = cob.trial();
+        let types = &self.types;
+        // (Another unit by its script id; its own reads as no one, as `with_script` has it.)
+        let lookup = |sid: i32| -> Option<OtherUnit> {
+            let other = self.units.get(usize::try_from(sid.checked_sub(1)?).ok()?)?.as_ref()?;
+            (other.id != id).then(|| OtherUnit::of(other, types))
+        };
+        let allies = self.ally_masks().get(u.owner as usize).copied().unwrap_or(0);
+        let mut host = crate::host::TrialHost { unit: u, unit_type: types.get(u.type_id), world: &self.world, now_ms: self.now_ms(), lookup: &lookup, max_id: self.units.len() as i32, allies, rng: u.rng.clone() };
+        trial.call(&mut host, name, args);
+        Some(trial)
+    }
+
     /// A unit finished: its event, and what a unit does as it is finished. Once only: a unit
     /// taken apart by its own side and built back up is not finished again (it was counted,
     /// switched on and given its fire orders already; `Unit::finished`).

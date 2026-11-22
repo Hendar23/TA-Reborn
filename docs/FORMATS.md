@@ -688,6 +688,20 @@ take up to all 32 bits of a texel.
     (TA Reborn asks after every shot), else its turret rests between shots.
   * Only the Commanders' `AimPrimary` answers "no" (0: while building); the others answer 1
     once on target.
+* **Firing**: the engine asks the weapon's `Query` function which piece the shot leaves from,
+  then starts its `Fire` function, and the shot leaves from where that piece is once the fire
+  function has run as far as its first wait (a flash shown, a barrel kicked back; `Sim::fire`).
+  TA's Hammer alternates its barrels, its `FirePrimary` switching to the other as it fires and
+  its `QueryPrimary` naming the one in use: asked before the fire function runs, the query names
+  the barrel that flashes. TA: Escalation's C.O.R.E. (`CORMKL`) moves its eighteen launch points
+  (single points in its six pods) 25,000 px off in `AimSecondary` and moves the one firing back
+  into its pod in `FireSecondary`, before it shows its launch flash there: with the piece's place
+  read before the fire function ran, every rocket left from off the map and went off at once, and
+  only the flashes were seen. Read after it: 15 of TA's fire functions move or turn a piece at
+  once before their first wait (most kick a barrel back a few px before they show their flash),
+  and their shots leave from the muzzle so moved, where the flash shows; TA: Escalation's Armada
+  (`ARMUSCAR`), which steps its anti-air rack's piece a slot down as it fires, launches each
+  missile a slot (9.4 px) below its flash.
 * `XZ_ATAN(dx, dz)` is the heading, relative to the unit's, that points a piece along
   **−(dx, dz)**. Only the four boom transports (`arm/corthovr`, `arm/cortship`) use it, as
   `XZ_ATAN(PIECE_XZ(pivot) − target)`: their booms pivot at the stern and rest pointing
@@ -828,6 +842,19 @@ take up to all 32 bits of a texel.
   is), as the Spring engine's do: TA's anti-nukes (`range` 22,000 to 32,000) take a nuke as it
   leaves its silo on TA's maps, a tactical defence a few hundred px across as the missile comes
   down on what it covers (`Sim::update_interceptors`).
+* **Missile speeds**: a missile leaves at its `startvelocity` (px/s; none given, at its
+  `weaponvelocity`, or launched upright with a `weaponacceleration`, at rest) and its speed goes by
+  its `weaponacceleration` (px/s a second) towards its `weaponvelocity`, stopping there. Every one
+  of TA's 198 weapons starts no faster than its `weaponvelocity` and gathers speed or holds it.
+  TA: Escalation's vertical missiles (12 weapons, among them its missile batteries' and the
+  Raptor's `VSPAM_ALL`, its battleships' and mobile fortresses', the Deluge's, Hammerhead's,
+  Arbitrator's and Talos's, the Abyssal's and Vortex's `NUKE_SUB_ARM`, `NUKE_SUB_CORE`) leave at
+  360 to 1,280 px a second with a `weaponvelocity` of -1 to -10 and a negative acceleration (-12
+  to -300): a missile launched faster than its top speed is not pulled down to it, and they slow as
+  they fly. Their flight times end before they would stop (half of them with about a tenth of their
+  start speed left): their makers timed them by the slowing. Its pulse bombs (`BOMB_MS`,
+  `BOMB_SHOCK`) are launched upright at -400 px a second with a `weaponvelocity` of -400: straight
+  down.
 * `tracks=1` (a guided weapon homes on the unit it is sent at): every guided weapon of TA's
   launched other than upright says it, and of the vertical launchers the anti-nukes
   (`AMD_ROCKET`, `FMD_ROCKET`, `ARMSCAB_WEAPON`, `CORMABM_WEAPON`) and the Krogoth's

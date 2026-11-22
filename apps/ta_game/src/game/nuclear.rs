@@ -37,29 +37,34 @@ pub(crate) fn destination_shown(sim: &Sim, viewer: Option<u8>, p: &ta_sim::Proje
 
 /// Seconds until a strategic missile comes down where it is aimed, as it flies now: the rest of
 /// its climb out of its tube, then (one of TA's `cruise` missiles) level until its target is 60°
-/// below it and down onto it, else straight at it; at its top speed once it has gathered it.
-/// (Within a second or so of the simulation's own flight: a countdown, not a promise, for a
-/// target that moves.)
+/// below it and down onto it, else straight at it; at its top speed once it has gathered it (or,
+/// one launched faster than that and slowing down, its speed once it has lost what it loses:
+/// `ta_sim::WeaponType::speed_limit`). (Within a second or so of the simulation's own flight: a
+/// countdown, not a promise, for a target that moves.)
 pub(crate) fn time_to_impact(sim: &Sim, p: &ta_sim::Projectile) -> f32 {
     let w = sim.weapon_types.get(p.weapon);
-    let (top, gather) = (w.velocity.to_f32().max(0.01), w.acceleration.to_f32());
+    let (limit, gather) = (w.speed_limit().to_f32().max(0.01), w.acceleration.to_f32());
     let mut at = Vec3::from_array(p.pos.to_f32());
     let mut speed = Vec3::from_array(p.vel.to_f32()).length();
     let mut ticks = 0.0;
-    if w.vlaunch {
+    if w.vlaunch && p.age < w.launch_ticks {
+        // (The climb as the simulation flies it, tick by tick.)
+        let mut climb = p.vel.y;
         for _ in p.age..w.launch_ticks {
-            speed = (speed + gather).min(top);
-            at.y += speed;
+            climb = w.speed_after(climb);
+            at.y += climb.to_f32();
             ticks += 1.0;
         }
+        speed = climb.to_f32().abs();
     }
     let to = Vec3::from_array(p.target_pos.to_f32()) - at;
     let (flat, drop) = (Vec2::new(to.x, to.z).length(), -to.y);
     // (Level to where the target is 60° below, then down: tan 60° is 1.732, sin 60° 0.866.)
     let path = if w.vlaunch && w.def.cruise && drop > 0.0 && drop < flat * 1.732 { flat - drop / 1.732 + drop / 0.866 } else { flat.hypot(drop) };
-    // (Gathering speed to its top, then at it.)
-    let (gathering, gathered) = if gather > 0.0 && speed < top { ((top - speed) / gather, (top + speed) * 0.5 * (top - speed) / gather) } else { (0.0, 0.0) };
-    ticks += if path <= gathered { path / ((top + speed) * 0.5).max(0.01) } else { gathering + (path - gathered) / top };
+    // (Gathering speed to its limit, or losing it, then at it.)
+    let (changing, covered) = if gather != 0.0 && (limit - speed) * gather > 0.0 { ((limit - speed) / gather, (limit + speed) * 0.5 * (limit - speed) / gather) } else { (0.0, 0.0) };
+    let cruising = if gather == 0.0 { speed.min(limit) } else { limit };
+    ticks += if path <= covered { path / ((limit + speed) * 0.5).max(0.01) } else { changing + (path - covered) / cruising.max(0.01) };
     ticks / 30.0
 }
 
