@@ -176,6 +176,51 @@ pub struct Drift {
     pub side: i8,
 }
 
+/// A unit made by a factory with ways out (`UnitType::exits`, Supreme Commander's roll-off
+/// points): the way it is built facing and leaves by, and once it is let go its way on the
+/// factory's floor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RollOff {
+    /// The factory's way out (an index of its type's `exits`).
+    pub exit: u8,
+    /// Once it is let go, its way out on the factory's floor.
+    pub way: Option<Way>,
+}
+
+/// A unit's way out of a factory once it is let go ([`RollOff::way`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Way {
+    /// Where it set off from: the pad, at the pad's height.
+    pub from: FxVec3,
+    /// Where the way ends, on the ground.
+    pub to: FxVec3,
+    /// Pixels along the way: the pad's height kept to the first, the ground reached at the
+    /// second.
+    pub ramp: (Fx, Fx),
+}
+
+impl Way {
+    /// How high the factory's floor stands at `p` on the way out, `ground` the ground's height
+    /// there: the pad's as far as the ramp's top (measured along the way), down evenly to the
+    /// ground at its foot; none past it (or for a way of no length), only the ground.
+    pub fn floor(&self, p: FxVec3, ground: Fx) -> Option<Fx> {
+        let along = (self.to - self.from).xz();
+        let length = along.length_xz();
+        if length <= Fx::ZERO {
+            return None;
+        }
+        let d = (p - self.from).xz().dot(along) / length;
+        let (top, foot) = self.ramp;
+        if d <= top {
+            Some(self.from.y)
+        } else if d >= foot {
+            None
+        } else {
+            Some(self.from.y + (ground - self.from.y) * ((d - top) / (foot - top)))
+        }
+    }
+}
+
 /// Progress of a builder's current job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BuildJob {
@@ -342,6 +387,10 @@ pub struct Unit {
     pub rally: Vec<Order>,
     /// Factory that is building / releasing this unit.
     pub factory: Option<UnitId>,
+    /// Made by a factory with ways out (`UnitType::exits`): the one it is built facing and leaves
+    /// by, and once it is let go the floor under it on its way out (`Sim::settle`). Gone once it is
+    /// out of the factory's footprint.
+    pub roll_off: Option<RollOff>,
     /// Factories: the units they built that may still be leaving their yard (those whose
     /// `factory` is this one; the others are dropped as they are found).
     pub yard: Vec<UnitId>,
@@ -492,6 +541,7 @@ impl Unit {
             factory_queue: VecDeque::new(),
             rally: Vec::new(),
             factory: None,
+            roll_off: None,
             yard: Vec::new(),
             occupied_origin: None,
             cob: None,

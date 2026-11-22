@@ -1092,6 +1092,51 @@ pad and takes on through its scripts. TA Reborn plays them as those engines did:
 [FORMATS.md](FORMATS.md) gives the details, mod by mod; `crates/ta_sim/tests/mod_upgrades.rs` plays
 every building of a mod that offers an upgrade ([testing](#from-the-source-tree)).
 
+#### Factories' ways out
+
+A factory's units drive out of its front, as TA's do: from its pad (the piece its script's
+`QueryBuildInfo` names) to a point just past the front of its footprint, through its walls, which
+are their way out until they are clear of it. A factory may name its own ways out instead, as
+Supreme Commander's factories roll their units off their build platforms to their sides: an
+`[EXITS]` section within its `[UNITINFO]`, a section for each way (any name), in order:
+
+```text
+[UNITINFO]
+{
+    UnitName=UEB0101;
+    ...
+    [EXITS]
+    {
+        [EXIT1] { X=128; Z=-4; Heading=90; Ramp=36 60; }
+        [EXIT2] { X=-128; Z=-4; Heading=-90; Ramp=36 60; }
+    }
+}
+```
+
+- **`X`, `Z`**: where the way leads, in pixels from the factory's middle as it stands facing south
+  (x east, z south), turned with the factory. Lead it past the footprint: the factory lets its unit
+  go once it is out of the footprint.
+- **`Heading`**: the way the unit faces while it is built, in degrees as a unit's heading is
+  counted (0 the factory's front, its +z; 90 towards its +x), turned with the factory and with the
+  pad as TA's plants turn theirs.
+- **`Ramp`**: two numbers, pixels along the way from the pad: the unit keeps the pad's height (its
+  build platform's) as far as the first, and comes down evenly to the ground at the second, tipped
+  down the slope as it goes. Without it the unit is on the ground as soon as it is done.
+
+A unit may name the way it faces while such a factory builds it, whichever way out it takes:
+`BuildHeading` in its own `[UNITINFO]`, in degrees as a way's `Heading` (from the factory's front,
+turned with the pad). The Supreme Commander factions' long transports and gunships say so
+(`ForcedBuildSpin`), built along their air factories' platforms rather than across them.
+
+A unit is built facing the way out nearest where it goes next (the first place of the factory's
+route, else the factory's front), of those whose end it may stand on (not built over), the first of
+equals; done, it rolls off along that way to its end, then follows the route. An aircraft lifts
+off its pad, as before (built facing its way), and a unit that never moves (a module) takes no
+way: it is made as the pad faces. Such a factory's units stand on its pad from the moment they are
+begun. With ways out a factory's `YardMap` may be solid (`o` throughout): its units leave by their
+way through its walls, and no other unit walks over its platform. The Supreme Commander factions'
+factories name theirs so, from their roll-off points and their models' platforms.
+
 #### Units that upgrade in place
 
 A unit may become another where it stands, as Supreme Commander's factories, extractors and radars

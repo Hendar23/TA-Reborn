@@ -13,7 +13,7 @@ use crate::fixed::{FULL_TURN, Fx, FxVec3, QUARTER_TURN, atan2, cos, heading_of, 
 use crate::host::{HostRequest, OtherUnit, UnitHost, script_angle};
 use crate::path::{FlowField, PathQuery, Pathfinder};
 use crate::rng::Rng;
-use crate::unit::{BuildJob, Drift, Economy, MAX_PLAYERS, Order, Player, PlayerSetup, Unit, UnitId, piece_world_heading, piece_world_position, player_bit};
+use crate::unit::{BuildJob, Drift, Economy, MAX_PLAYERS, Order, Player, PlayerSetup, RollOff, Unit, UnitId, Way, piece_world_heading, piece_world_position, player_bit};
 use crate::vision::{self, Seen, Sensor, Vision};
 use crate::world::{CELL, MoveSpec, Occupant, Region, World};
 
@@ -4864,13 +4864,29 @@ impl Sim {
                 let unit_id = job.target;
                 let tt = types.get(target.type_id);
                 let rally = self.unit(id).map(|f| f.rally.clone()).unwrap_or_default();
+                // A factory with ways out sends it out by the one nearest where it goes, from the
+                // pad along the factory's floor and down its ramp (`Sim::settle`), not out of its
+                // front through its walls; an aircraft lifts off the pad, as Supreme Commander's
+                // do (`FactoryUnit:OnStopBuild` rolls off all but aircraft).
+                let way = if !t.exits.is_empty() && !matches!(tt.locomotion, Locomotion::Static | Locomotion::Air) {
+                    let k = self.choose_exit(id, t, target.type_id);
+                    let to = self.exit_end(id, &t.exits[k]);
+                    Some((k, Way { from: target.pos, to, ramp: t.exits[k].ramp }))
+                } else {
+                    None
+                };
+                let out = way.map_or(exit, |(_, w)| w.to);
+                if let Some((k, w)) = way
+                    && let Some(nu) = self.unit_mut(unit_id)
+                {
+                    nu.roll_off = Some(RollOff { exit: k as u8, way: Some(w) });
+                }
                 if tt.locomotion != Locomotion::Static && let Some(nu) = self.unit_mut(unit_id) && nu.orders.is_empty() {
-                    nu.orders.push_back(Order::Move(exit));
+                    nu.orders.push_back(Order::Move(out));
                     for o in &rally {
-                        queue_order(&mut nu.orders, o, true, exit);
+                        queue_order(&mut nu.orders, o, true, out);
                     }
                 }
-                let _ = tt;
                 if let Some(f) = self.unit_mut(id) {
                     f.build = None;
                     let done = f.factory_queue.pop_front();
@@ -4912,11 +4928,20 @@ impl Sim {
             return;
         }
         let pad_piece = self.call_script(id, "QueryBuildInfo", &[0]).and_then(|p| p.first().copied()).unwrap_or(-1);
+        // (With ways out, it is built facing the one it will leave by: Supreme Commander turns its
+        // factories' build bone so, `UnitSpin`. Not one that never moves: it stays as it is made.)
+        let exit = (!t.exits.is_empty() && types.get(type_id).locomotion != Locomotion::Static).then(|| self.choose_exit(id, t, type_id));
         let f = self.unit(id).unwrap();
         let pad_pos = self.cob_piece_position(f, t, pad_piece).unwrap_or(f.pos);
         let owner = f.owner;
         // (Facing as the pad is turned: `Sim::follow_build_pad`.)
         let heading = self.cob_piece_heading(f, t, pad_piece).unwrap_or(f.heading);
+        // (A unit that names its own way to face as it is built faces that, whichever way it takes:
+        // Supreme Commander's long transports, `ForcedBuildSpin`.)
+        let heading = match exit {
+            Some(k) => wrap_angle(heading + types.get(type_id).build_heading.unwrap_or(t.exits[k].heading)),
+            None => heading,
+        };
         // The pad clear first: one of its own side's units standing still where the next would
         // go (built in no time, the instant-build cheat or many builders helping; given an
         // order as it was done: to guard the factory, or to build beside it) is sent off it, to
@@ -4934,6 +4959,11 @@ impl Sim {
         if let Some(new) = self.spawn_unit(type_id, owner, pad_pos, heading, false) {
             if let Some(nu) = self.unit_mut(new) {
                 nu.factory = Some(id);
+                nu.roll_off = exit.map(|k| RollOff { exit: k as u8, way: None });
+            }
+            // (On its pad from the first: `spawn_unit` stood it on the ground under the pad.)
+            if exit.is_some() {
+                self.follow_build_pad(new, id);
             }
             if let Some(f) = self.unit_mut(id) {
                 f.build = Some(BuildJob { target: new, started: true });
@@ -5005,15 +5035,18 @@ impl Sim {
                 gone.push(id);
                 return false;
             }
-            leaving |= u.path_goal.is_some() || u.orders.front() == Some(&Order::Move(exit));
+            // (Its way out: the factory's front, or the end of the way it was sent out by.)
+            let way_out = u.roll_off.and_then(|r| r.way).map_or(exit, |w| w.to);
+            leaving |= u.path_goal.is_some() || u.orders.front() == Some(&Order::Move(way_out));
             true
         });
-        // (Out of the yard: no longer the factory's to see out.)
+        // (Out of the yard: no longer the factory's to see out, and off its floor.)
         for id in gone {
             if let Some(u) = self.unit_mut(id)
                 && u.factory == Some(factory)
             {
                 u.factory = None;
+                u.roll_off = None;
             }
         }
         if let Some(f) = self.unit_mut(factory) {
@@ -5031,6 +5064,33 @@ impl Sim {
         FxVec3::new(p.x, self.world.height_at(p.x, p.z), p.z)
     }
 
+    /// Where factory `id`'s way out `e` leads, on the ground (its place turned with the factory).
+    fn exit_end(&self, id: UnitId, e: &crate::defs::Exit) -> FxVec3 {
+        let f = self.unit(id).unwrap();
+        let p = f.pos + rotate_y(e.to, f.heading);
+        FxVec3::new(p.x, self.world.height_at(p.x, p.z), p.z)
+    }
+
+    /// Which of factory `id`'s ways out (its type `t` has some) a unit of `unit_type` it makes
+    /// takes: the nearest to where it goes next (the first place of its rally orders; with none,
+    /// the factory's front, where TA's plants send theirs), of those whose end it may stand on
+    /// (not built over), the first of equals, as Supreme Commander takes the roll-off point
+    /// nearest the factory's rally point (`CalculateRollOffPoint`); with none open, the nearest.
+    fn choose_exit(&self, id: UnitId, t: &UnitType, unit_type: usize) -> usize {
+        let Some(f) = self.unit(id) else { return 0 };
+        let dest = f.rally.iter().find_map(crate::formation::order_point).unwrap_or_else(|| self.factory_exit(id, t));
+        let ut = self.types.get(unit_type);
+        // (Aircraft lift off the pad: any end will do.)
+        let spec = (ut.locomotion != Locomotion::Air).then(|| self.move_spec(unit_type));
+        (0..t.exits.len())
+            .min_by_key(|&k| {
+                let end = self.exit_end(id, &t.exits[k]);
+                let blocked = spec.as_ref().is_some_and(|s| !self.world.passable(s, World::pos_to_anchor(end, ut.footprint), None));
+                (blocked, (end - dest).xz().length_sq_raw(), k)
+            })
+            .unwrap_or(0)
+    }
+
     /// The unit in production rides the factory's build pad (`QueryBuildInfo`'s piece): where it
     /// is, and turned as it is turned (TA's plants spin the pad about y while they build, 30
     /// degrees a second, and the unit goes round with it); finished, it keeps the heading the pad
@@ -5043,6 +5103,13 @@ impl Sim {
         let Some(f) = self.unit(factory) else { return };
         if let Some(mut p) = self.cob_piece_position(f, t, pad) {
             let heading = self.cob_piece_heading(f, t, pad).unwrap_or(f.heading);
+            // (Turned to face the way out it will leave by, where the factory has ways out, or the
+            // way it names to face as it is built.)
+            let turn = self.unit(id).and_then(|u| {
+                let e = t.exits.get(u.roll_off?.exit as usize)?;
+                Some(types.get(u.type_id).build_heading.unwrap_or(e.heading))
+            });
+            let heading = turn.map_or(heading, |turn| wrap_angle(heading + turn));
             // A ship is built at the surface, where it floats once done: a shipyard's pad is under
             // the water (the Core's yard stands 22 px deep). A hovercraft on a pad under the water
             // (a floating hover plant's) is on the water too.
@@ -5318,6 +5385,7 @@ impl Sim {
                                 u.pos.x = p.x;
                                 u.pos.z = p.z;
                                 u.factory = None;
+                                u.roll_off = None;
                                 placed = true;
                                 break 'search;
                             }
@@ -5423,6 +5491,12 @@ impl Sim {
             Locomotion::Hover | Locomotion::Naval => ground.max(world.sea_level),
             _ => ground,
         };
+        // On its way out of a factory with ways out, on the factory's floor where that stands
+        // higher (the pad's height, down the ramp to the ground: `Way::floor`).
+        let way = u.roll_off.and_then(|r| r.way).filter(|_| u.factory.is_some());
+        if let Some(floor) = way.and_then(|w| w.floor(u.pos, u.pos.y)) {
+            u.pos.y = u.pos.y.max(floor);
+        }
         if !t.level() && t.locomotion != Locomotion::Naval {
             // The slope under its whole footprint (half its length and width each way, 16
             // units a cell): a tank rides its tracks over a bump rather than tipping with
@@ -5432,7 +5506,12 @@ impl Sim {
             let left = rotate_y(FxVec3::new(half_w, Fx::ZERO, Fx::ZERO), u.heading);
             let h = |p: FxVec3| {
                 let g = world.height_at(p.x, p.z);
-                if t.locomotion == Locomotion::Hover { g.max(world.sea_level) } else { g }
+                let g = if t.locomotion == Locomotion::Hover { g.max(world.sea_level) } else { g };
+                // (Tipped down the ramp as it comes down it.)
+                match way.and_then(|w| w.floor(p, g)) {
+                    Some(floor) => g.max(floor),
+                    None => g,
+                }
             };
             let (hf, hb) = (h(u.pos + fwd), h(u.pos - fwd));
             let (hl, hr) = (h(u.pos + left), h(u.pos - left));
@@ -5693,6 +5772,7 @@ impl Sim {
             for product in u.yard {
                 if let Some(product) = self.unit_mut(product) && product.factory == Some(u.id) {
                     product.factory = None;
+                    product.roll_off = None;
                     if !product.is_complete() {
                         product.worked_at = Some(tick);
                     }
@@ -6062,6 +6142,16 @@ impl Sim {
                 for &i in &u.enhancements { mix(i as i64); }
             }
             target(&mut mix, u.factory.map(Target::Unit));
+            // (A way out only where there is one: a game without, TA's, sums as before.)
+            if let Some(r) = u.roll_off {
+                mix(-25);
+                mix(r.exit as i64);
+                if let Some(w) = r.way {
+                    for v in [w.from, w.to] { mix(v.x.0); mix(v.y.0); mix(v.z.0); }
+                    mix(w.ramp.0.0);
+                    mix(w.ramp.1.0);
+                }
+            }
             mix(u.orders.len() as i64);
             for o in &u.orders { order(&mut mix, o); }
             mix(u.factory_queue.len() as i64);

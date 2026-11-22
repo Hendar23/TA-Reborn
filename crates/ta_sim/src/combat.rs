@@ -1694,6 +1694,7 @@ impl Sim {
                         && yu.factory == Some(id)
                     {
                         yu.factory = None;
+                        yu.roll_off = None;
                     }
                 }
             }

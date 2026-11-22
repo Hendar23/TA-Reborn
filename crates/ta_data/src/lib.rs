@@ -30,7 +30,7 @@ use ta_vfs::Vfs;
 pub use enhancement::EnhancementDef;
 pub use feature::FeatureDef;
 pub use map::MapInfo;
-pub use unit::UnitDef;
+pub use unit::{ExitDef, UnitDef};
 pub use weapon::{RenderType, STRATEGIC_CLASS, WeaponDef};
 
 /// Largest supported unit, feature or movement-class side, in 16-pixel map cells.

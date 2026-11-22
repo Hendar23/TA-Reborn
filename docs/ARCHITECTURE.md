@@ -508,7 +508,11 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   production off the queue takes its frame apart, its metal back. The unit in production rides
   the factory's pad (`QueryBuildInfo`'s piece, `Sim::follow_build_pad`), turned as the pad is
   turned (TA's plants spin it while they build: docs/FORMATS.md; `unit::piece_world_heading`) and
-  keeping the heading it was left with when done, but a ship is built at
+  keeping the heading it was left with when done. A factory with ways out (`[EXITS]`,
+  `UnitType::exits`: Supreme Commander's roll-off points) builds it facing the one nearest where it
+  goes next (`Sim::choose_exit`), on the pad from its first tick, and sends it to that way's end
+  instead of past its front, on the factory's floor as it goes (`Unit::roll_off`, `unit::Way`,
+  `Sim::settle`: the pad's height to the ramp's top, down the ramp to the ground); a ship is built at
   the surface, where it floats once done (a shipyard's pad is under the water, the Core's yard
   22 px deep), and a hovercraft on a pad under the water on it too. Construction aircraft at work
   face what they build and sway round it, as TA's do (`Sim::drift_round`, `Unit::drift`): once

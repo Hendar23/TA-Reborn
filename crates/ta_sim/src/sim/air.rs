@@ -581,6 +581,7 @@ impl Sim {
         // (as ground units do in `ground_step`).
         if let Some(yard) = yard && yard.is_none_or(|(p, fp)| !u.pos.within_xz(p, Fx::from_int(fp.0.max(fp.1) as i64 * CELL / 2) + t.radius)) {
             u.factory = None;
+            u.roll_off = None;
         }
         // Wings and jets follow the speed (TA's MoveRate0..3: a third of top speed each,
         // planes topping out at 2; taking off or landing counts as 1).
