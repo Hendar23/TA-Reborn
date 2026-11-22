@@ -26,8 +26,13 @@ pub const TAGS: [&str; 3] = ["units", "factions", "supreme commander"];
 /// points, their yards solid; weapons that unpack before they fire play their unpack animations in
 /// their scripts, from their first frames, those that lock their unit's motion holding it still;
 /// anti-air, the towers' and the aircraft's, takes aircraft alone, by order too,
-/// `OnlyTargetCategory<n>`).
-pub const VERSION: u32 = 11;
+/// `OnlyTargetCategory<n>`;
+/// 12: the structures' adjacency, `[ADJACENCY]` and
+/// `AdjacencySize`, from the buffs of the player's own copy; the engineering stations working round
+/// them by themselves, `DefaultMissionType=AssistPatrol`, by their drones' work and reach; and the
+/// units Forged Alliance makes only by upgrading made, so that what upgrades into them says so: the
+/// tech 3 Kennel, the Hives of tech 2 and 3, the Cybran shield generator's four upgrades).
+pub const VERSION: u32 = 12;
 
 /// What was made.
 #[derive(Clone, Debug, Default)]
@@ -63,6 +68,9 @@ pub fn make(files: &Files, units: &[UnitBlueprint], reborn: &str, write: &mut dy
         write(path, bytes)
     };
     put("mod.toml", manifest(reborn).as_bytes(), &mut made)?;
+    // What each structure gives the structures beside it, as the player's copy has it.
+    let adjacency = crate::adjacency::read(files)?;
+    let adjacency_categories = adjacency.categories();
     // (Each unit made, with the footprint its model was given: its wreck lies on as much.)
     let mut done: Vec<std::borrow::Cow<UnitBlueprint>> = Vec::new();
     for (i, u) in units.iter().enumerate() {
@@ -88,7 +96,14 @@ pub fn make(files: &Files, units: &[UnitBlueprint], reborn: &str, write: &mut dy
                 None => e.icon = None,
             }
         }
-        let extra = units::Extra { upgrades_to: faction::upgrade_of(u, &faction).map(|t| t.id.as_str()), enhancements: enhance::section(u, &list), weapons: extra_weapons.clone(), exits: Vec::new() };
+        let extra = units::Extra {
+            upgrades_to: faction::upgrade_of(u, &faction).map(|t| t.id.as_str()),
+            enhancements: enhance::section(u, &list),
+            weapons: extra_weapons.clone(),
+            exits: Vec::new(),
+            adjacency: u.adjacency.as_deref().map_or(&[][..], |table| adjacency.of(table)),
+            adjacency_categories: Some(&adjacency_categories),
+        };
         let shown: Vec<Vec<String>> = list.iter().map(|e| enhance::shown_bones(u, e)).collect();
         match unit(files, u, &extra, &extra_weapons, shown, &mut |path, bytes| put(path, bytes, &mut made))? {
             Ok(footprint) => {
@@ -348,7 +363,7 @@ mod tests {
                    Shield = {{ BuildCostMass = 1500, BuildCostEnergy = 112500, BuildTime = 1500, Name = 'Personal Shield Generator', ShieldMaxHealth = 24000, Slot = 'Back' }} }}",
                 gun("RightZephyr", "", "/projectiles/Shell/Shell_proj.bp")
             ))),
-            ("UEB0101", blueprint("'STRUCTURE', 'FACTORY', 'LAND', 'TECH1', 'BUILTBYCOMMANDER', 'BUILTBYTIER1ENGINEER'",
+            ("UEB0101", blueprint("'STRUCTURE', 'FACTORY', 'LAND', 'TECH1', 'SIZE16', 'BUILTBYCOMMANDER', 'BUILTBYTIER1ENGINEER'",
                 "Economy = { BuildCostMass = 240, BuildCostEnergy = 2100, BuildTime = 300, BuildRate = 20, BuildableCategory = { 'BUILTBYTIER1FACTORY UEF MOBILE', 'BUILTBYTIER1FACTORY UEF STRUCTURE LAND' } }, \
                  General = { FactionName = 'UEF', UpgradesTo = 'ueb0201' }, Footprint = { SizeX = 4, SizeZ = 4 }, Display = { UniformScale = 0.05, BuildAttachBone = 'Turret' }, \
                  Physics = { MotionType = 'RULEUMT_None', RollOffPoints = { { UnitSpin = 90, X = 3, Y = 0, Z = 0 }, { UnitSpin = -90, X = -3, Y = 0, Z = 0 } } }")),
@@ -375,14 +390,15 @@ mod tests {
             // An extractor pumping as it works and turning into the next as it upgrades, that next,
             // a generator whose turret spins once it is built, and a radar whose turret spins
             // while it watches.
-            ("UEB1103", blueprint("'STRUCTURE', 'MASSEXTRACTION', 'TECH1', 'BUILTBYTIER1ENGINEER'",
+            ("UEB1103", blueprint("'STRUCTURE', 'MASSEXTRACTION', 'TECH1', 'SIZE4', 'BUILTBYTIER1ENGINEER'",
                 "Economy = { BuildCostMass = 50, BuildCostEnergy = 360, BuildTime = 60, BuildRate = 10, MaintenanceConsumptionPerSecondEnergy = 2, ProductionPerSecondMass = 2 }, \
                  General = { FactionName = 'UEF', UpgradesTo = 'ueb1202' }, Display = { UniformScale = 0.05, AnimationOpen = '/units/UEB1103/UEB1103_pump.sca', AnimationUpgrade = '/units/UEB1103/UEB1103_up.sca' }")),
             ("UEB1202", blueprint("'STRUCTURE', 'MASSEXTRACTION', 'TECH2', 'BUILTBYTIER2ENGINEER'",
                 "Economy = { BuildCostMass = 900, BuildCostEnergy = 5400, BuildTime = 900, MaintenanceConsumptionPerSecondEnergy = 9, ProductionPerSecondMass = 6 }, \
                  General = { FactionName = 'UEF', UpgradesFrom = 'ueb1103' }")),
-            ("UEB1101", blueprint("'STRUCTURE', 'ENERGYPRODUCTION', 'TECH1', 'BUILTBYTIER1ENGINEER'", "Economy = { BuildCostMass = 75, BuildCostEnergy = 750, BuildTime = 125, ProductionPerSecondEnergy = 20 }")),
-            ("UEB3101", blueprint("'STRUCTURE', 'RADAR', 'INTELLIGENCE', 'TECH1', 'BUILTBYTIER1ENGINEER'",
+            ("UEB1101", blueprint("'STRUCTURE', 'ENERGYPRODUCTION', 'TECH1', 'SIZE4', 'BUILTBYTIER1ENGINEER'",
+                "Adjacency = 'GeneratorBuffs', Economy = { BuildCostMass = 75, BuildCostEnergy = 750, BuildTime = 125, ProductionPerSecondEnergy = 20 }")),
+            ("UEB3101", blueprint("'STRUCTURE', 'RADAR', 'INTELLIGENCE', 'TECH1', 'SIZE4', 'BUILTBYTIER1ENGINEER'",
                 "Economy = { BuildCostMass = 60, BuildCostEnergy = 600, BuildTime = 120, MaintenanceConsumptionPerSecondEnergy = 20 }, Intel = { RadarRadius = 115, VisionRadius = 20 }")),
             ("UEL0111", blueprint("'MOBILE', 'LAND', 'TECH2', 'INDIRECTFIRE', 'BUILTBYTIER1FACTORY'",
                 "Economy = { BuildCostMass = 200, BuildCostEnergy = 1500, BuildTime = 1000 }, Physics = { MotionType = 'RULEUMT_Land', MaxSpeed = 2.8, TurnRate = 60 }, \
@@ -396,9 +412,20 @@ mod tests {
                    TurretBoneYaw = 'Turret', TurretBonePitch = 'Turret_Barrel', TurretYawSpeed = 180, TurretPitchSpeed = 90, \
                    RackBones = { { RackBone = 'Turret_Barrel', MuzzleBones = { 'Turret_Barrel' } } }, ProjectileId = '/projectiles/Shell/Shell_proj.bp', \
                    FireTargetLayerCapsTable = { Land = 'Air', Water = 'Air' } } }")),
+            // An engineering station the engineer builds, working through its drone, and the next
+            // tier of it, which nothing builds: made by upgrading alone, with two drones. (Made-up
+            // figures.)
+            ("XEB0104", blueprint("'STRUCTURE', 'TECH2', 'ENGINEERSTATION', 'BUILTBYTIER1ENGINEER'",
+                "Economy = { BuildCostMass = 400, BuildCostEnergy = 2000, BuildTime = 1000, BuildRate = 18, BuildableCategory = { 'xeb0204' }, EngineeringPods = { { PodUnitID = 'XEA3204', PodName = 'PodOne' } } }, \
+                 General = { FactionName = 'UEF', UpgradesTo = 'xeb0204', CommandCaps = { RULEUCC_Guard = false, RULEUCC_Stop = true } }")),
+            ("XEB0204", blueprint("'STRUCTURE', 'TECH3', 'ENGINEERSTATION'",
+                "Economy = { BuildCostMass = 600, BuildCostEnergy = 3000, BuildTime = 1500, BuildRate = 18, EngineeringPods = { { PodUnitID = 'XEA3204', PodName = 'PodOne' }, { PodUnitID = 'XEA3204', PodName = 'PodTwo' } } }, \
+                 General = { FactionName = 'UEF', UpgradesFrom = 'xeb0104', CommandCaps = { RULEUCC_Guard = true } }")),
+            ("XEA3204", blueprint("'UEF', 'MOBILE', 'AIR', 'POD'", "AI = { GuardScanRadius = 12 }, Economy = { BuildRate = 12 }, Physics = { MotionType = 'RULEUMT_Air' }")),
         ];
         let projectile = |cats: &str, rest: &str| format!("ProjectileBlueprint {{ Categories = {{ 'PROJECTILE', {cats} }}, {rest} }}");
-        let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+        // (What the structures give those beside them.)
+        let mut files: Vec<(String, Vec<u8>)> = vec![("lua/sim/AdjacencyBuffs.lua".into(), crate::adjacency::tests::BUFFS.as_bytes().to_vec())];
         for (id, bp) in &units {
             files.push((format!("units/{id}/{id}_unit.bp"), bp.clone().into_bytes()));
             files.push((format!("units/{id}/{id}_lod0.scm"), mesh.clone()));
@@ -488,7 +515,7 @@ mod tests {
         std::fs::write(dir.0.join("units.scd"), archive()).unwrap();
         let files = Files::of(Vec::new(), vec![crate::scd::Scd::open(&dir.0.join("units.scd")).unwrap()]);
         let units: Vec<UnitBlueprint> = crate::unit::catalogue(&files).unwrap().into_iter().filter(|u| u.playable()).collect();
-        assert_eq!(units.len(), 14);
+        assert_eq!(units.len(), 16, "the station's next tier, made by upgrading alone, among them; not its drone");
         let run = || {
             let mut hash = Sha256::new();
             let mut paths: Vec<String> = Vec::new();
@@ -503,7 +530,7 @@ mod tests {
             (made, paths, hex)
         };
         let (made, paths, first) = run();
-        assert_eq!((made.units, made.skipped.len()), (14, 0), "{:?}", made.skipped);
+        assert_eq!((made.units, made.skipped.len()), (16, 0), "{:?}", made.skipped);
         // The tech 1 factory upgrades into the tech 2 one, which no builder builds.
         let mut texts: std::collections::BTreeMap<String, String> = Default::default();
         make(&files, &units, "test", &mut |path, bytes| {
@@ -515,6 +542,26 @@ mod tests {
         assert!(texts["units/ueb0101.fbi"].contains("	UpgradesTo=UEB0201;"), "{}", texts["units/ueb0101.fbi"]);
         assert!(!texts["units/ueb0201.fbi"].contains("UpgradesTo"));
         assert!(!texts["download/supcom_uef.tdf"].contains("UNITNAME=UEB0201;"), "on no menu");
+        // The engineering station upgrades into its next tier, which nothing builds; each works
+        // round it by itself, by its drones' reach (12 ogrids) and its own work or theirs, the more.
+        let station = |id: &str| ta_formats::tdf::parse(&texts[&format!("units/{id}.fbi")]).sections.remove(0);
+        let (t2, t3) = (station("xeb0104"), station("xeb0204"));
+        assert_eq!((t2.get("UpgradesTo"), t2.get("DefaultMissionType"), t2.get("WorkerTime"), t2.get("BuildDistance"), t2.get("canguard")), (Some("XEB0204"), Some("AssistPatrol"), Some("180"), Some("384"), None));
+        assert_eq!((t3.get("UpgradesTo"), t3.get("DefaultMissionType"), t3.get("WorkerTime"), t3.get("canguard")), (None, Some("AssistPatrol"), Some("240"), Some("1")), "two drones' work; told to help, as FA lets it");
+        assert!(!texts["download/supcom_uef.tdf"].contains("UNITNAME=XEB0204;") && texts["download/supcom_uef.tdf"].contains("UNITNAME=XEB0104;"), "the next tier on no menu");
+        assert!(!texts.contains_key("units/xea3204.fbi"), "the drone is not made");
+        // The generator gives the structures beside it its buffs; the factory, the extractor and
+        // the radar say their size classes.
+        let generator = ta_formats::tdf::parse(&texts["units/ueb1101.fbi"]).sections.remove(0);
+        let buffs = generator.sections.iter().find(|s| s.name == "ADJACENCY").expect("its adjacency");
+        let buff = &buffs.sections[0];
+        assert_eq!((buff.name.as_str(), buff.get("Affects"), buff.get("Add"), buff.get("Size")), ("GenBuildSize4", Some("BuildEnergy"), Some("-0.05"), Some("4")));
+        assert_eq!(buffs.sections.len(), 4);
+        assert_eq!(buffs.sections[3].get("Category"), Some("ARTILLERY"));
+        for (id, size) in [("ueb0101", "16"), ("ueb1103", "4"), ("ueb3101", "4"), ("ueb1101", "4")] {
+            assert_eq!(ta_formats::tdf::parse(&texts[&format!("units/{id}.fbi")]).sections[0].get("AdjacencySize"), Some(size), "{id}");
+        }
+        assert!(station("xeb0104").get("AdjacencySize").is_none(), "a station has no size class: it takes nothing");
         // The commander's enhancements, each as the engine plays it; the shield left out.
         let acu = ta_formats::tdf::parse(&texts["units/uel0001.fbi"]);
         let list = acu.section("UNITINFO").and_then(|u| u.sections.iter().find(|s| s.name == "ENHANCEMENTS")).expect("its enhancements");
@@ -645,7 +692,7 @@ mod tests {
     }
 
     /// The hash of the test faction's mod (see the test above).
-    const EXPECTED: &str = "06fc094884aba1b036502f2c18fbaef5c7eead12e348c7c021fe5c542a30f40e";
+    const EXPECTED: &str = "724a6fd9e1bf0a04f95d1bd6cfad1f49f7bcae55a11ee64ba80699ecb7d4f14b";
 
     /// A unit whose mesh does not read is left out, with its reason; the rest are made.
     #[test]

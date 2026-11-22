@@ -8,6 +8,7 @@
 mod compatibility;
 pub use compatibility::Compatibility;
 
+pub mod adjacency;
 pub mod enhancement;
 pub mod feature;
 pub mod font;
@@ -27,6 +28,7 @@ use ta_formats::image::Palette;
 use ta_formats::tdf::{self, TdfDocument, TdfSection};
 use ta_vfs::Vfs;
 
+pub use adjacency::{AdjacencyAffect, AdjacencyDef};
 pub use enhancement::EnhancementDef;
 pub use feature::FeatureDef;
 pub use map::MapInfo;

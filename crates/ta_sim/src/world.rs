@@ -730,6 +730,19 @@ impl World {
         if self.in_bounds(cx, cz) { self.occupancy[self.idx(cx, cz)] } else { Occupant::Unit(u32::MAX) }
     }
 
+    /// The building whose footprint holds the cell, if any (its unit slot): the one it is
+    /// reserved for, or that blocks it.
+    pub fn building_at(&self, cx: i32, cz: i32) -> Option<u32> {
+        if !self.in_bounds(cx, cz) {
+            return None;
+        }
+        let i = self.idx(cx, cz);
+        self.reservations[i].or(match self.occupancy[i] {
+            Occupant::Unit(slot) => Some(slot),
+            _ => None,
+        })
+    }
+
     /// Notes a change to the occupants of a footprint (see [`World::changes_since`]).
     fn note_change(&mut self, origin: (i32, i32), fp: (u32, u32)) {
         if self.changes.len() >= CHANGES_KEPT {

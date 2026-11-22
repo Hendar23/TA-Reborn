@@ -216,6 +216,12 @@ pub struct UnitDef {
     /// Supreme Commander's `ForcedBuildSpin`, its long transports and gunships built along their
     /// air factories' platforms. None given, it faces its way out.
     pub build_heading: Option<f64>,
+    /// What it gives the buildings of its player beside it (`[ADJACENCY]` within its `[UNITINFO]`,
+    /// in the file's order: [`crate::AdjacencyDef`]), and its size class for what it takes from
+    /// them (`AdjacencySize`; 0: none, it takes any size's bonus and from as many as touch it):
+    /// Supreme Commander's adjacency. None of TA's.
+    pub adjacency: Vec<crate::AdjacencyDef>,
+    pub adjacency_size: u32,
     /// What the computer players build with it besides: the 3.1 patch's `[CANBUILD]` list for it
     /// (`gamedata/sidedata.tdf`), its entries not on its menu. TA's computer players went by
     /// these lists, its players by the menus: mods list units of their AI there that players are
@@ -389,6 +395,8 @@ impl UnitDef {
             enhancements: crate::EnhancementDef::of_unit(s),
             exits: ExitDef::of_unit(s),
             build_heading: s.get_f64("BuildHeading").filter(|v| v.is_finite()),
+            adjacency: crate::AdjacencyDef::of_unit(s),
+            adjacency_size: s.get_i64_or("AdjacencySize", 0).clamp(0, u32::MAX as i64) as u32,
             build_options: Vec::new(),
             ai_build_options: Vec::new(),
             name,

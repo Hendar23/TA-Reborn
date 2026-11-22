@@ -300,6 +300,6 @@ fn an_upgrade_plays_the_same_on_every_computer() {
     let mut sim = base();
     let gen1 = put(&mut sim, "GEN1", 300, 300);
     let before = sim.checksum();
-    sim.unit_mut(gen1).unwrap().self_work = Some(crate::unit::SelfWork { job: crate::unit::SelfJob::Upgrade(1), work: 5 });
+    sim.unit_mut(gen1).unwrap().self_work = Some(crate::unit::SelfWork { job: crate::unit::SelfJob::Upgrade(1), work: 5, metal_saved: Fx::ZERO });
     assert_ne!(sim.checksum(), before);
 }

@@ -200,8 +200,15 @@ pub const RECORD_VERSION: u32 = 47;
 /// the one nearest where they go (or as a unit's `BuildHeading` says) and sends them out along it,
 /// on its floor and down its ramp; a script may hold its unit still (`IMMOBILE`, told
 /// `StartMoving` when it has somewhere to go); a weapon naming its only targets
-/// (`OnlyTargetCategory<n>`) takes no other, by order too.
-pub const SIMULATION_VERSION: u32 = 107;
+/// (`OnlyTargetCategory<n>`) takes no other, by order too; 108, a building's `[ADJACENCY]` gives
+/// the finished buildings of its player touching it its bonuses (Supreme Commander's adjacency:
+/// what building costs, upkeep, what is made, a shot's energy, a reload), a frame or an upgrade
+/// given up and a unit its side takes apart give back what was paid for them, builders whose
+/// `DefaultMissionType` is `AssistPatrol` (the factions' engineering stations) help build, mend and
+/// reclaim wreckage round them by themselves, the work a building found itself gives way to its
+/// player's next order, and the computer players put their power generators up beside their
+/// factories and their storage beside their extractors where that pays.
+pub const SIMULATION_VERSION: u32 = 108;
 /// Records shorter than one year of simulated time are supported. Shared with the
 /// launcher's metadata reader so impossible durations cannot start endless save catch-up.
 pub const MAX_RECORD_TICKS: u64 = 30 * 3600 * 24 * 365;

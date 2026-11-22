@@ -51,6 +51,8 @@ mod upgrades;
 mod enhancements;
 #[path = "blocker_tests.rs"]
 mod blockers;
+#[path = "adjacency_tests.rs"]
+mod adjacency;
 
 /// Game data from TDF files (path, text), loaded as a mod's folder is.
 fn data_of(files: &[(String, String)]) -> GameData {

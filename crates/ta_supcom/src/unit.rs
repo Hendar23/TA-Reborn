@@ -308,6 +308,16 @@ pub struct Wreckage {
     pub health: f64,
 }
 
+/// A drone a structure keeps (`Economy.EngineeringPods`: the UEF's Kennel's), as its own blueprint
+/// gives it: its build power and how far round its station it looks for work (`AI.GuardScanRadius`,
+/// ogrids).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Pod {
+    pub id: String,
+    pub build_rate: f64,
+    pub reach: f64,
+}
+
 /// A unit's blueprint.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UnitBlueprint {
@@ -355,6 +365,17 @@ pub struct UnitBlueprint {
     pub wreckage: Option<Wreckage>,
     pub upgrades_to: Option<String>,
     pub upgrades_from: Option<String>,
+    /// Made only by upgrading a unit a player can make: no builder's lists name it (it has no
+    /// `BUILTBY…` category), and a unit of its faction a player makes, with build power, upgrades
+    /// into it (`General.UpgradesTo`), as the Kennel's and the Hives' later tiers and the Cybran
+    /// shield generator's are made. Set by [`catalogue`], which knows them all.
+    pub upgrade_only: bool,
+    /// The table of what it gives the structures beside it (`Adjacency =
+    /// 'T1PowerGeneratorAdjacencyBuffs'`: `crate::adjacency`).
+    pub adjacency: Option<String>,
+    /// Its drones (`Economy.EngineeringPods`), with what their blueprints say (set by
+    /// [`catalogue`]).
+    pub pods: Vec<Pod>,
     pub transport_class: Option<u32>,
     /// What its script switches off as it is made (`units/<id>/<id>_script.lua`).
     pub birth: crate::behaviour::Birth,
@@ -373,15 +394,34 @@ impl UnitBlueprint {
 
     /// Whether a player may make it in Forged Alliance's skirmish: of one of the four factions,
     /// in the game (not the campaign's own), and built by something (its `BUILTBY…` categories,
-    /// an air transport's `TRANSPORTBUILTBY…`), or a commander.
+    /// an air transport's `TRANSPORTBUILTBY…`), or a commander, or made by upgrading such a unit
+    /// ([`UnitBlueprint::upgrade_only`]: the tech 3 Kennel, the Hives of tech 2 and 3, which nothing
+    /// builds).
     pub fn playable(&self) -> bool {
+        self.built_by_something() || self.upgrade_only
+    }
+
+    /// [`UnitBlueprint::playable`] by its own categories alone: built by something, or a commander.
+    fn built_by_something(&self) -> bool {
         Faction::PLAYABLE.contains(&self.faction)
-            && (self.is("PRODUCTSC1") || self.is("PRODUCTFA"))
+            && self.in_the_game()
             && (self.is("COMMAND")
                 || self.categories.iter().any(|c| {
                     let c = c.to_ascii_uppercase();
                     c.starts_with("BUILTBY") || c.starts_with("TRANSPORTBUILTBY")
                 }))
+    }
+
+    /// Of the game rather than its campaign alone (`PRODUCTSC1`, `PRODUCTFA`).
+    fn in_the_game(&self) -> bool {
+        self.is("PRODUCTSC1") || self.is("PRODUCTFA")
+    }
+
+    /// Its size class among structures (`SIZE4` to `SIZE20`: how many of the smallest structures
+    /// fit round it, side by side), which says which of a neighbour's adjacency bonuses it takes
+    /// (`crate::adjacency`). None for a unit without one (walls, the engineering stations).
+    pub fn size_class(&self) -> Option<u32> {
+        self.categories.iter().find_map(|c| crate::adjacency::size_of(c))
     }
 
     /// Whether a builder whose `buildable` holds `expression` ('BUILTBYTIER1ENGINEER UEF') may
@@ -474,6 +514,11 @@ pub fn parse(id: &str, text: &str) -> Result<UnitBlueprint> {
         Wreckage { mass: n("MassMult"), energy: n("EnergyMult"), health: n("HealthMult") }
     });
     let blueprint_id = |s: Option<String>| s.filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_string());
+    // (Its drones by their blueprints' ids: what they are, `catalogue` reads.)
+    let pods = table
+        .path(&["Economy", "EngineeringPods"])
+        .map(|t| t.array.iter().filter_map(Value::table).filter_map(|p| p.get_ci("PodUnitID").and_then(Value::str)).map(|id| Pod { id: id.trim().to_ascii_uppercase(), ..Pod::default() }).collect())
+        .unwrap_or_default();
     Ok(UnitBlueprint {
         id: id.to_string(),
         faction: Faction::of(&general("FactionName").unwrap_or_default()),
@@ -513,6 +558,9 @@ pub fn parse(id: &str, text: &str) -> Result<UnitBlueprint> {
         wreckage,
         upgrades_to: blueprint_id(general("UpgradesTo")),
         upgrades_from: blueprint_id(general("UpgradesFrom")),
+        upgrade_only: false,
+        adjacency: blueprint_id(text_at(&[], "Adjacency")),
+        pods,
         transport_class: num(&["Transport"], "TransportClass").map(|n| n as u32),
         birth: crate::behaviour::Birth::default(),
         enhancement_scripts: Vec::new(),
@@ -701,7 +749,50 @@ pub fn catalogue(files: &crate::files::Files) -> Result<Vec<UnitBlueprint>> {
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
     attach(files, &mut out)?;
+    relate(&mut out);
     Ok(out)
+}
+
+/// What each of `units` is to the others: its drones as their blueprints have them
+/// ([`UnitBlueprint::pods`]), and whether it is made only by upgrading a unit a player can make
+/// ([`UnitBlueprint::upgrade_only`]), all the way along a chain of upgrades (the Hive of tech 1
+/// into that of tech 2, and that into tech 3's).
+pub fn relate(units: &mut [UnitBlueprint]) {
+    let pods: Vec<Vec<Pod>> = units
+        .iter()
+        .map(|u| {
+            u.pods
+                .iter()
+                .map(|p| match units.iter().find(|o| o.id.eq_ignore_ascii_case(&p.id)) {
+                    Some(o) => {
+                        let reach = o.table.path(&["AI"]).and_then(|a| a.get_ci("GuardScanRadius")).and_then(Value::num).unwrap_or(0.0);
+                        Pod { id: o.id.clone(), build_rate: o.build_rate, reach }
+                    }
+                    None => p.clone(),
+                })
+                .collect()
+        })
+        .collect();
+    for (u, p) in units.iter_mut().zip(pods) {
+        u.pods = p;
+    }
+    loop {
+        let reached: Vec<usize> = (0..units.len())
+            .filter(|&k| {
+                let u = &units[k];
+                !u.playable()
+                    && Faction::PLAYABLE.contains(&u.faction)
+                    && u.in_the_game()
+                    && units.iter().any(|from| from.playable() && from.faction == u.faction && from.id != u.id && from.build_rate > 0.0 && from.upgrades_to.as_deref().is_some_and(|to| to.eq_ignore_ascii_case(&u.id)))
+            })
+            .collect();
+        if reached.is_empty() {
+            break;
+        }
+        for k in reached {
+            units[k].upgrade_only = true;
+        }
+    }
 }
 
 /// How many times a projectile's splits are followed down (the deepest, the Salvation's, two).
@@ -879,6 +970,38 @@ UnitBlueprint {
         // A transport's turn on its factory's build bone, whatever point it takes.
         let transport = parse("UEA0104", "UnitBlueprint { Categories = { 'UEF', 'AIR' }, Display = { UniformScale = 0.1, ForcedBuildSpin = 90 } }").unwrap();
         assert_eq!(transport.display.forced_build_spin, Some(90.0));
+    }
+
+    /// A unit no builder's lists name, made by upgrading one a player makes, is a player's too,
+    /// all the way along its chain (the Hives: tech 1 into tech 2 into tech 3); not one a unit
+    /// with no build power names (a fabricator's), nor the campaign's. A station's drones are
+    /// read from their own blueprints.
+    #[test]
+    fn units_made_by_upgrading_alone_are_a_players() {
+        let bp = |id: &str, cats: &str, rest: &str| parse(id, &format!("UnitBlueprint {{ Categories = {{ {cats} }}, General = {{ FactionName = 'Cybran', {rest} }} }}")).unwrap();
+        // (Made-up figures.)
+        let mut hive1 = bp("XRB0104", "'PRODUCTFA', 'CYBRAN', 'STRUCTURE', 'BUILTBYCOMMANDER', 'ENGINEERSTATION'", "UpgradesTo = 'xrb0204'");
+        hive1.build_rate = 11.0;
+        let mut hive2 = bp("XRB0204", "'PRODUCTFA', 'CYBRAN', 'STRUCTURE', 'ENGINEERSTATION'", "UpgradesFrom = 'xrb0104', UpgradesTo = 'xrb0304'");
+        hive2.build_rate = 21.0;
+        let hive3 = bp("XRB0304", "'PRODUCTFA', 'CYBRAN', 'STRUCTURE', 'ENGINEERSTATION'", "UpgradesFrom = 'xrb0204'");
+        // (A fabricator naming an upgrade has no build power: it never upgrades.)
+        let fab = bp("URB1104", "'PRODUCTSC1', 'CYBRAN', 'STRUCTURE', 'BUILTBYTIER2ENGINEER'", "UpgradesTo = 'urb9999'");
+        let nowhere = bp("URB9999", "'PRODUCTSC1', 'CYBRAN', 'STRUCTURE'", "");
+        let mut campaign = bp("URB0999", "'CYBRAN', 'STRUCTURE'", "");
+        campaign.upgrades_from = Some("xrb0304".into());
+        let mut hive3_named = hive3.clone();
+        hive3_named.upgrades_to = Some("urb0999".into());
+        hive3_named.build_rate = 31.0;
+        let kennel = parse("XEB0104", "UnitBlueprint { Categories = { 'PRODUCTFA', 'UEF', 'STRUCTURE', 'BUILTBYTIER2ENGINEER', 'ENGINEERSTATION' }, General = { FactionName = 'UEF' }, Economy = { BuildRate = 18, EngineeringPods = { { PodUnitID = 'XEA3204', PodName = 'PodOne' } } } }").unwrap();
+        let drone = parse("XEA3204", "UnitBlueprint { AI = { GuardScanRadius = 12 }, Categories = { 'UEF', 'POD' }, General = { FactionName = 'UEF' }, Economy = { BuildRate = 12 } }").unwrap();
+        let mut all = vec![campaign, fab, nowhere, hive1, hive2, hive3_named, kennel, drone];
+        relate(&mut all);
+        let playable: Vec<&str> = all.iter().filter(|u| u.playable()).map(|u| u.id.as_str()).collect();
+        assert_eq!(playable, ["URB1104", "XRB0104", "XRB0204", "XRB0304", "XEB0104"]);
+        assert!(all.iter().filter(|u| u.upgrade_only).all(|u| u.id.starts_with("XRB0")), "built by none, made by upgrading");
+        let pods = &all.iter().find(|u| u.id == "XEB0104").unwrap().pods;
+        assert_eq!(pods, &[Pod { id: "XEA3204".into(), build_rate: 12.0, reach: 12.0 }]);
     }
 
     #[test]

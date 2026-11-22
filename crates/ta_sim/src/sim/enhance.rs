@@ -102,7 +102,7 @@ impl Sim {
             self.cancel_self_work(id, true);
             self.stop(id);
             if let Some(u) = self.unit_mut(id) {
-                u.self_work = Some(SelfWork { job: SelfJob::Enhance(index), work: 0 });
+                u.self_work = Some(SelfWork { job: SelfJob::Enhance(index), work: 0, metal_saved: Fx::ZERO });
                 u.speed = Fx::ZERO;
             }
         }
@@ -110,7 +110,7 @@ impl Sim {
         self.stop(id);
         let rate = self.mutator_work_rate(self.perk_work_rate(id, rate));
         let owner = self.unit(id).map_or(0, |u| u.owner);
-        self.work_on_self(id, rate, owner);
+        self.work_on_self(id, rate, owner, id);
     }
 
     /// The install done: in its slot in place of what was there; its order off the front.

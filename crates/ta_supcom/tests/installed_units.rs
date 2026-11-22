@@ -819,3 +819,71 @@ fn factories_roll_off_weapons_unpack_and_anti_air_shoots_aircraft_alone() {
     }
     eprintln!("{factories} factories with ways out, {unpacking} weapons unpacking, {air_only} weapons shooting aircraft alone");
 }
+
+/// The engineering stations, the units Forged Alliance makes only by upgrading, and the
+/// structures' adjacency, as the mod is made from the player's copy: every engineering station
+/// works round it by itself (`AssistPatrol`, with build power and a reach); the Kennel upgrades
+/// into the tech 3 Kennel and the Hive into that of tech 2 and that into tech 3's, which no menu
+/// offers; every structure with a size class says it (`AdjacencySize`), what moves neither gives
+/// nor takes, and each bonus given changes something TA Reborn plays, by a share.
+#[test]
+#[ignore]
+fn stations_upgrades_and_adjacency_are_made() {
+    let Some(game) = the_game() else {
+        eprintln!("no copy of Forged Alliance found: nothing to read");
+        return;
+    };
+    let files = Files::own(&game).unwrap();
+    let units: Vec<_> = unit::catalogue(&files).unwrap().into_iter().filter(|u| u.playable()).collect();
+    let mut texts: BTreeMap<String, String> = BTreeMap::new();
+    make::make(&files, &units, "test", &mut |path, bytes| {
+        if path.starts_with("units/") || path.starts_with("download/") {
+            texts.insert(path.to_string(), String::from_utf8_lossy(bytes).into_owned());
+        }
+        Ok(())
+    }, &mut |_, _| true)
+    .unwrap();
+    let info = |id: &str| ta_formats::tdf::parse(&texts[&format!("units/{}.fbi", id.to_ascii_lowercase())]).sections.remove(0);
+    let menus: String = texts.iter().filter(|(p, _)| p.starts_with("download/")).map(|(_, t)| t.as_str()).collect();
+    for (from, to) in [("XEB0104", "XEB0204"), ("XRB0104", "XRB0204"), ("XRB0204", "XRB0304")] {
+        assert_eq!(info(from).get("UpgradesTo"), Some(to), "{from} upgrades into {to}");
+        assert!(units.iter().any(|u| u.id == to && u.upgrade_only), "{to}: made by upgrading alone");
+        assert!(!menus.contains(&format!("UNITNAME={to};")), "{to} is on no menu");
+    }
+    let stations: Vec<&unit::UnitBlueprint> = units.iter().filter(|u| u.is("ENGINEERSTATION")).collect();
+    for s in &stations {
+        let f = info(&s.id);
+        assert_eq!(f.get("DefaultMissionType"), Some("AssistPatrol"), "{}", s.id);
+        assert!(f.get_i64_or("WorkerTime", 0) > 0 && f.get_i64_or("BuildDistance", 0) >= 64 && f.get("CanReclamate") == Some("1"), "{}: build power, a reach, reclaiming", s.id);
+    }
+    assert!(stations.len() >= 5, "the Kennels and the Hives: {:?}", stations.iter().map(|s| &s.id).collect::<Vec<_>>());
+    let (mut sized, mut givers, mut bonuses) = (0, 0, 0);
+    for u in &units {
+        let f = info(&u.id);
+        let size = f.get("AdjacencySize").map(|s| s.parse::<u32>().expect("a number"));
+        let given = f.sections.iter().find(|s| s.name == "ADJACENCY");
+        if u.motion != unit::Motion::None {
+            assert!(size.is_none() && given.is_none(), "{}: what moves gives and takes nothing", u.id);
+            continue;
+        }
+        assert_eq!(size, u.size_class(), "{}", u.id);
+        sized += size.is_some() as usize;
+        if let Some(given) = given {
+            givers += 1;
+            for b in &given.sections {
+                bonuses += 1;
+                assert!(b.get("Affects").and_then(ta_sim::AdjacencyAffect::of).is_some(), "{}: {} changes what is played", u.id, b.name);
+                assert!(b.get_f64_or("Add", 0.0) != 0.0 && b.get("Size").is_some(), "{}: {} adds a share to a size", u.id, b.name);
+            }
+        }
+    }
+    eprintln!("{} engineering stations; {sized} structures with a size class; {givers} giving {bonuses} bonuses", stations.len());
+    assert!(givers >= 30 && sized >= 150, "the generators, extractors, fabricators and storage give; the structures have their sizes");
+    // Every faction's tech 1 power generator cuts what the factories beside it pay to build.
+    for f in Faction::PLAYABLE {
+        let generator = units.iter().find(|u| u.faction == f && u.is("ENERGYPRODUCTION") && u.tech == Some(Tech::T1) && u.adjacency.is_some()).expect("a tech 1 generator with adjacency");
+        let given = info(&generator.id);
+        let given = given.sections.iter().find(|s| s.name == "ADJACENCY").expect("its bonuses");
+        assert!(given.sections.iter().any(|b| b.get("Affects") == Some("BuildEnergy") && b.get("Size") == Some("16")), "{}: build energy to size 16", generator.id);
+    }
+}

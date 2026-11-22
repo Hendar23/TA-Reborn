@@ -132,6 +132,10 @@ pub fn parse(text: &str) -> Result<Vec<(String, Value)>> {
             continue;
         }
         let mut name = p.name().ok_or_else(|| p.error("a name"))?;
+        // (`local x = ...`: a script's own name, read as any other.)
+        if name == "local" {
+            name = p.name().ok_or_else(|| p.error("a name"))?;
+        }
         while p.peek() == Some(b'.') {
             p.i += 1;
             name.push('.');
@@ -240,7 +244,13 @@ impl Parser<'_> {
             Some(b'[') if long_bracket(&self.s[self.i..]).is_some() => Ok(Value::Str(self.long_string())),
             Some(c) if c == b'-' || c == b'+' || c == b'.' || c.is_ascii_digit() => Ok(Value::Num(self.number()?)),
             Some(_) => {
-                let name = self.name().ok_or_else(|| self.error("a value"))?;
+                let mut name = self.name().ok_or_else(|| self.error("a value"))?;
+                // (A dotted name, a function another file defines: `Funcs.SomeCheck`.)
+                while self.peek() == Some(b'.') && self.s.get(self.i + 1).is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_') {
+                    self.i += 1;
+                    name.push('.');
+                    name.push_str(&self.name().ok_or_else(|| self.error("a name"))?);
+                }
                 match name.as_str() {
                     "nil" => Ok(Value::Nil),
                     "true" => Ok(Value::Bool(true)),

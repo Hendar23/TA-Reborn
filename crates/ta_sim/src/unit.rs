@@ -151,6 +151,29 @@ pub struct Boost {
     pub stealth: bool,
 }
 
+/// What the buildings of its player beside a building give it (Supreme Commander's adjacency:
+/// `sim/adjacency.rs`), summed: the share each of its figures changes by, and who gives it what.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Adjacency {
+    /// The share added to each figure (by [`ta_data::AdjacencyAffect::index`]): the sum of what
+    /// its neighbours give it.
+    pub change: [Fx; ADJACENCY_AFFECTS],
+    /// The neighbours whose bonuses it takes, by slot, each with the figures it changes (a bit for
+    /// each affect's index).
+    pub from: Vec<(UnitId, u8)>,
+}
+
+/// How many figures adjacency changes ([`ta_data::AdjacencyAffect::ALL`]).
+pub const ADJACENCY_AFFECTS: usize = ta_data::AdjacencyAffect::ALL.len();
+
+impl Adjacency {
+    /// What a figure is multiplied by: one and the shares its neighbours add, never below none.
+    #[inline]
+    pub fn factor(&self, affect: ta_data::AdjacencyAffect) -> Fx {
+        (Fx::ONE + self.change[affect.index()]).max(Fx::ZERO)
+    }
+}
+
 /// A unit's work on itself under way: what, and the work done on it so far (of its whole, as
 /// construction counts work: [`crate::UnitType::build_work`] for an upgrade). Called off, the
 /// metal paid for it comes back (`Sim::cancel_self_work`).
@@ -158,6 +181,9 @@ pub struct Boost {
 pub struct SelfWork {
     pub job: SelfJob,
     pub work: u64,
+    /// The metal adjacency spared those working on it so far: called off, what was paid comes
+    /// back, not its price.
+    pub metal_saved: Fx,
 }
 
 /// A construction aircraft's sway round what it builds, facing it (`Sim::drift_round`).
@@ -261,6 +287,10 @@ pub struct Unit {
     /// The metal its side's reclaiming has taken off it so far, paid when it is gone: TA pays
     /// reclaiming at the end, not as the work goes. Lost with it if it dies first.
     pub reclaim_owed: Fx,
+    /// The metal adjacency spared its builders (`sim/adjacency.rs`; for one upgraded in place, those
+    /// who worked on the upgrade): given up unfinished, or taken apart by its side, it gives back
+    /// what was paid for it, not its price.
+    pub metal_saved: Fx,
     /// The last tick a builder worked on it unfinished (or set it down to build): construction
     /// left with nobody at it un-builds after a while, its metal coming back
     /// (`Sim::decay_abandoned_frames`). None for one nobody has worked on (a scene's or a
@@ -386,6 +416,14 @@ pub struct Unit {
     /// with them (none without).
     pub enhancements: Vec<u16>,
     pub boost: Option<Box<Boost>>,
+    /// What the buildings of its player beside it give it (none: nothing, as every unit of TA's).
+    pub adjacency: Option<Box<Adjacency>>,
+    /// Where it stood for adjacency when last looked at (`Sim::update_adjacency`): its player and
+    /// its footprint (the top-left cell, its size), while it stands finished; none otherwise.
+    pub adjacency_key: Option<(u8, (i32, i32), (u32, u32))>,
+    /// Its only order is work it found itself (a building that works round it: `RepairPatrol`,
+    /// `AssistPatrol`): the player's next order, queued or not, takes its place.
+    pub auto_work: bool,
     /// Factory production queue (unit type ids), and the orders every unit it releases
     /// is given (its rally route: move, patrol, fight and guard orders).
     pub factory_queue: VecDeque<usize>,
@@ -489,6 +527,7 @@ impl Unit {
             finished: false,
             taken_apart_at: None,
             reclaim_owed: Fx::ZERO,
+            metal_saved: Fx::ZERO,
             worked_at: None,
             field_site: None,
             activated: false,
@@ -544,6 +583,9 @@ impl Unit {
             self_work: None,
             enhancements: Vec::new(),
             boost: None,
+            adjacency: None,
+            adjacency_key: None,
+            auto_work: false,
             factory_queue: VecDeque::new(),
             rally: Vec::new(),
             factory: None,
@@ -662,6 +704,13 @@ impl Unit {
     #[inline]
     pub fn stealthy(&self, t: &UnitType) -> bool {
         self.boost.as_ref().map_or(t.def.stealth, |b| b.stealth)
+    }
+
+    /// What one of its figures is multiplied by for the buildings beside it ([`Adjacency::factor`]);
+    /// none: it stands by none that give it anything.
+    #[inline]
+    pub fn adjacency_factor(&self, affect: ta_data::AdjacencyAffect) -> Option<Fx> {
+        self.adjacency.as_ref().filter(|a| !a.change[affect.index()].is_zero()).map(|a| a.factor(affect))
     }
 
     /// Whether its build stance is its script's to raise and drop (it has `StartBuilding`), as

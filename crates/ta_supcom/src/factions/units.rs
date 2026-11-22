@@ -888,8 +888,11 @@ fn winged(u: &UnitBlueprint) -> bool {
 }
 
 /// What a unit's file says that its own blueprint does not tell alone: what it upgrades into in
-/// place (the unit its `General.UpgradesTo` names, of its faction and made), and its enhancements'
-/// section (`factions::enhance::section`).
+/// place (the unit its `General.UpgradesTo` names, of its faction and made), its enhancements'
+/// section (`factions::enhance::section`), and its adjacency: the buffs it gives the structures
+/// beside it (its `Adjacency` table's, as the game's file has them: `crate::adjacency`) and the
+/// categories buffs name besides the size classes (`ARTILLERY`), which it carries in its
+/// `Category` where it has them.
 #[derive(Clone, Debug, Default)]
 pub struct Extra<'a> {
     pub upgrades_to: Option<&'a str>,
@@ -899,6 +902,8 @@ pub struct Extra<'a> {
     pub weapons: Vec<&'a WeaponBlueprint>,
     /// A factory's ways out ([`exits`]: they need its mesh).
     pub exits: Vec<Exit>,
+    pub adjacency: &'a [crate::adjacency::Buff],
+    pub adjacency_categories: Option<&'a std::collections::BTreeSet<String>>,
 }
 
 /// One of a factory's ways out, for its unit file's `[EXITS]` (docs/MODDING.md; `ta_data`'s
@@ -1003,6 +1008,39 @@ pub fn exits_section(exits: &[Exit]) -> String {
     s
 }
 
+/// An engineering station's build power and reach (ogrids): its own `BuildRate`, or its drones'
+/// together where they have more (the tech 3 Kennel's two), and its `MaxBuildDistance`, or how far
+/// round it its drones look for work (`AI.GuardScanRadius`), or five ogrids. TA Reborn's station
+/// builds with its own beams: its drones are not made (the Kennel's), their work its own.
+pub fn station_work(u: &UnitBlueprint) -> (f64, f64) {
+    let pods: f64 = u.pods.iter().map(|p| p.build_rate.max(0.0)).sum();
+    let own_reach = u.table.path(&["Economy"]).and_then(|e| e.get_ci("MaxBuildDistance")).and_then(|v| v.num());
+    let pod_reach = u.pods.iter().map(|p| p.reach).fold(0.0f64, f64::max);
+    (u.build_rate.max(pods), own_reach.or((pod_reach > 0.0).then_some(pod_reach)).unwrap_or(5.0))
+}
+
+/// The `[ADJACENCY]` section of a unit's file: each buff it gives the structures beside it, by
+/// name, what it changes in them (`Affects`), by how much (`Add`), and which take it (`Size`, their
+/// size class; `Category`, what else they must have).
+pub fn adjacency_section(buffs: &[crate::adjacency::Buff]) -> String {
+    if buffs.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("\t[ADJACENCY]\n\t\t{\n");
+    for b in buffs {
+        let _ = writeln!(s, "\t\t[{}]\n\t\t\t{{\n\t\t\tAffects={};\n\t\t\tAdd={};", tdf_text(&b.name), b.affect.key(), b.add);
+        if let Some(size) = b.size {
+            let _ = writeln!(s, "\t\t\tSize={size};");
+        }
+        if !b.categories.is_empty() {
+            let _ = writeln!(s, "\t\t\tCategory={};", b.categories.join(" "));
+        }
+        s.push_str("\t\t\t}\n");
+    }
+    s.push_str("\t\t}\n");
+    s
+}
+
 /// The unit's file.
 pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32)>, extra: &Extra) -> String {
     let id = u.id.to_ascii_uppercase();
@@ -1091,9 +1129,14 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
     }
     // Building.
     if builds != Builds::No {
+        // (An engineering station by its drones' work where they have more, and their reach.)
+        let (rate, reach) = if builds == Builds::Assist {
+            station_work(u)
+        } else {
+            (u.build_rate, u.table.path(&["Economy"]).and_then(|e| e.get_ci("MaxBuildDistance")).and_then(|v| v.num()).unwrap_or(5.0))
+        };
         put("Builder", "1".into());
-        put("WorkerTime", ((u.build_rate * WORK).round().max(1.0) as i64).to_string());
-        let reach = u.table.path(&["Economy"]).and_then(|e| e.get_ci("MaxBuildDistance")).and_then(|v| v.num()).unwrap_or(5.0);
+        put("WorkerTime", ((rate * WORK).round().max(1.0) as i64).to_string());
         put("BuildDistance", ((reach * UNIT_SCALE).round() as i64).max(64).to_string());
         put("CanReclamate", "1".into());
         // (A factory with ways out is solid, as Forged Alliance's are: its units leave by them,
@@ -1101,6 +1144,18 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
         // its platform; TA's open their yards to the front.)
         if builds == Builds::Factory {
             put("YardMap", if extra.exits.is_empty() { yard_map(fx, fz) } else { "o".repeat((fx * fz).max(1) as usize) });
+        }
+        if builds == Builds::Assist {
+            // An engineering station works round it by itself whenever it has no orders, as
+            // Forged Alliance's do: it helps build what is going up within its reach, mends the
+            // damaged and reclaims wreckage (`AssistPatrol`, docs/MODDING.md). Told to help a
+            // unit where Forged Alliance lets it (`CommandCaps`' guard: the tech 3 Kennel, the
+            // Hives).
+            put("DefaultMissionType", "AssistPatrol".into());
+            let guards = u.table.path(&["General", "CommandCaps"]).and_then(|c| c.get_ci("RULEUCC_Guard")).and_then(crate::lua::Value::bool).unwrap_or(false);
+            if guards {
+                put("canguard", "1".into());
+            }
         }
     }
     // Built facing a way of its own on a factory with ways out, whichever it takes (its
@@ -1223,7 +1278,26 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
     if u.motion == Motion::None && weapons.slots.is_empty() {
         cats.push("NOWEAPON".into());
     }
+    // (Of a structure, the categories the adjacency buffs name that it has, `ARTILLERY`: a
+    // neighbour's buff for them reaches it.)
+    if u.motion == Motion::None
+        && let Some(words) = extra.adjacency_categories
+    {
+        for c in &u.categories {
+            let c = c.to_ascii_uppercase();
+            if words.contains(&c) && !cats.contains(&c) {
+                cats.push(c);
+            }
+        }
+    }
     put("Category", cats.join(" "));
+    // Its size class among structures, for adjacency: which of a neighbour's buffs it takes, and
+    // from how many neighbours at most (as many of the smallest structures as fit round it).
+    if u.motion == Motion::None
+        && let Some(size) = u.size_class()
+    {
+        put("AdjacencySize", size.to_string());
+    }
     let ted = match (u.motion, builds) {
         _ if commander => "COMMANDER",
         (Motion::None, Builds::Factory) => "PLANT",
@@ -1330,7 +1404,8 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
             }
         }
     }
-    format!("[UNITINFO]\n\t{{\n{f}{}{}\t}}\n", extra.enhancements, exits_section(&extra.exits))
+    let adjacency = if u.motion == Motion::None { adjacency_section(extra.adjacency) } else { String::new() };
+    format!("[UNITINFO]\n\t{{\n{f}{}{}{adjacency}\t}}\n", extra.enhancements, exits_section(&extra.exits))
 }
 
 /// TA's sound category for the unit's kind (TA's own sounds, `gamedata/sound.tdf`'s: Forged
@@ -1696,6 +1771,50 @@ mod tests {
         assert!(file.contains("MaxWaterDepth=255;") && file.contains("MinWaterDepth=15;") && !file.contains("Floater"), "{file}");
         let file = unit_file(&structure("UEB3102", Layers { water: true, ..Default::default() }), &none, None, &Extra::default());
         assert!(file.contains("MinWaterDepth=5;") && file.contains("Floater=1;"), "{file}");
+    }
+
+    /// A structure's adjacency: the buffs it gives as its section, its size class, and the
+    /// categories buffs name that it has in its `Category` (an artillery piece's); a unit that
+    /// moves gives and takes nothing. An engineering station works round it by itself, by its own
+    /// work or its drones' (the more) and its drones' reach where it gives none of its own.
+    #[test]
+    fn adjacency_and_stations_are_written_into_the_unit_file() {
+        use crate::adjacency::{Affect, Buff};
+        let none = Weapons { slots: Vec::new(), death: None, dgun: None, kamikaze: None };
+        let buffs = [
+            Buff { name: "GenBuildSize4".into(), size: Some(4), categories: Vec::new(), affect: Affect::EnergyActive, add: -0.05 },
+            Buff { name: "GenReloadSize4".into(), size: Some(4), categories: vec!["ARTILLERY".into()], affect: Affect::RateOfFire, add: -0.03 },
+        ];
+        let words: std::collections::BTreeSet<String> = ["ARTILLERY".to_string()].into();
+        let extra = Extra { adjacency: &buffs, adjacency_categories: Some(&words), ..Extra::default() };
+        let generator = UnitBlueprint { id: "UEB1101".into(), faction: Faction::Uef, categories: vec!["STRUCTURE".into(), "SIZE4".into()], production_energy: 20.0, ..Default::default() };
+        let file = ta_formats::tdf::parse(&unit_file(&generator, &none, None, &extra)).sections.remove(0);
+        assert_eq!(file.get("AdjacencySize"), Some("4"));
+        let section = file.sections.iter().find(|s| s.name == "ADJACENCY").unwrap();
+        assert_eq!(section.sections.iter().map(|s| (s.name.as_str(), s.get("Affects"), s.get("Add"), s.get("Size"), s.get("Category"))).collect::<Vec<_>>(), [
+            ("GenBuildSize4", Some("BuildEnergy"), Some("-0.05"), Some("4"), None),
+            ("GenReloadSize4", Some("ReloadTime"), Some("-0.03"), Some("4"), Some("ARTILLERY")),
+        ]);
+        let artillery = UnitBlueprint { id: "UEB2303".into(), faction: Faction::Uef, categories: vec!["STRUCTURE".into(), "ARTILLERY".into(), "SIZE4".into()], ..Default::default() };
+        assert_eq!(ta_formats::tdf::parse(&unit_file(&artillery, &none, None, &extra)).sections[0].get("Category"), Some("UEF LEVEL1 NOTAIR NOTSUB NOWEAPON ARTILLERY"));
+        let tank = UnitBlueprint { id: "UEL0201".into(), faction: Faction::Uef, motion: Motion::Land, categories: vec!["ARTILLERY".into(), "SIZE4".into()], ..Default::default() };
+        let file = unit_file(&tank, &none, None, &extra);
+        assert!(!file.contains("ADJACENCY") && !file.contains("AdjacencySize") && !file.contains(" ARTILLERY"), "{file}");
+        // Stations: the Hive by its own work and reach; the Kennel by its drones'.
+        let station = |id: &str, rate: f64, economy: &str, pods: Vec<crate::unit::Pod>| {
+            let mut u = crate::unit::parse(id, &format!("UnitBlueprint {{ Categories = {{ 'STRUCTURE', 'ENGINEERSTATION' }}, General = {{ FactionName = 'Cybran' }}, Economy = {{ {economy} }} }}")).unwrap();
+            u.build_rate = rate;
+            u.pods = pods;
+            u
+        };
+        // (Made-up figures.)
+        let drone = |rate: f64| crate::unit::Pod { id: "XEA3204".into(), build_rate: rate, reach: 12.0 };
+        assert_eq!(station_work(&station("XRB0104", 14.0, "MaxBuildDistance = 13", Vec::new())), (14.0, 13.0));
+        assert_eq!(station_work(&station("XEB0104", 18.0, "", vec![drone(12.0)])), (18.0, 12.0), "its own work, the more; its drone's reach");
+        assert_eq!(station_work(&station("XEB0204", 18.0, "", vec![drone(12.0), drone(12.0)])), (24.0, 12.0), "two drones' work");
+        assert_eq!(station_work(&station("XEB0304", 18.0, "", Vec::new())), (18.0, 5.0), "no drones and no reach of its own: five ogrids");
+        let hive = unit_file(&station("XRB0104", 14.0, "MaxBuildDistance = 13", Vec::new()), &none, None, &Extra::default());
+        assert!(hive.contains("DefaultMissionType=AssistPatrol;") && hive.contains("WorkerTime=140;") && hive.contains("BuildDistance=416;") && hive.contains("CanReclamate=1;"), "{hive}");
     }
 
     /// Upkeep only for what TA Reborn plays: a shield's (or the Fatboy's) and a stealth unit's is
