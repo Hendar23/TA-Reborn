@@ -5758,8 +5758,10 @@ impl Sim {
             let e = &mut p.economy;
             e.metal_capacity = metal_cap[i];
             e.energy_capacity = energy_cap[i];
-            e.metal = e.metal.clamp(Fx::ZERO, e.metal_capacity);
-            e.energy = e.energy.clamp(Fx::ZERO, e.energy_capacity);
+            // (As a clamp to 0..storage, but storage a mod's units take below nothing holds
+            // nothing: a clamp's bounds crossed would stop the game.)
+            e.metal = e.metal.min(e.metal_capacity).max(Fx::ZERO);
+            e.energy = e.energy.min(e.energy_capacity).max(Fx::ZERO);
             if p.cheats.unlimited {
                 e.metal = e.metal_capacity;
                 e.energy = e.energy_capacity;

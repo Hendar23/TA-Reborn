@@ -27,6 +27,10 @@
   and Emerald Seamount. Zoomed out over most of the map the view keeps to it, and the margin it
   keeps from the map's edges, rounded, could come out a hair past the map's middle, so that the far
   edge's margin came before the near one's. It no longer can.
+- Five other places that could crash the same way no longer can: the companion screen between
+  about 800 and 935 points wide, a walking unit whose thigh is some eighty times as long as its
+  shin, a map's start markers on a picture smaller than they are, the command deck on a narrow
+  window, and a mod's units whose storage takes a player's below nothing.
 - The Kennel and the Hive (the UEF's and the Cybran's engineering stations) offered no upgrade and
   stood idle unless told what to do. Their next tiers, which Forged Alliance makes only by
   upgrading (the tech 3 Kennel, the Hives of tech 2 and 3), were not made at all, nor were the

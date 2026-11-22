@@ -107,7 +107,10 @@ impl Placed {
     /// [`Placed::at`], kept a marker of `radius` inside the picture.
     pub fn marker_at(&self, x: f32, z: f32, radius: f32) -> Pos2 {
         let inner = self.rect.shrink(radius + 2.0);
-        self.at(x, z).clamp(inner.min, inner.max)
+        // (A picture smaller than the marker: its middle, that way.)
+        let keep = |v: f32, lo: f32, hi: f32| if lo <= hi { v.clamp(lo, hi) } else { (lo + hi) * 0.5 };
+        let p = self.at(x, z);
+        egui::pos2(keep(p.x, inner.min.x, inner.max.x), keep(p.y, inner.min.y, inner.max.y))
     }
 
     /// How many points across a world pixel is.

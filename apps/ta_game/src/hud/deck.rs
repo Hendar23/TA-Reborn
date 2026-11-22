@@ -1784,7 +1784,7 @@ pub(super) fn deck_layout(screen: Rect, forces: Option<usize>, selected: bool, c
     let right = command.map_or(screen.right() - GAP, |c| c.left() - GAP);
     let width = (right - left).min(MIDDLE_MOST);
     let middle = (selected && width >= MIDDLE_LEAST * 0.8).then(|| {
-        let x = (screen.center().x - width / 2.0).clamp(left, right - width);
+        let x = (screen.center().x - width / 2.0).clamp(left, (right - width).max(left));
         Rect::from_min_size(Pos2::new(x, top), EVec2::new(width, deck))
     });
     DeckLayout { forces: plate, force_columns, middle, command, orders, stance, build }
