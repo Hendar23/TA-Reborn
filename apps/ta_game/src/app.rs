@@ -698,6 +698,9 @@ enum DemoAction {
     /// window's own events come: a button pressed (true) or let go (false) there, if one
     /// (`TA_UI_MOUSE`: box selections, orders on the map).
     UiMouse(f32, f32, Option<(MouseButtonId, bool)>),
+    /// The mouse wheel turned at (x, y) in window pixels, that many lines (positive away from
+    /// the player: closer), for the map (`TA_UI_MOUSE`'s `wheel=<lines>`).
+    UiWheel(f32, f32, f32),
     /// A key the app itself answers to (F1, F2), pressed at the start of the next frame.
     AppKey(KeyCode),
     /// Text typed into the interface's field with the focus (`TA_UI_TEXT`).
@@ -2160,8 +2163,19 @@ impl State {
         // `TA_UI_MOUSE="frame:x,y[,button];..."`: the mouse to window pixels (x, y) at those
         // frames, for the interface and the map alike; `+left` presses the button there, `-left`
         // lets it go, `left` clicks (pressed, let go the next frame); right and middle too.
-        // A drag: "60:500,300,+left;62:620,380;64:700,450,-left".
+        // A drag: "60:500,300,+left;62:620,380;64:700,450,-left". `wheel=<lines>` turns the wheel
+        // there (positive closer, negative farther): "90:960,540,wheel=-6".
         for event in std::env::var("TA_UI_MOUSE").unwrap_or_default().split(';').filter(|c| !c.trim().is_empty()) {
+            let wheel = event.split_once(':').and_then(|(f, rest)| {
+                let mut parts = rest.split(',').map(str::trim);
+                let (x, y) = (parts.next()?.parse::<f32>().ok()?, parts.next()?.parse::<f32>().ok()?);
+                let lines = parts.next()?.strip_prefix("wheel=")?.parse::<f32>().ok()?;
+                Some((f.trim().parse::<u32>().ok()?, x, y, lines))
+            });
+            if let Some((f, x, y, lines)) = wheel {
+                script.push((f, DemoAction::UiWheel(x, y, lines)));
+                continue;
+            }
             let parsed = event.split_once(':').and_then(|(f, rest)| {
                 let mut parts = rest.split(',').map(str::trim);
                 let (x, y) = (parts.next()?.parse::<f32>().ok()?, parts.next()?.parse::<f32>().ok()?);
@@ -2188,7 +2202,7 @@ impl State {
                 Some((f, x, y, None)) => script.push((f, DemoAction::UiMouse(x, y, None))),
                 Some((f, x, y, Some((b, Some(pressed))))) => script.push((f, DemoAction::UiMouse(x, y, Some((b, pressed))))),
                 Some((f, x, y, Some((b, None)))) => script.extend([(f, DemoAction::UiMouse(x, y, Some((b, true)))), (f + 1, DemoAction::UiMouse(x, y, Some((b, false))))]),
-                None => log::warn!("TA_UI_MOUSE: {event:?} is not frame:x,y[,(+|-)left|right|middle]"),
+                None => log::warn!("TA_UI_MOUSE: {event:?} is not frame:x,y[,(+|-)left|right|middle|wheel=<lines>]"),
             }
         }
         // `TA_UI_TEXT="frame:text;..."`: text typed at those frames into the field with the focus.
@@ -3810,6 +3824,13 @@ impl State {
                         let state = if pressed { ElementState::Pressed } else { ElementState::Released };
                         self.input.on_event(&WindowEvent::MouseInput { device_id: DeviceId::dummy(), state, button }, over_ui, false);
                     }
+                }
+                DemoAction::UiWheel(x, y, lines) => {
+                    use winit::event::{DeviceId, MouseScrollDelta, TouchPhase};
+                    let over_ui = self.egui.ctx.egui_wants_pointer_input() || self.egui.ctx.is_pointer_over_egui();
+                    let position = winit::dpi::PhysicalPosition::new(x as f64, y as f64);
+                    self.input.on_event(&WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position }, false, false);
+                    self.input.on_event(&WindowEvent::MouseWheel { device_id: DeviceId::dummy(), delta: MouseScrollDelta::LineDelta(0.0, lines), phase: TouchPhase::Moved }, over_ui, false);
                 }
                 // On every screen: see `ui_script`.
                 DemoAction::UiMove(..) | DemoAction::UiHover(..) | DemoAction::UiButton(..) | DemoAction::UiText(..) | DemoAction::UiPad(..) => {}
