@@ -859,9 +859,10 @@ impl WeaponType {
     /// that is lower. A missile launched faster than its top speed is not pulled down to it: TA:
     /// Escalation's vertical missiles (its missile batteries', battleships', submarines') leave
     /// their tubes at 360 to 1,280 px a second with a `weaponvelocity` of -1 to -10 and slow down as
-    /// they fly (their flight times end before they would stop); held to their top speed, a
-    /// fifteenth of a pixel a tick and less, they hung over their launchers until their time was up
-    /// and went off there. Its pulse bombs, launched "upright" at -400 px a second, fall at that.
+    /// they fly (their flight times end before they would stop); held to their top speed (half a
+    /// pixel a tick, the least a weapon is given) from their first tick, they hung over their
+    /// launchers until their time was up and went off there. One launched upright at a negative
+    /// speed (its pulse bombs, -400 px a second) holds it, falling.
     pub fn speed_limit(&self) -> Fx {
         if self.acceleration < Fx::ZERO { self.velocity.min(self.start_velocity) } else { self.velocity.max(self.start_velocity) }
     }
