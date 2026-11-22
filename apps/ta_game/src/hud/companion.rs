@@ -63,7 +63,9 @@ impl Hud {
         let map_wanted = (page.height() - chrome) / aspect.max(0.2) + 2.0 * PAD;
         let least = 2.0 * COLUMN_LEAST + GAP;
         let two = page.width() - least - GAP >= page.width() * 0.4;
-        let plates_width = if two { (page.width() - map_wanted - GAP).clamp(least, page.width() * 0.5) } else { (page.width() * 0.34).max(COLUMN_LEAST) };
+        // (Two columns at least, though half the page is less: a page 800 to 935 points wide
+        // had its bounds crossed.)
+        let plates_width = if two { (page.width() - map_wanted - GAP).clamp(least, (page.width() * 0.5).max(least)) } else { (page.width() * 0.34).max(COLUMN_LEAST) };
         let map_room = page.width() - plates_width - GAP;
         let map_height = (map_room - 2.0 * PAD) * aspect.max(0.2) + chrome;
         let events_under = page.height() - map_height - GAP >= 100.0;

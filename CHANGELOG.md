@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Added
+- A battle the game crashes in is kept as a replay, as a battle finished or left is, and the crash
+  report (`logs\crash.txt`) names its file: watched, it plays up to the moment of the crash, which
+  helps tell what went wrong. Attach both to a report.
 - Adjacency: the Supreme Commander factions' structures give the structures of their player beside
   them bonuses, as in Forged Alliance. Power generators cut what the factories, upgrading buildings
   and silos beside them pay to build, the upkeep of radars, fabricators and extractors, the energy
@@ -21,6 +24,16 @@
   [docs/MODDING.md](docs/MODDING.md#adjacency)); make the factions' mod again (UPDATE) to have it.
 
 ### Fixed
+- The game could crash ("min > max, or either was NaN") when the modern camera was zoomed all the
+  way out, often while zooming in and out quickly. It depended on the map's size and the window's:
+  at 1920 × 1080, about one map in fourteen, among them Acid Foursome, Aqua Verdigris, Lipar Pass
+  and Emerald Seamount. Zoomed out over most of the map the view keeps to it, and the margin it
+  keeps from the map's edges, rounded, could come out a hair past the map's middle, so that the far
+  edge's margin came before the near one's. It no longer can.
+- Five other places that could crash the same way no longer can: the companion screen between
+  about 800 and 935 points wide, a walking unit whose thigh is some eighty times as long as its
+  shin, a map's start markers on a picture smaller than they are, the command deck on a narrow
+  window, and a mod's units whose storage takes a player's below nothing.
 - The Kennel and the Hive (the UEF's and the Cybran's engineering stations) offered no upgrade and
   stood idle unless told what to do. Their next tiers, which Forged Alliance makes only by
   upgrading (the tech 3 Kennel, the Hives of tech 2 and 3), were not made at all, nor were the

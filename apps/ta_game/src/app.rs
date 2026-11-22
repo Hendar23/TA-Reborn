@@ -43,7 +43,7 @@ pub fn run(args: Args, vfs: Vfs, mods: crate::record_mods::InPlay, config: ta_co
     event_loop.run_app(&mut app)?;
     app.goodbye();
     crate::photo::wait_for_saves(std::time::Duration::from_secs(5));
-    match app.error {
+    match app.error.take() {
         Some(e) => Err(e),
         None => Ok(()),
     }
@@ -74,6 +74,26 @@ impl App {
         }
         if let Some(lobby) = state.menu.lobby.as_mut() {
             lobby.goodbye(wait);
+        }
+    }
+}
+
+/// The game stopping on a crash (a panic unwinding out of the window's loop, after the panic
+/// hook's report): the battle under way is kept as a replay, as one left would be, and the
+/// report names it. (Watched, it plays to where the crash came: a crash of the simulation's
+/// comes again there, the report's best witness.)
+impl Drop for App {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let Some(state) = self.state.as_ref() else { return };
+        let Some(path) = state.keep_crashed_battle() else { return };
+        log::error!("the battle's replay was kept: {}", path.display());
+        let report = ta_config::running::profile_root().join("logs").join("crash.txt");
+        if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(&report) {
+            use std::io::Write;
+            let _ = writeln!(file, "\nthe battle's replay was kept: {}", path.display());
         }
     }
 }
@@ -698,6 +718,9 @@ enum DemoAction {
     /// window's own events come: a button pressed (true) or let go (false) there, if one
     /// (`TA_UI_MOUSE`: box selections, orders on the map).
     UiMouse(f32, f32, Option<(MouseButtonId, bool)>),
+    /// The mouse wheel turned at (x, y) in window pixels, that many lines (positive away from
+    /// the player: closer), for the map (`TA_UI_MOUSE`'s `wheel=<lines>`).
+    UiWheel(f32, f32, f32),
     /// A key the app itself answers to (F1, F2), pressed at the start of the next frame.
     AppKey(KeyCode),
     /// Text typed into the interface's field with the focus (`TA_UI_TEXT`).
@@ -2160,8 +2183,19 @@ impl State {
         // `TA_UI_MOUSE="frame:x,y[,button];..."`: the mouse to window pixels (x, y) at those
         // frames, for the interface and the map alike; `+left` presses the button there, `-left`
         // lets it go, `left` clicks (pressed, let go the next frame); right and middle too.
-        // A drag: "60:500,300,+left;62:620,380;64:700,450,-left".
+        // A drag: "60:500,300,+left;62:620,380;64:700,450,-left". `wheel=<lines>` turns the wheel
+        // there (positive closer, negative farther): "90:960,540,wheel=-6".
         for event in std::env::var("TA_UI_MOUSE").unwrap_or_default().split(';').filter(|c| !c.trim().is_empty()) {
+            let wheel = event.split_once(':').and_then(|(f, rest)| {
+                let mut parts = rest.split(',').map(str::trim);
+                let (x, y) = (parts.next()?.parse::<f32>().ok()?, parts.next()?.parse::<f32>().ok()?);
+                let lines = parts.next()?.strip_prefix("wheel=")?.parse::<f32>().ok()?;
+                Some((f.trim().parse::<u32>().ok()?, x, y, lines))
+            });
+            if let Some((f, x, y, lines)) = wheel {
+                script.push((f, DemoAction::UiWheel(x, y, lines)));
+                continue;
+            }
             let parsed = event.split_once(':').and_then(|(f, rest)| {
                 let mut parts = rest.split(',').map(str::trim);
                 let (x, y) = (parts.next()?.parse::<f32>().ok()?, parts.next()?.parse::<f32>().ok()?);
@@ -2188,7 +2222,7 @@ impl State {
                 Some((f, x, y, None)) => script.push((f, DemoAction::UiMouse(x, y, None))),
                 Some((f, x, y, Some((b, Some(pressed))))) => script.push((f, DemoAction::UiMouse(x, y, Some((b, pressed))))),
                 Some((f, x, y, Some((b, None)))) => script.extend([(f, DemoAction::UiMouse(x, y, Some((b, true)))), (f + 1, DemoAction::UiMouse(x, y, Some((b, false))))]),
-                None => log::warn!("TA_UI_MOUSE: {event:?} is not frame:x,y[,(+|-)left|right|middle]"),
+                None => log::warn!("TA_UI_MOUSE: {event:?} is not frame:x,y[,(+|-)left|right|middle|wheel=<lines>]"),
             }
         }
         // `TA_UI_TEXT="frame:text;..."`: text typed at those frames into the field with the focus.
@@ -3811,6 +3845,13 @@ impl State {
                         self.input.on_event(&WindowEvent::MouseInput { device_id: DeviceId::dummy(), state, button }, over_ui, false);
                     }
                 }
+                DemoAction::UiWheel(x, y, lines) => {
+                    use winit::event::{DeviceId, MouseScrollDelta, TouchPhase};
+                    let over_ui = self.egui.ctx.egui_wants_pointer_input() || self.egui.ctx.is_pointer_over_egui();
+                    let position = winit::dpi::PhysicalPosition::new(x as f64, y as f64);
+                    self.input.on_event(&WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position }, false, false);
+                    self.input.on_event(&WindowEvent::MouseWheel { device_id: DeviceId::dummy(), delta: MouseScrollDelta::LineDelta(0.0, lines), phase: TouchPhase::Moved }, over_ui, false);
+                }
                 // On every screen: see `ui_script`.
                 DemoAction::UiMove(..) | DemoAction::UiHover(..) | DemoAction::UiButton(..) | DemoAction::UiText(..) | DemoAction::UiPad(..) => {}
                 DemoAction::AppKey(k) => self.demo_keys.push(k),
@@ -4546,9 +4587,12 @@ impl State {
                 clamp_classic_view(cam, size, free);
             } else if !showroom {
                 // (Zoomed out over much of the map, the view keeps to it: see `view_margins`.)
-                let margins = if held { view_margins(cam, size) } else { Vec2::ZERO };
-                cam.focus.x = cam.focus.x.clamp(margins.x, size.x - margins.x);
-                cam.focus.z = cam.focus.z.clamp(margins.y, size.y - margins.y);
+                if held {
+                    hold_to_map(cam, size);
+                } else {
+                    cam.focus.x = cam.focus.x.clamp(0.0, size.x);
+                    cam.focus.z = cam.focus.z.clamp(0.0, size.y);
+                }
                 let ground = t.field.sample(cam.focus.x, cam.focus.z).max(t.field.sea_level);
                 cam.focus.y = ease_focus_height(cam.focus.y, ground, dt);
             }
@@ -5297,6 +5341,11 @@ impl State {
         }
         if self.screen == Screen::Space {
             return self.space_frame(event_loop);
+        }
+        // `TA_CRASH_AT=<frame>`: the game stops there as on a crash, for trying the crash's
+        // report and the battle's replay kept with it.
+        if crash_asked_at() == Some(self.frames) {
+            panic!("TA_CRASH_AT: a crash asked for at frame {}", self.frames);
         }
         let now = Instant::now();
         // (A film moves the battle on a picture's worth a frame, however long the frame takes.)
@@ -8640,6 +8689,19 @@ impl State {
             }
         }
     }
+
+    /// The battle under way kept as a replay when the game stops on a crash (`App`'s drop): as
+    /// [`Self::archive_replay`] keeps one, nothing else saved (unwinding, nothing here may
+    /// fail loudly). Where it was written.
+    fn keep_crashed_battle(&self) -> Option<std::path::PathBuf> {
+        let g = &self.game;
+        if self.screen != Screen::Playing || self.benchmark.is_some() || !g.keeps_replay() || !self.script.is_empty() {
+            return None;
+        }
+        let ticks = g.record.snapshot()?;
+        let record = crate::replay::Record::new(crate::replay::RecordKind::Replay, self.assets.data_hash, self.assets.mods.record(), g.setup.clone(), ticks, g.sim.tick, record_title(g, &self.assets)).with_profile(g);
+        record.write().inspect_err(|e| log::warn!("could not keep the crashed battle's replay: {e}")).ok()
+    }
 }
 
 
@@ -8887,7 +8949,6 @@ fn clamp_classic_view(camera: &mut Camera, map_size: Vec2, free: (Vec2, Vec2)) {
     // half` and `free.1 - half` pixels from the centre, stay within 0..shown.
     let lo = (half - free.0) / zoom;
     let hi = shown - (free.1 - half) / zoom;
-    let fit = |c: f32, lo: f32, hi: f32| if lo <= hi { c.clamp(lo, hi) } else { (lo + hi) * 0.5 };
     let art_y = camera.focus.z - camera.focus.y * 0.5;
     camera.focus.x = fit(camera.focus.x, lo.x, hi.x);
     camera.focus.z += fit(art_y, lo.y, hi.y) - art_y;
@@ -8931,11 +8992,34 @@ fn view_margins(camera: &Camera, map: Vec2) -> Vec2 {
     let half = camera.viewport * 0.5 / camera.zoom.max(1e-3);
     let (s, c) = camera.yaw.sin_cos();
     let reach = Vec2::new(c.abs() * half.x + s.abs() * half.y, s.abs() * half.x + c.abs() * half.y);
+    // (Never past the middle: the eased share, a hair under one, rounded to a hair over it, and
+    // the far edge's margin then came before the near one's.)
     let margin = |reach: f32, size: f32| {
         let t = ((reach - size * 0.25) / (size * 0.25).max(1e-3)).clamp(0.0, 1.0);
-        size * 0.5 * t * t * (3.0 - 2.0 * t)
+        let m = (size * 0.5 * t * t * (3.0 - 2.0 * t)).min(size * 0.5);
+        if m.is_finite() { m.max(0.0) } else { 0.0 }
     };
     Vec2::new(margin(reach.x, map.x), margin(reach.y, map.y))
+}
+
+/// Keeps the player's perspective camera's focus to the map, `view_margins` in from its edges.
+fn hold_to_map(camera: &mut Camera, map: Vec2) {
+    let margins = view_margins(camera, map);
+    camera.focus.x = fit(camera.focus.x, margins.x, map.x - margins.x);
+    camera.focus.z = fit(camera.focus.z, margins.y, map.y - margins.y);
+}
+
+/// `value` clamped to `lo..=hi`, or their middle where they cross (`f32::clamp` stops the game
+/// then).
+fn fit(value: f32, lo: f32, hi: f32) -> f32 {
+    if lo <= hi { value.clamp(lo, hi) } else { (lo + hi) * 0.5 }
+}
+
+/// `TA_CRASH_AT=<frame>`: the frame the game is to crash at, for trying its crash report. Read
+/// once.
+fn crash_asked_at() -> Option<u32> {
+    static AT: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *AT.get_or_init(|| std::env::var("TA_CRASH_AT").ok().and_then(|v| v.trim().parse().ok()))
 }
 
 /// `TA_TIME=<hours>`: the time of day for captures, over anything else. Read once.
@@ -9470,6 +9554,42 @@ mod tests {
         camera.yaw = std::f32::consts::FRAC_PI_2;
         let turned = view_margins(&camera, map);
         assert!((turned.x - halfway.y).abs() < 1.0, "{turned} against {halfway}");
+    }
+
+    /// Zooming out to the whole map and back, on maps of every shape and windows of every size,
+    /// turned any way: the view's margins never pass the map's middle (rounded a hair past it,
+    /// on Acid Foursome, 6176 by 6272, the focus was held between 3136.0002 and 3135.9998, and
+    /// the game stopped: issue 117).
+    #[test]
+    fn zooming_out_never_holds_the_view_between_crossed_edges() {
+        let windows = [(1920.0, 1080.0), (2560.0, 1440.0), (1366.0, 768.0), (3840.0, 2160.0), (1280.0, 800.0), (2560.0, 1080.0), (1024.0, 768.0), (1600.0, 1200.0)];
+        // (Maps in TA's cells of 16 pixels, square, wide and tall, from small to large.)
+        let maps = [(386.0, 392.0), (256.0, 256.0), (320.0, 240.0), (512.0, 512.0), (640.0, 384.0), (384.0, 640.0), (160.0, 160.0), (1024.0, 1024.0), (448.0, 576.0)];
+        let mut checked = 0;
+        for (w, h) in windows {
+            for (mw, mh) in maps {
+                let map = Vec2::new(mw * 16.0, mh * 16.0);
+                let mut camera = Camera::new(Vec2::new(w, h));
+                let limit = zoom_out_limit(camera.viewport, Some(map));
+                for yaw in [0.0, 0.1, 0.5, std::f32::consts::FRAC_PI_4, 1.2, std::f32::consts::FRAC_PI_2, 2.5, std::f32::consts::PI, -0.7] {
+                    camera.yaw = yaw;
+                    // From the farthest out to three times as close, in fine steps (each wheel
+                    // notch is 15%, but eased views and turns land anywhere between).
+                    for step in 0..4000 {
+                        camera.zoom = limit * (1.0 + step as f32 * 0.0005);
+                        for focus in [Vec2::ZERO, map * 0.5, map, Vec2::new(map.x * 0.3, map.y * 0.9)] {
+                            camera.focus = Vec3::new(focus.x, 0.0, focus.y);
+                            hold_to_map(&mut camera, map);
+                            let (m, f) = (view_margins(&camera, map), Vec2::new(camera.focus.x, camera.focus.z));
+                            assert!(m.x <= map.x * 0.5 && m.y <= map.y * 0.5, "margins {m} on a map of {map} in a {w}x{h} window");
+                            assert!(f.x >= 0.0 && f.x <= map.x && f.y >= 0.0 && f.y <= map.y, "focus {f} off a map of {map}");
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 1_000_000);
     }
 
     /// The commander's card at the top right shows on the title screen alone: every other page
