@@ -20,7 +20,7 @@ as they work. Their sounds come later.
   FACTIONS tab). The dialog finds the game (as for its maps: GOG's or Steam's copy, or a folder
   chosen, kept for the next start), counts each faction's units by kind, with its commander's
   build picture, and makes the factions chosen into the mod **Supreme Commander factions**
-  (`supcom-factions`), turned on, a side each in skirmish. All four take about 680 MB (3,732
+  (`supcom-factions`), turned on, a side each in skirmish. All four take about 700 MB (3,810
   files) and, on a fast computer, about half a minute, most of it writing and installing their
   files; the room on the disk is checked first. A stop installs nothing (not once the mod is being
   installed: STOP is greyed then), and the mod is made whole each time, of the factions chosen
@@ -49,14 +49,18 @@ archives rebalance the units, and the import plays them as Forged Alliance does.
 
 - `units.scd`: 679 unit folders, 568 blueprints (`<id>_unit.bp`), 1,148 meshes (`.scm`), 474
   animations (`.sca`) and 3,276 textures (`.dds`).
-- **357 units a player can make** ([`UnitBlueprint::playable`]: of the four factions, in the game
+- **364 units a player can make** ([`UnitBlueprint::playable`]: of the four factions, in the game
   rather than its campaign, built by something (an air transport by its factories'
-  `TRANSPORTBUILTBY…` categories) or a commander): UEF 92, Cybran 91, Aeon 92, Seraphim 82, each
-  about 26 tech 1, 31 tech 2, 26 tech 3, three or four experimentals, the ACU and a support
-  commander. Every one but the tech 2 and 3 factories is made by some builder, by its lists'
-  categories; those Forged Alliance makes only by upgrading the factory below
-  (`General.UpgradesTo`), as TA Reborn does (Upgrades, below): every one is then reached from
-  its faction's commander, by builds and upgrades (UEF 13 upgrades, the others 12 each).
+  `TRANSPORTBUILTBY…` categories) or a commander, or made by upgrading such a unit): UEF 93,
+  Cybran 97, Aeon 92, Seraphim 82, each about 26 tech 1, 31 tech 2, 26 tech 3, three or four
+  experimentals, the ACU and a support commander. Every one is made by some builder, by its lists'
+  categories, but those Forged Alliance makes only by upgrading the one below
+  (`General.UpgradesTo`; no `BUILTBY…` category), as TA Reborn does (Upgrades, below): the tech 2
+  and 3 factories, the tech 3 Kennel, the Hives of tech 2 and 3, and the Cybran tech 2 shield
+  generator's four upgrades ([`UnitBlueprint::upgrade_only`], found by [`unit::relate`]: before
+  converter version 12 these last seven were not made, and what upgrades into them offered no
+  upgrade). Every one is then reached from its faction's commander, by builds and upgrades (UEF 14
+  upgrades, Cybran 18, Aeon and Seraphim 12 each).
 - Their first levels of detail hold 785,000 vertices in all (the Fatboy, UEL0401, the most: 15,100);
   194 walks and deaths.
 - `projectiles.scd` (289 projectile blueprints, 48 meshes), `textures.scd` (539 build icons,
@@ -451,8 +455,17 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
   buildings its lists name are its own upgrades, in place). A building FA makes only by
   upgrading the one below (no builder's lists reach it: the tech 2 and 3 factories) is on no
   builder's menu: it is made by upgrading, as in FA. An engineering station (the Kennel, the
-  Hive) lends its build power to what is built round it (TA's assist turret: a builder with no
-  menu); an air staging platform repairs the aircraft landed on it, as TA's repair pads do
+  Hive: `ENGINEERSTATION`) works round it by itself whenever it has no orders, as Forged Alliance's
+  do (`DefaultMissionType=AssistPatrol`, docs/MODDING.md): it helps build what its player is
+  putting up within its reach (a frame, a factory's unit, a building upgrading in place), else
+  mends the damaged units of its side and its allies there, else reclaims the wreckage there; the
+  player's orders come first. It works with its own beams: the Kennel's drone (`XEA3204`, its
+  `Economy.EngineeringPods`) is not made, the station working as far round it as the drone looks
+  for work (its `AI.GuardScanRadius`, 15 ogrids, 480 px) and with its own build power or its
+  drones' together, the more (the tech 2 Kennel its own 20, the tech 3 its two drones' 30; the
+  Hives their own 15, 25 and 35, as far as their `MaxBuildDistance`, 15, 20 and 25 ogrids). Told
+  to help a unit where Forged Alliance lets it (`CommandCaps`' guard: the tech 3 Kennel and the
+  Hives). An air staging platform repairs the aircraft landed on it, as TA's repair pads do
   (`IsAirBase`). A mobile factory (the Fatboy, the carriers, the Atlantis, the Tempest, the CZAR)
   builds its units out in the field round it, as an engineer does: TA Reborn has no factory that
   moves. The menus (`download/supcom_<faction>.tdf`) put buildings before units, the lower tech
@@ -462,13 +475,16 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
   faction that is made, and that has build power to upgrade with (`Economy.BuildRate`), says
   `UpgradesTo` (docs/MODDING.md): the tech 1 factories into the tech 2 and those into the tech 3
   (land, air and naval), the extractors (tech 1 into 2 into 3), the radars (into the omni
-  sensor), the sonars (into the tech 3 sonar platform) and the UEF's and the Seraphim's tech 2
-  shield generators: 49 in all (what the others name is no unit a player makes). A building
+  sensor), the sonars (into the tech 3 sonar platform), the shield generators (the UEF's and the
+  Seraphim's tech 2 into tech 3, the Cybran's through its four upgrades) and the engineering
+  stations (the Kennel of tech 2 into tech 3, the Hive of tech 1 into 2 into 3): 56 in all (what
+  the others name is no unit a player makes). One whose next form stands on more ground (the Cybran
+  tech 1 land factory's tech 2, a row longer) upgrades while no other building is in the way. A building
   that builds nothing else gets its `BuildRate` as its `WorkerTime` for it; a fabricator, which
   names an upgrade and has none, never upgrades (nor does it in FA). An upgrade takes what FA's
   does: the new unit's build time at the old one's build rate (a tech 1 land factory into the tech
   2 in 80 s, that into the tech 3 in 210 s; a tech 1 extractor into the tech 2 in 90 s, that into
-  the tech 3 in about 190 s), at the new unit's price. A factory makes nothing while it upgrades,
+  the tech 3 in about 190 s; the tech 2 Kennel into the tech 3 in 100 s), at the new unit's price. A factory makes nothing while it upgrades,
   an extractor extracts on, a radar watches, as in FA.
 - **Enhancements** (`factions::enhance`; the unit file's `[ENHANCEMENTS]`, docs/MODDING.md): the
   commanders' and support commanders' `Enhancements`, each with its slot, prerequisite, price and
@@ -492,6 +508,43 @@ Each unit becomes a TA unit (`units/<id>.fbi`, `scripts/<id>.cob`; `ta_supcom::f
   Chrono Dampener (a weapon of a point a shot): one none of whose effects is played is not offered,
   nor one needing such another. FA's "Remove" enhancements are TA Reborn's own removal (at once,
   for nothing).
+- **Adjacency** (`crate::adjacency`; the unit file's `[ADJACENCY]` and `AdjacencySize`,
+  docs/MODDING.md): what a structure gives the structures of its player beside it, as Forged
+  Alliance's do, read when the factions are made from the player's own copy
+  (`lua/sim/AdjacencyBuffs.lua` in `lua.scd`, as data: none of it is kept here). A structure's
+  blueprint names a table (`Adjacency = 'T1PowerGeneratorAdjacencyBuffs'`), the table its buffs,
+  and each buff the structures it reaches (`EntityCategory = 'STRUCTURE SIZE4'`) and what it adds
+  to them (`Affects = { EnergyActive = { Add = -0.0625, Mult = 1.0 } }`): each becomes a bonus of
+  the structure's unit file, its `Affects` TA Reborn's name for what it changes, its `Add` the
+  game's, its `Size` the size class it reaches, any other category it names (`ARTILLERY`) its
+  `Category`, which the structures with it carry in theirs. Every structure with a size class
+  (`SIZE4` to `SIZE20`: 183 of them) says it as `AdjacencySize`; the engineering stations, walls
+  and pads have none, and take nothing. 44 structures give bonuses, of the game's eleven tables:
+
+  | Table (the structures) | What it gives the structures beside it |
+  | --- | --- |
+  | Power generators of tech 1, 2 and 3, hydrocarbon plants | Their build energy (`EnergyActive`: builders, upgrading structures and silos), upkeep (`EnergyMaintenance`), weapons' shot energy (`EnergyWeapon`) and, to artillery of size 4, reload (`RateOfFire`) cut: by a share of the receiver's size for tech 1 (−6.25% to size 4 down to −1.25% to size 20: a size 16 factory −1.5625%), −12.5% for tech 2 and hydrocarbon, −18.75% for tech 3 (−5% and −7.5% for weapons) |
+  | Mass extractors of tech 1, 2 and 3 | Their build metal (`MassActive`) cut, −10%, −15%, −20% to size 4 down to a fifth of that to size 20 |
+  | Mass fabricators of tech 1 and 3 | Their build metal cut, −2.5% to size 4 down; −7.5% |
+  | Energy storage | Their energy made (`EnergyProduction`) raised, +12.5% to size 4 down to +2.5% to size 20 |
+  | Mass storage | Their metal made (`MassProduction`: extraction, fabrication) raised, +12.5% to size 4 down |
+
+  As Forged Alliance's buffs, every neighbour's share is summed (a factory with nine tech 1
+  generators along its sides builds for 14% less energy; an extractor with mass storage on its four
+  sides makes 50% more). In TA Reborn two structures touch where their footprints meet along an
+  edge (not at a corner alone, nor a cell apart), both finished, of one player; Forged Alliance's
+  wider footprints (its skirts) keep as many of its smallest structures round another as its size
+  class says (`SIZE4`: four, one a side), TA Reborn's footprints are what of the model stands on the
+  ground and pack closer (a tech 3 extractor's three cells a side take two storages on each), so a
+  structure takes bonuses from no more neighbours than its size class: those touching it along the
+  most of its edge first. Every bonus is paid where Forged Alliance pays it: the time a build takes
+  is as long, what it costs less (a frame given up, or a unit taken apart by its side, gives back
+  what was paid for it); upkeep, what
+  is made, a shot's energy, a reload. Forged Alliance's own quirks are kept: its tech 2 generators'
+  build bonus to size 20 is a tenth of the others' (−1.25%), and its generators' reload bonus goes
+  to artillery of size 4 alone (the tech 2 artillery and the Salvation), the tables naming no other
+  size of it. Not played: the adjacency's effect beams (TA Reborn draws its own link across the
+  seam, and the bonus in the hover card, the selection's details and on the information page).
 - **Sides:** `gamedata/sidedata_supcom.tdf` adds UEF, CYBRAN, AEON and SERAPHIM to the game's
   sides (a side add-on: docs/MODDING.md), each with its commander, drawn in Arm's panels (the UEF
   and the Aeon) or Core's (the Cybran and the Seraphim). They have no interface pages of their
@@ -573,9 +626,16 @@ reaches farther, hits harder or fires faster), at home and when the economy allo
 within a minute's income (`run_enhancements`; on Sherwood: the tech 2 suite at 10 to 16 minutes,
 the gun at 11 to 18, the tech 3 suite at 17 to 26). They fire a tactical launcher's
 missiles at what is worth one in reach (never a wall, nor what a tactical defence covers), and
-build anti-nukes against strategic silos alone. Experimentals they do not build yet.
+build anti-nukes against strategic silos alone. Experimentals they do not build yet. They put
+their power generators up beside the factories the generators' bonuses reach (along the most of a
+side, out of the way out and off the ground the factory's upgrades take), and mass storage beside
+their upgraded extractors where the more they make pays for it within eight minutes (on Sherwood
+in 20 minutes, UEF against Cybran: 15 tech 1 generators beside the UEF's air and tech 3 land
+factories, 15 beside the Cybran's, and storage beside a tech 2 extractor of each). They build no
+engineering stations.
 
 Not yet in TA Reborn: Forged Alliance's own sounds and weapon effects (TA's of their kinds play),
+the Kennel's drone (the station works with its own beams), the adjacency's effect beams,
 shields, stealth fields and teleporting, and the enhancements that need them (and drones,
 resource allocation, regeneration fields); and, besides, jamming, remote viewing, a weapon's toggles (the sniper's second
 gun), FA's minimum ranges, factories that move and build within themselves, and air transports

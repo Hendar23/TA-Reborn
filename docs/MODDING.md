@@ -1096,7 +1096,8 @@ pad and takes on through its scripts. TA Reborn plays them as those engines did:
 - A module with build power and `DefaultMissionType=RepairPatrol` (TA: Escalation's repair tower
   upgrades) mends the damaged units of its side and its allies within its `BuildDistance` by
   itself whenever it has no orders, the nearest first, standing loose or on its building. Any
-  builder with that mission does the same, standing where it is.
+  builder with that mission does the same, standing where it is
+  ([below](#buildings-that-work-round-them-by-themselves)).
 
 [FORMATS.md](FORMATS.md) gives the details, mod by mod; `crates/ta_sim/tests/mod_upgrades.rs` plays
 every building of a mod that offers an upgrade ([testing](#from-the-source-tree)).
@@ -1146,6 +1147,100 @@ begun. With ways out a factory's `YardMap` may be solid (`o` throughout): its un
 way through its walls, and no other unit walks over its platform. The Supreme Commander factions'
 factories name theirs so, from their roll-off points and their models' platforms.
 
+#### Buildings that work round them by themselves
+
+A builder that cannot move (a building with `WorkerTime`, `Builder=1` and a `BuildDistance`)
+waits for orders, as TA's do. Its `DefaultMissionType` sets it to work round it by itself whenever
+it has no orders, standing where it is, within its `BuildDistance`:
+
+| `DefaultMissionType` | What it does |
+| --- | --- |
+| `RepairPatrol` | Mends the damaged units of its side and its allies, the nearest first (TA: Escalation's repair towers) |
+| `AssistPatrol` | Helps build what its player is putting up (a frame, a factory's unit, a building upgrading in place), else mends the damaged units of its side and its allies, else reclaims wreckage (wrecks and their heaps, not trees or rocks), the nearest of each first: as a builder on patrol does on its way, and as Supreme Commander's engineering stations, the Kennel and the Hive, do |
+
+What it finds itself is its only order, and gives way to its player's: any order, queued or not,
+takes its place, and once that is done it goes back to its own work. Something it found out of its
+reach is passed over for a while, without a word, and waiting for work it is no idle builder (the
+idle builders' button and the coach pass it over). It needs build power: the mod check tells an
+`AssistPatrol` without a `WorkerTime` (`unit.assist_patrol`). Give it `canguard=1` to let players
+tell it to help a unit of theirs. The Supreme Commander factions' engineering stations work so
+([SUPCOM_UNITS.md](SUPCOM_UNITS.md#gameplay)). None of TA's own units has either mission.
+
+#### Adjacency
+
+A building may give the finished buildings of its player that touch it bonuses, as Supreme
+Commander's structures do (power generators cutting what the factories beside them pay to build,
+storage raising what the extractors beside it make): an `[ADJACENCY]` section within its
+`[UNITINFO]` holds one section for each bonus (named as you like), and `AdjacencySize` gives the
+building's size class for the bonuses it takes.
+
+```
+[UNITINFO]
+	{
+	UnitName=MYPLANT;
+	AdjacencySize=4;
+	...
+	[ADJACENCY]
+		{
+		[CheaperBuilds]
+			{
+			Affects=BuildEnergy;
+			Add=-0.05;
+			Size=16;
+			}
+		[QuickerGuns]
+			{
+			Affects=ReloadTime;
+			Add=-0.1;
+			Size=4;
+			Category=ARTILLERY;
+			}
+		}
+	}
+```
+
+- **Touching:** two buildings touch where their footprints meet along an edge, a cell of it at
+  least (corners alone do not, nor buildings a cell apart). Both must be finished and the same
+  player's: an ally's building gives nothing. Units that take no ground (the mods' modules) neither
+  give nor take.
+- **`Affects`**: what of the building beside it the bonus changes. The building must have it for
+  the bonus to reach it (and for the link between them to show):
+
+  | `Affects` | What it changes | Who has it |
+  | --- | --- | --- |
+  | `BuildEnergy`, `BuildMetal` | The energy and metal its building costs it a second: construction, its upgrades in place, its stockpiled missiles. Its builds take as long, for less (or more) | Builders and silos (build power, or a stockpiling weapon) |
+  | `EnergyUse` | Its upkeep while it is on | A positive `EnergyUse` |
+  | `EnergyPerShot` | The energy its weapons' shots cost (not stockpiled missiles') | A weapon with `energypershot` |
+  | `ReloadTime` | Its weapons' reload: below one, it fires faster | A weapon |
+  | `EnergyMake` | The energy it makes (`EnergyMake`, the wind's and the tide's share, a solar collector's) | Something that makes energy |
+  | `MetalMake` | The metal it makes (`MetalMake`, what it extracts, what it makes of energy) | Something that makes metal |
+
+- **`Add`**: the share it adds to that figure: -0.0625 cuts it by a sixteenth, 0.125 raises it by an
+  eighth. The shares of every neighbour giving a figure are summed, and the figure multiplied by
+  one and the sum, never below none (four generators of -0.25 beside a factory: it builds for
+  nothing). A bonus adding nothing does nothing (the mod check says so, `unit.adjacency`, as it
+  does of an `Affects` TA Reborn does not play).
+- **`Size`**: the size class of the buildings that take it (their `AdjacencySize`); none, any.
+- **`Category`**: tokens a building that takes it must have in its `Category`, every one; none,
+  any. A token no unit's `Category` names reaches nothing.
+- **`AdjacencySize`**: the building's size class, which `Size` names, and the most neighbours it
+  takes bonuses from: as many as touch it where it gives none; else that many, those touching it
+  along the most of its edge first. (Supreme Commander names its structures' size classes by how
+  many of the smallest fit round them, `SIZE4` to `SIZE20`: its wider footprints keep that many
+  there, TA's footprints pack closer.)
+
+A bonus is paid where the economy pays, in every player's game alike (in multiplayer and replays
+too): a builder's draw shows it, the figures over a building (the hover card, TA's unit bar) say
+what it makes and uses with its bonuses, the hover card, the selection's details and the information
+page (F1) say what the buildings beside it give it and how many it helps, and a building being
+placed shows the links it would make and what it would take. A frame or an upgrade given up, and a
+unit its player takes apart, gives back what was paid for it, not its price. The battlefield shows a
+link across the seam between two buildings that help each other, a chevron for each kind of bonus
+pointing at the one it helps. The computer players put a generator beside a factory it helps and
+storage beside an extractor it raises, where that pays. The Supreme Commander factions' structures
+carry Forged Alliance's own adjacency ([SUPCOM_UNITS.md](SUPCOM_UNITS.md#adjacency)). TA's own units
+have none.
+
 #### Units that upgrade in place
 
 A unit may become another where it stands, as Supreme Commander's factories, extractors and radars
@@ -1165,6 +1260,9 @@ orders page, among the buttons TA has no gadget for), and builds that unit on it
 - **Called off** by Stop, or by any order not queued after it, the metal paid for the upgrade
   comes back (as a frame given up gives its metal back); its energy is spent. A unit captured
   while it upgrades loses the upgrade.
+- **Room for it:** a unit whose next form takes more ground than it stands on (a larger footprint)
+  upgrades only while no other building stands on that ground: it is refused ("no room to upgrade
+  into that"), or called off, its metal back, if one is put there meanwhile.
 - **Done**, the new unit stands where the old one stood, facing as it faced, its owner's and
   finished, with the old one's share of its health; it keeps the orders queued after the upgrade
   (so `UpgradesTo` chains may be queued one step after another, with Shift), a factory's queue,
@@ -1387,6 +1485,7 @@ names the mod's folder (an absolute path, with its `mod.toml`):
 | A mod's presentation: its pictures, preview and links, and their check | `crates/ta_vfs/src/mods.rs` (`Media`), `apps/ta_launcher/src/mod_media.rs`, `crates/ta_data/src/presentation.rs` |
 | A mod's interface theme: the palette, applying it in battle (the HUD alone: `hud`, `reborn`), its check | `crates/ta_vfs/src/mods.rs` (`Theme`), `crates/ta_ui/src/theme.rs` (`Palette`, `hud`), `apps/ta_game/src/mod_theme.rs`, `apps/ta_game/src/hud_skin.rs`, `crates/ta_data/src/presentation.rs` |
 | Script values | `crates/ta_sim/src/host.rs` |
+| Adjacency, buildings working round them | `crates/ta_data/src/adjacency.rs`, `crates/ta_sim/src/sim/adjacency.rs`, `crates/ta_sim/src/sim/repair_round.rs`, `apps/ta_game/src/hud/adjacency.rs` |
 | Models' surfaces and clips (walks, deaths, buildings at work) | `crates/ta_formats/src/surface.rs`, `crates/ta_formats/src/anims.rs`, `apps/ta_game/src/scene/walk.rs`, `apps/ta_game/src/scene/work.rs`, `apps/ta_game/src/effects_remains.rs` |
 | The classic build pages, 768-pixel layouts, shared places | `apps/ta_game/src/hud_classic_art.rs` |
 | The catalogue, installs, the MODS page | `apps/ta_launcher/src/catalogue.rs`, `getmods.rs`, `modlist.rs`, `mod_library.rs`, `pages/mods.rs`, `pages/mod_order.rs`, `pages/mod_report.rs` |
