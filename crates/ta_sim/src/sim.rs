@@ -5156,6 +5156,11 @@ impl Sim {
             let wants = u.path_goal.is_some();
             if wants != u.moving {
                 u.moving = wants;
+                if wants {
+                    // (Packing up to go: what it aimed unpacked would fire it once let go, packed
+                    // and on its way. It aims anew, its script answering for a unit that moves.)
+                    u.forget_aims();
+                }
                 if let Some(c) = &mut u.cob {
                     c.start(if wants { "StartMoving" } else { "StopMoving" }, &[], ThreadTag::None);
                 }

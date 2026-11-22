@@ -714,6 +714,21 @@ impl Unit {
         }
     }
 
+    /// Its weapons' aims so far count no more, whatever they were at (their answers none of them:
+    /// those still running run on, see [`CobInstance::supersede_aims`]): each aims anew before it
+    /// fires. A unit its script holds still (`IMMOBILE`), told to go, packs up: an aim it answered
+    /// unpacked would otherwise fire it once let go, packed and on its way.
+    pub(crate) fn forget_aims(&mut self) {
+        for slot in 0..self.weapons.len() {
+            let ws = &mut self.weapons[slot];
+            ws.aimed = false;
+            ws.aim_asked = false;
+            if let Some(c) = &mut self.cob {
+                c.supersede_aims(slot as u16);
+            }
+        }
+    }
+
     /// Sets the work done building it (of `total`, its type's [`UnitType::build_work`]) and
     /// the progress that is: ONE exactly when it is all done.
     pub fn set_build_work(&mut self, work: u64, total: u64) {
