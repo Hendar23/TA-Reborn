@@ -1263,6 +1263,12 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
     sheen, lit by the physically based light as every model is; the colour map read through a
     Catmull-Rom spline where it is magnified (`surface_sharp`: from a texel over a pixel and a
     half, five lookups of its first level and four for its nearest texels, which bound it).
+    In the rain (either style) the film of water a wet model mirrors the sky in (`rain_film`)
+    lies on such a surface's faces (`Surface::rim_normal`) rather than on its normal map's relief,
+    mirrors the ground below the horizon, and is a third as strong as on TA's paint
+    (`SURFACED_FILM`): on Forged Alliance's normal maps, baked from finer models, it ran grazing
+    along every bevel and panel line, and over the dark paint read as a white frost (TA's models
+    keep their film as it was, to the bit).
     Ray-traced reflections take the vertex's colour (its material's on average, as Forged
     Alliance's paint, in either art style). A model whose surface names a `far` one is drawn as
     that one under `FAR_PIXELS` across, a unit or a wreck drawn as itself the frame before

@@ -839,6 +839,41 @@ mod tests {
         assert_eq!(paint.memory(), 3 * layer_bytes(SIDE, compressed) + paint.fine_array.capacity as u64 * layer_bytes(FINE_SIDE, compressed));
     }
 
+    /// Runs a fixture of unit.wgsl's functions on the GPU: its `main` once a case, `cases` (bytes
+    /// of `count` cases) at binding 0, what it writes at binding 1 (`rows` rows of four floats)
+    /// read back.
+    fn run_fixture(label: &str, source: String, cases: &[u8], count: u32, rows: u64) -> Vec<[f32; 4]> {
+        use crate::gpu::CheckedBufferInit;
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("GPU adapter");
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("GPU device");
+        let input = device.create_buffer_checked(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: cases, usage: wgpu::BufferUsages::STORAGE });
+        let bytes = rows * 16;
+        let output = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: bytes, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+        let readback = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: bytes, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: None, layout: None, module: &shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
+        let layout = pipeline.get_bind_group_layout(0);
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() }],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(count, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, bytes);
+        queue.submit([encoder.finish()]);
+        readback.slice(..).map_async(wgpu::MapMode::Read, |result| result.expect("fixture readback"));
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let data = readback.slice(..).get_mapped_range().unwrap();
+        bytemuck::cast_slice::<u8, [f32; 4]>(&data).to_vec()
+    }
+
     /// Reborn's finish of a model's own surface (`surfaced_finish` in unit.wgsl, run as it is in
     /// a compute shader): a blue-grey paint's cast mostly gone and it matte; painted highlights
     /// brought down on a shoulder; the player's colour where the alpha says, a little darker;
@@ -847,10 +882,6 @@ mod tests {
     #[test]
     #[ignore = "requires a GPU; run with --ignored"]
     fn reborn_finishes_a_surfaces_paint() {
-        use crate::gpu::CheckedBufferInit;
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("GPU adapter");
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("GPU device");
         let unit = include_str!("../shaders/unit.wgsl");
         let (start, end) = (unit.find("struct SurfacedFinish {").unwrap(), unit.find("fn model_surface(").unwrap());
         let source = format!(
@@ -876,31 +907,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {{
             [grey, [0.13, 0.9, 0.0, 0.0], flat, player],
             [grey, [0.13, 0.9, 0.0, 0.0], flat, [0.03, 0.1, 0.7, 1.0]],
         ];
-        let input = device.create_buffer_checked(&wgpu::util::BufferInitDescriptor { label: Some("finish cases"), contents: bytemuck::cast_slice(&cases), usage: wgpu::BufferUsages::STORAGE });
-        let bytes = 12 * 16;
-        let output = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: bytes, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
-        let readback = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: bytes, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("surfaced finish fixture"), source: wgpu::ShaderSource::Wgsl(source.into()) });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: None, layout: None, module: &shader, entry_point: Some("main"), compilation_options: Default::default(), cache: None });
-        let layout = pipeline.get_bind_group_layout(0);
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() }],
-        });
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-            pass.set_pipeline(&pipeline);
-            pass.set_bind_group(0, &group, &[]);
-            pass.dispatch_workgroups(cases.len() as u32, 1, 1);
-        }
-        encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, bytes);
-        queue.submit([encoder.finish()]);
-        readback.slice(..).map_async(wgpu::MapMode::Read, |result| result.expect("finish fixture readback"));
-        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        let data = readback.slice(..).get_mapped_range().unwrap();
-        let out: &[[f32; 4]] = bytemuck::cast_slice(&data);
+        let out = run_fixture("surfaced finish fixture", source, bytemuck::cast_slice(&cases), cases.len() as u32, 12);
         let (albedo, material) = (&out[..6], &out[6..]);
         let chroma = |c: [f32; 4]| (c[0].max(c[1]).max(c[2]) - c[0].min(c[1]).min(c[2])) / c[0].max(c[1]).max(c[2]);
         let lum = |c: [f32; 4]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
@@ -916,6 +923,69 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {{
         // An outline: brighter than the paint round it, smoother, metal; burnt out, none of that.
         assert!(lum(albedo[4]) > lum(albedo[0]) && material[4][0] < material[0][0] - 0.2 && material[4][1] > 0.7, "{:?} {:?}", albedo[4], material[4]);
         assert!((material[5][0] - 0.9).abs() < 1e-3 && material[5][1] == 0.0 && lum(albedo[5]) < lum(albedo[4]), "{:?} {:?}", albedo[5], material[5]);
+    }
+
+    /// A film of rain water on a model's own surface (`rain_film` in unit.wgsl, run as it is in a
+    /// compute shader, under a rainy sky), against TA's models' film (Fresnel's share of the sky,
+    /// from the haze at the horizon to the zenith overhead, on the paint's relief): it lies on
+    /// the face, so a texel its normal map turns grazing mirrors no more than the face does; a
+    /// side seen from above mirrors the ground; all of it thinner.
+    #[test]
+    #[ignore = "requires a GPU; run with --ignored"]
+    fn rain_lies_on_a_surfaces_faces() {
+        let unit = include_str!("../shaders/unit.wgsl");
+        let (start, end) = (unit.find("// How thin a film of rain water").unwrap(), unit.find("// Lit colour of a model fragment").unwrap());
+        let thin: f32 = unit.split("const SURFACED_FILM: f32 = ").nth(1).and_then(|s| s.split(';').next()).unwrap().parse().unwrap();
+        let (fog, zenith, ground) = ([0.38f32, 0.42, 0.48], [0.2f32, 0.25, 0.36], [0.19f32, 0.18, 0.17]);
+        let source = format!(
+            "struct Frame {{ fog: vec4<f32>, sky_zenith: vec4<f32>, sky: vec4<f32> }};
+var<private> frame: Frame = Frame(vec4<f32>({:?}, {:?}, {:?}, 0.0), vec4<f32>({:?}, {:?}, {:?}, 0.0), vec4<f32>(0.0, 0.0, 0.0, 1.0));
+{}
+struct Case {{ face: vec4<f32>, v: vec4<f32>, ground: vec4<f32> }};
+@group(0) @binding(0) var<storage, read> cases: array<Case>;
+@group(0) @binding(1) var<storage, read_write> results: array<vec4<f32>, 3>;
+@compute @workgroup_size(1)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {{
+    let c = cases[id.x];
+    let film = rain_film(c.face.xyz, c.v.xyz, c.ground.xyz);
+    results[id.x] = vec4<f32>(film.rgb * film.a, 0.0);
+}}",
+            fog[0], fog[1], fog[2], zenith[0], zenith[1], zenith[2], &unit[start..end]
+        );
+        let unit_vec = |x: f32, y: f32, z: f32| {
+            let l = (x * x + y * y + z * z).sqrt();
+            [x / l, y / l, z / l, 0.0]
+        };
+        // The eye 70 degrees up; a top face, a texel of its relief turned 60 degrees away from the
+        // eye, and a side facing the eye.
+        let eye = unit_vec(0.0, 0.94, 0.34);
+        let (top, turned, side) = (unit_vec(0.0, 1.0, 0.0), unit_vec(0.0, 0.5, -0.866), unit_vec(0.0, 0.0, 1.0));
+        let at = [ground[0], ground[1], ground[2], 0.0];
+        let cases: [[[f32; 4]; 3]; 3] = [[top, eye, at], [side, eye, at], [top, top, at]];
+        let out = run_fixture("rain film fixture", source, bytemuck::cast_slice(&cases), cases.len() as u32, 3);
+        // TA's film on a shading normal `n` (unit.wgsl's `shade_model`).
+        let ta = |n: [f32; 4], v: [f32; 4]| {
+            let nv = n[0] * v[0] + n[1] * v[1] + n[2] * v[2];
+            let ry = 2.0 * nv * n[1] - v[1];
+            let t = (ry * 1.5).clamp(0.0, 1.0);
+            let fresnel = 0.03 + 0.97 * (1.0 - nv.max(0.0)).powi(5);
+            [0, 1, 2, 3].map(|k| if k < 3 { (fog[k] + (zenith[k] - fog[k]) * t) * fresnel } else { 0.0 })
+        };
+        let lum = |c: [f32; 4]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        let near = |a: [f32; 4], b: [f32; 4]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-5);
+        // A texel of the top turned grazing mirrors as the face does, thinner: a tenth of what
+        // TA's film on the turned texel mirrors, at the most.
+        let face = ta(top, eye).map(|c| c * thin);
+        assert!(near(out[0], face), "{:?} against {face:?}", out[0]);
+        assert!(lum(out[0]) < 0.1 * lum(ta(turned, eye)), "{:?} against {:?}", out[0], ta(turned, eye));
+        // A side seen from above mirrors the ground below the horizon (TA's the haze), thinner.
+        let fresnel = 0.03 + 0.97 * (1.0f32 - 0.34 / (0.94f32 * 0.94 + 0.34 * 0.34).sqrt()).powi(5);
+        let mirrored = [0, 1, 2, 3].map(|k| if k < 3 { ground[k] * 0.8 * fresnel * thin } else { 0.0 });
+        assert!(near(out[1], mirrored), "{:?} against {mirrored:?}", out[1]);
+        assert!(lum(out[1]) < 0.5 * thin * lum(ta(side, eye)), "{:?} against {:?}", out[1], ta(side, eye));
+        // Looked at straight down, the zenith, thinner.
+        let overhead = ta(top, top).map(|c| c * thin);
+        assert!(near(out[2], overhead), "{:?} against {overhead:?}", out[2]);
     }
 
     /// A hull and a turret on it, a triangle each: the turret's painted with the surface's

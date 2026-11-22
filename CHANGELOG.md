@@ -16,6 +16,15 @@
   Seraphim's chrome polished, the Seraphim's markings glowing in their player's colour. Enhanced
   Classic keeps Forged Alliance's look, at its full resolution. Make the factions' mod again
   (UPDATE) to have it: it takes about 680 MB (440 MB before).
+- The Supreme Commander factions' buildings and units turned a glossy, frosty white in the rain,
+  the more once a shower had passed and the sky cleared while they were still wet, and the most
+  at dawn and dusk (the UEF's land factory more than its air factory: it goes by how much relief
+  a model's normal map has). The film of rain water that mirrors the sky over wet models lay on
+  their normal maps' relief, which Forged Alliance bakes from finer models, so it ran white along
+  every bevel and panel line, and seen from above their sides mirrored the bright haze. On these
+  models it now lies on their faces, mirrors the ground below the horizon and is laid on their
+  dark paint about as thinly as it shows on TA's: wet, they are darker with a sheen, as TA's units
+  are, in either art style. TA's own units look exactly as they did.
 - The Supreme Commander factions' buildings move as they work, as in Forged Alliance: extractors
   pump while they extract, stopping where they are when switched off; power generators, mass
   fabricators, radars and shield generators spin, swing and slide their parts; factories' arms

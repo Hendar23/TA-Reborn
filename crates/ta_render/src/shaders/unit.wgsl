@@ -366,8 +366,9 @@ struct Surface {
     // sun's light glances off it towards the eye, as Forged Alliance lights its units' metal (its
     // specular map's green; 0 for every other model).
     sheen: f32,
-    // The normal its rim light and its silhouette go by: a model's own surface its face's own,
-    // smooth (its normal map's fine relief lit the rim all over it, a haze from every angle); any
+    // The normal its rim light and its silhouette go by, and in the rain its film of water (see
+    // `rain_film`): a model's own surface its face's own, smooth (its normal map's fine relief lit
+    // the rim all over it, a haze from every angle, and ran the film white along every bevel); any
     // other model's its shading normal's.
     rim_normal: vec3<f32>,
 };
@@ -874,6 +875,28 @@ fn widened_power(power: f32, widen: f32) -> f32 {
     return max(2.0 / (2.0 / (power + 2.0) + widen) - 2.0, 1.0);
 }
 
+// How thin a film of rain water lies on a model's own surface, against TA's models (see
+// `rain_film`).
+const SURFACED_FILM: f32 = 0.35;
+
+// What a film of rain water on a model's own surface (Supreme Commander's) mirrors towards the eye
+// `v` (rgb), and how much of it (a: Fresnel's share, thinned); `shade_model` lays it on as wet as
+// the world is. On TA's models the film lies on the shading normal, the paint's relief, and
+// mirrors the sky all round. Here it lies on the face (`face`), as water levels the relief:
+// Forged Alliance's normal maps are baked from finer models and turn a fifth of the UEF land
+// factory's texels more than 44 degrees off its faces, so on them the film was grazing, near
+// white, along every bevel and panel line. It mirrors the ground below the horizon, as the
+// paint's own reflection does (seen from above, a building's sides mirrored the bright haze), and
+// it is laid thinner over the dark paint, as the selection's lift is: as strong as on TA's paint,
+// an even sheen of the sky washed it out to frost, the whiter as a shower passed and the sky
+// cleared.
+fn rain_film(face: vec3<f32>, v: vec3<f32>, ground: vec3<f32>) -> vec4<f32> {
+    let r = reflect(-v, face);
+    let sky_col = select(frame.fog.rgb, mix(frame.fog.rgb, frame.sky_zenith.rgb, saturate(r.y * 1.5)), frame.sky.w > 0.5);
+    let fresnel = 0.03 + 0.97 * pow(1.0 - max(dot(face, v), 0.0), 5.0);
+    return vec4<f32>(mix(ground * 0.8, sky_col, smoothstep(-0.12, 0.08, r.y)), fresnel * SURFACED_FILM);
+}
+
 // Lit colour of a model fragment; `flags` = the instance's flags (see model.rs).
 fn shade_model(in: VOut, surface: Surface, flags: u32) -> vec4<f32> {
     // (Derivatives for the build effect, taken while every pixel runs alike.)
@@ -1013,11 +1036,16 @@ fn shade_model(in: VOut, surface: Surface, flags: u32) -> vec4<f32> {
         let glance = pow(saturate(dot(reflect(-l, n), v)), SHEEN_POWER);
         color += sun * vec3<f32>(0.6, 0.78, 0.95) * (glance * surface.sheen * SHEEN * shadow * direct);
     }
-    // A film of rain water mirrors the sky on every surface.
+    // A film of rain water mirrors the sky on every surface (on a model's own, see `rain_film`).
     if (wet > 0.0) {
         let r = reflect(-v, n);
-        let sky_col = select(frame.fog.rgb, mix(frame.fog.rgb, frame.sky_zenith.rgb, saturate(r.y * 1.5)), frame.sky.w > 0.5);
-        let fresnel = 0.03 + 0.97 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+        var sky_col = select(frame.fog.rgb, mix(frame.fog.rgb, frame.sky_zenith.rgb, saturate(r.y * 1.5)), frame.sky.w > 0.5);
+        var fresnel = 0.03 + 0.97 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+        if (surfaced) {
+            let film = rain_film(normalize(surface.rim_normal), v, ground);
+            sky_col = film.rgb;
+            fresnel = film.a;
+        }
         color += sky_col * fresnel * 0.5 * wet * ao;
     }
     // Embers of battle damage glow by themselves.
