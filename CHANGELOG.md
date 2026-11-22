@@ -21,6 +21,12 @@
   [docs/MODDING.md](docs/MODDING.md#adjacency)); make the factions' mod again (UPDATE) to have it.
 
 ### Fixed
+- The game could crash ("min > max, or either was NaN") when the modern camera was zoomed all the
+  way out, often while zooming in and out quickly. It depended on the map's size and the window's:
+  at 1920 × 1080, about one map in fourteen, among them Acid Foursome, Aqua Verdigris, Lipar Pass
+  and Emerald Seamount. Zoomed out over most of the map the view keeps to it, and the margin it
+  keeps from the map's edges, rounded, could come out a hair past the map's middle, so that the far
+  edge's margin came before the near one's. It no longer can.
 - The Kennel and the Hive (the UEF's and the Cybran's engineering stations) offered no upgrade and
   stood idle unless told what to do. Their next tiers, which Forged Alliance makes only by
   upgrading (the tech 3 Kennel, the Hives of tech 2 and 3), were not made at all, nor were the

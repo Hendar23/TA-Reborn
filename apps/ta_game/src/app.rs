@@ -4546,9 +4546,12 @@ impl State {
                 clamp_classic_view(cam, size, free);
             } else if !showroom {
                 // (Zoomed out over much of the map, the view keeps to it: see `view_margins`.)
-                let margins = if held { view_margins(cam, size) } else { Vec2::ZERO };
-                cam.focus.x = cam.focus.x.clamp(margins.x, size.x - margins.x);
-                cam.focus.z = cam.focus.z.clamp(margins.y, size.y - margins.y);
+                if held {
+                    hold_to_map(cam, size);
+                } else {
+                    cam.focus.x = cam.focus.x.clamp(0.0, size.x);
+                    cam.focus.z = cam.focus.z.clamp(0.0, size.y);
+                }
                 let ground = t.field.sample(cam.focus.x, cam.focus.z).max(t.field.sea_level);
                 cam.focus.y = ease_focus_height(cam.focus.y, ground, dt);
             }
@@ -8887,7 +8890,6 @@ fn clamp_classic_view(camera: &mut Camera, map_size: Vec2, free: (Vec2, Vec2)) {
     // half` and `free.1 - half` pixels from the centre, stay within 0..shown.
     let lo = (half - free.0) / zoom;
     let hi = shown - (free.1 - half) / zoom;
-    let fit = |c: f32, lo: f32, hi: f32| if lo <= hi { c.clamp(lo, hi) } else { (lo + hi) * 0.5 };
     let art_y = camera.focus.z - camera.focus.y * 0.5;
     camera.focus.x = fit(camera.focus.x, lo.x, hi.x);
     camera.focus.z += fit(art_y, lo.y, hi.y) - art_y;
@@ -8931,11 +8933,27 @@ fn view_margins(camera: &Camera, map: Vec2) -> Vec2 {
     let half = camera.viewport * 0.5 / camera.zoom.max(1e-3);
     let (s, c) = camera.yaw.sin_cos();
     let reach = Vec2::new(c.abs() * half.x + s.abs() * half.y, s.abs() * half.x + c.abs() * half.y);
+    // (Never past the middle: the eased share, a hair under one, rounded to a hair over it, and
+    // the far edge's margin then came before the near one's.)
     let margin = |reach: f32, size: f32| {
         let t = ((reach - size * 0.25) / (size * 0.25).max(1e-3)).clamp(0.0, 1.0);
-        size * 0.5 * t * t * (3.0 - 2.0 * t)
+        let m = (size * 0.5 * t * t * (3.0 - 2.0 * t)).min(size * 0.5);
+        if m.is_finite() { m.max(0.0) } else { 0.0 }
     };
     Vec2::new(margin(reach.x, map.x), margin(reach.y, map.y))
+}
+
+/// Keeps the player's perspective camera's focus to the map, `view_margins` in from its edges.
+fn hold_to_map(camera: &mut Camera, map: Vec2) {
+    let margins = view_margins(camera, map);
+    camera.focus.x = fit(camera.focus.x, margins.x, map.x - margins.x);
+    camera.focus.z = fit(camera.focus.z, margins.y, map.y - margins.y);
+}
+
+/// `value` clamped to `lo..=hi`, or their middle where they cross (`f32::clamp` stops the game
+/// then).
+fn fit(value: f32, lo: f32, hi: f32) -> f32 {
+    if lo <= hi { value.clamp(lo, hi) } else { (lo + hi) * 0.5 }
 }
 
 /// `TA_TIME=<hours>`: the time of day for captures, over anything else. Read once.
@@ -9470,6 +9488,42 @@ mod tests {
         camera.yaw = std::f32::consts::FRAC_PI_2;
         let turned = view_margins(&camera, map);
         assert!((turned.x - halfway.y).abs() < 1.0, "{turned} against {halfway}");
+    }
+
+    /// Zooming out to the whole map and back, on maps of every shape and windows of every size,
+    /// turned any way: the view's margins never pass the map's middle (rounded a hair past it,
+    /// on Acid Foursome, 6176 by 6272, the focus was held between 3136.0002 and 3135.9998, and
+    /// the game stopped: issue 117).
+    #[test]
+    fn zooming_out_never_holds_the_view_between_crossed_edges() {
+        let windows = [(1920.0, 1080.0), (2560.0, 1440.0), (1366.0, 768.0), (3840.0, 2160.0), (1280.0, 800.0), (2560.0, 1080.0), (1024.0, 768.0), (1600.0, 1200.0)];
+        // (Maps in TA's cells of 16 pixels, square, wide and tall, from small to large.)
+        let maps = [(386.0, 392.0), (256.0, 256.0), (320.0, 240.0), (512.0, 512.0), (640.0, 384.0), (384.0, 640.0), (160.0, 160.0), (1024.0, 1024.0), (448.0, 576.0)];
+        let mut checked = 0;
+        for (w, h) in windows {
+            for (mw, mh) in maps {
+                let map = Vec2::new(mw * 16.0, mh * 16.0);
+                let mut camera = Camera::new(Vec2::new(w, h));
+                let limit = zoom_out_limit(camera.viewport, Some(map));
+                for yaw in [0.0, 0.1, 0.5, std::f32::consts::FRAC_PI_4, 1.2, std::f32::consts::FRAC_PI_2, 2.5, std::f32::consts::PI, -0.7] {
+                    camera.yaw = yaw;
+                    // From the farthest out to three times as close, in fine steps (each wheel
+                    // notch is 15%, but eased views and turns land anywhere between).
+                    for step in 0..4000 {
+                        camera.zoom = limit * (1.0 + step as f32 * 0.0005);
+                        for focus in [Vec2::ZERO, map * 0.5, map, Vec2::new(map.x * 0.3, map.y * 0.9)] {
+                            camera.focus = Vec3::new(focus.x, 0.0, focus.y);
+                            hold_to_map(&mut camera, map);
+                            let (m, f) = (view_margins(&camera, map), Vec2::new(camera.focus.x, camera.focus.z));
+                            assert!(m.x <= map.x * 0.5 && m.y <= map.y * 0.5, "margins {m} on a map of {map} in a {w}x{h} window");
+                            assert!(f.x >= 0.0 && f.x <= map.x && f.y >= 0.0 && f.y <= map.y, "focus {f} off a map of {map}");
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 1_000_000);
     }
 
     /// The commander's card at the top right shows on the title screen alone: every other page
