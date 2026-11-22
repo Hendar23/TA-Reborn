@@ -4,7 +4,8 @@
 //! and starts the script's `AimPrimary/Secondary/Tertiary` thread (`AimWeapon1` to `AimWeapon8`
 //! in a mod's scripts, for up to eight weapons: [`ta_data::unit::WEAPON_FUNCTIONS`]); when that
 //! thread returns non-zero the weapon is aimed. Firing asks `QueryPrimary` for the muzzle piece,
-//! calls `FirePrimary` for recoil/flash animation and launches a projectile from the muzzle.
+//! starts `FirePrimary` (its recoil, its flash) and launches a projectile from where the muzzle
+//! piece is once that has run as far as its first wait (tried on a copy of the script).
 
 use ta_data::RenderType;
 use ta_data::unit::{MAX_WEAPONS, WeaponFunction};
@@ -1356,6 +1357,15 @@ impl Sim {
             None => return,
         };
         let muzzle_piece = self.call_script(id, query, &[0]).and_then(|p| p.first().copied());
+        // The shot leaves from where the piece the query named is once the fire function has run
+        // as far as its first wait (its flash shown, its barrel kicked back): tried on a copy of
+        // the script, which changes nothing, the fire function itself starting as ever. Scripts
+        // move that piece as they fire: TA: Escalation's C.O.R.E. sends its eighteen launch points
+        // far off as it aims and brings the one firing back to its pod as it fires (read before,
+        // its rockets left from 25,000 px away, off the map, and only their launch flashes were
+        // seen). (Asked first, the query names the barrel the fire function flashes: TA's Hammer
+        // alternates its two.)
+        let fired = self.trial_script(id, fire, &[]);
         self.start_script(id, fire, &[]);
         // The recoil rocks the hull away from the shot, in the unit's own frame (TA's
         // RockUnit: tilts about the x and z axes, 500 at most).
@@ -1366,11 +1376,11 @@ impl Sim {
             let rock = [(cos(away) * 500).to_int() as i32, (sin(away) * 500).to_int() as i32];
             self.start_script(id, "RockUnit", &rock);
         }
-        let u = self.unit(id).unwrap();
+        let Some(u) = self.unit(id) else { return };
         let t = self.types.get(u.type_id);
         let muzzle = muzzle_piece
             .and_then(|p| {
-                let cob = u.cob.as_ref()?;
+                let cob = fired.as_ref().or(u.cob.as_ref())?;
                 let mp = cob.program.piece_map.get(usize::try_from(p).ok()?).copied().flatten()?;
                 Some(piece_world_position(u, t, Some(cob), mp))
             })

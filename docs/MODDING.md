@@ -881,6 +881,12 @@ details. What mod makers ask about most:
   about): TA: Escalation's vertical missiles say `weaponvelocity=-10` and slow from their start
   speed. Launched upright (`vlaunch=1`) at a negative `startvelocity`, a missile goes straight
   down. Its `flighttime` is its life: give one that slows the time to get where it is sent.
+- **Where a shot leaves from.** The piece the weapon's `Query` function names, where it is once
+  the weapon's `Fire` function has run as far as its first wait (`sleep`, `wait-for-turn`,
+  `wait-for-move`): a fire function may move that piece into place before the shot leaves (as TA:
+  Escalation's C.O.R.E. brings its launch points back into its pods), or kick it back, and the shot
+  leaves from there. The query is asked first, so a fire function that switches barrels for the
+  next shot flashes the barrel the query named.
 
 #### Sides of a mod's own
 

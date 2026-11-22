@@ -688,6 +688,20 @@ take up to all 32 bits of a texel.
     (TA Reborn asks after every shot), else its turret rests between shots.
   * Only the Commanders' `AimPrimary` answers "no" (0: while building); the others answer 1
     once on target.
+* **Firing**: the engine asks the weapon's `Query` function which piece the shot leaves from,
+  then starts its `Fire` function, and the shot leaves from where that piece is once the fire
+  function has run as far as its first wait (a flash shown, a barrel kicked back; `Sim::fire`).
+  TA's Hammer alternates its barrels, its `FirePrimary` switching to the other as it fires and
+  its `QueryPrimary` naming the one in use: asked before the fire function runs, the query names
+  the barrel that flashes. TA: Escalation's C.O.R.E. (`CORMKL`) moves its eighteen launch points
+  (single points in its six pods) 25,000 px off in `AimSecondary` and moves the one firing back
+  into its pod in `FireSecondary`, before it shows its launch flash there: with the piece's place
+  read before the fire function ran, every rocket left from off the map and went off at once, and
+  only the flashes were seen. Read after it: 15 of TA's fire functions move or turn a piece at
+  once before their first wait (most kick a barrel back a few px before they show their flash),
+  and their shots leave from the muzzle so moved, where the flash shows; TA: Escalation's Armada
+  (`ARMUSCAR`), which steps its anti-air rack's piece a slot down as it fires, launches each
+  missile a slot (9.4 px) below its flash.
 * `XZ_ATAN(dx, dz)` is the heading, relative to the unit's, that points a piece along
   **−(dx, dz)**. Only the four boom transports (`arm/corthovr`, `arm/cortship`) use it, as
   `XZ_ATAN(PIECE_XZ(pivot) − target)`: their booms pivot at the stern and rest pointing

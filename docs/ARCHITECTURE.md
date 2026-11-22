@@ -288,7 +288,10 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   untouched (`Sim::throw_clear`: sending each off it and back made thousands of new routes
   in a big battle).
 * **Combat** (`combat.rs`): targets via a uniform grid; aiming through the unit's own
-  `AimPrimary` script; muzzle from `QueryPrimary`; ballistic launch angles solved
+  `AimPrimary` script; the muzzle the piece `QueryPrimary` names, where it is once `FirePrimary`
+  has run as far as its first wait (see FORMATS.md: tried on a copy of the script,
+  `Sim::trial_script` and `host::TrialHost`, which changes nothing; the function itself runs with
+  the unit's other threads, as ever); ballistic launch angles solved
   analytically; projectiles swept against unit spheres, going off where they meet the first
   unit along the tick's flight, or the ground or the sea (`Sim::spent` keeps those that ended,
   and the explosion event says how far through the tick, for the client to draw the last

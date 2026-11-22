@@ -169,26 +169,31 @@ pub struct UnitHost<'a> {
     pub allies: u64,
 }
 
-impl UnitHost<'_> {
-    fn piece_pos(&self, instance: &CobInstance, cob_piece: i32) -> Option<FxVec3> {
-        let mp = instance.program.piece_map.get(usize::try_from(cob_piece).ok()?).copied().flatten()?;
-        Some(piece_world_position(self.unit, self.unit_type, Some(instance), mp))
-    }
+/// Where a script's piece is in the world.
+fn piece_pos(unit: &Unit, unit_type: &UnitType, instance: &CobInstance, cob_piece: i32) -> Option<FxVec3> {
+    let mp = instance.program.piece_map.get(usize::try_from(cob_piece).ok()?).copied().flatten()?;
+    Some(piece_world_position(unit, unit_type, Some(instance), mp))
 }
 
-impl CobHost for UnitHost<'_> {
-    fn now_ms(&self) -> i64 {
-        self.now_ms
+/// The unit a script runs for, and what it may ask about the others: what a `get` reads, for
+/// [`UnitHost`] and [`TrialHost`] alike.
+struct Asked<'a> {
+    unit: &'a Unit,
+    unit_type: &'a UnitType,
+    world: &'a World,
+    lookup: &'a dyn Fn(i32) -> Option<OtherUnit>,
+    max_id: i32,
+    allies: u64,
+}
+
+impl Asked<'_> {
+    fn piece_pos(&self, instance: &CobInstance, cob_piece: i32) -> Option<FxVec3> {
+        piece_pos(self.unit, self.unit_type, instance, cob_piece)
     }
 
-    /// (The unit's own random numbers: see [`Unit::rng`].)
-    fn random(&mut self, lo: i32, hi: i32) -> i32 {
-        self.unit.rng.range_i32(lo, hi)
-    }
-
-    fn get_value(&mut self, instance: &CobInstance, id: i32, args: [i32; 4]) -> i32 {
+    fn get_value(&self, instance: &CobInstance, id: i32, args: [i32; 4]) -> i32 {
         use value::*;
-        let u = &*self.unit;
+        let u = self.unit;
         match id {
             ACTIVATION => u.activated as i32,
             STANDING_MOVE_ORDERS => u.move_state as i32,
@@ -287,6 +292,21 @@ impl CobHost for UnitHost<'_> {
             _ => 0,
         }
     }
+}
+
+impl CobHost for UnitHost<'_> {
+    fn now_ms(&self) -> i64 {
+        self.now_ms
+    }
+
+    /// (The unit's own random numbers: see [`Unit::rng`].)
+    fn random(&mut self, lo: i32, hi: i32) -> i32 {
+        self.unit.rng.range_i32(lo, hi)
+    }
+
+    fn get_value(&mut self, instance: &CobInstance, id: i32, args: [i32; 4]) -> i32 {
+        Asked { unit: self.unit, unit_type: self.unit_type, world: self.world, lookup: self.lookup, max_id: self.max_id, allies: self.allies }.get_value(instance, id, args)
+    }
 
     fn set_value(&mut self, id: i32, v: i32) {
         use value::*;
@@ -337,8 +357,43 @@ impl CobHost for UnitHost<'_> {
     }
 
     fn emit_sfx(&mut self, instance: &CobInstance, piece: usize, kind: i32) {
-        if let Some(pos) = self.piece_pos(instance, piece as i32) {
+        if let Some(pos) = piece_pos(self.unit, self.unit_type, instance, piece as i32) {
             self.events.push(SimEvent::Sfx { unit: self.unit.id, pos, kind });
         }
     }
+}
+
+/// The host of a function tried on a copy of a unit's script ([`CobInstance::trial`]): it answers
+/// what the script asks as the unit's own host does, from a copy of the unit's random numbers, and
+/// does nothing: no value set, no flash, effect or sound, nothing attached or dropped. (Where a
+/// weapon's fire function puts the piece its shot leaves from: `Sim::fire`.)
+pub struct TrialHost<'a> {
+    pub unit: &'a Unit,
+    pub unit_type: &'a UnitType,
+    pub world: &'a World,
+    pub now_ms: i64,
+    pub lookup: &'a dyn Fn(i32) -> Option<OtherUnit>,
+    pub max_id: i32,
+    pub allies: u64,
+    pub rng: crate::rng::Rng,
+}
+
+impl CobHost for TrialHost<'_> {
+    fn now_ms(&self) -> i64 {
+        self.now_ms
+    }
+
+    fn random(&mut self, lo: i32, hi: i32) -> i32 {
+        self.rng.range_i32(lo, hi)
+    }
+
+    fn get_value(&mut self, instance: &CobInstance, id: i32, args: [i32; 4]) -> i32 {
+        Asked { unit: self.unit, unit_type: self.unit_type, world: self.world, lookup: self.lookup, max_id: self.max_id, allies: self.allies }.get_value(instance, id, args)
+    }
+
+    fn set_value(&mut self, _id: i32, _value: i32) {}
+
+    fn explode(&mut self, _instance: &CobInstance, _piece: usize, _flags: i32) {}
+
+    fn emit_sfx(&mut self, _instance: &CobInstance, _piece: usize, _kind: i32) {}
 }

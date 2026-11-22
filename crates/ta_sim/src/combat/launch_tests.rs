@@ -1,17 +1,22 @@
-//! Missiles as their weapons' speeds say. Made-up units and weapons on flat ground.
+//! Missiles as their weapons' speeds say, and shots leaving from where their scripts put their
+//! firing pieces. Made-up units and weapons on flat ground.
 
 use super::*;
 use std::sync::{
     Arc,
     atomic::{AtomicU32, Ordering},
 };
+use ta_formats::cob::{CobFunction, CobScript, op};
 
 use crate::Command;
+use crate::cob::CobProgram;
+use crate::defs::{ModelDef, PieceDef};
 
-/// Weapons for these tests: a vertical launcher whose missiles leave faster than their top
+/// Weapons for these tests: a gun; a vertical launcher whose missiles leave faster than their top
 /// speed (a negative `weaponvelocity`) and slow down as they fly (`weaponacceleration` negative);
 /// the same, gathering speed as TA's launchers do; and one launched "upright" at a negative speed.
 const WEAPONS: &str = "
+    [GUN] { range=400; reloadtime=1; weaponvelocity=500; rendertype=0; [DAMAGE] { default=1; } }
     [SLOWING] { range=600; reloadtime=2; rendertype=1; vlaunch=1; tracks=1; selfprop=1; twophase=1;
         startvelocity=600; weaponvelocity=-5; weaponacceleration=-60; turnrate=60000;
         weapontimer=0.5; flighttime=3; areaofeffect=40; [DAMAGE] { default=1; } }
@@ -177,4 +182,77 @@ fn a_missile_launched_upright_at_a_negative_speed_drops_straight_down() {
     assert!(fell.windows(2).all(|p| p[1].y < p[0].y), "falling: {fell:?}");
     let (p, _) = sim.spent.iter().find(|(p, _)| p.owner == dropper).expect("gone off within two seconds");
     assert!(p.age < 30 && (p.pos.y - below.y).abs() <= Fx::from_int(1), "on the ground under it: {:?}", p.pos);
+}
+
+/// A unit's script that moves its firing piece away as it aims and back as it fires (TA:
+/// Escalation's C.O.R.E. sends its launch points far off as it aims, and brings back the one firing):
+/// the shot leaves from where the fire function puts the piece. (Its position read before the fire
+/// function ran, the shot left from far off the map and was gone at once.) The query, asked before
+/// the fire function runs, names the piece that function brings back: here two, the fire function
+/// changing which the next shot takes.
+#[test]
+fn a_shot_leaves_from_where_the_fire_script_puts_its_firing_piece() {
+    let mut sim = game_of(&[("GUNNER", "Weapon1=GUN; Category=GROUND;"), ("TARGET", "Category=GROUND;")]);
+    sim.cheats_allowed = true;
+    sim.step(&[Command::Cheat { player: 1, cheat: crate::Cheat::Invulnerable(true) }]);
+    // Its model: a base and two muzzles on it, 12 px either side and 20 up, 16 ahead.
+    let pieces = vec!["base".to_string(), "left".to_string(), "right".to_string()];
+    let mut script = CobScript { pieces: pieces.clone(), static_var_count: 1, ..Default::default() };
+    let function = |script: &mut CobScript, name: &str, code: &[u32]| {
+        script.functions.push(CobFunction { name: name.into(), offset: script.code.len() as u32 });
+        script.code.extend_from_slice(code);
+    };
+    let far = (3000 * 65536) as u32;
+    let move_now = |piece: u32, to: u32| [op::PUSH_CONSTANT, to, op::MOVE_NOW, piece, 0];
+    // AimPrimary: both muzzles 3,000 px off, aimed. FirePrimary: the one static 0 names back, the
+    // other next. QueryPrimary: the one static 0 names (1 left, 2 right).
+    function(&mut script, "Create", &[op::PUSH_CONSTANT, 1, op::POP_STATIC, 0, op::PUSH_CONSTANT, 0, op::RETURN]);
+    function(&mut script, "AimPrimary", &[&move_now(1, far)[..], &move_now(2, far), &[op::PUSH_CONSTANT, 1, op::RETURN]].concat());
+    let back = |piece: u32, next: u32| [&[op::PUSH_STATIC, 0, op::PUSH_CONSTANT, piece, op::SET_EQUAL, op::JUMP_IF_FALSE, 0][..], &move_now(piece, 0), &[op::PUSH_CONSTANT, next, op::POP_STATIC, 0, op::PUSH_CONSTANT, 0, op::RETURN]].concat();
+    let mut fire = back(1, 2);
+    let to_right = script.code.len() as u32 + fire.len() as u32;
+    // (Not the left: on to the right's check.)
+    fire[6] = to_right;
+    fire.extend(back(2, 1));
+    let end = script.code.len() as u32 + fire.len() as u32;
+    fire[to_right as usize - script.code.len() + 6] = end;
+    fire.extend([op::PUSH_CONSTANT, 0, op::RETURN]);
+    function(&mut script, "FirePrimary", &fire);
+    function(&mut script, "QueryPrimary", &[op::CREATE_LOCAL, op::PUSH_STATIC, 0, op::POP_LOCAL, 0, op::PUSH_CONSTANT, 0, op::RETURN]);
+    let gunner_type = sim.types.id("GUNNER").unwrap();
+    {
+        let t = &mut Arc::get_mut(&mut sim.types).unwrap().types[gunner_type];
+        t.model = Arc::new(ModelDef {
+            pieces: vec![
+                PieceDef { name: "base".into(), parent: None, offset: FxVec3::ZERO, top: Fx::ZERO },
+                PieceDef { name: "left".into(), parent: Some(0), offset: FxVec3::from_ints(12, 20, 16), top: Fx::ZERO },
+                PieceDef { name: "right".into(), parent: Some(0), offset: FxVec3::from_ints(-12, 20, 16), top: Fx::ZERO },
+            ],
+            height: Fx::from_int(24),
+            ..Default::default()
+        });
+        t.model_to_cob = vec![Some(0), Some(1), Some(2)];
+        t.script = Some(Arc::new(CobProgram::new(script, &pieces)));
+    }
+    let gunner = spawn(&mut sim, "GUNNER", 0, 400, 400);
+    spawn(&mut sim, "TARGET", 1, 400, 650);
+    let gun = sim.unit(gunner).unwrap().pos;
+    let mut muzzles = Vec::new();
+    for _ in 0..30 * 6 {
+        sim.step(&[]);
+        for e in sim.take_events() {
+            if let SimEvent::WeaponFired { unit, pos, .. } = e
+                && unit == gunner
+            {
+                muzzles.push(pos);
+            }
+        }
+    }
+    assert!(muzzles.len() >= 3, "it fires: {} shots", muzzles.len());
+    for (i, at) in muzzles.iter().enumerate() {
+        assert!(at.distance(gun) < Fx::from_int(40), "shot {i} leaves from the muzzle the script brought back, by the gun: {at:?} (the gun at {gun:?})");
+    }
+    // (Facing south, the left muzzle is at -x... whichever: the shots alternate between the two.)
+    assert!(muzzles.windows(2).all(|m| m[0].x != m[1].x), "from one muzzle and the other in turn: {muzzles:?}");
+    assert_eq!(muzzles[0].x, muzzles[2].x);
 }
