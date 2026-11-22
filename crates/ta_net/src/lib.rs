@@ -104,10 +104,12 @@ pub use transport::{Client, Host, HostEvent};
 /// leaned to; 112: simulation 107, factories' ways out, scripts holding their units still, weapons'
 /// only targets;
 /// 113: simulation 108, adjacency, engineering stations working round them by
-/// themselves, and the computer players building beside what their buildings help.)
+/// themselves, and the computer players building beside what their buildings help; 114:
+/// simulation 109, missiles' speeds from their start towards their top speed, and shots leaving
+/// from where the fire functions put their firing pieces.)
 /// [`Msg::Hello`] and [`Refusal::Version`] keep their layout, so builds of other protocols are
 /// still told why they cannot meet.
-pub const PROTOCOL: u32 = 113;
+pub const PROTOCOL: u32 = 114;
 pub const DEFAULT_PORT: u16 = 7890;
 /// Ticks between state hash reports (which double as progress reports).
 pub const HASH_INTERVAL: u64 = 15;
