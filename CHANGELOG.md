@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Added
+- A battle the game crashes in is kept as a replay, as a battle finished or left is, and the crash
+  report (`logs\crash.txt`) names its file: watched, it plays up to the moment of the crash, which
+  helps tell what went wrong. Attach both to a report.
 - Adjacency: the Supreme Commander factions' structures give the structures of their player beside
   them bonuses, as in Forged Alliance. Power generators cut what the factories, upgrading buildings
   and silos beside them pay to build, the upkeep of radars, fabricators and extractors, the energy

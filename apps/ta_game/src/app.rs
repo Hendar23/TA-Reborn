@@ -43,7 +43,7 @@ pub fn run(args: Args, vfs: Vfs, mods: crate::record_mods::InPlay, config: ta_co
     event_loop.run_app(&mut app)?;
     app.goodbye();
     crate::photo::wait_for_saves(std::time::Duration::from_secs(5));
-    match app.error {
+    match app.error.take() {
         Some(e) => Err(e),
         None => Ok(()),
     }
@@ -74,6 +74,26 @@ impl App {
         }
         if let Some(lobby) = state.menu.lobby.as_mut() {
             lobby.goodbye(wait);
+        }
+    }
+}
+
+/// The game stopping on a crash (a panic unwinding out of the window's loop, after the panic
+/// hook's report): the battle under way is kept as a replay, as one left would be, and the
+/// report names it. (Watched, it plays to where the crash came: a crash of the simulation's
+/// comes again there, the report's best witness.)
+impl Drop for App {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let Some(state) = self.state.as_ref() else { return };
+        let Some(path) = state.keep_crashed_battle() else { return };
+        log::error!("the battle's replay was kept: {}", path.display());
+        let report = ta_config::running::profile_root().join("logs").join("crash.txt");
+        if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(&report) {
+            use std::io::Write;
+            let _ = writeln!(file, "\nthe battle's replay was kept: {}", path.display());
         }
     }
 }
@@ -5322,6 +5342,11 @@ impl State {
         if self.screen == Screen::Space {
             return self.space_frame(event_loop);
         }
+        // `TA_CRASH_AT=<frame>`: the game stops there as on a crash, for trying the crash's
+        // report and the battle's replay kept with it.
+        if crash_asked_at() == Some(self.frames) {
+            panic!("TA_CRASH_AT: a crash asked for at frame {}", self.frames);
+        }
         let now = Instant::now();
         // (A film moves the battle on a picture's worth a frame, however long the frame takes.)
         let dt = self.film.as_ref().map(|f| f.dt()).or_else(|| self.capture_dt()).unwrap_or_else(|| (now - self.last_frame).as_secs_f32().min(0.1));
@@ -8664,6 +8689,19 @@ impl State {
             }
         }
     }
+
+    /// The battle under way kept as a replay when the game stops on a crash (`App`'s drop): as
+    /// [`Self::archive_replay`] keeps one, nothing else saved (unwinding, nothing here may
+    /// fail loudly). Where it was written.
+    fn keep_crashed_battle(&self) -> Option<std::path::PathBuf> {
+        let g = &self.game;
+        if self.screen != Screen::Playing || self.benchmark.is_some() || !g.keeps_replay() || !self.script.is_empty() {
+            return None;
+        }
+        let ticks = g.record.snapshot()?;
+        let record = crate::replay::Record::new(crate::replay::RecordKind::Replay, self.assets.data_hash, self.assets.mods.record(), g.setup.clone(), ticks, g.sim.tick, record_title(g, &self.assets)).with_profile(g);
+        record.write().inspect_err(|e| log::warn!("could not keep the crashed battle's replay: {e}")).ok()
+    }
 }
 
 
@@ -8975,6 +9013,13 @@ fn hold_to_map(camera: &mut Camera, map: Vec2) {
 /// then).
 fn fit(value: f32, lo: f32, hi: f32) -> f32 {
     if lo <= hi { value.clamp(lo, hi) } else { (lo + hi) * 0.5 }
+}
+
+/// `TA_CRASH_AT=<frame>`: the frame the game is to crash at, for trying its crash report. Read
+/// once.
+fn crash_asked_at() -> Option<u32> {
+    static AT: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *AT.get_or_init(|| std::env::var("TA_CRASH_AT").ok().and_then(|v| v.trim().parse().ok()))
 }
 
 /// `TA_TIME=<hours>`: the time of day for captures, over anything else. Read once.
