@@ -8,6 +8,8 @@
 mod compatibility;
 pub use compatibility::Compatibility;
 
+pub mod adjacency;
+pub mod enhancement;
 pub mod feature;
 pub mod font;
 pub mod map;
@@ -26,9 +28,11 @@ use ta_formats::image::Palette;
 use ta_formats::tdf::{self, TdfDocument, TdfSection};
 use ta_vfs::Vfs;
 
+pub use adjacency::{AdjacencyAffect, AdjacencyDef};
+pub use enhancement::EnhancementDef;
 pub use feature::FeatureDef;
 pub use map::MapInfo;
-pub use unit::UnitDef;
+pub use unit::{ExitDef, UnitDef};
 pub use weapon::{RenderType, STRATEGIC_CLASS, WeaponDef};
 
 /// Largest supported unit, feature or movement-class side, in 16-pixel map cells.

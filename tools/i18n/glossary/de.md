@@ -709,3 +709,26 @@ konnte nicht erstellt werden"); other counts read for any number ("nicht erstell
 | with this (dialog) closed / the launcher's footer | bei geschlossenem Dialog / die Statusleiste des Launchers |
 | the commanders' enhancements / upgrading buildings in place | die Erweiterungen der Kommandanten / das Aufrüsten von Gebäuden an Ort und Stelle |
 | shields / stealth fields / teleporting | Schilde / Tarnkappenfelder (as Tarnkappe, TA's stealth; tarnen is cloak) / Teleportation |
+| experimental features / EXPERIMENTAL (tag) | experimentelle Funktionen / EXPERIMENTELL |
+
+## Upgrades in place and the commanders' enhancements (`hud/enhance.rs`, `hud/deck.rs`, `hud/info.rs`, `orders.rs`, `hud_classic.rs`)
+
+A building upgrading itself into its higher-tech version is aufrüsten, as "das Aufrüsten von Gebäuden
+an Ort und Stelle" above; transitive, so the building "wird zu {name} aufgerüstet" (status lines,
+"Lässt sich … zu {name} aufrüsten"), the noun Aufrüstung. A commander's enhancements are Erweiterungen,
+built into a Steckplatz (as an Erweiterungssteckplatz: computer words, einbauen / ausbauen), one per
+slot; the commander's status lines are active ("Baut {name} ein: {pct}%", "Baut {name} aus").
+Refusals after "Nicht ausführbar: " stay lower-case fragments ("hat keine Bauleistung").
+
+| English | Deutsch |
+|---|---|
+| upgrade (in place) / UPGRADE (button) / UPGR (classic panel) | Aufrüsten / AUFRÜSTEN / AUFR. |
+| upgrade into {name} / the upgrade under way | zu {name} aufrüsten / die laufende Aufrüstung |
+| enhancement / ENHANCE (tab, button) / ENH / ENHANCEMENTS | Erweiterung / ERWEITERN / ERW. / ERWEITERUNGEN |
+| slot (an enhancement's: LCH, RCH, Back) | Steckplatz ("Steckplatz {slot}", "eines pro Steckplatz") |
+| install / take out (an enhancement) / installed / being installed | einbauen / ausbauen / eingebaut / wird eingebaut |
+| on its own build power | mit eigener Bauleistung |
+| Stop calls it off, its metal back | Stopp bricht ab und erstattet das Metall |
+| Shift: queued (in a tip's hints) | Shift: einreihen |
+| hit points / mends (its own) | Lebenspunkte / regeneriert |
+| Builds {n} more kinds: (an enhancement's new build options) | Neue Bauoptionen ({n}): (reads for any number) |

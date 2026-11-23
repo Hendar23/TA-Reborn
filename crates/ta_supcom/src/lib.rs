@@ -10,9 +10,11 @@
 //!
 //! Its factions' units are read too (docs/SUPCOM_UNITS.md), to be made into a mod of TA units:
 //! - [`unit`]: their blueprints, with their weapons' [`projectile`]s and what their scripts say
-//!   ([`behaviour`]);
+//!   ([`behaviour`]; what they move as the units work, [`motions`]);
+//! - [`adjacency`]: what their structures give the structures beside them;
 //! - [`scm`], [`sca`]: their meshes and animations.
 
+pub mod adjacency;
 pub mod behaviour;
 pub mod convert;
 /// (Read as TA Reborn reads textures of its own: `ta_formats::dds`.)
@@ -22,6 +24,7 @@ pub mod files;
 pub mod install;
 pub mod lua;
 pub mod map;
+pub mod motions;
 pub mod projectile;
 pub mod sca;
 pub mod scd;

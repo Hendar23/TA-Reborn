@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
 use ta_data::unit::{MAX_WEAPONS, WeaponFunction};
-use ta_data::{GameData, UnitDef};
+use ta_data::{AdjacencyAffect, GameData, UnitDef};
 use ta_formats::cob::CobScript;
 use ta_formats::model3do::Model3do;
 
@@ -98,6 +98,9 @@ pub struct Callins {
     pub target_cleared: bool,
     /// Builders: the piece the nano spray leaves from (factories alternate between two).
     pub query_nano_piece: bool,
+    /// Told an enhancement installed or removed (`SetEnhancement(index, on)`: TA Reborn's own, for
+    /// the parts it shows).
+    pub set_enhancement: bool,
     /// The names its script gives its weapons' functions, by slot and [`WeaponFunction`]: TA's
     /// (`AimPrimary`) or Spring's (`AimWeapon1`), whichever it defines (TA's where neither).
     pub weapon_functions: [[&'static str; 4]; MAX_WEAPONS],
@@ -120,6 +123,7 @@ impl Callins {
             set_sfx_occupy: has("SetSFXoccupy"),
             target_cleared: has("TargetCleared"),
             query_nano_piece: has("QueryNanoPiece"),
+            set_enhancement: has("SetEnhancement"),
         }
     }
 }
@@ -163,6 +167,12 @@ impl CategorySet {
     #[inline]
     pub fn intersects(&self, other: &CategorySet) -> bool {
         self.0.iter().zip(&other.0).fold(0, |m, (a, b)| m | a & b) != 0
+    }
+
+    /// Whether this set has every token of `other`.
+    #[inline]
+    pub fn contains_all(&self, other: &CategorySet) -> bool {
+        self.0.iter().zip(&other.0).all(|(a, b)| a & b == *b)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -261,6 +271,11 @@ pub struct UnitType {
     /// charges, `NOTSUB`). Such a weapon past the first keeps to its own targets on an attack
     /// order naming one of them (`Sim::keeps_to_own_targets`).
     pub own_bad_targets: [bool; MAX_WEAPONS],
+    /// The only units each weapon takes on, of its own accord or by order (`OnlyTargetCategory<n>`):
+    /// none, any (TA's own). A weapon with some never fires on the ground or on a unit of none of
+    /// them, nor on one where it cannot hit it (an anti-air gun on an aircraft landed):
+    /// [`crate::Sim::only_allows`].
+    pub weapon_only_masks: [Option<CategorySet>; MAX_WEAPONS],
     /// What it never goes after (`NoChaseCategory`: TA's ground units list VTOL).
     pub no_chase_mask: CategorySet,
     /// Gunships: aircraft that hover at range while attacking.
@@ -275,6 +290,133 @@ pub struct UnitType {
     /// It mends itself (TA's `HealTime`, its Commanders' 27): the ticks it takes to regain
     /// [`HEAL_POINTS`] hit points, `HealTime` seconds; 0, it doesn't (`Sim::heal_units`).
     pub heal_ticks: u64,
+    /// The type it becomes when upgraded in place (`UnitDef::upgrades_to`: Supreme Commander's
+    /// factories, extractors, radars), if one of that name is in the game (never itself).
+    pub upgrades_to: Option<usize>,
+    /// What it may install on itself (`UnitDef::enhancements`, in their order), compiled.
+    pub enhancements: Vec<Enhancement>,
+    /// The slots they take, by name, in the order first named (an [`Enhancement::slot`] indexes it).
+    pub enhancement_slots: Vec<String>,
+    /// A factory's ways out (`UnitDef::exits`, in their order), compiled: none, its units drive
+    /// out of its front, as TA's do.
+    pub exits: Vec<Exit>,
+    /// The way it faces while a factory with ways out builds it, whichever way it leaves by
+    /// (`UnitDef::build_heading`, angle units from the pad's heading): none, it faces its way.
+    pub build_heading: Option<i32>,
+    /// What it gives the buildings of its player beside it (`UnitDef::adjacency`: Supreme
+    /// Commander's adjacency), compiled; those of an affect not played left out. None of TA's.
+    pub adjacency: Vec<AdjacencyBonus>,
+    /// Its size class for what it takes of them (`AdjacencySize`; 0: none).
+    pub adjacency_size: u32,
+}
+
+/// One of a factory's ways out (`ta_data::ExitDef`), compiled: where it leads (pixels from the
+/// factory's middle, at its heading 0), the heading a unit made for it takes beside the pad's, and
+/// its ramp (pixels along the way from the pad: the pad's height kept to the first, the ground
+/// reached at the second).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Exit {
+    pub to: FxVec3,
+    pub heading: i32,
+    pub ramp: (Fx, Fx),
+}
+
+impl Exit {
+    fn of(e: &ta_data::ExitDef) -> Exit {
+        let px = |v: f64| Fx::from_f64(v.clamp(-1.0e6, 1.0e6));
+        Exit { to: FxVec3::new(px(e.x), Fx::ZERO, px(e.z)), heading: heading_of_degrees(e.heading), ramp: (px(e.ramp.0.max(0.0)), px(e.ramp.1.max(e.ramp.0).max(0.0))) }
+    }
+}
+
+/// A heading in degrees as a unit file gives it (0 the front, 90 towards +x), in angle units.
+fn heading_of_degrees(degrees: f64) -> i32 {
+    crate::fixed::wrap_angle(((degrees.clamp(-1.0e6, 1.0e6) * 65536.0 / 360.0).round() as i64).rem_euclid(65536) as i32)
+}
+
+/// One bonus a building gives the buildings beside it (`ta_data::AdjacencyDef`), compiled: what it
+/// changes in them, the share it adds (16.16), and which take it (`sim/adjacency.rs`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdjacencyBonus {
+    pub affect: AdjacencyAffect,
+    pub add: Fx,
+    /// The size class of those that take it (0: any).
+    pub size: u32,
+    /// The `Category` tokens a building that takes it must have, every one; none where one of
+    /// them no unit's `Category` names (or past what a [`CategorySet`] holds): nothing takes it.
+    pub category: Option<CategorySet>,
+}
+
+/// One of a unit type's enhancements (`ta_data::EnhancementDef`, its `def` beside it in the unit
+/// type's), compiled: its slot, prerequisite, price and work, and what it adds to the unit while
+/// installed (`crate::unit::Boost` sums them).
+#[derive(Clone, Debug)]
+pub struct Enhancement {
+    pub slot: u8,
+    /// The one it needs installed first (an index of the type's), if any it names is there.
+    pub prerequisite: Option<u16>,
+    pub cost_metal: Fx,
+    pub cost_energy: Fx,
+    /// The work it takes, as a unit's build work: `BuildTime` in worker-time ticks (raw 16.16).
+    pub build_work: u64,
+    pub max_health: Fx,
+    /// Hit points a second it mends.
+    pub heal_rate: Fx,
+    /// Build power added: work a tick (raw 16.16), and points a tick.
+    pub work_rate: u64,
+    pub worker_rate: Fx,
+    pub sight: Fx,
+    pub radar: Fx,
+    pub sonar: Fx,
+    /// Units added to its menu (and what its computer player may build).
+    pub build_options: Vec<usize>,
+    /// The weapon each slot fires while it is installed (none: as it was).
+    pub weapons: [Option<usize>; MAX_WEAPONS],
+    /// One of those weapons builds missiles to launch.
+    pub stockpile: bool,
+    /// It lets the unit cloak: energy a second cloaked, a second cloaked on the move, and how
+    /// near an enemy sees through it.
+    pub cloak: Option<(Fx, Fx, Fx)>,
+    pub stealth: bool,
+}
+
+/// A type's enhancements compiled (with the names of the slots they take).
+fn compile_enhancements(u: &UnitDef, data: &GameData) -> (Vec<Enhancement>, Vec<String>) {
+    let mut slots: Vec<String> = Vec::new();
+    let out = u
+        .enhancements
+        .iter()
+        .map(|e| {
+            let slot = match slots.iter().position(|s| s.eq_ignore_ascii_case(&e.slot)) {
+                Some(k) => k,
+                None => {
+                    slots.push(e.slot.clone());
+                    slots.len() - 1
+                }
+            };
+            let weapons: [Option<usize>; MAX_WEAPONS] = std::array::from_fn(|k| e.weapons[k].as_deref().and_then(|w| data.weapon_id(w)));
+            let build_time = Fx::from_f64(e.build_time.max(1.0));
+            Enhancement {
+                slot: slot.min(u8::MAX as usize) as u8,
+                prerequisite: (!e.prerequisite.is_empty()).then(|| u.enhancements.iter().position(|o| o.id.eq_ignore_ascii_case(&e.prerequisite))).flatten().map(|i| i as u16),
+                cost_metal: Fx::from_f64(e.build_cost_metal),
+                cost_energy: Fx::from_f64(e.build_cost_energy),
+                build_work: (build_time.0.max(1) as u64).saturating_mul(TICKS_PER_SECOND as u64),
+                max_health: Fx::from_f64(e.max_damage),
+                heal_rate: Fx::from_f64(e.heal_rate),
+                work_rate: Fx::from_f64(e.worker_time).0.max(0) as u64,
+                worker_rate: per_tick(e.worker_time),
+                sight: Fx::from_f64(e.sight_distance),
+                radar: Fx::from_f64(e.radar_distance),
+                sonar: Fx::from_f64(e.sonar_distance),
+                build_options: e.build_options.iter().filter_map(|b| data.unit_id(b)).collect(),
+                weapons,
+                stockpile: weapons.iter().flatten().any(|&w| data.weapons[w].stockpile),
+                cloak: e.cloaks().then(|| (Fx::from_f64(e.cloak_cost), Fx::from_f64(e.cloak_cost_moving.max(e.cloak_cost)), Fx::from_f64(e.min_cloak_distance.max(8.0)))),
+                stealth: e.stealth,
+            }
+        })
+        .collect();
+    (out, slots)
 }
 
 /// What a unit that mends itself regains every `HealTime` seconds (its [`UnitType::heal_ticks`]):
@@ -363,6 +505,9 @@ pub struct UnitTypes {
     pub(crate) target_reach: Fx,
     /// Whether any type mends itself ([`UnitType::heal_ticks`]).
     pub(crate) heals: bool,
+    /// Whether any type gives the buildings beside it a bonus ([`UnitType::adjacency`]): without,
+    /// nothing of adjacency runs (TA's own games).
+    pub(crate) adjacency: bool,
     by_name: FxHashMap<String, usize>,
     /// Upper-case `Category` token → its number in a [`CategorySet`].
     categories: FxHashMap<String, usize>,
@@ -448,6 +593,7 @@ impl UnitTypes {
             // TA: The Final Frontier's `AAILAB`, have nothing on a menu.)
             let is_builder = can_build && (u.builder || !ai_build_options.is_empty());
             let is_factory = is_builder && locomotion == Locomotion::Static && !ai_build_options.is_empty();
+            let (enhancements, enhancement_slots) = compile_enhancements(u, data);
             types.push(UnitType {
                 id,
                 name: u.name.clone(),
@@ -503,6 +649,7 @@ impl UnitTypes {
                     list => token_set(&categories, target_tags(u, list)),
                 }),
                 own_bad_targets: std::array::from_fn(|k| !u.weapon_bad_target_category[k].trim().is_empty()),
+                weapon_only_masks: std::array::from_fn(|k| u.weapon_only_target_category[k].as_deref().map(|list| token_set(&categories, list))),
                 no_chase_mask: token_set(&categories, target_tags(u, &u.no_chase_category)),
                 hover_attack: u.hover_attack,
                 transport_capacity: if u.transport_capacity == 0 { 0 } else if locomotion == Locomotion::Air { 1 } else { u.transport_capacity },
@@ -510,6 +657,20 @@ impl UnitTypes {
                 big_walker,
                 // (`HealTime` seconds, in ticks: at least one; none, or none given, no mending.)
                 heal_ticks: if u.heal_time > 0.0 { ((u.heal_time * TICKS_PER_SECOND as f64).round() as u64).max(1) } else { 0 },
+                upgrades_to: data.unit_id(&u.upgrades_to).filter(|&to| to != id),
+                enhancements,
+                enhancement_slots,
+                // (A factory's alone: a building that makes nothing has no unit to see out.)
+                exits: if is_factory { u.exits.iter().map(Exit::of).collect() } else { Vec::new() },
+                build_heading: u.build_heading.map(heading_of_degrees),
+                adjacency: u
+                    .adjacency
+                    .iter()
+                    .filter_map(|a| {
+                        Some(AdjacencyBonus { affect: a.affect?, add: Fx::from_f64(a.add), size: a.size, category: all_tokens(&categories, &a.category) }).filter(|b| !b.add.is_zero())
+                    })
+                    .collect(),
+                adjacency_size: u.adjacency_size,
                 def: u.clone(),
             });
         }
@@ -518,8 +679,10 @@ impl UnitTypes {
         let airbase_reach = types.iter().filter(|t| t.def.is_airbase).map(|t| t.radius + Fx::from_int(24)).max().unwrap_or(Fx::ZERO);
         let collision_reach = types.iter().map(UnitType::collision_radius).max().unwrap_or(Fx::ZERO);
         let target_reach = types.iter().map(|t| t.radius).max().unwrap_or(Fx::ZERO);
-        let heals = types.iter().any(|t| t.heal_ticks > 0);
-        UnitTypes { types, by_name, categories, airbase_reach, collision_reach, target_reach, heals }
+        // (A unit mends itself by its type's `HealTime`, or by an enhancement's `HealRate`.)
+        let heals = types.iter().any(|t| t.heal_ticks > 0 || t.enhancements.iter().any(|e| e.heal_rate > Fx::ZERO));
+        let adjacency = types.iter().any(|t| !t.adjacency.is_empty());
+        UnitTypes { types, by_name, categories, airbase_reach, collision_reach, target_reach, heals, adjacency }
     }
 
     pub fn get(&self, id: usize) -> &UnitType {
@@ -537,6 +700,22 @@ impl UnitTypes {
     /// line; tokens no unit's `Category` names are left out).
     pub fn categories(&self, list: &str) -> CategorySet {
         token_set(&self.categories, list)
+    }
+
+    /// The types a unit of type `from` becomes upgraded in place, step by step (`upgrades_to`,
+    /// then what that upgrades to...), in order: Supreme Commander's tech 1 factory its tech 2 and
+    /// then its tech 3. None for TA's own units.
+    pub fn upgrade_chain(&self, from: usize) -> Vec<usize> {
+        let mut chain = Vec::new();
+        let mut at = from;
+        while let Some(next) = self.types.get(at).and_then(|t| t.upgrades_to) {
+            if next == from || chain.contains(&next) {
+                break;
+            }
+            chain.push(next);
+            at = next;
+        }
+        chain
     }
 
     pub fn by_name(&self, name: &str) -> Option<&UnitType> {
@@ -558,6 +737,18 @@ fn token_set(categories: &FxHashMap<String, usize>, list: &str) -> CategorySet {
         }
     }
     set
+}
+
+/// The set of every `Category`-style token in `list`: none where one of them is unknown (no
+/// unit's `Category` names it) or past the set's capacity, as nothing could then have them all.
+fn all_tokens(categories: &FxHashMap<String, usize>, list: &str) -> Option<CategorySet> {
+    let mut set = CategorySet::EMPTY;
+    for t in list.split_whitespace() {
+        if !set.insert(*categories.get(&t.to_ascii_uppercase())?) {
+            return None;
+        }
+    }
+    Some(set)
 }
 
 /// TA yard maps list one character per footprint cell: y stays free, c opens with
@@ -661,6 +852,27 @@ impl WeaponType {
     pub fn strikes_a_place(&self) -> bool {
         self.trajectory == Trajectory::Guided && self.def.stockpile && !self.def.interceptor && !self.def.tracks
     }
+
+    /// The speed (px a tick) a missile's `weaponacceleration` takes it to and holds it at: gathering
+    /// speed, its top speed (`weaponvelocity`), or the speed it was launched at (`startvelocity`) if
+    /// that is higher; losing it (a negative acceleration), its top speed, or its launch speed if
+    /// that is lower. A missile launched faster than its top speed is not pulled down to it: TA:
+    /// Escalation's vertical missiles (its missile batteries', battleships', submarines') leave
+    /// their tubes at 360 to 1,280 px a second with a `weaponvelocity` of -1 to -10 and slow down as
+    /// they fly (their flight times end before they would stop); held to their top speed (half a
+    /// pixel a tick, the least a weapon is given) from their first tick, they hung over their
+    /// launchers until their time was up and went off there. One launched upright at a negative
+    /// speed (its pulse bombs, -400 px a second) holds it, falling.
+    pub fn speed_limit(&self) -> Fx {
+        if self.acceleration < Fx::ZERO { self.velocity.min(self.start_velocity) } else { self.velocity.max(self.start_velocity) }
+    }
+
+    /// A missile's speed a tick on from `speed` (px a tick along its way; a vertically launched one's
+    /// climb counts up): its acceleration added, as far as its [`WeaponType::speed_limit`].
+    pub fn speed_after(&self, speed: Fx) -> Fx {
+        let next = speed + self.acceleration;
+        if self.acceleration < Fx::ZERO { next.max(self.speed_limit()) } else { next.min(self.speed_limit()) }
+    }
 }
 
 pub struct WeaponTypes {
@@ -721,6 +933,10 @@ fn fieldable(types: &[UnitType], data: &GameData) -> Vec<bool> {
             continue;
         }
         queue.extend(types[i].ai_build_options.iter().copied().filter(|&o| !seen[o]));
+        // (And what it upgrades into in place: Supreme Commander's tech 2 and 3 factories,
+        // which nothing builds outright; and what its enhancements add to its menu.)
+        queue.extend(types[i].upgrades_to.filter(|&o| !seen[o]));
+        queue.extend(types[i].enhancements.iter().flat_map(|e| e.build_options.iter().copied()).filter(|&o| !seen[o]));
     }
     seen
 }

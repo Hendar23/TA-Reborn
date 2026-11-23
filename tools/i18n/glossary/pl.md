@@ -662,4 +662,29 @@ te kolory, a także …”, joined by a comma („własną czcionkę, obrazy w t
 | then import these (the IMPORT button's wait reasons) | „a potem zaimportuj wybrane”; „…zaimportuj mapy / frakcje” where the sentence names the other tab's work |
 | UPDATE… / Update: import it again / Made by an older TA Reborn (a mod made by the import) | AKTUALIZUJ… / Aktualizacja: ponowny import / Utworzony przez starszą wersję TA Reborn |
 | but {failed} of its units could not be made | „ale nie udało się utworzyć części jej jednostek (nieudane: {failed})” (count-safe) |
-| commanders' enhancements / upgrading buildings in place / shields / stealth fields / teleporting | ulepszenia dowódców / ulepszanie budynków na miejscu / tarcze / pola niewykrywalności (as „Niewykrywalna: nie widać jej na radarze”) / teleportacja |
+| commanders' enhancements / upgrading buildings in place / shields / stealth fields / teleporting | usprawnienia dowódców (see below) / ulepszanie budynków na miejscu / tarcze / pola niewykrywalności (as „Niewykrywalna: nie widać jej na radarze”) / teleportacja |
+| experimental features / EXPERIMENTAL (tag) | funkcje eksperymentalne / EKSPERYMENTALNE |
+
+## Supreme Commander's upgrades in place and commanders' enhancements (`hud/enhance.rs`, `hud/deck.rs`, `hud/info.rs`, `orders.rs`, `hud_classic.rs`)
+
+Two words kept apart, as in Forged Alliance's own Polish (its enhancement panel „Usprawnienie”,
+„Slot:”, its removals „Usuń …”, its buildings „ulepszony do … wersji”): a building's upgrade is
+ulepszenie, a commander's enhancement usprawnienie. Names ({name}: a unit's or an enhancement's)
+stay in the nominative behind a noun: „do wersji {name}”, „usprawnienie {name}”.
+
+| English | Polski |
+|---|---|
+| upgrade in place (into its higher-tech version) / Upgrade (order, as Atak, Naprawa) | ulepszenie, ulepszanie na miejscu; „Ulepsza się do wersji {name}: {pct}%” / Ulepszenie |
+| UPGRADE / UPGR (TA's 1997 panel) | ULEPSZ / ULEP. |
+| into {name} (an upgrade's target) | do wersji {name} |
+| enhancement(s) / ENHANCEMENTS (heading) | usprawnienie, usprawnienia / USPRAWNIENIA |
+| ENHANCE (the build menu's tab) / ENH (TA's 1997 panel) | USPRAWNIJ / USPR. |
+| slot ({slot}: the data's own name, LCH, RCH, Back) | slot („Slot {slot}”, „jedna na slot”) |
+| install / installed / installing / take out | zainstaluj, instaluje / zainstalowane (neuter: usprawnienie) / instalacja („W trakcie instalacji”) / usuń, usuwa („PPM: usuń”) |
+| {duration} on its own build power | Czas {duration} przy własnej mocy budowy |
+| Stop calls it off, its metal back | Stop przerywa ulepszanie (instalację) i zwraca wydany metal |
+| Shift: queued / queued after the upgrade under way | Shift: do kolejki / do kolejki po trwającym ulepszeniu |
+| refusals after „Nie można wykonać: ” | brak mocy budowy / nie może się ulepszyć do tej wersji / najpierw wymaga innego usprawnienia |
+| more kinds it builds / {more} others | nowe opcje budowy („Nowe opcje budowy ({n}): {names}”) / i jeszcze {more} |
+| hit points (mended a second) | pkt. zdrowia („Regeneruje {n} pkt. zdrowia na sekundę”) |
+| stronger (a weapon) | większa siła ognia (no gender to agree with) |

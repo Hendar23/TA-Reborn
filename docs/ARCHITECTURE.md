@@ -288,7 +288,10 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   untouched (`Sim::throw_clear`: sending each off it and back made thousands of new routes
   in a big battle).
 * **Combat** (`combat.rs`): targets via a uniform grid; aiming through the unit's own
-  `AimPrimary` script; muzzle from `QueryPrimary`; ballistic launch angles solved
+  `AimPrimary` script; the muzzle the piece `QueryPrimary` names, where it is once `FirePrimary`
+  has run as far as its first wait (see FORMATS.md: tried on a copy of the script,
+  `Sim::trial_script` and `host::TrialHost`, which changes nothing; the function itself runs with
+  the unit's other threads, as ever); ballistic launch angles solved
   analytically; projectiles swept against unit spheres, going off where they meet the first
   unit along the tick's flight, or the ground or the sea (`Sim::spent` keeps those that ended,
   and the explosion event says how far through the tick, for the client to draw the last
@@ -352,7 +355,10 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   (`projectiles::torpedo_aim`), as one sent along the straight line up from a submarine ran into
   the sea bed rising to the shallows, and runs at least as far as its range.
   `toairweapon` weapons engage only aircraft, other direct-fire and guided weapons both,
-  shells and bombs only the ground. A weapon takes its bad targets on last, only when no other
+  shells and bombs only the ground; an attack order fires any of them at what it names, but a
+  weapon naming its only targets (`OnlyTargetCategory<n>`, `UnitType::weapon_only_masks`,
+  `Sim::only_allows`, part of `Sim::takes_order`) takes no other, by order either: Supreme
+  Commander's anti-air. A weapon takes its bad targets on last, only when no other
   enemy is in reach, and turns to a better one coming into reach (`Sim::bad_target`,
   `Sim::can_engage`, `Sim::find_target`'s first key): the categories its unit's
   `BadTargetCategory` names, or the weapon's own `wpri_`/`wsec_`/`wspe_badTargetCategory`
@@ -426,6 +432,18 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   back to it first): steered straight at the target from the top of the climb they came in a
   few degrees above the ground and went off against the first hill, building or tall unit in
   front of it, 100 to 500 px short (`tests/nuclear.rs`).
+  A missile's speed goes from its `startvelocity` by its `weaponacceleration` towards its
+  `weaponvelocity` and stops there (`WeaponType::speed_after`, `speed_limit`): TA's gather speed
+  up to their top speed; one launched faster than its top speed is never pulled down to it, and
+  with a negative acceleration slows as it flies, no slower than its top speed (and never turned
+  about). TA: Escalation makes its vertical missiles so (its missile batteries', the Raptor's,
+  battleships', the Abyssal's and Vortex's: 360 to 1,280 px a second out of the tube, a
+  `weaponvelocity` of -1 to -10, slowing by 12 to 300 px a second each second); held to their top
+  speed from the first tick, half a pixel a tick, they hung over their launchers until their
+  flight time was up and went off there, an Abyssal's on itself. Launched upright at a negative
+  speed, a missile goes straight down (its pulse bombs). `tests/mod_missiles.rs` (ignored, with
+  `TA_TEST_MOD`) fires every missile of a mod at an enemy and reports how far they got and where
+  they went off.
 * **Vision** (`vision.rs`): per-player line of sight, radar, sonar and jamming on 32 px
   cells, rebuilt from precomputed disc spans every 6 ticks, plus sticky "explored" bits.
   `Sim::seen_by` gives Visible / Radar / Hidden; automatic targeting ignores hidden units
@@ -453,6 +471,42 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   assist the guarded unit's construction), build, repair, reclaim, capture, load, unload,
   manual fire, stop. Work found automatically that turns out unreachable is remembered and
   skipped.
+* **Upgrades in place** (`sim/upgrade.rs`; a unit type's `UpgradesTo`, Supreme Commander's
+  factories, extractors and radars): `Order::Upgrade(type)` at the front of a unit's orders builds
+  that type on the unit itself (`Unit::self_work`: the job and its work, of the type's
+  `build_work`), with its own `work_rate` and that of builders helping it (guard and repair orders
+  on it: `Sim::needs_work`, `apply_build_power`), paid by `Economy::spend_work` as construction is,
+  so it stalls with the economy. A factory makes nothing meanwhile (`update_factory` returns while
+  its first order is an upgrade or an enhancement to install; a factory's orders take both,
+  `order_unit`); anything else works on. Its guards help with it, not with the unit on its pad
+  (`update_guard_order`; a guard's help with that gives way, `update_repair_order`). A type whose
+  footprint is larger than the unit's upgrades only while no other building stands on the ground it
+  takes besides (`Sim::room_to_become`: refused, or called off, its metal back). The order taken off the front (Stop, an
+  order not queued, `DropOrder`) calls the work off at the unit's next `update_orders`, its metal
+  back (`cancel_self_work`); a capture drops it. Done (`finish_upgrade`): the old unit is taken off
+  the map as given up (`removed`, its ground released at once) and a unit of the new type spawned
+  finished in its place and heading, with the old one's share of health, its orders after the
+  upgrade, a factory's queue, route, repeat and the unit on its pad (re-pointed to it), its states
+  and experience; builders guarding or mending it go on with the new one, and
+  `SimEvent::UnitUpgraded` lets the game carry its selection and control groups over
+  (`Game::carry_over`). `UnitTypes::upgrade_chain` lists a type's steps; orders may name a step past
+  the next (queued after it), which fails if it reaches the front first.
+* **Enhancements** (`sim/enhance.rs`; a unit type's `[ENHANCEMENTS]`, Supreme Commander's
+  commanders'): `Order::Enhance { index, remove }` at the front of a unit's orders installs one as
+  an upgrade is built (`SelfJob::Enhance`, the same `self_work`, helpers, payment, stall and refund),
+  the unit standing; a removal is done at once. `Sim::enhancement_fit` says whether one may be
+  installed (its prerequisite installed, not already there). Installed (`set_enhancement`), it
+  takes its slot in place of the one there, and the unit's figures are made again from its type's
+  and every enhancement installed (`Unit::boost`, a `Boost`: most health, mending, build power,
+  sight, radar, sonar, weapon slots, menu, cloak, stealth; none for a unit with none, so TA's units
+  read their type's). Whatever reads those reads them through the unit (`Unit::max_health`,
+  `weapon_slots`, `work_rate`, `build_options`, `ai_build_options`, `sight`, `radar`, `sonar`,
+  `heal_ticks`, `cloak_costs`, `stealthy`), never the type's alone. Health rises with the most and
+  falls to it; a slot whose weapon changed starts afresh, and a stockpiling launcher swapped or
+  gone takes its missiles and the one under way with it; the script's `SetEnhancement(index, on)`
+  is called; `SimEvent::UnitEnhanced` follows. `Unit::enhancements` is in the checksum. The
+  interface gives an enhancement chosen from a type's list to the selected units of that type
+  alone (`game::enhancement_orders`): the index is the type's.
 * **Standing orders** (`Command::SetStates`, never touching the queue): fire (hold, return,
   at will) and movement. Idle armed units hit from beyond their reach answer by movement
   state: Maneuver advances on the attacker within a 420 px leash and walks back afterwards,
@@ -471,7 +525,11 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   production off the queue takes its frame apart, its metal back. The unit in production rides
   the factory's pad (`QueryBuildInfo`'s piece, `Sim::follow_build_pad`), turned as the pad is
   turned (TA's plants spin it while they build: docs/FORMATS.md; `unit::piece_world_heading`) and
-  keeping the heading it was left with when done, but a ship is built at
+  keeping the heading it was left with when done. A factory with ways out (`[EXITS]`,
+  `UnitType::exits`: Supreme Commander's roll-off points) builds it facing the one nearest where it
+  goes next (`Sim::choose_exit`), on the pad from its first tick, and sends it to that way's end
+  instead of past its front, on the factory's floor as it goes (`Unit::roll_off`, `unit::Way`,
+  `Sim::settle`: the pad's height to the ramp's top, down the ramp to the ground); a ship is built at
   the surface, where it floats once done (a shipyard's pad is under the water, the Core's yard
   22 px deep), and a hovercraft on a pad under the water on it too. Construction aircraft at work
   face what they build and sway round it, as TA's do (`Sim::drift_round`, `Unit::drift`): once
@@ -578,6 +636,41 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   missions and look again a second later. Mended, or its deck lost or switched off, it takes
   off and carries on with its orders (`Sim::end_repair_trip`); a new order (not one queued)
   calls the trip off. Idle aircraft, and those only moved somewhere, don't go looking for a pad.
+* **Adjacency** (`sim/adjacency.rs`; a unit type's `[ADJACENCY]` bonuses and `AdjacencySize`,
+  Supreme Commander's structures'): a finished building gives the finished buildings of its player
+  whose footprints meet its own along an edge (`adjacency::contact`; through `World::building_at`,
+  the cells round a footprint) the bonuses they take: of their size class, every token of the
+  bonus's category theirs, and something of theirs for it to change (`Sim::takes_affect`). Each
+  receiver keeps the shares summed by what they change and who gives them (`Unit::adjacency`, an
+  `Adjacency`; none for TA's units), from at most `AdjacencySize` neighbours, those along the most of
+  its edge first. Found at the economy's end (`Sim::update_adjacency`): the buildings standing
+  otherwise than when last looked at (`Unit::adjacency_key`: finished, alive, of a player, on a
+  footprint) are found in one pass, and they and the buildings round where they stood and stand are
+  looked at again in slot order; with no type giving a bonus (TA's games) nothing of it runs, the
+  game's sums as before. The factor (`Unit::adjacency_factor`: one and the shares, never below none)
+  scales what a builder pays for its work (`apply_build_power`, `work_on_self`, `update_stockpile`;
+  `Unit::metal_saved`, `SelfWork::metal_saved` keep what it was spared, so a frame or an upgrade
+  given up, and a unit its side takes apart (`update_reclaim_unit_order`; an upgraded one keeps its
+  upgrade's), gives back what was paid), upkeep and what is made (`economy_end`), a shot's energy
+  (`Sim::shot_energy`) and a reload (`Sim::fire`), and the unit figures (`flows.rs`) say the same.
+  `Sim::adjacency_given` and `Sim::adjacency_preview` (a building being placed) answer the
+  interface, `Sim::adjacency_bonus` the computer players.
+* **Repair patrols** (`sim/repair_round.rs`): a builder whose `DefaultMissionType` is
+  `RepairPatrol` (TA: Escalation's repair tower upgrades, which its air repair pads make) mends,
+  whenever it has no orders, the nearest damaged unit of its side or an ally's whose footprint is
+  within its reach (finished, not carried, not being taken apart; aircraft too), looked for every
+  half second, an `Order::Repair` put first, standing where it is. A module its pad has taken on (a
+  unit carried by one that carries none, `Sim::module_at_work`) works where it rides: its orders and
+  its nano-lathe's piece go on, where a transport's passengers' don't. (The mission was read and
+  never acted on: the towers, which can neither move, patrol nor guard, stood idle.) A builder
+  whose `DefaultMissionType` is `AssistPatrol` (Supreme Commander's engineering stations) works
+  round it so (`Sim::work_round`): its player's unfinished units and units upgrading in place
+  first (an `Order::Repair` helps build them), then its side's and its allies' damaged units, then
+  wreckage (`Order::Reclaim`), the nearest of each within its reach, none it found out of reach
+  lately (`Unit::unreachable`). What either finds is marked its own (`Unit::auto_work`): the
+  player's next order, queued or not, takes its place (`order_unit`), and its failing is no
+  refusal (`give_up`). Neither kind is an idle builder while it waits for work
+  (`Sim::works_by_itself`; `Game::idle_builders`).
 * **Cheats** (`cheats.rs`): `Command::Cheat { player, cheat }`, taken only when
   `Sim::cheats_allowed` (the client sets it for games with at most one human, so replays of
   them agree). Standing cheats live in `Player::cheats`: double or half damage from the
@@ -1192,26 +1285,47 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
     vertices out with the surface's texture coordinates and normals, shared by the polygons
     round them (a vertex of the library's for each of the 3DO's and its material), none of
     Reborn's kit, caps or rounding. A face's `layer` is its material's slot with no frames (bits
-    16-23 zero): bit 9 of the shader's flags. The paint is one array of BC3 layers of 512² with
-    every mip (`SurfaceTextures`; decoded to RGBA8 where the card has no block compression),
-    three a material (colour; specular and team colour; normals), asked for the first time a
-    model of the material is drawn (`prepare`), read and made BC3 levels on workers of their own
-    (`make_paint`; a texture of another size, or uncompressed, decoded and encoded again), and put
-    in the array by the frames, `FRAME_SHARE` (2 ms) of a frame at most (a film on a fixed clock,
-    `set_paint_waits`, waits for all it asks); kept for the battle and let go as the next starts
-    (`Renderer::release_surface_paint`). The array grows `GROWTH` (32) materials at a time, what
-    it held copied over, in an error scope: refused, it stays as it was and the rest are drawn in
-    their colours on average. A storage buffer tells the shader each slot's layers (`u32::MAX`
-    until read: the face in its colour on average, the vertex's).
+    16-23 zero): bit 9 of the shader's flags. The paint is two arrays of BC3 layers with every
+    mip (`SurfaceTextures`; decoded to RGBA8 where the card has no block compression), one of 512²
+    and a fine one of 1024² (bindings 11 and 13), each of a material's three textures (colour;
+    specular and team colour; normals) a layer of either by its own size: a texture of 1024 or
+    more in the fine one while the paint is fine (`set_fine`: with HD surfaces, from the frame's
+    lighting; never as plain colour; a change lets the paint go), else its 512 levels in the other
+    (`dds::paint_side`). Asked for the first time a model of the material is drawn (`prepare`),
+    read and made BC3 levels on workers of their own (`make_paint`; a texture of another size, or
+    uncompressed, decoded and encoded again), and put in the arrays by the frames, `FRAME_SHARE`
+    (2 ms) of a frame at most (a film on a fixed clock, `set_paint_waits`, waits for all it asks);
+    kept for the battle and let go as the next starts (`Renderer::release_surface_paint`). Each
+    array grows about 32 MB at a time (`GROWTH_BYTES`: 96 layers of 512, 24 of 1024), what it held
+    copied over, in an error scope: the fine one refused, its textures go in the other at 512;
+    that refused, the rest are drawn in their colours on average. A storage buffer tells the
+    shader where each of a slot's three textures is (three words: a layer, `FINE` the top bit for
+    the fine array's; `u32::MAX` until read: the face in its colour on average, the vertex's;
+    `surface_texel`).
     The shader takes the colour (in sRGB), the player's colour where the specular map's alpha
-    says, gloss and mirroring from its green and red (strong mirroring brightens the paint to
-    polished metal: Forged Alliance added the mirrored sky over dark paint), lights from its
-    blue (out when the unit's lights are), and the normal map's relief through the screen-space
-    tangent frame (`mapped_normal`). Ray-traced reflections take the vertex's colour. A model
-    whose surface names a `far` one is drawn as that one under `FAR_PIXELS` across, a unit or a
-    wreck drawn as itself the frame before (`DrawInstance::key`) down to `FAR_PIXELS_BACK`
-    (`detail_for`, in either art style; same pieces). A surface that does not read or fit leaves
-    its model drawn as TA draws its faces (`add_plain`: no kit, caps or halves).
+    says, lights from its blue (out when the unit's lights are), and the normal map's relief
+    through the screen-space tangent frame (`mapped_normal`); the rest by the art style. Enhanced
+    Classic: gloss and mirroring from its green and red (strong mirroring brightens the paint to
+    polished metal: Forged Alliance added the mirrored sky over dark paint) and Forged Alliance's
+    broad, cool sheen as strong as the green. Reborn (`surfaced_finish`): greys lose most of their
+    cast and the paint's painted highlights rise on a shoulder; matte paint as glossy as the green
+    over some six texels round (a second lookup of the specular map, its gradients six times
+    larger); the green's outlines worn to bright, smoother metal; strong red polished metal; no
+    sheen, lit by the physically based light as every model is; the colour map read through a
+    Catmull-Rom spline where it is magnified (`surface_sharp`: from a texel over a pixel and a
+    half, five lookups of its first level and four for its nearest texels, which bound it).
+    In the rain (either style) the film of water a wet model mirrors the sky in (`rain_film`)
+    lies on such a surface's faces (`Surface::rim_normal`) rather than on its normal map's relief,
+    mirrors the ground below the horizon, and is a third as strong as on TA's paint
+    (`SURFACED_FILM`): on Forged Alliance's normal maps, baked from finer models, it ran grazing
+    along every bevel and panel line, and over the dark paint read as a white frost (TA's models
+    keep their film as it was, to the bit).
+    Ray-traced reflections take the vertex's colour (its material's on average, as Forged
+    Alliance's paint, in either art style). A model whose surface names a `far` one is drawn as
+    that one under `FAR_PIXELS` across, a unit or a wreck drawn as itself the frame before
+    (`DrawInstance::key`) down to `FAR_PIXELS_BACK` (`detail_for`, in either art style; same
+    pieces). A surface that does not read or fit leaves its model drawn as TA draws its faces
+    (`add_plain`: no kit, caps or halves).
 * **Sprites**: shelf-packed atlas, 4096² to begin with, growing 4096 texels at a time (taller,
   then wider: each widening a new column of shelves; a big mod's a little over 8192 × 16384 is
   12288 × 16384, not twice that) up to the largest texture the device takes, a big mod's
@@ -1573,6 +1687,94 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   Unit roles come from properties (extractor, generator, factory, combat value...), never
   names, so mods work. Easy / Normal / Hard differ in `Params` (tech timing, wave sizes,
   factories, towers, production pace, how units are chosen, battle handling).
+* Personas (`Persona`, as Forged Alliance's computer players had them): Balanced, Rush,
+  Turtle, Tech, Air, Naval, or Random, drawn from the game's seed and the player's number as the
+  computer player is made (`Persona::resolve`: the same on every machine, and again when a saved
+  game is loaded). A persona bends the difficulty's `Params` (`Params::with_persona`), never past
+  what Easy allows: Rush attacks sooner and smaller, with more factories, no extra towers and the
+  tiers and projects late; Turtle puts up towers before its constructors help at the factories
+  (more of them, one every three minutes, the strongest the budget buys), heavy defences,
+  anti-nuclear cover and long-range guns early, and attacks late, in force; Tech climbs the tiers
+  (its factories' upgrades with them), upgrades its extractors and takes its commander's deeper
+  engineering suites and gun as soon as the tech economy allows, and the experimentals and silos
+  sooner and more of them (a strategic silo and a tactical launcher more, half its factories
+  standing for its projects, ten minutes of income for an experimental); Rush all of them later
+  and fewer, with its tech minute (one tactical launcher, 15% standing, six minutes); Turtle a
+  tactical launcher and a tactical defence more; Air makes its next two factories air plants and
+  builds more planes; Naval its shipyard first, where the sea reaches the enemy, and more ships
+  (on dry land it plays as Balanced). Soak (`tests/skirmish.rs`, `TA_TEST_PERSONA`, Normal, 25
+  minutes on Painted Desert against Balanced): Rush's army first at an enemy start at minute 7
+  (Balanced's 11), Turtle's at 21 with 13 armed buildings (9) and a heavy defence at 17, Air's
+  11 armed aircraft (none), Tech a silo at 24 and its army thin. The setup carries each computer
+  player's difficulty and persona
+  (`setup::Controller::Ai`, saved games and replays from record version 47; older ones play
+  Balanced) and a lobby's seat its persona (`ta_net::SlotKind::Ai`, protocol 110); missions,
+  Conquest and scenarios keep their own settings, Balanced. The computer players' voices in the
+  chat (`chatter.rs`: their names, tempers and taunts, `TA_RIVALS`) are a side of their own and
+  do not follow the persona.
+* Projects (`projects.rs`): the tech tree's big buildings, each put up by advanced constructors
+  one at a time while the others help (`help_project_task`), once the economy can feed it (no
+  project while power or metal is short; those saved for, below, on a metal income of 30 or more
+  however short the store is): anti-nuclear cover first once an enemy strategic silo is seen (on
+  every level, Easy's only project) or from `anti_minute`, and cover against tactical missiles (an
+  interceptor of their class alone, `TypeInfo::tactical_cover`: Forged Alliance's tactical
+  defences) once an enemy tactical launcher is seen (one, another every eight minutes, at most
+  `tactical_covers`); then by the persona's liking a strategic silo (`TypeInfo::strategic_silo`:
+  missiles of the class anti-nuclear defences take, TA's every silo; only by a constructor whose
+  options hold one, `builds_strategic`: Forged Alliance's tech 3 engineers, a factory turning one
+  out when none of ours can; within seven minutes of our metal income), a tactical launcher
+  (`TypeInfo::tactical_silo`: Forged Alliance's, by its tech 2 engineers, sited as a long-range gun
+  is, at most `tactical` from `tactical_minute`; never in the strategic silo's place), a heavy
+  defence on the approach (cost 1,500 or more, `HEAVY_COST`, as many as `heavy_towers` allows,
+  one more every 12 minutes, its power to fire four times over in our income) and a long-range
+  gun (`TypeInfo::long_range`: reach 2,000 or more) where it reaches the enemy's base, which then
+  shells what we know of that base (`run_long_guns`: a building's guns fire of themselves only at
+  what their side sees). Strategic missiles go at the richest cluster their salvo gets through the
+  cover over; tactical ones at buildings alone, defences and strategic weapons first
+  (`strike_value`), what a tactical defence covers left alone; a silo holding missiles with
+  nothing known in its reach sends a plane round the enemy's bases (`send_recon`, once in two
+  minutes: a scout, else an idle plane or air transport). The strategic silos, standing or going
+  up, add what their missiles draw to the power the big plants are put up for
+  (`Survey::silo_draw`, `power_wanted`); a strategic silo's first missile, while it costs more
+  than two minutes of our income (`first_missile_due`: Forged Alliance's, 12,000 metal and
+  1,350,000 energy; never TA's), is a project: the next project waits for it, factories stand for
+  it, and the advanced constructors put up power first while our income falls short of it. Experimentals
+  (`TypeInfo::experimental`: armed, mobile, costing 5,000 or more, no constructor of buildings:
+  the factions' support commanders are constructors, of the third tier once their options hold a
+  tech 3 engineer's, `mark_constructors`) go up beside them, built by the constructor that builds
+  them or by a factory of them (sited at the back, once it and the cheapest it makes cost ten
+  minutes of our income at most), each within eight minutes of our income
+  (`experimental_budget`: ten for Tech, six for Rush); where none of our factories turns out a
+  constructor that leads there (TA's Core: the Gantry needs the advanced construction kbot's lab),
+  that factory and constructor are made from ten minutes before the level's minute
+  (`toward_experimentals`). Projects are helped by more hands the longer they take
+  (`help_project_task`: one more per 60,000 of build time, six more at most; TA's Krogoth nine on
+  Normal), an experimental in a factory's yard at the factory (`Survey::yard_projects`: guards,
+  whom the simulation sets to work on what it builds); a factory of experimentals builds at the
+  army's size limit; and while an experimental or a strategic silo with more metal left to pay
+  than two minutes of our income is under way on short metal, `save_share` of our factories stand
+  (`standing_for_projects`: the lowest tier first, none while the enemy's army seen outweighs
+  ours). Factories lean to the top tier as the metal income grows (`top_tier_share`, a share of
+  their orders: none on Easy; a third more at a factory of three tiers, Forged Alliance's tech 3),
+  the army's cap grows a quarter for a player at tech 2 or more, more advanced factories come as
+  the economy grows (`adv_factories_wanted`): upgraded where a factory of ours upgrades into one
+  (`run_upgrades_in_place`, which also takes first the upgrade into a factory leading to
+  experimentals, and once a tech 3 factory stands climbs more ground factories to it,
+  `top_factories_wanted`), built where none does; and more tech 3 engineers as the income grows.
+  The way to experimentals (`experimentals_reachable`) follows a factory's upgrades and an
+  engineering suite's menu as well as what builds what.
+* Clearing the way (`clear.rs`): a unit whose route stops short of where it was sent though the
+  ground leads there (`Unit::path_goal` far from the move's goal), or that has stood stalled on
+  its way, has its way searched (`Sim::way_blockers`, `ta_sim`'s `sim/blockers.rs`: an A* back
+  from the goal over the static ground, then a search by the ground's own steps through what
+  stands there, so the wreckage across a winding pass is found, not the dead end nearest the
+  goal). What shuts it is reclaimed by a constructor (it pays its metal), the Commander among them
+  when near and safe, and broken up by up to six of the army's guns when no constructor is on it
+  within 20 seconds (a broken wreck leaves a heap, which blocks nothing). The searches are rationed
+  (one a look, ways near those searched in the last 30 s skipped, none for 30 s after one that
+  found nothing). A scenario's waves, which have no constructors, fire on the wreckage that shuts
+  their way (`mission.rs`, `Hunter::clearing`), and a route that stopped short is looked for
+  again once the ground changes (`CachedPath::short`).
 * It knows only what a player in its seat could: what is in its team's sight (`Seen::Visible`:
   what a unit is, its health), where radar shows something (`Seen::Radar`: a contact of a kind
   not known, a threat of an armed unit's worth: `Survey::contacts`), and what it remembers. An
@@ -1590,6 +1792,31 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   from them all is a base found. Waves, the fleet and lifts go for what was seen first, and a
   start not yet looked at only when nothing is known (scouting in force). It is never
   "dominant" (going for the kill) before it has found the enemy.
+* Upgrades in place (`upgrade.rs`, `run_upgrades_in_place`): where a factory of ours upgrades into
+  a factory of a higher tier (`factory_tier`), the tiers are climbed by upgrading it, one factory
+  at a time, on the economy the first advanced factory waits for (`builder_task` then builds no
+  factory of the next tier: `climbs_by_upgrading`), the land factory first; with metal piling up,
+  or fewer advanced factories than the economy wants (`adv_factories_wanted`), more of them (toward
+  experimentals, first one that upgrades into a factory leading there); extractors (from
+  `mex_upgrade_minute`: the persona's, Tech's sooner, Rush's later) upgrade into better ones (more
+  `extracts_metal`), the safe ones nearest
+  home first, a few at a time as the income allows and while power holds (the reclaim and rebuild of
+  `upgrade_task` leaves those alone). Builders that help factories help one upgrading
+  (`factory_to_help`). With no unit of ours that upgrades (TA's games), nothing of it runs.
+* Adjacency (`adjacency.rs`): a power plant whose bonuses reach a factory of ours goes up beside it
+  (`plant_beside_factory`, from `plant_task`: the factory nearest the builder first, a site along
+  the most of a side, out of the way out and off the ground its upgrades take, the lane round the
+  block kept free, `site_beside`), and storage whose bonuses raise what an extractor, plant or
+  maker of ours makes beside it (`storage_beside_task`: the best for its price, near home and out of
+  danger, where the more it makes pays for it within eight minutes), one at a time. With no unit
+  giving a bonus (TA's games), nothing of it runs. Engineering stations are not built.
+* Enhancements (`enhance.rs`, `run_enhancements`): the commander, near home and with no enemy
+  close, installs an engineering suite once the economy reaches the tech climb's (the next suite
+  once a factory of tech 2 stands, or metal piles up; a Tech persona's at once, `tech_eager`), a
+  gun upgrade some minutes into the game
+  and more armour when rich, one at a time, only into an empty slot or over its prerequisite, when
+  it can afford it. Its builders' menus are their own (`Unit::ai_build_options`), the suites' units
+  among them. With no unit of ours with enhancements, nothing of it runs.
 * Allies (`ally.rs`): players signal their team with `Command::Signal` (a ping with a
   meaning: look, attack, defend, on my way, need metal or energy; the sim keeps the last 32
   for 90 s in `Sim::signals`, the same on every machine, and emits `SimEvent::Signal`). A
@@ -1752,7 +1979,11 @@ GOG/Steam install ──ta_vfs──► bytes ──ta_formats──► parsed f
   approach to the enemy), `tests/duty_explore.rs` (ignored: the by-hand runs that found them) and
   the asset-free ones in `tests.rs`.
 * Soak test: `cargo test --release -p ta_ai --test skirmish -- --nocapture` (see the file
-  for `TA_TEST_*` options: map, length, difficulty, players, teams, logs). Ladder:
+  for `TA_TEST_*` options: map, length, difficulty, players, teams, logs, `TA_TEST_UNTIL_DECIDED`).
+  It reports each player's tech tree as used: what it finished of each kind, strategic and tactical
+  launches and missiles shot down, the experimentals finished, every five minutes the projects
+  under way (how far along, how many at them, the strategic silos' missiles), every ten the army by
+  tier, and who won. Ladder:
   `cargo test --release -p ta_ai --test ladder -- --ignored --nocapture` plays one level
   against another (`TA_LADDER_A`, `TA_LADDER_B`) on ten land maps, from both starts and on
   both sides, over every core (`TA_LADDER_MAPS=sea` for ten water and island maps, `all`
@@ -1868,6 +2099,15 @@ only for units big enough on screen; the simulation's pieces are untouched (a sh
 muzzle before the kick). `TA_RECOIL_ROOM=0` turns it off; `cargo test --release -p ta_game
 recoil_room_report -- --ignored --nocapture` lists those guns' kicks as drawn, and the animation
 scan's `recoil_scan` what every unit's recoils pass through as the scripts move them.
+Buildings play their models' clips for their work (`scene/work.rs`; a model's `active`, `open` and
+`upgrade` clips, `ta_formats::anims`: the Supreme Commander buildings' own): `Scene::after_tick`
+notes each such unit's work at each tick (`work::works`: `Sim::working`, not upgrading, and a
+factory or a builder building) and how far its upgrade in place has come
+(`Sim::self_work_progress`); posing it, the loop goes on at its pace (easing to a stop as the unit
+stops working, held there), the opening forward or back, the upgrade at its share done between the
+ticks, the loop and the upgrade fading in and out as an upgrade starts or is called off, each clip
+added to the script's states (after the walk, before the recoil). The simulation's pieces are
+untouched.
 Big walkers stand level (`ta_sim::defs::big_walker`: a kbot, a Commander or a spider 60 px tall
 or more; the simulation tilts them no more than `Upright=1` units, so their guns fire from where
 they are drawn): those that were not upright (the mods' giants: TA: Enhanced's SpiderBot and
@@ -1902,10 +2142,18 @@ flags; faces painted with a track (`Tredside*`) carry their tread rate and side 
 `unit.wgsl` runs their texture by it. `hud.rs` is the egui HUD with portraits of the units
 (`ta_render::portrait`: each type's model drawn once per player's colour and size, posed as it
 stands finished, `scene::standing_pose`, by the battle's own shader in a studio's light, on a
-clear ground the HUD sets on a gunmetal backdrop; TA's `unitpics` with the classic panels, for
+clear ground the HUD sets on a gunmetal backdrop, or in a build menu on the ground where the unit
+goes, `hud/domain.rs`; TA's `unitpics` with the classic panels, for
 players' pictures and while a portrait is not drawn yet), order and state buttons, a hover card per unit (after the pointer rests;
 more after longer; under its health, a finished unit of ours or an ally's shows what it makes and
-uses of metal and energy a second now, `Sim::unit_flows`), the time left over what is being built
+uses of metal and energy a second now, `Sim::unit_flows`, and a building's adjacency, what the
+buildings beside it give it and how many it helps, as the selection's details say of one building,
+`hud/deck.rs`), adjacency's links (`hud/adjacency.rs`: between
+two buildings of ours or our allies that help each other, a line along the seam where their
+footprints meet and a chevron for each kind of bonus pointing at the one helped, in energy's or
+metal's colour or a warm red for a reload; faint, bright with a spark crossing the seam for the
+building under the pointer and the selected; a building being placed shows those it would make,
+dashed, and what it would take under its figures; none far out), the time left over what is being built
 (`hud/eta.rs`: from the builders working on it, scaled by how the work has really gone, so that a
 stall or a builder joining shows; our own and our allies' only, not far out nor in photo mode),
 the selection's routes (for a moment after an order, `Game::last_order`,
@@ -1914,12 +2162,21 @@ only sense, the building being placed and a unit the pointer rests on: a radar's
 with a beam sweeping round, a sonar's with pings, a jammer's dashed rim, the unit's own sight thin and
 dashed beside them, each captioned, out of the view's reach beside the unit; the colours are the sight
 overlay's, and the minimap shows the same discs, a radar's whole coverage at a glance; a unit switched
-off dims them and says OFF; `--demo radar`, `TA_RADAR_UNIT`, `TA_RADAR_OFF`), the
+off dims them and says OFF; `--demo radar`, `TA_RADAR_UNIT`, `TA_RADAR_OFF`; the player's RANGES,
+`gameplay.range_overlays`, Alt+O, shows them all, the radar, sonar and jammers' alone or none; a
+unit in play shows its own sensors and weapons, as its enhancements have them (`Ranged::unit`,
+`Unit::weapon_slots`), one being placed its type's; every
+rim and ring on the ground, a weapon's reach too, is laid by `hud/ground_line.rs`: only what is in
+front of the eye and in the view, a point every few screen points there, a few thousand at most
+however far it reaches: a rim of a fixed number of points, cut where the eye's plane met it, ran
+millions of points off the screen and was dashed all along, TA: Escalation's Shaper 245,000 dashes a
+frame, 13 ms), the
 acknowledgements of orders (`Game::order_marks`, pushed by
 `Game::mark_order` where orders are given by clicks) and the minimap (fog overlay, alert
 pings). The top bar's economy (`hud/economy.rs`) reads each store as a `Store` with its
 `StoreState` (stalling from the economy's `build_factor`); `hud/deck.rs` shows a constructor's
-build menu by `Purpose` on tabs (`Hud::build_tab`).
+build menu by `Purpose` on tabs (`Hud::build_tab`), each tab, and a factory's list, ordered by
+where the units go (`hud/domain.rs`, below).
 
 * **Version, logs and crashes**: both programs show the version with the commit they were
   built from ("1.0.0 (c752ef7fe)", `TA_BUILD_COMMIT` from the build script), in the main
@@ -2344,11 +2601,14 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   F4 (metal) and Alt+L (sight). N looks at the next of our units off the screen, in turn (of
   the selection, if any); Delete clears the messages and the chat (TA's F12, which here takes
   a screenshot). Dragging while placing a building lays
-  out a row of them. While a building is placed, the ground it will take shows as TA's grid of the
-  16 px cells it snaps to, under the ghost and each site of a row (`hud::footprint_on_ground`: lines
-  through every cell's corner over the ground or the sea, edged dark, in the ghost's colour from
-  `palette::allowed_rgba`/`blocked_rgba`; far out, the outline alone); Shift's squares round the
-  plans are its outline. T follows a unit, Alt+click pings.
+  out a row of them. While a building is placed, the cells of the ground it will take show as TA
+  showed them, under the ghost and each site of a row and nothing round them (`hud::footprint_cells`:
+  each 16 px cell a square on the ground or the sea, a little in from its edges and edged dark, green
+  where the building may have it and red where it may not, `palette::allowed_rgba`/`blocked_rgba`;
+  which cells will do is `Sim::placement_cells`, `World::cell_placement_error` for each, none where
+  the site will not do as a whole, a geothermal plant off a vent, and the game takes out those of
+  other constructors' plans: `Placement::cells`); Shift's squares round the plans are their outlines
+  (`hud::plan_on_ground`). T follows a unit, Alt+click pings.
 * **Models** are drawn with back faces culled, as TA did (its 3DO models are consistently
   wound; drawn double-sided, the undersides of ground plates and the insides of shells
   showed as black or wrongly textured faces). Shadows and ambient occlusion still use both
@@ -2356,6 +2616,13 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   when it is the root (the Core Mine's unflagged selection plate) or lies on the ground (TA:
   Escalation's Commanders' `flip`, 108 units square: its shadow fell in black wedges where the
   ground dips and its contact occlusion darkened a square round them), `unflagged_ground_plate`.
+  A wreck's (a feature drawn from a 3DO) leaves out the plate among its root's faces too
+  (`model::flag_ground_plates`, as `features.rs` loads it): a flat, untextured four-cornered
+  face facing straight down, on or under the ground, spanning half the model each way, flagged
+  as its piece's selection plate (a copy of a flagged one emptied). 23 of TA's wrecks drew theirs,
+  black and footprint-wide: given its back by `halves::give_backs` (debris lies lower than it, so
+  it was not at the model's foot), each was a large black square at its wreck's base, and
+  darkened the ground round it (`wreck_ground_plates_are_left_out` lists them).
 * **Checking every unit**: `--demo gallery` puts every unit type on show, finished and
   switched on (`TA_GALLERY=<page>`, `TA_GALLERY_SIZE`, `TA_GALLERY_UNITS=a,b`);
   `TA_GALLERY_ACTION=produce|patrol|build` sets them working; `TA_GALLERY_TOUR=<dir>`
@@ -2411,7 +2678,11 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
     click away), under DETAILS first what the selection makes and uses of metal and energy a second
     now, all of it together (`Sim::unit_flows` summed, as TA's unit bar gives the first unit's; with
     a queue shown, DETAILS has these alone); at the right, for a selection of ours, the command plate: ORDERS in rows by
-    kind (`orders::available`: moving and fighting, work, the special ones, each with its key),
+    kind (`orders::available`: moving and fighting, work, the special ones, each with its key;
+    UPGRADE among the work where the selection has a unit that upgrades in place, its tip the
+    unit it becomes, its price and time: `orders::upgrade_tip`, `Game::upgrade_selection`, Alt+U,
+    Shift queueing the step after; the progress an amber bar under the unit's health, and in its
+    card, `activity`),
     beside them the STANCE (the standing orders as labelled buttons showing what each is set to,
     switches some on and some off ON/OFF with a half-lit lamp, as the classic's mixed art, a press
     all one way: `Game::selection_power`; self-destruct last and apart; a column of glyphs where
@@ -2422,6 +2693,35 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
     selection's plate has what it wants (`MIDDLE_WANTED`): the stance to glyphs, then the forces'
     columns narrow. The other overlays keep above the deck (`Clearance`); the battlefield's own
     marks show between its plates.
+  * **Where a unit goes** (`hud/domain.rs`), as Forged Alliance's build icons tell it: every
+    portrait in a build menu (the deck's, and the radial menu's rings of buildings and units)
+    stands on the ground of its `Domain`, in place of the gunmetal: grass for land, water for the
+    sea, the two split on the diagonal (land at the top left) for both, sky for aircraft. The
+    domain is the simulation's reading of the unit (`Domain::of`, one function): an aircraft
+    (`Locomotion::Air`, seaplanes too) the air, a hovercraft both, a ship or a submarine
+    (`Locomotion::Naval`) the sea; a unit on the ground both when its movement class (as
+    `MoveSpec::for_type` reads it, its own `MaxWaterDepth` with none) lets it go at least
+    `DEEP` (50) under the water, else land: TA's wading classes go 12 to 23 deep (the mods' up to
+    27), its amphibians' 100 (the Commanders and their decoys, the Triton and the Crock, the
+    Pelican and the Gimp, the crawling bombs), the mods' 255; a building as its placement
+    (`World::placement_error`) has it: any `MinWaterDepth` the sea (yards, seaplane platforms,
+    tidal generators, sonar, floating towers, the underwater extractors, storages and fusion
+    plants), a `MaxWaterDepth` of `DEEP` or more both (none of TA's; the mods' mines, storages and
+    plants that stand anywhere), else land (the air repair pads and the Core's fusion plant may
+    stand in a pixel of water, the mods' buildings in up to 18). A factory goes where it stands,
+    whatever it makes (an aircraft plant on grass). `Upright` and the `Amphibious` of TA's seaplanes play no part. The lists are ordered by
+    it (`domain::menu_order`, a stable sort): land first, then both, then the sea, then aircraft,
+    each group in the menu's own order (TA's pages and download entries, `GameData::build_menus`);
+    neither the player nor a mod has another way to order a menu. The list is the unit's own menu
+    (`Unit::build_options`: what its enhancements add, ordered with the rest), and a factory that
+    upgrades in place offers the unit it becomes first, on its ground, stamped UPGRADE
+    (`upgrade_tile`); the ENHANCE tab's pictures keep their own. A picture with a ground of its
+    own keeps it: TA's `unitpics` (the classic interface, a portrait not drawn yet) and the Supreme
+    Commander factions' build pictures (`own_picture`: their game's icon on its frame). The
+    grounds are original art drawn by `tools/hud/grounds.py` into `apps/ta_game/hud/grounds.png`
+    (the four side by side at 192 pixels, in the order of `Domain`), brought down to six sizes as
+    they are first drawn (no mipmaps in egui's wgpu renderer), each drawn from the smallest at
+    least about as large as it is shown.
 * **Radial menu** (`radial.rs`, drawn by `hud/radial.rs`): the ring of a unit's choices round the
   pointer, for the mouse, the keys and a pad. What it offers is `radial::entries`, from the same
   list of orders as the command plate (`orders::available`) and the standing orders: a tower's
@@ -2789,8 +3089,12 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   (factories hollow, armed ones hexagons), land units circles (constructors hollow),
   aircraft triangles, ships and hovercraft diamonds, bigger for costlier units; unfinished
   buildings are paler, the selection wears white rings (the HUD's selection circles give
-  way to them). Clicks that miss every unit's sphere pick the icon under the pointer
-  (`Game::unit_at_screen`). The player can turn the icons off (STRATEGIC ICONS, Interface,
+  way to them). A click picks the unit whose sphere (round its model) the pointer's ray meets
+  first, unless a smaller finished unit the ray meets lies inside that one's sphere, resting on it or
+  in it (an aircraft landed on a carrier's deck, which the carrier's sphere takes in): the smaller,
+  the big one being picked anywhere else on it (`game::pick_hit`; not a unit being built in a
+  factory, whose click stays the factory's). Clicks that miss every unit's sphere pick the icon
+  under the pointer (`Game::unit_at_screen`). The player can turn the icons off (STRATEGIC ICONS, Interface,
   `gameplay.strategic_icons`): `strategic::shown` is then nothing, and what the icons stood in
   for comes back at every height (the selection's bars and circles, the markers over the units),
   while what follows the zoom alone (the pick of a unit a pixel wide, the build times' fade) keeps
@@ -3512,7 +3816,9 @@ build menu by `Purpose` on tabs (`Hud::build_tab`).
   units, kills, what they build) in place of production. Its key
   (`companion`, Alt+C) or the pause menu opens and closes it (`Game::companion_toggle`); the
   `gameplay.companion` setting opens it with every battle when there is a second display, and
-  otherwise a battle with one says once that it can be had. Captures: `TA_COMPANION=1` (or
+  otherwise a battle with one says once that it can be had; changed in the options, it is followed
+  at once (`companion::follows_setting`: off closes it however it was opened, on opens it in a
+  battle as the battle's start would). Captures: `TA_COMPANION=1` (or
   `--open companion`, a battle `TA_RESULT_MINUTES` in) open it hidden and
   `TA_COMPANION_SIZE` large (1920x1080), and `TA_COMPANION_SHOT=<file>` at
   `TA_COMPANION_AT=<frame>` saves its picture (drawn again offscreen: a window's surface
@@ -3551,7 +3857,10 @@ menu's briefing replays the narration through `MusicRequest::Narration`.
   `s` stop, `i ident` start aboard that
   transport, `b TYPE [n]` a factory builds (`b TYPE x z` a constructor), `bw n` missiles,
   `u [x z]` set one unit down, `d` self-destruct. `ta-tools missions` lists what it can't
-  read (TA's own slips).
+  read (TA's own slips). A schema's units are its `[units]`, or where it has none, the section
+  whose entries name units (`Unitname`), whatever it is called: TA: Escalation's engine read
+  `unitse` for TA's `units` folder, and its copies of TA's missions keep their units in
+  `[unitsE]` (all 175 of them). Read only as `[units]`, they placed nothing and were lost at once.
 * **Objectives**: every victory goal must be met (TA's rule, `MissionRules::all_victory`;
   scenarios keep any one), any defeat goal loses. Victory: DestroyAllUnits,
   KillAllMobileUnits, KillEnemyCommander, KillUnitType, KillAllOfType, CaptureUnitType,
@@ -3580,6 +3889,19 @@ menu's briefing replays the narration through `MusicRequest::Narration`.
   units were never built: `setup_mission` gives them their file's `StandingFireOrder`
   (`sim::file_fire_state`), so I09's and T31's Annihilators fire at will and the Berthas wait
   for the player, as their files say; what anyone builds comes out on TA's hold fire.
+* **Playable or not** (`ta_sim::mission::unplayable`): a mission the game's data can't play, the
+  mods that are on in it, is said so rather than started to be decided at its first look at its
+  goals: one that places no unit for the player (three of Total Mayhem's own missions are maps
+  made for skirmishes), none the data has (a total conversion's units in place of TA's), no
+  Commander where it is lost with one (`CommanderKilled`, the player's placed under a name the
+  data lacks), or whose every victory goal names a unit type the data lacks. The campaign page
+  marks it MISSION NOT PLAYABLE, with why, and offers no START (`campaign::not_playable`);
+  `Game::new` refuses it (`campaign::MissionNotPlayable`, which the menu says, `--mission` too).
+  TA's own all play (`every_campaign_mission_can_be_played`). The game's log says how many units
+  a mission placed, and once it is decided, the goals that decided it (`Sim::mission_goals_met`,
+  `Objective::describe`). The campaign smoke test plays every mission with a mod's data too
+  (`TA_TEST_MOD=<mod folder> cargo test --release -p ta_sim --test mission every_mission --
+  --ignored --nocapture`), saying why any is decided early.
 * **Scripts** run in the sim (`UnitScript`, every tick from `check_mission`) as steps: runs
   of orders the unit carries out itself (`Move`, `Patrol`, `Wait`, `WaitAttacked`,
   `AttackType`, `Guard`, `SetStates`, a constructor's `Build`), each followed by an end mark

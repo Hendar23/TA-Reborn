@@ -19,6 +19,7 @@ use ta_ui::i18n::{n, t, tf};
 use crate::game::{CommandMode, Game, UnitInfo};
 use crate::input::Input;
 use crate::hud::Purpose;
+use crate::hud::domain::{self, Domain};
 use crate::hud_icons::Glyph;
 use crate::orders::{self, Kind};
 
@@ -125,11 +126,14 @@ pub struct Entry {
     pub cost: Option<(f32, f32)>,
     /// It would do nothing now (`hint` says why): drawn dim, and it makes nothing happen.
     pub disabled: bool,
+    /// What its picture stands on, as the build menus show a unit to build: the ground where the
+    /// unit goes (`hud::domain`).
+    pub ground: Option<Domain>,
 }
 
 impl Entry {
     pub(crate) fn new(id: Id, glyph: Glyph, label: impl Into<String>, hint: impl Into<String>) -> Entry {
-        Entry { id, glyph: Some(glyph), picture: None, label: label.into(), detail: None, action: None, key: None, hint: hint.into(), tone: Tone::Normal, lit: false, count: 0, opens: false, stays: false, cost: None, disabled: false }
+        Entry { id, glyph: Some(glyph), picture: None, label: label.into(), detail: None, action: None, key: None, hint: hint.into(), tone: Tone::Normal, lit: false, count: 0, opens: false, stays: false, cost: None, disabled: false, ground: None }
     }
 
     /// It cannot be made now, for `why` (shown where its hint is).
@@ -647,7 +651,7 @@ impl<'a> Choices<'a> {
 
     /// A constructor's buildings, by purpose.
     fn build(&self) -> Option<Entry> {
-        (!self.game.sim.unit_type(self.unit).build_options.is_empty()).then(|| build_entry(Menu::Purposes))
+        (!self.unit.build_options(self.game.sim.unit_type(self.unit)).is_empty()).then(|| build_entry(Menu::Purposes))
     }
 
     /// A factory's units.
@@ -673,6 +677,7 @@ fn order_entry(game: &Game, def: &orders::Def) -> Entry {
         Kind::Stop => t("Stop").to_string(),
         Kind::Mode(mode) => t(mode.label_for(game)).to_string(),
         Kind::Perspective(_) => t("Perspective").to_string(),
+        Kind::Upgrade => t("Upgrade").to_string(),
     };
     Entry::new(Id::Order(def.kind), def.glyph, label, def.tip(game)).keyed(game, def.action)
 }
@@ -821,15 +826,25 @@ fn type_entry(game: &Game, id: Id, ty: usize, builder: &ta_sim::UnitType) -> Ent
     let mut e = Entry::new(id, Glyph::Build, label, hint.join("\n"));
     e.glyph = None;
     e.picture = Some(ty);
+    e.ground = Some(Domain::of(k, &game.sim.data.move_classes));
     e.detail = Some(cost_line(game, ty));
     e.cost = Some((k.cost_metal.to_f32(), k.cost_energy.to_f32()));
     e
 }
 
+/// What `u` (of type `builder`) offers to build (those allowed in this battle: its own menu, what
+/// its enhancements add to it too), in its build menu's order: land first, then what goes on both,
+/// then the sea's, then aircraft (`domain::menu_order`).
+fn offered(game: &Game, u: &Unit, builder: &ta_sim::UnitType) -> Vec<usize> {
+    let mut options: Vec<usize> = u.build_options(builder).iter().copied().filter(|&o| game.sim.is_allowed(o)).collect();
+    domain::menu_order(&game.sim.types, &game.sim.data.move_classes, &mut options);
+    options
+}
+
 /// A factory's units, a page of them: a click queues one, Shift five, right-click takes one off.
 fn unit_ring(game: &Game, u: &Unit, k: usize) -> Vec<Entry> {
     let builder = game.sim.unit_type(u).clone();
-    let options: Vec<usize> = builder.build_options.iter().copied().filter(|&o| game.sim.is_allowed(o)).collect();
+    let options = offered(game, u, &builder);
     let queued = |ty: usize| u.factory_queue.iter().filter(|&&q| q == ty).count();
     let list: Vec<Entry> = options
         .iter()
@@ -854,7 +869,7 @@ fn unit_ring(game: &Game, u: &Unit, k: usize) -> Vec<Entry> {
 /// A constructor's kinds of building by purpose: each with the picture of its first.
 fn purpose_ring(game: &Game, u: &Unit) -> Vec<Entry> {
     let builder = game.sim.unit_type(u);
-    let options: Vec<usize> = builder.build_options.iter().copied().filter(|&o| game.sim.is_allowed(o)).collect();
+    let options = offered(game, u, builder);
     Purpose::ALL
         .iter()
         .enumerate()
@@ -874,11 +889,9 @@ fn purpose_ring(game: &Game, u: &Unit) -> Vec<Entry> {
 fn building_ring(game: &Game, u: &Unit, purpose: usize, k: usize) -> Vec<Entry> {
     let builder = game.sim.unit_type(u).clone();
     let Some(&p) = Purpose::ALL.get(purpose) else { return Vec::new() };
-    let list: Vec<Entry> = builder
-        .build_options
-        .iter()
-        .copied()
-        .filter(|&o| game.sim.is_allowed(o) && Purpose::of(&game.sim.types, game.sim.types.get(o)) == p)
+    let list: Vec<Entry> = offered(game, u, &builder)
+        .into_iter()
+        .filter(|&o| Purpose::of(&game.sim.types, game.sim.types.get(o)) == p)
         .map(|o| type_entry(game, Id::Place(o), o, &builder))
         .collect();
     let mut shown = page(list, k);
@@ -933,10 +946,10 @@ pub fn paging(game: &Game, radial: &Radial) -> Option<(usize, usize)> {
     let (len, at) = match radial.ring() {
         Menu::Main => (all(game, u).len(), 0),
         Menu::More(k) => (all(game, u).len(), k),
-        Menu::Units(k) => (game.sim.unit_type(u).build_options.iter().filter(|&&o| game.sim.is_allowed(o)).count(), k),
+        Menu::Units(k) => (u.build_options(game.sim.unit_type(u)).iter().filter(|&&o| game.sim.is_allowed(o)).count(), k),
         Menu::Buildings(p, k) => {
             let kind = *Purpose::ALL.get(p)?;
-            (game.sim.unit_type(u).build_options.iter().filter(|&&o| game.sim.is_allowed(o) && Purpose::of(&game.sim.types, game.sim.types.get(o)) == kind).count(), k)
+            (u.build_options(game.sim.unit_type(u)).iter().filter(|&&o| game.sim.is_allowed(o) && Purpose::of(&game.sim.types, game.sim.types.get(o)) == kind).count(), k)
         }
         _ => return None,
     };
@@ -950,7 +963,7 @@ pub fn health(game: &Game, radial: &Radial) -> Option<f32> {
     if ids.is_empty() {
         ids.push(radial.unit);
     }
-    let (have, most) = ids.iter().filter_map(|&id| game.sim.unit(id)).fold((0.0f32, 0.0f32), |(h, m), u| (h + u.health.to_f32(), m + game.sim.unit_type(u).max_health.to_f32()));
+    let (have, most) = ids.iter().filter_map(|&id| game.sim.unit(id)).fold((0.0f32, 0.0f32), |(h, m), u| (h + u.health.to_f32(), m + u.max_health(game.sim.unit_type(u)).to_f32()));
     (most > 0.0).then(|| (have / most).clamp(0.0, 1.0))
 }
 
@@ -1126,6 +1139,7 @@ impl Game {
                 self.ui_sounds.push("SPECIALORDERS");
             }
             Id::Order(Kind::Perspective(id)) => self.perspective_request = Some(id),
+            Id::Order(Kind::Upgrade) => self.upgrade_selection(false),
             Id::Fire(k) => self.set_states(Some(k), None),
             Id::Movement(k) => self.set_states(None, Some(k)),
             Id::Cloak => self.toggle_cloak(),

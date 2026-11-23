@@ -93,7 +93,7 @@ pub(super) fn click_on(sim: &Sim, me: u8, selection: &[UnitId], target: UnitId) 
     // Constructors repair a unit that needs work, and guard one that doesn't (a constructor's
     // guard is help for what it builds, a factory's units included); other mobile units guard
     // it, and factories send their units to it.
-    let needs_work = !tu.is_complete() || tu.health < tt.max_health;
+    let needs_work = !tu.is_complete() || tu.health < tu.max_health(tt);
     let (mut repair, mut guard, mut assists) = (Vec::new(), Vec::new(), false);
     for &id in selection {
         let Some((_, t)) = mine(id) else { continue };

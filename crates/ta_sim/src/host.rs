@@ -43,17 +43,28 @@ pub mod value {
     pub const UNIT_BUILD_PERCENT_LEFT: i32 = 73;
     pub const UNIT_ALLIED: i32 = 74;
     pub const UNIT_IS_ON_THIS_COMP: i32 = 75;
+    /// Spring's: the target of the unit's weapon given (from 1): a unit's script id, -1 none, -2 a
+    /// place on the ground, -3 a missile it intercepts, -4 no such weapon. The Supreme Commander
+    /// factions' weapons that unpack watch theirs, to pack up once it is gone.
+    pub const TARGET_ID: i32 = 83;
     /// Whether the unit is cloaked, from a later patch: Total Mayhem's mines cloak themselves
     /// with it while they wait, and uncloak to go off. (Free: TA's cloak costs the energy the
     /// unit's `CloakCost` says, which a mine's file does not.)
     pub const UNIT_CLOAKED: i32 = 111;
+    /// TA Reborn's own: whether the unit's script holds it still (Supreme Commander's
+    /// `SetImmobile`, as its weapons that unpack before they fire and keep their unit where it
+    /// stands meanwhile do: `WeaponUnpackLocksMotion`). Set, the unit neither moves nor turns, its
+    /// way waiting; with somewhere to go, its script is told `StartMoving` (once), so that it can
+    /// pack up and let it go, its weapons firing nothing until then (`Unit::immobile`,
+    /// `Unit::packing_to_go`).
+    pub const IMMOBILE: i32 = 200;
     /// Every value the host answers a script that asks for it, in order (and keeps, those a
     /// script may set): what the mod check tells a mod's scripts Reborn answers
     /// (`ta_data::validation::ANSWERED_VALUES`, held to this by a test).
     pub const ANSWERED: &[i32] = &[
         ACTIVATION, STANDING_MOVE_ORDERS, STANDING_FIRE_ORDERS, HEALTH, IN_BUILD_STANCE, BUSY, PIECE_XZ, PIECE_Y, UNIT_XZ, UNIT_Y,
         UNIT_HEIGHT, XZ_ATAN, XZ_HYPOT, ATAN, HYPOT, GROUND_HEIGHT, BUILD_PERCENT_LEFT, YARD_OPEN, BUGGER_OFF, ARMORED, VETERAN_LEVEL,
-        MIN_ID, MAX_ID, MY_ID, UNIT_TEAM, UNIT_BUILD_PERCENT_LEFT, UNIT_ALLIED, UNIT_IS_ON_THIS_COMP, UNIT_CLOAKED,
+        MIN_ID, MAX_ID, MY_ID, UNIT_TEAM, UNIT_BUILD_PERCENT_LEFT, UNIT_ALLIED, UNIT_IS_ON_THIS_COMP, TARGET_ID, UNIT_CLOAKED, IMMOBILE,
     ];
 }
 
@@ -158,26 +169,31 @@ pub struct UnitHost<'a> {
     pub allies: u64,
 }
 
-impl UnitHost<'_> {
-    fn piece_pos(&self, instance: &CobInstance, cob_piece: i32) -> Option<FxVec3> {
-        let mp = instance.program.piece_map.get(usize::try_from(cob_piece).ok()?).copied().flatten()?;
-        Some(piece_world_position(self.unit, self.unit_type, Some(instance), mp))
-    }
+/// Where a script's piece is in the world.
+fn piece_pos(unit: &Unit, unit_type: &UnitType, instance: &CobInstance, cob_piece: i32) -> Option<FxVec3> {
+    let mp = instance.program.piece_map.get(usize::try_from(cob_piece).ok()?).copied().flatten()?;
+    Some(piece_world_position(unit, unit_type, Some(instance), mp))
 }
 
-impl CobHost for UnitHost<'_> {
-    fn now_ms(&self) -> i64 {
-        self.now_ms
+/// The unit a script runs for, and what it may ask about the others: what a `get` reads, for
+/// [`UnitHost`] and [`TrialHost`] alike.
+struct Asked<'a> {
+    unit: &'a Unit,
+    unit_type: &'a UnitType,
+    world: &'a World,
+    lookup: &'a dyn Fn(i32) -> Option<OtherUnit>,
+    max_id: i32,
+    allies: u64,
+}
+
+impl Asked<'_> {
+    fn piece_pos(&self, instance: &CobInstance, cob_piece: i32) -> Option<FxVec3> {
+        piece_pos(self.unit, self.unit_type, instance, cob_piece)
     }
 
-    /// (The unit's own random numbers: see [`Unit::rng`].)
-    fn random(&mut self, lo: i32, hi: i32) -> i32 {
-        self.unit.rng.range_i32(lo, hi)
-    }
-
-    fn get_value(&mut self, instance: &CobInstance, id: i32, args: [i32; 4]) -> i32 {
+    fn get_value(&self, instance: &CobInstance, id: i32, args: [i32; 4]) -> i32 {
         use value::*;
-        let u = &*self.unit;
+        let u = self.unit;
         match id {
             ACTIVATION => u.activated as i32,
             STANDING_MOVE_ORDERS => u.move_state as i32,
@@ -237,6 +253,16 @@ impl CobHost for UnitHost<'_> {
             ARMORED => u.armored as i32,
             VETERAN_LEVEL => u.kills.saturating_mul(100).min(i32::MAX as u64) as i32,
             UNIT_CLOAKED => u.cloak_on as i32,
+            IMMOBILE => u.immobile as i32,
+            TARGET_ID => match usize::try_from(args[0] - 1).ok().and_then(|k| u.weapons.get(k)) {
+                Some(w) => match w.target {
+                    Some(crate::unit::Target::Unit(id)) => id.script_id(),
+                    None => -1,
+                    Some(crate::unit::Target::Ground(_)) => -2,
+                    Some(crate::unit::Target::Projectile(_)) => -3,
+                },
+                None => -4,
+            },
             // Script ids are the units' places, from 1.
             MIN_ID => 1,
             MAX_ID => self.max_id,
@@ -266,6 +292,21 @@ impl CobHost for UnitHost<'_> {
             _ => 0,
         }
     }
+}
+
+impl CobHost for UnitHost<'_> {
+    fn now_ms(&self) -> i64 {
+        self.now_ms
+    }
+
+    /// (The unit's own random numbers: see [`Unit::rng`].)
+    fn random(&mut self, lo: i32, hi: i32) -> i32 {
+        self.unit.rng.range_i32(lo, hi)
+    }
+
+    fn get_value(&mut self, instance: &CobInstance, id: i32, args: [i32; 4]) -> i32 {
+        Asked { unit: self.unit, unit_type: self.unit_type, world: self.world, lookup: self.lookup, max_id: self.max_id, allies: self.allies }.get_value(instance, id, args)
+    }
 
     fn set_value(&mut self, id: i32, v: i32) {
         use value::*;
@@ -289,6 +330,7 @@ impl CobHost for UnitHost<'_> {
             }
             ARMORED => u.armored = v != 0,
             UNIT_CLOAKED => u.cloak_on = v != 0,
+            IMMOBILE => u.immobile = v != 0,
             _ => {}
         }
     }
@@ -315,8 +357,43 @@ impl CobHost for UnitHost<'_> {
     }
 
     fn emit_sfx(&mut self, instance: &CobInstance, piece: usize, kind: i32) {
-        if let Some(pos) = self.piece_pos(instance, piece as i32) {
+        if let Some(pos) = piece_pos(self.unit, self.unit_type, instance, piece as i32) {
             self.events.push(SimEvent::Sfx { unit: self.unit.id, pos, kind });
         }
     }
+}
+
+/// The host of a function tried on a copy of a unit's script ([`CobInstance::trial`]): it answers
+/// what the script asks as the unit's own host does, from a copy of the unit's random numbers, and
+/// does nothing: no value set, no flash, effect or sound, nothing attached or dropped. (Where a
+/// weapon's fire function puts the piece its shot leaves from: `Sim::fire`.)
+pub struct TrialHost<'a> {
+    pub unit: &'a Unit,
+    pub unit_type: &'a UnitType,
+    pub world: &'a World,
+    pub now_ms: i64,
+    pub lookup: &'a dyn Fn(i32) -> Option<OtherUnit>,
+    pub max_id: i32,
+    pub allies: u64,
+    pub rng: crate::rng::Rng,
+}
+
+impl CobHost for TrialHost<'_> {
+    fn now_ms(&self) -> i64 {
+        self.now_ms
+    }
+
+    fn random(&mut self, lo: i32, hi: i32) -> i32 {
+        self.rng.range_i32(lo, hi)
+    }
+
+    fn get_value(&mut self, instance: &CobInstance, id: i32, args: [i32; 4]) -> i32 {
+        Asked { unit: self.unit, unit_type: self.unit_type, world: self.world, lookup: self.lookup, max_id: self.max_id, allies: self.allies }.get_value(instance, id, args)
+    }
+
+    fn set_value(&mut self, _id: i32, _value: i32) {}
+
+    fn explode(&mut self, _instance: &CobInstance, _piece: usize, _flags: i32) {}
+
+    fn emit_sfx(&mut self, _instance: &CobInstance, _piece: usize, _kind: i32) {}
 }

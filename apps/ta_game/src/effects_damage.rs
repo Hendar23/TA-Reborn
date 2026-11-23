@@ -59,7 +59,7 @@ impl Effects {
             if t.max_health.is_zero() || t.def.is_feature {
                 continue;
             }
-            let health = (u.health / t.max_health).to_f32();
+            let health = (u.health / u.max_health(t)).to_f32();
             let flying = t.locomotion == Locomotion::Air && !u.landed;
             if health >= if flying { TRAIL_BELOW } else { FIRE_BELOW } {
                 continue;

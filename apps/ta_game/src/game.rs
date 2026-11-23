@@ -40,25 +40,37 @@ fn wrecks_by_unit(events: &[SimEvent]) -> rustc_hash::FxHashMap<UnitId, usize> {
 }
 
 /// A building being placed with the mouse.
+#[derive(Default)]
 pub struct Placement {
     pub type_id: usize,
     pub pos: Option<Vec3>,
     pub valid: bool,
+    /// Which cells of its footprint it may have there, row by row from the north-west
+    /// (`Sim::placement_cells`, and clear of the plans of other constructors): green and red
+    /// under its ghost, as TA showed them.
+    pub cells: Vec<bool>,
     pub matrices: Vec<Mat4>,
     /// Dragging out a row: where the drag began, the sites along it (and whether each is
-    /// buildable), and a ghost's matrices per site.
+    /// buildable, and which of its cells), and a ghost's matrices per site.
     pub line_start: Option<Vec3>,
     pub row: Vec<(Vec3, bool)>,
+    pub row_cells: Vec<Vec<bool>>,
     row_matrices: Vec<Vec<Mat4>>,
 }
 
 impl Placement {
+    pub fn new(type_id: usize) -> Placement {
+        Placement { type_id, ..Default::default() }
+    }
+
     fn cancel_drag(&mut self) {
         self.line_start = None;
         self.row.clear();
+        self.row_cells.clear();
         self.row_matrices.clear();
         self.pos = None;
         self.valid = false;
+        self.cells.clear();
         self.matrices.clear();
     }
 }
@@ -456,6 +468,9 @@ pub struct Game {
     ally_hint_at: Option<f32>,
     /// The camera follows this unit (T) until the view is scrolled.
     pub follow: Option<UnitId>,
+    /// Units upgraded in place lately (the unit, the one it became), newest last: a staged
+    /// scene's labels follow them.
+    pub replaced: Vec<(UnitId, UnitId)>,
     /// Signals from us and our team on the map (see `signals.rs`), and the wheel of meanings
     /// while Alt+drag holds it.
     pub pings: Vec<crate::signals::Ping>,
@@ -625,6 +640,8 @@ pub struct Game {
     pub show_players: bool,
     /// When units show health bars (from the settings).
     pub health_bars: ta_config::HealthBars,
+    /// Which ranges the selection shows (from the settings).
+    pub range_overlays: ta_config::RangeOverlays,
     /// Key bindings (from the settings).
     pub keys: crate::keys::Bindings,
     /// Spectators and replays: the camera drifts to where the fighting is.
@@ -703,6 +720,15 @@ impl Game {
             _ => 0,
         };
         let mission_schema = mission.as_ref().and_then(|m| m.schemas.get(schema_index).cloned());
+        // A mission the game's data can't play (the mods that are on lack what it gives the
+        // player, or what wins it) is said so, not started to be decided at its first look at its
+        // goals. (Before anything of the renderer is touched: the menu it came from stays.)
+        if let (Some(m), Some(ms)) = (&mission, &setup.mission)
+            && let Some(why) = crate::campaign::not_playable(assets, m, &ms.difficulty)
+        {
+            log::warn!("mission {} ({}) not started: {why}", m.file, ms.difficulty);
+            return Err(crate::campaign::MissionNotPlayable(why).into());
+        }
         let scenario = match &setup.scenario {
             Some(sc) => Some(crate::scenario::Scenario::parse(&sc.source).with_context(|| format!("scenario {}", sc.id))?),
             None => None,
@@ -735,7 +761,7 @@ impl Game {
             .iter()
             .enumerate()
             .map(|(i, slot)| {
-                let ai = matches!(slot.controller, Controller::Ai(_));
+                let ai = matches!(slot.controller, Controller::Ai(..));
                 // Missions set exact starting resources; skirmishes use the chosen amount
                 // (Conquest adds the player's bonus from the systems held).
                 // (Whole amounts: exact however large, up to what the simulation holds.)
@@ -780,6 +806,8 @@ impl Game {
         } else if let (Some(m), Some(ms)) = (&mission, &mission_schema) {
             let allowed = ta_data::mission::use_only_units(vfs, &m.use_only);
             let placed = ta_sim::mission::setup_mission(&mut sim, m, ms, allowed.as_deref());
+            let ours = sim.units().filter(|u| u.owner == 0).count();
+            log::info!("mission {} ({}): {} units placed, {ours} of them the player's", m.file, ms.kind, sim.unit_count());
             if !placed.skipped.is_empty() {
                 log::warn!("mission {}: unknown unit types skipped: {:?}", m.file, placed.skipped);
             }
@@ -875,8 +903,10 @@ impl Game {
             .iter()
             .enumerate()
             .filter_map(|(i, slot)| match slot.controller {
-                Controller::Ai(_) if scenario.as_ref().is_some_and(|s| s.passive(i as u8)) => None,
-                Controller::Ai(d) => Some(ta_ai::SkirmishAi::new(i as u8, &sim, d)),
+                Controller::Ai(..) if scenario.as_ref().is_some_and(|s| s.passive(i as u8)) => None,
+                // (A persona drawn at random is drawn from the game's seed: the same on every
+                // machine, and again when the game is loaded.)
+                Controller::Ai(d, persona) => Some(ta_ai::SkirmishAi::with_persona(i as u8, &sim, d, persona)),
                 Controller::Human => None,
             })
             .collect();
@@ -919,6 +949,7 @@ impl Game {
             allies_greeted: false,
             ally_hint_at: None,
             follow: None,
+            replaced: Vec::new(),
             pings: Vec::new(),
             signal_wheel: None,
             radial: None,
@@ -1007,6 +1038,7 @@ impl Game {
             request_rewind: None,
             show_players: false,
             health_bars: ta_config::HealthBars::Auto,
+            range_overlays: ta_config::RangeOverlays::All,
             keys: crate::keys::Bindings::from_config(&ta_config::Keys::default()),
             action_camera: false,
             action_spread: 600.0,
@@ -1137,6 +1169,37 @@ impl Game {
     /// lines would otherwise be sent off to attack).
     pub fn retire_ai(&mut self, player: u8) {
         self.ais.retain(|ai| ai.player != player);
+    }
+
+    /// What the interface keeps of unit `from` passed on to `to`, which took its place (upgraded
+    /// in place): its place in the selection and the control groups, the camera following it,
+    /// the hover and the information page on it.
+    pub fn carry_over(&mut self, from: UnitId, to: UnitId) {
+        let swap = |list: &mut Vec<UnitId>| {
+            if let Some(slot) = list.iter_mut().find(|id| **id == from) {
+                *slot = to;
+            }
+        };
+        swap(&mut self.selection);
+        for group in &mut self.groups {
+            swap(group);
+        }
+        if self.follow == Some(from) {
+            self.follow = Some(to);
+        }
+        if self.replaced.len() >= 256 {
+            self.replaced.remove(0);
+        }
+        self.replaced.push((from, to));
+        if self.hovered == Some(from) {
+            self.hovered = Some(to);
+        }
+        if let Some(info) = self.unit_info.as_mut()
+            && info.unit == Some(from)
+        {
+            info.unit = Some(to);
+            info.type_id = self.sim.unit(to).map_or(info.type_id, |u| u.type_id);
+        }
     }
 
     pub fn local_commander(&self) -> Option<UnitId> {
@@ -1776,6 +1839,11 @@ impl Game {
                 {
                     self.ui_sounds.push("TREEBURN");
                 }
+                // A unit upgraded in place: the new one takes its place in the selection, the
+                // control groups, the camera's following and the information page.
+                if let SimEvent::UnitUpgraded { from, to, .. } = e {
+                    self.carry_over(from, to);
+                }
                 // A factory in a control group puts what it builds there too (TA 3.1's squads).
                 if let SimEvent::UnitCompleted { id, .. } = e
                     && let Some(factory) = self.sim.unit(id).filter(|u| u.owner == self.local_player).and_then(|u| u.factory)
@@ -1893,6 +1961,14 @@ impl Game {
             if let Some(rules) = &self.sim.mission {
                 // Campaign missions end on their objectives only.
                 self.outcome = rules.outcome.map(|won| if won { Outcome::Victory } else { Outcome::Defeat });
+                // (What decided it, in the log: a mission decided at once points at data it is
+                // not played with.)
+                if let Some(outcome) = self.outcome {
+                    let (won, lost) = self.sim.mission_goals_met();
+                    let goals: Vec<String> = won.iter().chain(&lost).map(|o| o.describe(&self.sim.types)).collect();
+                    let file = self.setup.mission.as_ref().map_or(self.setup.map.as_str(), |m| m.file.as_str());
+                    log::info!("mission {file}: {outcome:?} at {:.1} s, by {}", self.sim.tick as f64 / 30.0, goals.join(", "));
+                }
                 return;
             }
             let me = &self.sim.players[self.local_player as usize];
@@ -1936,7 +2012,7 @@ impl Game {
     fn unit_at_screen(&self, camera: &Camera, screen: Vec2) -> Option<UnitId> {
         let (o, d) = camera.screen_ray(screen);
         let alpha = self.alpha();
-        let mut best: Option<(f32, UnitId)> = None;
+        let mut hits: Vec<Hit> = Vec::new();
         // (Whether the pointer is on it first: the viewer's sight is asked of those only.)
         for u in self.sim.units() {
             if u.carried_by.is_some() {
@@ -1955,12 +2031,13 @@ impl Game {
                 continue;
             }
             let t_hit = -b - disc.sqrt();
-            if t_hit > 0.0 && best.is_none_or(|(bt, _)| t_hit < bt) && self.seen(u) == Seen::Visible {
-                best = Some((t_hit, u.id));
+            if t_hit > 0.0 && self.seen(u) == Seen::Visible {
+                hits.push(Hit { along: t_hit, id: u.id, centre: c, radius: r, finished: u.is_complete() });
             }
         }
+        let best = pick_hit(&mut hits);
         if best.is_some() || crate::strategic::amount(camera, self.ppp) < 0.25 {
-            return best.map(|(_, id)| id);
+            return best;
         }
         // Far out, where units are a pixel or two: the strategic icon under the pointer.
         let mut nearest: Option<(f32, UnitId)> = None;
@@ -2077,8 +2154,24 @@ impl Game {
                 !planned.iter().any(|q| r.0 < q.2 && q.0 < r.2 && r.1 < q.3 && q.1 < r.3)
             };
             let free = |p: Vec3| clear_of(&planned, p);
+            // (Which of its cells it may have: those the map gives it, out of the others' plans.)
+            let (sim, type_id) = (&self.sim, pl.type_id);
+            let cells_at = |planned: &[(i32, i32, i32, i32)], p: Vec3| {
+                let r = footprint_rect(t, fx_vec(p));
+                let mut cells = sim.placement_cells(type_id, fx_vec(p));
+                let width = (r.2 - r.0).max(1);
+                for (i, ok) in cells.iter_mut().enumerate() {
+                    let (x, z) = (r.0 + i as i32 % width, r.1 + i as i32 / width);
+                    if planned.iter().any(|q| q.0 <= x && x < q.2 && q.1 <= z && z < q.3) {
+                        *ok = false;
+                    }
+                }
+                cells
+            };
             pl.valid = pl.pos.is_some_and(|p| self.sim.can_place(pl.type_id, fx_vec(p)) && clear_of(&others_planned, p));
+            pl.cells = pl.pos.map(|p| cells_at(&others_planned, p)).unwrap_or_default();
             pl.row.clear();
+            pl.row_cells.clear();
             if let (Some(a), Some(b)) = (pl.line_start, pl.pos) {
                 let t = self.sim.types.get(pl.type_id);
                 let footprint = Vec2::new(t.footprint.0 as f32 * 16.0, t.footprint.1 as f32 * 16.0);
@@ -2091,6 +2184,7 @@ impl Game {
                     }
                     let ok = self.sim.can_place(pl.type_id, fx_vec(site)) && free(site);
                     pl.row.push((site, ok));
+                    pl.row_cells.push(cells_at(&planned, site));
                 }
             }
         }
@@ -2224,6 +2318,10 @@ impl Game {
         }
         if self.keys.pressed(input, "cloak") && !self.selection.is_empty() {
             self.toggle_cloak();
+        }
+        // Upgrade in place (with Shift: the step after those queued).
+        if self.keys.pressed(input, "upgrade") && !self.selection.is_empty() && !self.spectator {
+            self.upgrade_selection(input.modifiers.shift_key() || self.demo_shift);
         }
         // Enter: chat to everyone (Shift+Enter: to our allies); a + line is one of TA's
         // commands or a cheat code.
@@ -2466,11 +2564,12 @@ impl Game {
                 let mut sites: Vec<Vec3> = pl.row.iter().filter(|(_, ok)| *ok).map(|(p, _)| *p).collect();
                 pl.line_start = None;
                 pl.row.clear();
+                pl.row_cells.clear();
                 let builders: Vec<UnitId> = self
                     .selection
                     .iter()
                     .copied()
-                    .filter(|&id| self.sim.unit(id).is_some_and(|u| self.sim.unit_type(u).build_options.contains(&type_id)))
+                    .filter(|&id| self.sim.unit(id).is_some_and(|u| u.build_options(self.sim.unit_type(u)).contains(&type_id)))
                     .collect();
                 // A filled rectangle (Alt): its far side first, from where the builders will be,
                 // so that they work their way out of it rather than wall themselves in.
@@ -2525,7 +2624,7 @@ impl Game {
                         .selection
                         .iter()
                         .copied()
-                        .filter(|&id| self.sim.unit(id).is_some_and(|u| self.sim.unit_type(u).build_options.contains(&type_id)))
+                        .filter(|&id| self.sim.unit(id).is_some_and(|u| u.build_options(self.sim.unit_type(u)).contains(&type_id)))
                         .collect();
                     // (Queued after the rest: the plans under it go first. Without Shift the new
                     // order takes the place of the whole queue anyway.)
@@ -3065,7 +3164,7 @@ impl Game {
             .iter()
             .filter_map(|&id| self.sim.unit(id))
             .filter(|u| u.owner == self.local_player && u.is_complete())
-            .flat_map(|u| self.sim.unit_type(u).build_options.iter().copied())
+            .flat_map(|u| u.build_options(self.sim.unit_type(u)).iter().copied())
             .filter(|&o| {
                 let t = self.sim.types.get(o);
                 t.extracts_metal > Fx::ZERO && !t.needs_geo && self.sim.is_allowed(o)
@@ -3142,7 +3241,7 @@ impl Game {
     pub fn signal(&mut self, kind: ta_sim::SignalKind, at: Vec3) {
         let now = self.sim.tick as f32 / 30.0;
         let name = if self.player_name.is_empty() { ta_ui::i18n::t("You").to_string() } else { self.player_name.clone() };
-        let computer_ally = self.allies().into_iter().any(|a| matches!(self.setup.players.get(a as usize).map(|p| &p.controller), Some(crate::setup::Controller::Ai(_))));
+        let computer_ally = self.allies().into_iter().any(|a| matches!(self.setup.players.get(a as usize).map(|p| &p.controller), Some(crate::setup::Controller::Ai(..))));
         match self.net.as_mut() {
             _ if self.spectator || self.playback.is_some() => self.pings.push(crate::signals::Ping { at, from: name, time: now, kind }),
             Some(net) if !computer_ally => {
@@ -3191,10 +3290,8 @@ impl Game {
     pub fn free_metal_near_commander(&self) -> Option<Vec3> {
         let commander = self.sim.unit(self.local_commander()?)?;
         let at = Vec3::from_array(commander.pos.to_f32());
-        let extractor = self
-            .sim
-            .unit_type(commander)
-            .build_options
+        let extractor = commander
+            .build_options(self.sim.unit_type(commander))
             .iter()
             .copied()
             .filter(|&o| {
@@ -3215,7 +3312,7 @@ impl Game {
 
     /// Whether a player is played by the computer.
     pub fn is_computer(&self, player: u8) -> bool {
-        matches!(self.setup.players.get(player as usize).map(|p| &p.controller), Some(crate::setup::Controller::Ai(_)))
+        matches!(self.setup.players.get(player as usize).map(|p| &p.controller), Some(crate::setup::Controller::Ai(..)))
     }
 
     /// Our computer allies, still in.
@@ -3277,18 +3374,19 @@ impl Game {
     }
 
     /// A player as the interface names them: "You", their multiplayer name, "AI (Hard)"
-    /// or "Player 3".
+    /// (a computer player of a persona other than Balanced: "AI (Hard, Rush)", as chosen: one
+    /// drawn at random stays "Random") or "Player 3".
     pub fn player_label(&self, i: u8) -> String {
         match self.setup.players.get(i as usize) {
             _ if !self.spectator && i == self.local_player => ta_ui::i18n::t("You").to_string(),
             Some(s) if !s.name.is_empty() => s.name.clone(),
-            Some(crate::setup::SlotSetup { controller: crate::setup::Controller::Ai(d), .. }) => {
-                let level = match d {
-                    ta_ai::Difficulty::Easy => ta_ui::i18n::t("Easy"),
-                    ta_ai::Difficulty::Normal => ta_ui::i18n::t("Normal"),
-                    ta_ai::Difficulty::Hard => ta_ui::i18n::t("Hard"),
-                };
-                ta_ui::i18n::tf("AI ({level})", &[("level", &level)])
+            Some(crate::setup::SlotSetup { controller: crate::setup::Controller::Ai(d, persona), .. }) => {
+                let level = ta_ui::i18n::t(crate::setup::difficulty_name(*d));
+                if *persona == ta_ai::Persona::Balanced {
+                    ta_ui::i18n::tf("AI ({level})", &[("level", &level)])
+                } else {
+                    ta_ui::i18n::tf("AI ({level}, {persona})", &[("level", &level), ("persona", &ta_ui::i18n::t(crate::setup::persona_name(*persona)))])
+                }
             }
             _ => ta_ui::i18n::tf("Player {n}", &[("n", &(i + 1))]),
         }
@@ -3533,8 +3631,9 @@ impl Game {
                 let t = self.sim.unit_type(u);
                 t.is_builder && !t.is_factory
             })
-            // (One on duty has its own work, and waits for it when there is none.)
-            .filter(|u| !self.on_duty(u.id))
+            // (One on duty has its own work, and waits for it when there is none; so does a
+            // building that works round it by itself, an engineering station.)
+            .filter(|u| !self.on_duty(u.id) && !Sim::works_by_itself(self.sim.unit_type(u)))
             .map(|u| u.id)
             .collect()
     }
@@ -3546,6 +3645,8 @@ impl Game {
         self.sim
             .units()
             .filter(|u| u.owner == self.local_player && u.is_complete() && !u.dead && u.factory_queue.is_empty() && u.build.is_none())
+            // (One upgrading in place is at work.)
+            .filter(|u| u.self_work.is_none() && !matches!(u.orders.front(), Some(Order::Upgrade(_))))
             .filter(|u| self.sim.types.makes_units(self.sim.unit_type(u)))
             .map(|u| u.id)
             .collect()
@@ -3640,6 +3741,76 @@ impl Game {
         }
     }
 
+    /// The type an UPGRADE click makes of a unit of ours (`queue`: after the upgrades already in
+    /// its orders; else its type's next), where it upgrades in place.
+    pub fn upgrade_step(&self, u: &Unit, queue: bool) -> Option<usize> {
+        if u.owner != self.local_player || self.spectator || !u.is_complete() || u.dead {
+            return None;
+        }
+        let last = if queue { u.orders.iter().rev().find_map(|o| if let Order::Upgrade(t) = o { Some(*t) } else { None }) } else { None };
+        match last {
+            Some(t) => self.sim.types.get(t).upgrades_to.filter(|&to| self.sim.is_allowed(to)),
+            None => self.sim.next_upgrade(u),
+        }
+    }
+
+    /// What UPGRADE offers the selection: the type the first unit that upgrades in place becomes
+    /// next, and how many of the selection upgrade. None when none does.
+    pub fn upgrade_offer(&self) -> Option<(usize, usize)> {
+        let mut first = None;
+        let mut count = 0;
+        for u in self.selection.iter().filter_map(|&id| self.sim.unit(id)) {
+            if let Some(to) = self.upgrade_step(u, false) {
+                first.get_or_insert(to);
+                count += 1;
+            }
+        }
+        first.map(|to| (to, count))
+    }
+
+    /// Upgrades the selected units in place, each into the next step of its type's upgrades
+    /// (`queue`: the step after those already ordered, queued after its other orders). A unit
+    /// already upgrading into that step goes on with it.
+    pub fn upgrade_selection(&mut self, queue: bool) {
+        let mut by_target: Vec<(usize, Vec<UnitId>)> = Vec::new();
+        for u in self.selection.iter().filter_map(|&id| self.sim.unit(id)) {
+            let Some(to) = self.upgrade_step(u, queue) else { continue };
+            if !queue && matches!(u.orders.front(), Some(Order::Upgrade(t)) if *t == to) {
+                continue;
+            }
+            match by_target.iter_mut().find(|(t, _)| *t == to) {
+                Some((_, units)) => units.push(u.id),
+                None => by_target.push((to, vec![u.id])),
+            }
+        }
+        if by_target.is_empty() {
+            return;
+        }
+        self.ui_sounds.push("ADDBUILD");
+        for (to, units) in by_target {
+            self.issue(Command::Order { player: self.local_player, units, order: Order::Upgrade(to), queue });
+        }
+    }
+
+    /// Installs enhancement `index` of unit type `type_id` (`remove`: takes it out) on each unit
+    /// of the selection of that type that may now (`enhancement_orders`: the type's list is the
+    /// one shown, and another type's is its own). `queue`: after its other orders.
+    pub fn enhance_selection(&mut self, type_id: usize, index: u16, remove: bool, queue: bool) {
+        if self.spectator {
+            return;
+        }
+        let orders = enhancement_orders(&self.sim, &self.selection, self.local_player, type_id, index, remove, queue);
+        if orders.is_empty() {
+            return;
+        }
+        self.ui_sounds.push("ADDBUILD");
+        for (id, list, after) in orders {
+            for (k, order) in list.into_iter().enumerate() {
+                self.issue(Command::Order { player: self.local_player, units: vec![id], order, queue: after || k > 0 });
+            }
+        }
+    }
+
     /// Whether a selected unit supports the D-gun command. Stockpiled missiles
     /// and primary command-fire weapons use Attack, as ordinary weapons do.
     pub fn selection_has_dgun(&self) -> bool {
@@ -3697,7 +3868,7 @@ impl Game {
                 .selection
                 .iter()
                 .copied()
-                .filter(|&id| self.sim.unit(id).is_some_and(|u| self.sim.unit_type(u).build_options.contains(&type_id)))
+                .filter(|&id| self.sim.unit(id).is_some_and(|u| u.build_options(self.sim.unit_type(u)).contains(&type_id)))
                 .collect();
             let from = builders.iter().filter_map(|&id| self.sim.unit(id)).map(|u| Vec3::from_array(u.pos.to_f32())).sum::<Vec3>() / builders.len().max(1) as f32;
             let stops: Vec<(Vec3, Vec3)> = sites.into_iter().map(|p| (p, p)).collect();
@@ -4154,7 +4325,7 @@ impl Game {
                 match keep {
                     SelectionFilter::Combat => t.weapons.iter().any(|w| w.is_some()) && !t.is_builder,
                     SelectionFilter::Builders => t.is_builder && !t.is_factory,
-                    SelectionFilter::Damaged => u.health < t.max_health,
+                    SelectionFilter::Damaged => u.health < u.max_health(t),
                     SelectionFilter::Idle => u.orders.is_empty() && u.build.is_none() && !self.on_duty(u.id),
                 }
             })
@@ -4181,7 +4352,7 @@ impl Game {
     pub fn begin_placement(&mut self, type_id: usize) {
         self.repeat_order = false;
         self.command_mode = None;
-        self.placement = Some(Placement { type_id, pos: None, valid: false, matrices: Vec::new(), line_start: None, row: Vec::new(), row_matrices: Vec::new() });
+        self.placement = Some(Placement::new(type_id));
     }
 
     /// Render instances for units, 3DO features and the placement ghost; also refreshes the
@@ -4562,6 +4733,33 @@ pub(crate) fn footprint_rect(t: &ta_sim::UnitType, pos: ta_sim::FxVec3) -> (i32,
     (x0, z0, x0 + t.footprint.0 as i32, z0 + t.footprint.1 as i32)
 }
 
+/// A unit the pointer's ray passes through (`Game::unit_at_screen`): how far along the ray it
+/// meets its sphere, and the sphere.
+#[derive(Clone, Copy, Debug)]
+struct Hit {
+    along: f32,
+    id: UnitId,
+    centre: Vec3,
+    radius: f32,
+    finished: bool,
+}
+
+/// The unit the pointer is on, of those its ray passes through: the nearest, unless a finished
+/// unit it passes through lies inside that one's sphere and is smaller, resting on it or in it (an
+/// aircraft landed on a carrier's deck, which the carrier's sphere took in, a unit on a
+/// building's pad): that one, the smallest of them, while the big one is clicked anywhere else on
+/// it. (Not a unit being built in a factory: a click there is the factory's.)
+fn pick_hit(hits: &mut [Hit]) -> Option<UnitId> {
+    hits.sort_by(|a, b| a.along.total_cmp(&b.along));
+    let mut best = *hits.first()?;
+    for h in hits.iter().skip(1) {
+        if h.finished && h.radius < best.radius && h.centre.distance(best.centre) < best.radius {
+            best = *h;
+        }
+    }
+    Some(best.id)
+}
+
 /// Where a building's ghost is drawn from: where the building will stand once put down there
 /// (`Sim::resting_pos`: a shipyard at the surface, not on the sea floor), its model as the
 /// scene draws a unit's (`Unit::model_pos`).
@@ -4583,10 +4781,50 @@ fn ghost_pose(poses: &mut rustc_hash::FxHashMap<usize, Vec<Mat4>>, t: &ta_sim::U
 }
 
 
+/// The orders installing enhancement `index` of unit type `type_id` (`remove`: taking it out)
+/// gives each of `units` that is `player`'s and of that type, and may: a unit of another type,
+/// whose list is its own (a mixed selection's other Commanders), is left alone, as is one with it
+/// installed already; one whose prerequisite is missing gets that first, queued before it, or
+/// waits for it where it is on its way. Each with whether it goes after its other orders
+/// (`queue`).
+pub(crate) fn enhancement_orders(sim: &Sim, units: &[UnitId], player: u8, type_id: usize, index: u16, remove: bool, queue: bool) -> Vec<(UnitId, Vec<Order>, bool)> {
+    let mut orders: Vec<(UnitId, Vec<Order>, bool)> = Vec::new();
+    for u in units.iter().filter_map(|&id| sim.unit(id)) {
+        if u.owner != player || u.type_id != type_id {
+            continue;
+        }
+        let ty = sim.unit_type(u);
+        let Some(e) = ty.enhancements.get(index as usize) else { continue };
+        if remove {
+            if u.enhancements.contains(&index) {
+                orders.push((u.id, vec![Order::Enhance { index, remove: true }], queue));
+            }
+            continue;
+        }
+        let mut list = Vec::new();
+        let mut after = queue;
+        match sim.enhancement_fit(u, index) {
+            ta_sim::EnhancementFit::Free { .. } => {}
+            ta_sim::EnhancementFit::Needs(p) if !u.enhancements.contains(&p) && e.prerequisite == Some(p) => {
+                // (Its prerequisite first; where that is on its way already, after it.)
+                if u.orders.iter().any(|o| *o == Order::Enhance { index: p, remove: false }) {
+                    after = true;
+                } else {
+                    list.push(Order::Enhance { index: p, remove: false });
+                }
+            }
+            _ => continue,
+        }
+        list.push(Order::Enhance { index, remove: false });
+        orders.push((u.id, list, after));
+    }
+    orders
+}
+
 /// Why the simulation refused an order (`SimEvent::OrderFailed`), for the translations: shown
 /// through `t`.
 #[allow(dead_code)]
-const ORDER_FAILURES: [&str; 8] = [
+const ORDER_FAILURES: [&str; 12] = [
     ta_ui::i18n::n("cannot carry that"),
     ta_ui::i18n::n("out of reach"),
     ta_ui::i18n::n("no room to unload"),
@@ -4595,6 +4833,10 @@ const ORDER_FAILURES: [&str; 8] = [
     ta_ui::i18n::n("build site blocked"),
     ta_ui::i18n::n("too near an enemy base in the ceasefire"),
     ta_ui::i18n::n("no captures in the ceasefire"),
+    ta_ui::i18n::n("it has no build power"),
+    ta_ui::i18n::n("cannot upgrade into that"),
+    ta_ui::i18n::n("no room to upgrade into that"),
+    ta_ui::i18n::n("needs another enhancement first"),
 ];
 
 /// TA's selections by category: the key's action and the category it selects.
@@ -4876,10 +5118,7 @@ mod tests {
     fn releasing_shift_finishes_build_repetition_but_preserves_a_fresh_build_choice() {
         let mut repeated = false;
         let mut mode = None;
-        let mut placement = Some(Placement {
-            type_id: 7, pos: Some(Vec3::X), valid: true, matrices: Vec::new(),
-            line_start: None, row: Vec::new(), row_matrices: Vec::new(),
-        });
+        let mut placement = Some(Placement { pos: Some(Vec3::X), valid: true, ..Placement::new(7) });
         finish_repeat_mode(&mut repeated, &mut mode, &mut placement, false, false);
         assert!(placement.is_some(), "opening a build tool with Shift held still permits its first placement");
         repeated = true;
@@ -4996,18 +5235,47 @@ mod tests {
         assert!(attack_is_news(&mut told, b, 52.0), "and one that has gone on for a while is told again");
     }
 
+    /// A click on a small unit resting on a big one (a construction aircraft landed on TA:
+    /// Escalation's flying carrier, whose sphere takes in its whole deck) picks the small one; the
+    /// big one anywhere else on it, and the nearer of two apart, as before.
+    #[test]
+    fn a_click_on_a_unit_resting_on_a_bigger_one_picks_it() {
+        let id = |slot| UnitId { slot, generation: 0 };
+        let hit = |slot, along, centre: Vec3, radius, finished| Hit { along, id: id(slot), centre, radius, finished };
+        // The carrier's sphere is met first; the plane on its deck lies inside it.
+        let carrier = hit(1, 900.0, Vec3::new(0.0, 230.0, 0.0), 136.0, true);
+        let plane = hit(2, 960.0, Vec3::new(40.0, 262.0, -30.0), 22.0, true);
+        assert_eq!(pick_hit(&mut [carrier, plane]), Some(id(2)));
+        assert_eq!(pick_hit(&mut [plane, carrier]), Some(id(2)), "in whatever order they were found");
+        assert_eq!(pick_hit(&mut [carrier]), Some(id(1)), "the carrier clicked off its planes");
+        // Two planes on its deck the ray passes through: the nearer of those.
+        let other = hit(3, 1010.0, Vec3::new(-60.0, 262.0, 20.0), 22.0, true);
+        assert_eq!(pick_hit(&mut [other, carrier, plane]), Some(id(2)));
+        // A unit being built in a factory: a click there is still the factory's.
+        let factory = hit(4, 500.0, Vec3::new(0.0, 25.0, 0.0), 70.0, true);
+        let frame = hit(5, 540.0, Vec3::new(0.0, 12.0, 10.0), 14.0, false);
+        assert_eq!(pick_hit(&mut [factory, frame]), Some(id(4)));
+        // Apart (the small one outside the big one's sphere, behind it): the nearer.
+        let tank = hit(6, 700.0, Vec3::new(0.0, 10.0, 200.0), 12.0, true);
+        assert_eq!(pick_hit(&mut [factory, tank]), Some(id(4)));
+        // A big one behind a small one: the small one, nearer anyway.
+        assert_eq!(pick_hit(&mut [hit(7, 300.0, Vec3::ZERO, 12.0, true), factory]), Some(id(7)));
+        assert_eq!(pick_hit(&mut []), None);
+    }
+
     #[test]
     fn cancelled_placement_drag_keeps_the_build_choice_without_stale_sites() {
         let mut placement = Placement {
-            type_id: 7, pos: Some(Vec3::X), valid: true, matrices: vec![Mat4::IDENTITY],
-            line_start: Some(Vec3::ZERO), row: vec![(Vec3::X, true), (Vec3::Z, false)],
+            pos: Some(Vec3::X), valid: true, cells: vec![true; 4], matrices: vec![Mat4::IDENTITY],
+            line_start: Some(Vec3::ZERO), row: vec![(Vec3::X, true), (Vec3::Z, false)], row_cells: vec![vec![true; 4], vec![false; 4]],
             row_matrices: vec![vec![Mat4::IDENTITY]; 2],
+            ..Placement::new(7)
         };
         placement.cancel_drag();
         assert_eq!(placement.type_id, 7);
         assert!(placement.line_start.is_none() && placement.pos.is_none());
-        assert!(!placement.valid);
-        assert!(placement.row.is_empty() && placement.row_matrices.is_empty() && placement.matrices.is_empty());
+        assert!(!placement.valid && placement.cells.is_empty());
+        assert!(placement.row.is_empty() && placement.row_cells.is_empty() && placement.row_matrices.is_empty() && placement.matrices.is_empty());
     }
 
     #[test]

@@ -20,10 +20,25 @@ struct Loaded {
     setup: MissionSetup,
 }
 
-fn load(file: &str, difficulty: &str) -> Option<Loaded> {
+/// The game's content mounted as the game mounts it (`ta_vfs::mods::mount`: the install, less
+/// what a mod replaces), and over it the mod `TA_TEST_MOD` names (a folder with its mod.toml), if
+/// any. `None` without a TA install.
+fn game_vfs() -> Option<ta_vfs::Vfs> {
     let install = ta_vfs::install::discover(None).ok()?;
-    let mut vfs = ta_vfs::Vfs::new();
-    vfs.mount_game_dir(&install.root, "base").ok()?;
+    let module = std::env::var("TA_TEST_MOD").ok().map(|dir| {
+        ta_vfs::mods::read_mod(std::path::Path::new(&dir)).expect("TA_TEST_MOD: a mod's folder").expect("TA_TEST_MOD: a mod's folder")
+    });
+    if let Some(m) = &module {
+        println!("mod: {} {}", m.manifest.name, m.manifest.version);
+    }
+    let mounted = ta_vfs::mods::mount(Some(&install.root), None, &module.iter().collect::<Vec<_>>(), &|m| m.manifest.id.clone());
+    mounted.install.ok()?;
+    mounted.mods.expect("TA_TEST_MOD mounts");
+    Some(mounted.vfs)
+}
+
+fn load(file: &str, difficulty: &str) -> Option<Loaded> {
+    let vfs = game_vfs()?;
     let data = Arc::new(GameData::load(&vfs));
     let types = Arc::new(UnitTypes::compile(&data, &|p| vfs.read_opt(p)));
     load_from(&vfs, data, types, file, difficulty)
@@ -432,23 +447,35 @@ fn missions_with_scripts_play_the_same_twice() {
     }
 }
 
-/// Loads every campaign mission and runs 30 s with the AI. A mission decided before the
-/// player does anything points at a misread objective.
+/// Loads every campaign mission and runs 30 s with the AI, as the game mounts its content, with
+/// the mod `TA_TEST_MOD` names over it, if any (`TA_TEST_MOD=<mod folder> cargo test --release -p
+/// ta_sim --test mission every_mission -- --ignored --nocapture`). A mission decided before the
+/// player does anything points at a misread objective, or at data the mission is not played with:
+/// it says which goals decided it, and what the data lacks of what it places.
 #[test]
 #[ignore]
 fn every_mission_loads_and_runs() {
-    let Some(install) = ta_vfs::install::discover(None).ok() else { return };
-    let mut vfs = ta_vfs::Vfs::new();
-    vfs.mount_game_dir(&install.root, "base").unwrap();
-    let mut early = Vec::new();
+    let Some(vfs) = game_vfs() else { return };
+    let data = Arc::new(GameData::load(&vfs));
+    let types = Arc::new(UnitTypes::compile(&data, &|p| vfs.read_opt(p)));
+    let (mut early, mut unplayable) = (Vec::new(), Vec::new());
     let mut total = 0;
     for c in mission::campaigns(&vfs) {
         for entry in &c.missions {
-            let Some(Loaded { mut sim, .. }) = load(&entry.file, "Medium") else {
+            // (What the game does not start, said so instead: see `every_campaign_mission_can_be_played`.)
+            if let Some(m) = Mission::load(&vfs, &entry.file)
+                && let Some(why) = m.schema("Medium").and_then(|s| ta_sim::mission::unplayable(&m, s, &types))
+            {
+                println!("  {:10} not playable: {why:?}", entry.file);
+                unplayable.push(entry.file.clone());
+                continue;
+            }
+            let Some(Loaded { mut sim, setup, .. }) = load_from(&vfs, data.clone(), types.clone(), &entry.file, "Medium") else {
                 println!("  !! {} failed to load", entry.file);
                 continue;
             };
             total += 1;
+            let ours = sim.units().filter(|u| u.owner == 0).count();
             let mut ais: Vec<ta_ai::SkirmishAi> =
                 (1..sim.players.len() as u8).map(|p| ta_ai::SkirmishAi::new(p, &sim, ta_ai::Difficulty::Normal)).collect();
             let t0 = std::time::Instant::now();
@@ -469,13 +496,27 @@ fn every_mission_loads_and_runs() {
                 }
             }
             let ms = t0.elapsed().as_secs_f64() * 1000.0;
-            println!("  {:10} {:>4} units, 30 s in {ms:6.0} ms{}", entry.file, sim.unit_count(), ended.map_or(String::new(), |e| format!("  ENDED {e:?}")));
+            let why = match ended {
+                Some(_) => {
+                    let (won, lost) = sim.mission_goals_met();
+                    let goals: Vec<String> = won.iter().chain(&lost).map(|o| o.describe(&sim.types)).collect();
+                    format!(" ({})", goals.join(", "))
+                }
+                None => String::new(),
+            };
+            let skipped = if setup.skipped.is_empty() { String::new() } else { format!(", unknown {:?}", setup.skipped) };
+            println!(
+                "  {:10} {:>4} units ({ours} ours{skipped}), 30 s in {ms:6.0} ms{}{why}",
+                entry.file,
+                sim.unit_count(),
+                ended.map_or(String::new(), |e| format!("  ENDED {e:?}"))
+            );
             if ended.is_some() {
                 early.push(entry.file.clone());
             }
         }
     }
-    println!("{total} missions; decided early: {early:?}");
+    println!("{total} missions played; decided early: {early:?}; not playable: {unplayable:?}");
 }
 
 #[test]
@@ -1298,4 +1339,242 @@ fn mission_scripts_give_the_move_order_then_the_fire_order() {
     assert_eq!(intimidator.1, 1, "AC19's Intimidator returns fire before it opens up");
     let doomsday = state("AC24.ota", "CORDOOM", &|s| s.is_empty(), 30).expect("AC24's Doomsday Machine");
     assert_eq!(doomsday.1, 2, "AC24's Doomsday Machine is set firing by its computer player");
+}
+
+// ---- Missions with mods on ------------------------------------------------------------------
+
+/// Writes `files` (path, text) under `dir`.
+fn write_files(dir: &std::path::Path, files: &[(&str, String)]) {
+    for (path, text) in files {
+        let p = dir.join(path);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+}
+
+/// A fresh folder of the temp dir for a test's made-up game and mods.
+fn scratch_folder(name: &str) -> std::path::PathBuf {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let dir = std::env::temp_dir().join(format!("ta-mission-mods-{name}-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    std::fs::remove_dir_all(&dir).ok();
+    dir
+}
+
+/// A made-up unit's file: `name`, with `keys`.
+fn unit_file(name: &str, keys: &str) -> String {
+    format!("[UNITINFO]\n{{\nUnitName={name};\nObjectname={name};\nMaxDamage=1000;\nSightDistance=300;\n{keys}\n}}\n")
+}
+
+/// A made-up mission's OTA: `goals`, and its units in a section called `section` (TA's `units`).
+fn mission_ota(goals: &str, section: &str, units: &[(&str, u32, i32, i32)]) -> String {
+    let placed: String = units.iter().enumerate().map(|(i, (name, player, x, z))| format!("[unit{i}]{{Unitname={name};XPos={x};ZPos={z};Player={player};}}")).collect();
+    format!("[GlobalHeader]{{missionname=Made Up;{goals}[Schema 0]{{Type=Easy;[{section}]{{{placed}}}[specials]{{[special0]{{specialwhat=StartPos1;XPos=100;ZPos=100;}}}}}}}}")
+}
+
+/// A flat 1024 × 1024 map, the player and one computer player, on `types`.
+fn flat_sim(types: Arc<UnitTypes>, data: Arc<GameData>) -> Sim {
+    let cells = 64 * 64;
+    let map = TntMap { width: 64, height: 64, sea_level: 0, tiles: Vec::new(), tile_map: Vec::new(), heights: vec![60; cells], features: vec![FEATURE_NONE; cells], feature_names: Vec::new(), minimap: Default::default(), flags: Vec::new() };
+    let players: Vec<PlayerSetup> = (0..2).map(|i| PlayerSetup { side: "ARM".into(), color: i as u8, start: FxVec3::ZERO, metal: Fx::from_int(1000), energy: Fx::from_int(1000), ai: i == 1 }).collect();
+    let mut sim = Sim::new(types, data, &map, &MapInfo::default(), 0, &players, 7);
+    sim.set_team(1, 1);
+    sim
+}
+
+/// A made-up game (`game`: its units and its mission, `Made Up.ota`), with the mod in `module`
+/// (a folder with its mod.toml) mounted over it as the game mounts mods: the game's data, unit
+/// types and mission.
+fn made_up_game_with(game: &std::path::Path, module: &std::path::Path) -> (ta_vfs::Vfs, Arc<GameData>, Arc<UnitTypes>, Mission) {
+    let info = ta_vfs::mods::read_mod(module).expect("its mod.toml reads").expect("a mod's folder");
+    let mounted = ta_vfs::mods::mount(Some(game), None, &[&info], &|m| m.manifest.id.clone());
+    mounted.install.unwrap();
+    assert_eq!(mounted.mods.unwrap(), [info.manifest.id.clone()]);
+    let vfs = mounted.vfs;
+    let data = Arc::new(GameData::load(&vfs));
+    let types = Arc::new(UnitTypes::compile(&data, &|p| vfs.read_opt(p)));
+    let mission = Mission::load(&vfs, "Made Up.ota").expect("the mission");
+    (vfs, data, types, mission)
+}
+
+/// A mod's own copy of a mission, made for its own engine: TA: Escalation's engine read the folder
+/// `unitse` for TA's `units`, and its copies of TA's missions have their units in `[unitsE]`.
+/// Mounted over the game as the game mounts mods, its units are placed and it plays. Read only from
+/// `[units]`, nothing was placed, and with TA: Escalation on, every campaign mission was lost at
+/// its first look at its goals (`AllUnitsKilled`, half a second in).
+#[test]
+fn a_mods_own_copy_of_a_mission_places_its_units() {
+    let root = scratch_folder("own-copy");
+    let units = [("TANK", 1, 300, 300), ("TANK", 1, 340, 300), ("TARGET", 2, 800, 800)];
+    write_files(&root.join("game"), &[
+        ("units/tank.fbi", unit_file("TANK", "MaxVelocity=1;\nCanMove=1;")),
+        ("units/target.fbi", unit_file("TARGET", "")),
+        ("maps/Made Up.ota", mission_ota("DestroyAllUnits=1;AllUnitsKilled=1;", "units", &units)),
+    ]);
+    write_files(&root.join("mod"), &[
+        ("mod.toml", "id = \"own-copy\"\nname = \"Own Copy\"\n\n[rename]\nunitse = \"units\"\n".into()),
+        ("unitse/tank.fbi", unit_file("TANK", "MaxVelocity=2;\nCanMove=1;")),
+        ("unitse/target.fbi", unit_file("TARGET", "")),
+        ("maps/Made Up.ota", mission_ota("DestroyAllUnits=1;AllUnitsKilled=1;", "unitsE", &units)),
+    ]);
+    let (vfs, data, types, mission) = made_up_game_with(&root.join("game"), &root.join("mod"));
+    assert!(vfs.origin("maps/Made Up.ota").is_some_and(|o| o.layer == "own-copy"), "the mod's copy of the mission");
+    let schema = mission.schema("Medium").unwrap().clone();
+    assert_eq!(schema.units.len(), 3, "its units, from [unitsE]");
+    assert_eq!(ta_sim::mission::unplayable(&mission, &schema, &types), None);
+    let mut sim = flat_sim(types, data);
+    let setup = ta_sim::mission::setup_mission(&mut sim, &mission, &schema, None);
+    assert!(setup.skipped.is_empty());
+    assert_eq!((sim.players[0].unit_count, sim.players[1].unit_count), (2, 1), "the player's two tanks and the enemy's target");
+    for t in 0..60 {
+        sim.step(&[]);
+        assert_eq!(ended(&sim.take_events()), None, "decided at tick {t}");
+    }
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// What a mod's data lacks of a mission is said before it starts (`unplayable`), rather than
+/// played into a mission decided at once: a total conversion's units in place of TA's (none of
+/// those the mission gives the player), the Commander it is lost with, every way to win it; and
+/// a map made for skirmishes listed as a mission (Total Mayhem's), which places no unit at all.
+#[test]
+fn what_a_mods_data_lacks_of_a_mission_is_said() {
+    use ta_sim::mission::Unplayable;
+    let root = scratch_folder("lacks");
+    write_files(&root.join("game"), &[
+        ("units/armcom.fbi", unit_file("ARMCOM", "Commander=1;\nMaxVelocity=1;\nCanMove=1;")),
+        ("units/tank.fbi", unit_file("TANK", "MaxVelocity=1;\nCanMove=1;")),
+        ("units/gate.fbi", unit_file("GATE", "")),
+        (
+            "maps/Made Up.ota",
+            mission_ota("CaptureUnitType=GATE;CommanderKilled=1;AllUnitsKilled=1;", "units", &[("ARMCOM", 1, 300, 300), ("TANK", 1, 340, 300), ("GATE", 2, 800, 800)]),
+        ),
+    ]);
+    // Total conversions: TA's units folder replaced by one of their own...
+    write_files(&root.join("conversion"), &[
+        ("mod.toml", "id = \"conversion\"\nname = \"Conversion\"\n\n[rename]\nunitsx = \"units\"\n".into()),
+        ("unitsx/mech.fbi", unit_file("MECH", "Commander=1;\nMaxVelocity=1;\nCanMove=1;")),
+    ]);
+    let (_, _, types, mission) = made_up_game_with(&root.join("game"), &root.join("conversion"));
+    let schema = mission.schema("Easy").unwrap();
+    assert_eq!(ta_sim::mission::unplayable(&mission, schema, &types), Some(Unplayable::UnitsMissing(vec!["ARMCOM".into(), "TANK".into()])));
+    // ...or keeping TA's units but the Commander, which its own replaces.
+    write_files(&root.join("commander"), &[
+        ("mod.toml", "id = \"commander\"\nname = \"Commander\"\n\n[rename]\nunitsx = \"units\"\n".into()),
+        ("unitsx/tank.fbi", unit_file("TANK", "MaxVelocity=1;\nCanMove=1;")),
+        ("unitsx/gate.fbi", unit_file("GATE", "")),
+        ("unitsx/newcom.fbi", unit_file("NEWCOM", "Commander=1;\nMaxVelocity=1;\nCanMove=1;")),
+    ]);
+    let (_, _, types, mission) = made_up_game_with(&root.join("game"), &root.join("commander"));
+    let schema = mission.schema("Easy").unwrap();
+    assert_eq!(ta_sim::mission::unplayable(&mission, schema, &types), Some(Unplayable::CommanderMissing(vec!["ARMCOM".into()])));
+    // The gate to capture gone: nothing wins it (the player's units all there).
+    write_files(&root.join("gateless"), &[
+        ("mod.toml", "id = \"gateless\"\nname = \"Gateless\"\n\n[rename]\nunitsx = \"units\"\n".into()),
+        ("unitsx/armcom.fbi", unit_file("ARMCOM", "Commander=1;\nMaxVelocity=1;\nCanMove=1;")),
+        ("unitsx/tank.fbi", unit_file("TANK", "MaxVelocity=1;\nCanMove=1;")),
+    ]);
+    let (_, _, types, mission) = made_up_game_with(&root.join("game"), &root.join("gateless"));
+    let schema = mission.schema("Easy").unwrap();
+    assert_eq!(ta_sim::mission::unplayable(&mission, schema, &types), Some(Unplayable::Unwinnable(vec!["GATE".into()])));
+    // A skirmish map listed as a mission: no unit for the player, its goals all the same.
+    write_files(&root.join("skirmish"), &[
+        ("mod.toml", "id = \"skirmish\"\nname = \"Skirmish\"\n".into()),
+        ("maps/Made Up.ota", "[GlobalHeader]{missionname=Made Up;DestroyAllUnits=1;AllUnitsKilled=1;[Schema 0]{Type=Network 1;[specials]{[special0]{specialwhat=StartPos1;XPos=100;ZPos=100;}}}}".into()),
+    ]);
+    let (_, data, types, mission) = made_up_game_with(&root.join("game"), &root.join("skirmish"));
+    let schema = mission.schema("Easy").unwrap();
+    assert_eq!(ta_sim::mission::unplayable(&mission, schema, &types), Some(Unplayable::NoUnits));
+    // (Played regardless, it is decided at its first look at its goals: why it is said instead.)
+    let mut sim = flat_sim(types, data);
+    ta_sim::mission::setup_mission(&mut sim, &mission, schema, None);
+    let decided = (0..30).find_map(|_| {
+        sim.step(&[]);
+        ended(&sim.take_events())
+    });
+    assert_eq!(decided, Some(false), "lost at once, with nothing to play");
+    // The game as it is, without the mods: the mission plays.
+    let mut vfs = ta_vfs::Vfs::new();
+    vfs.mount_game_dir(&root.join("game"), "base").unwrap();
+    let data = GameData::load(&vfs);
+    let types = UnitTypes::compile(&data, &|p| vfs.read_opt(p));
+    let mission = Mission::load(&vfs, "Made Up.ota").unwrap();
+    assert_eq!(ta_sim::mission::unplayable(&mission, mission.schema("Easy").unwrap(), &types), None);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// Every one of TA's campaign missions, at every difficulty, plays as far as `unplayable` can
+/// tell (what the game asks before it offers one). With `TA_TEST_MOD`, the mod's missions that
+/// can't be played are listed, with why, instead.
+#[test]
+fn every_campaign_mission_can_be_played() {
+    let Some(vfs) = game_vfs() else {
+        eprintln!("TA install not found; skipping");
+        return;
+    };
+    let data = GameData::load(&vfs);
+    let types = UnitTypes::compile(&data, &|p| vfs.read_opt(p));
+    let mut unplayable = Vec::new();
+    let mut total = 0;
+    for c in mission::campaigns(&vfs) {
+        for entry in &c.missions {
+            let Some(m) = Mission::load(&vfs, &entry.file) else { continue };
+            for difficulty in ["Easy", "Medium", "Hard"] {
+                let Some(schema) = m.schema(difficulty) else { continue };
+                total += 1;
+                if let Some(why) = ta_sim::mission::unplayable(&m, schema, &types) {
+                    unplayable.push(format!("{} {} {difficulty}: {why:?}", c.title, entry.file));
+                }
+            }
+        }
+    }
+    println!("{total} missions and difficulties; not playable: {}", unplayable.len());
+    for line in &unplayable {
+        println!("  {line}");
+    }
+    if std::env::var_os("TA_TEST_MOD").is_none() {
+        assert!(unplayable.is_empty(), "TA's own missions all play: {unplayable:#?}");
+    }
+}
+
+/// TA: Escalation's way of keeping a mission's units (`[unitsE]`), on TA's own first mission: put
+/// in a mod as its copy of the mission and mounted over the install as the game mounts mods, it
+/// places what TA's places, and is not decided at its first looks at its goals.
+#[test]
+fn a_hero_returns_with_its_units_under_a_mods_own_name_plays() {
+    let Some(install) = ta_vfs::install::discover(None).ok() else {
+        eprintln!("TA install not found; skipping");
+        return;
+    };
+    let Some(original) = load("AC01.ota", "Medium") else {
+        eprintln!("TA install not found; skipping");
+        return;
+    };
+    let mut base = ta_vfs::Vfs::new();
+    base.mount_game_dir(&install.root, "base").unwrap();
+    // (TA's files are bytes, its text Latin-1: kept byte for byte but for the section's name.)
+    let text: String = base.read("maps/AC01.ota").unwrap().iter().map(|&b| b as char).collect();
+    let renamed = text.replace("[units]", "[unitsE]").replace("[Units]", "[unitsE]").replace("[UNITS]", "[unitsE]");
+    assert_ne!(renamed, text, "AC01's units section");
+    let root = scratch_folder("ac01");
+    write_files(&root, &[("mod.toml", "id = \"escalation-like\"\nname = \"Escalation-like\"\n".into())]);
+    std::fs::create_dir_all(root.join("maps")).unwrap();
+    std::fs::write(root.join("maps/AC01.ota"), renamed.chars().map(|c| c as u8).collect::<Vec<u8>>()).unwrap();
+    let info = ta_vfs::mods::read_mod(&root).unwrap().unwrap();
+    let mounted = ta_vfs::mods::mount(Some(&install.root), None, &[&info], &|m| m.manifest.id.clone());
+    mounted.install.unwrap();
+    mounted.mods.unwrap();
+    let vfs = mounted.vfs;
+    assert!(vfs.origin("maps/AC01.ota").is_some_and(|o| o.layer == "escalation-like"));
+    let data = Arc::new(GameData::load(&vfs));
+    let types = Arc::new(UnitTypes::compile(&data, &|p| vfs.read_opt(p)));
+    let Loaded { mut sim, mission, .. } = load_from(&vfs, data, types, "AC01.ota", "Medium").expect("the mod's AC01");
+    assert_eq!(ta_sim::mission::unplayable(&mission, mission.schema("Medium").unwrap(), &sim.types), None);
+    let count = |sim: &Sim, owner: u8| sim.units().filter(|u| u.owner == owner).count();
+    assert_eq!((count(&sim, 0), count(&sim, 1)), (count(&original.sim, 0), count(&original.sim, 1)), "the units TA's places");
+    assert!(count(&sim, 0) > 0);
+    for t in 0..60 {
+        sim.step(&[]);
+        assert_eq!(ended(&sim.take_events()), None, "decided at tick {t}");
+    }
+    std::fs::remove_dir_all(&root).ok();
 }

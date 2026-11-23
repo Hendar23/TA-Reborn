@@ -14,7 +14,7 @@ use egui::{
 };
 use ta_config::{
     ArtStyle, Audio, CameraStyle, Config, Gameplay, Graphics, HealthBars, Keys, Launcher, MenuBackdrop, OnPlay, OrderButton, Preset, Quality, RadialOpens,
-    Reflections, SeasonalTheme, TimeOfDay, UserMusic, WindowMode, limits,
+    RangeOverlays, Reflections, SeasonalTheme, TimeOfDay, UserMusic, WindowMode, limits,
 };
 
 use crate::i18n::{n, t, tf};
@@ -69,7 +69,7 @@ impl Category {
             Category::Graphics => n("Detail, antialiasing, effects, lighting and the camera"),
             Category::Display => n("Resolution, window and frame rate"),
             Category::Sound => n("Volumes, units' replies, and how many sounds play at once"),
-            Category::Launcher => n("When the game starts, the launcher's music and sounds, updates and its pointers"),
+            Category::Launcher => n("When the game starts, the launcher's music and sounds, updates, its pointers and experimental features"),
         }
     }
 
@@ -869,6 +869,9 @@ fn interface(ui: &mut Ui, rows: &mut Rows, p: &mut Gameplay, launcher: &mut Laun
     setting_row(ui, rows, "HEALTH BARS", "Selected and hovered units always show theirs", "hp damage life", |ui| {
         widgets::segmented_fill(ui, &mut p.health_bars, &[(HealthBars::Auto, "AUTO"), (HealthBars::Damaged, "DAMAGED"), (HealthBars::Selected, "SELECTED")]);
     });
+    setting_row(ui, rows, "RANGES", "The reach shown round the selected units, the building being placed and the unit under the pointer, on the battlefield and the minimap: weapons, sight and sensors; radar, sonar and jammers only; or none. Alt+O switches in battle.", "range ranges rings circles radar sonar jammer weapons sight reach coverage overlay", |ui| {
+        widgets::segmented_fill(ui, &mut p.range_overlays, &[(RangeOverlays::All, n("ALL")), (RangeOverlays::Sensors, n("SENSORS")), (RangeOverlays::Off, n("OFF"))]);
+    });
     toggle_row(ui, rows, "STRATEGIC ICONS", "Far out, where units are a few pixels across, each one shows as an icon in its owner's colour, its shape saying what it is. Off: the units themselves at every height.", "zoom out icons strategic overview symbols far units", &mut p.strategic_icons);
     toggle_row(ui, rows, "CLASSIC INTERFACE", "TA's own 1997 side panel, resource bar and build menus in battle", "hud old original panel", &mut p.classic_interface);
     setting_row(ui, rows, "ORIGINAL PIXELS", "The classic interface's art and lettering in TA's own square pixels, enlarged as they are. Off: smoothed for your screen, sharp at any size", "classic interface hud pixels pixelated pixel art sharp smooth blurry retro scaling filter", |ui| {
@@ -901,6 +904,7 @@ fn launcher(ui: &mut Ui, rows: &mut Rows, launcher: &mut Launcher, a: &mut Audio
     toggle_row(ui, rows, "LAUNCHER SOUNDS", "TA's own button sounds in the launcher, from your install", "launcher clicks ui sound effects", &mut a.launcher_sounds);
     toggle_row(ui, rows, "LOOK FOR UPDATES", "Ask for a newer version of TA Reborn each time the launcher starts (About has CHECK NOW)", "update version new release download automatic check", &mut updates.check);
     toggle_row(ui, rows, "THEMED LAUNCHER CURSORS", "Use Reborn cursors in the launcher. Turn off to use your system pointer.", "launcher mouse pointer cursor accessibility", &mut launcher.themed_cursor);
+    toggle_row(ui, rows, "ENABLE EXPERIMENTAL FEATURES", "Try features still being tested before they become a normal part of the game, such as the Supreme Commander import. They may change, or not always work as they should.", "experimental features beta test testing early preview supreme commander import", &mut launcher.experimental_features);
 }
 
 fn accessibility(ui: &mut Ui, rows: &mut Rows, p: &mut Gameplay) {
@@ -1185,6 +1189,7 @@ fn restore(category: Category, config: &mut Config) {
         Category::Interface => {
             let p = &mut config.gameplay;
             p.health_bars = d.gameplay.health_bars;
+            p.range_overlays = d.gameplay.range_overlays;
             p.strategic_icons = d.gameplay.strategic_icons;
             p.classic_interface = d.gameplay.classic_interface;
             p.classic_pixels = d.gameplay.classic_pixels;
@@ -1253,6 +1258,7 @@ fn restore(category: Category, config: &mut Config) {
             // (The seasons are Interface's: both the game and the launcher show them.)
             config.launcher.on_play = d.launcher.on_play;
             config.launcher.themed_cursor = d.launcher.themed_cursor;
+            config.launcher.experimental_features = d.launcher.experimental_features;
             config.audio.launcher_sounds = d.audio.launcher_sounds;
             config.audio.launcher_music = d.audio.launcher_music;
             config.audio.launcher_music_volume = d.audio.launcher_music_volume;
@@ -1512,7 +1518,7 @@ mod tests {
         let mut view = SettingsView::default();
         view.open(Category::Launcher);
         let (_, texts) = frame(&mut view, &mut config, &launcher);
-        for row in ["WHEN THE GAME STARTS", "LAUNCHER MUSIC", "LOOK FOR UPDATES", "THEMED LAUNCHER CURSORS"] {
+        for row in ["WHEN THE GAME STARTS", "LAUNCHER MUSIC", "LOOK FOR UPDATES", "THEMED LAUNCHER CURSORS", "ENABLE EXPERIMENTAL FEATURES"] {
             assert!(texts.iter().any(|text| text == row), "{row}: {texts:?}");
         }
         config.audio.launcher_music = !config.audio.launcher_music;
@@ -1564,6 +1570,7 @@ mod tests {
     fn the_new_switches_have_rows_search_and_defaults() {
         let rows = [
             (Category::Interface, "STRATEGIC ICONS", "icons"),
+            (Category::Interface, "RANGES", "radar"),
             (Category::Accessibility, "SCREEN SHAKE", "shake"),
             (Category::Graphics, "GROUND IN THE WIND", "grass"),
             (Category::Sound, "UNIT REPLIES", "acknowledgements"),
@@ -1587,6 +1594,7 @@ mod tests {
         }
         let mut config = Config::default();
         config.gameplay.strategic_icons = false;
+        config.gameplay.range_overlays = ta_config::RangeOverlays::Sensors;
         config.gameplay.screen_shake = false;
         config.graphics.ground_life = false;
         config.graphics.show_frame_rate = true;
@@ -1599,6 +1607,28 @@ mod tests {
             restore(category, &mut config);
         }
         assert_eq!(config, Config::default());
+    }
+
+    /// ENABLE EXPERIMENTAL FEATURES: the launcher's alone, found by searching for it there and
+    /// never in the game's options, off as it comes, and off again with the launcher's defaults.
+    #[test]
+    fn experimental_features_are_the_launchers_and_off_by_default() {
+        let mut config = Config::default();
+        assert!(!config.launcher.experimental_features);
+        for in_game in [false, true] {
+            let mut host = host();
+            host.in_game = in_game;
+            for search in ["experimental", "supreme commander"] {
+                let mut view = SettingsView { search: search.into(), ..Default::default() };
+                let (_, texts) = frame(&mut view, &mut config, &host);
+                assert_eq!(texts.iter().any(|text| text == "ENABLE EXPERIMENTAL FEATURES"), !in_game, "{search} in_game={in_game}: {texts:?}");
+            }
+        }
+        config.launcher.experimental_features = true;
+        restore(Category::Interface, &mut config);
+        assert!(config.launcher.experimental_features, "not Interface's");
+        restore(Category::Launcher, &mut config);
+        assert!(!config.launcher.experimental_features);
     }
 
     #[test]

@@ -1,8 +1,192 @@
 # Changelog
 
-## Unreleased
+## 1.0.9 — 2026-11-23
+
+The game no longer crashes when zoomed all the way out on some maps, and a battle it does crash in
+is kept as a replay. The Supreme Commander factions are painted at Forged Alliance's full
+resolution, no longer turn white in the rain, and move as they work; their factories roll their
+units out down their ramps, missile trucks deploy before they fire, anti-air takes on aircraft
+alone, adjacency gives its bonuses, and engineering stations upgrade and work round them by
+themselves. The computer players use the whole tech tree, strategic missiles and the Krogoth
+included. With TA: Escalation its campaign missions play and its vertically launched missiles fly,
+and wrecks no longer have a black square at their base.
 
 ### Added
+- A battle the game crashes in is kept as a replay, as a battle finished or left is, and the crash
+  report (`logs\crash.txt`) names its file: watched, it plays up to the moment of the crash, which
+  helps tell what went wrong. Attach both to a report.
+- Adjacency: the Supreme Commander factions' structures give the structures of their player beside
+  them bonuses, as in Forged Alliance. Power generators cut what the factories, upgrading buildings
+  and silos beside them pay to build, the upkeep of radars, fabricators and extractors, the energy
+  guns' shots cost, and quicken artillery; mass extractors and fabricators cut what the factories
+  beside them pay in metal; storage raises what the generators, extractors and fabricators beside it
+  make (four mass storages round an extractor: half as much again). The bonuses are Forged
+  Alliance's own, read from your copy of the game, by the size of the building that takes them; two
+  buildings touch where their footprints meet along an edge. A link shows across the seam between
+  two buildings that help each other (bright for the one under the pointer and the selected, and for
+  one being placed, before it is put down), the hover card, the selection's details and the
+  information page (F1) say what the buildings beside it give a building and how many it helps, and
+  the figures over it what it makes and uses with them. What a building was built or upgraded for
+  comes back when it is given up unfinished or taken apart, not its price. The computer players put
+  their power generators beside their factories and mass storage beside their upgraded extractors.
+  Any mod can use it (`[ADJACENCY]`, `AdjacencySize`: see
+  [docs/MODDING.md](docs/MODDING.md#adjacency)); make the factions' mod again (UPDATE) to have it.
+
+### Fixed
+- The game could crash ("min > max, or either was NaN") when the modern camera was zoomed all the
+  way out, often while zooming in and out quickly. It depended on the map's size and the window's:
+  at 1920 × 1080, about one map in fourteen, among them Acid Foursome, Aqua Verdigris, Lipar Pass
+  and Emerald Seamount. Zoomed out over most of the map the view keeps to it, and the margin it
+  keeps from the map's edges, rounded, could come out a hair past the map's middle, so that the far
+  edge's margin came before the near one's. It no longer can.
+- Five other places that could crash the same way no longer can: the companion screen between
+  about 800 and 935 points wide, a walking unit whose thigh is some eighty times as long as its
+  shin, a map's start markers on a picture smaller than they are, the command deck on a narrow
+  window, and a mod's units whose storage takes a player's below nothing.
+- The Kennel and the Hive (the UEF's and the Cybran's engineering stations) offered no upgrade and
+  stood idle unless told what to do. Their next tiers, which Forged Alliance makes only by
+  upgrading (the tech 3 Kennel, the Hives of tech 2 and 3), were not made at all, nor were the
+  Cybran shield generator's four upgrades: they are now, so UPGRADE is offered as in Forged
+  Alliance. Left alone, an engineering station now works round it by itself: it helps build what
+  is going up within its reach (a frame, a factory's unit, a building upgrading), then mends the
+  damaged units of its side and its allies there, then reclaims the wrecks there; any order you
+  give it comes first, and waiting for work it is no idle builder. The Kennel works with its own
+  beams, as far round it as its drone would go (its drone is not made yet). Any mod can use it
+  (`DefaultMissionType=AssistPatrol`: see
+  [docs/MODDING.md](docs/MODDING.md#buildings-that-work-round-them-by-themselves)); make the
+  factions' mod again (UPDATE) to have it.
+- A building upgrading in place into a larger one (the Cybran tech 1 land factory's tech 2, a row
+  longer) grew into whatever stood beside it; it now upgrades only with room for what it becomes.
+- The Supreme Commander factions' buildings and units looked pixelated and frosty: their paint was
+  halved to 512 texels a side, so at a normal battle zoom a factory was drawn from a quarter of
+  Forged Alliance's texels, blown up into soft DXT blocks. Their paint is now as large as Forged
+  Alliance paints it (most buildings', the commanders' and the large units' 1024 texels a side,
+  held with HD surfaces; at the Low level the graphics card holds what it did), smaller textures
+  are enlarged keeping their edges sharp, the colour maps' blocks keep their colours, and up close
+  the colour is read sharp rather than blurred between texels. In Reborn's art style the paint is
+  finished as TA's is: the pale blue-white the UEF's buildings wore and the white specks along
+  every panel line (Forged Alliance's sheen, painted into the paint and laid over it again) are
+  gone, the greys are gunmetal, the panels matte with their edges worn bright, the Aeon's and the
+  Seraphim's chrome polished, the Seraphim's markings glowing in their player's colour. Enhanced
+  Classic keeps Forged Alliance's look, at its full resolution. Make the factions' mod again
+  (UPDATE) to have it: it takes about 680 MB (440 MB before).
+- The Supreme Commander factions' buildings and units turned a glossy, frosty white in the rain,
+  the more once a shower had passed and the sky cleared while they were still wet, and the most
+  at dawn and dusk (the UEF's land factory more than its air factory: it goes by how much relief
+  a model's normal map has). The film of rain water that mirrors the sky over wet models lay on
+  their normal maps' relief, which Forged Alliance bakes from finer models, so it ran white along
+  every bevel and panel line, and seen from above their sides mirrored the bright haze. On these
+  models it now lies on their faces, mirrors the ground below the horizon and is laid on their
+  dark paint about as thinly as it shows on TA's: wet, they are darker with a sheen, as TA's units
+  are, in either art style. TA's own units look exactly as they did.
+- The Supreme Commander factions' buildings move as they work, as in Forged Alliance: extractors
+  pump while they extract, stopping where they are when switched off; power generators, mass
+  fabricators, radars and shield generators spin, swing and slide their parts; factories' arms
+  work as they build (the Cybran's, and the UEF's air and naval ones), the Seraphim's pods turn;
+  hatches, silos and antennae open once a building is up. An upgrade in place plays
+  the building's own upgrade animation as it goes, a T1 extractor or factory turning into the next
+  as the work is done, until the new building stands in its place. Make the factions' mod again
+  (UPDATE) to have it. Any mod can use the same: a model's clips named `active`, `open` and
+  `upgrade` play as its unit works, opens and upgrades (see
+  [docs/MODDING.md](docs/MODDING.md#models-that-move-by-clips-of-their-own)).
+- Campaign missions with TA: Escalation on were lost the moment they began: Escalation's copies of
+  TA's missions keep their units under a name of their own engine's (`[unitsE]`), which was not
+  read, so nothing was placed and every mission failed to "all your units destroyed" half a second
+  in. A mission's units are now read wherever its file keeps them, and its log says what decided
+  it. A mission the mods that are on cannot play (a total conversion lacking the units it gives
+  you or your Commander, a mod's mission that gives you no units: three of Total Mayhem's own) is
+  marked MISSION NOT PLAYABLE on the campaign page with the reason, and is not started.
+- Some wrecks had a large black square at their base: the ground plate TA's editor laid under
+  23 of TA's wrecks (the Sea Serpents', the EMP launcher's, the Thud's...), unflagged in their
+  models, was drawn from above, and darkened the ground round them. It is left out, as TA's
+  camera never saw it, in both art styles.
+- The Supreme Commander factions' buildings that float on water (the air factories, radars,
+  anti-air, missile defences and others) drew their pontoons, which Forged Alliance hides on land,
+  as dark slabs under the buildings and their wrecks; they are left out, and no longer widen the
+  footprints of four of them. Make the factions' mod again (UPDATE) to have it.
+- Computer players use the whole tech tree in long games. With the Supreme Commander factions they
+  build strategic missile launchers with their tech 3 engineers, making those engineers when they
+  have none, and fire them at the enemy's bases: their tactical launchers had taken the launcher's
+  place, and no strategic missile was ever built. The first missile is saved for as a project,
+  with the power for it built while the launcher goes up, and a plane looks at the enemy's bases
+  when a launcher holds a missile and knows of nothing to strike. The tactical launchers are built
+  beside them now and strike the enemy's defences and most valuable buildings in reach, and
+  tactical missile defences go up once an enemy launcher is seen. TA's Core fields the Krogoth:
+  constructors help build it in the Gantry, which had built it alone in half an hour of work, the
+  other factories hold back part of their production meanwhile, and the Gantry goes on at the
+  army's size limit. Once tech 3 factories stand, production leans to tech 3, and more factories
+  are upgraded to it as the economy grows. The Tech persona does the most of this and the Rush
+  persona the least; Easy still builds no silos, long-range guns or experimentals.
+- The Supreme Commander factions' factories built their units sinking into the build platform as
+  they were done, then drove them out through the factory's front wall. A unit is now built on the
+  platform facing the way it will leave by, and rolls off as in Forged Alliance: along the factory's
+  roll-off lane nearest its rally point, on the platform and down its ramp (the land factories' to
+  either side, the naval factories' along their docks, the quantum gateways' to the front or the
+  back); the long transports are built along their air factories' platforms, not through the
+  factory. Any mod's factory can name its ways out the same (`[EXITS]`, and a unit the way it faces
+  as it is built, `BuildHeading`: see [docs/MODDING.md](docs/MODDING.md#factories-ways-out)); TA's
+  own factories send their units out of the front as ever.
+- The Supreme Commander factions' missile trucks (the Flapjack, the Spearhead), missile launchers,
+  silos and heavy artillery fired without deploying. Each weapon that unpacks in Forged Alliance
+  now plays its unpack animation first (the launcher raised, the silo's doors opened, the
+  artillery's feet set down) and fires once it is done, packing up again a moment after its target
+  is gone; the heavy artillery, the Scathis and the Aeon sniper bot hold still while deployed and
+  pack up before they move off. A script can hold its unit still so (`IMMOBILE`, see
+  [docs/MODDING.md](docs/MODDING.md#scripts-and-ta-31s-questions)).
+- The Supreme Commander factions' anti-air towers (and their other anti-air, ships' and
+  interceptors' guns) fired on land and sea units, and on the ground, when told to attack them.
+  They now take on aircraft alone, by order too. Any mod's weapon can be kept to its targets the
+  same (`OnlyTargetCategory<n>`, see [docs/MODDING.md](docs/MODDING.md#units-weapons-and-features));
+  TA's own units keep their rules. Make the factions' mod again (UPDATE) to have these three.
+- TA: Escalation's vertically launched missiles were invisible and blew up at their launchers: those
+  of its missile batteries, the Raptor, the battleships, mobile fortresses and hover battleships,
+  the Deluge, Hammerhead, Arbitrator, Talos and others. They leave their tubes faster than their top
+  speed and slow down as they fly, and were held to that top speed (which the mod writes as a
+  negative number) from the moment they were launched, so they hung inside their launchers until
+  their flight time was up and went off there; the Abyssal's and the Vortex's strategic missiles
+  went off on the submarine itself. A missile now leaves at its start speed and gathers or loses
+  speed towards its top speed, as its weapon's file describes, so these climb out of their
+  launchers, turn over and fly at their targets. The C.O.R.E.'s rockets left from far off the map
+  and were gone at once, only their launch flashes to be seen: its script moves its launch points
+  away as it aims and brings the one firing back as it fires. A shot now leaves from where the
+  weapon's fire script puts its firing piece, so the C.O.R.E.'s rockets fly from its pods. TA's own
+  units fire as before, except that the few whose fire script kicks the barrel back at once (the
+  Guardian, the Punisher, the Sumo, flak and a few more) fire from the kicked-back barrel, where the
+  flash shows.
+
+## 1.0.8 — 2026-11-18
+
+Supreme Commander: Forged Alliance's four factions play in TA Reborn, made from your own copy of
+the game, as an experimental feature (Settings, LAUNCHER: ENABLE EXPERIMENTAL FEATURES): their
+units and buildings with their own models, paint, weapons, walks and deaths, factories upgrading
+in place and commanders taking enhancements. The computer players clear wrecks out of their way,
+build anti-nukes, silos, long-range guns and experimentals, and each can be given a difficulty and
+a persona in skirmish. Units turn with their factory's pad, the Commander mends itself, wrecks keep
+their heading and give metal alone, and the modern build menus stand each picture on the ground
+where its unit goes.
+
+### Added
+- Upgrading in place: the Supreme Commander factions' factories upgrade into the next tier, their
+  extractors into richer ones, their radars and sonars into better ones, as in Forged Alliance.
+  Select one and press UPGRADE (Alt+U, or a factory's first build picture, the building it
+  becomes; with Shift, the step after the one under way): it builds its upgrade on itself with its
+  own build power, and builders guarding it help; it pays as construction does, a factory making
+  nothing meanwhile; Stop calls it off and gives its metal back. Done, the new building stands in its place, keeping its queue, route, selection and control
+  groups. The computer players climb the tiers by upgrading their factories, and upgrade their
+  extractors. Any mod can use it (`UpgradesTo`, see [docs/MODDING.md](docs/MODDING.md#units-that-upgrade-in-place));
+  make the factions' mod again (UPDATE) to have it.
+- Commander enhancements: the Supreme Commander factions' commanders and support commanders
+  install Forged Alliance's enhancements on themselves: the engineering suites (tech 2 and 3
+  buildings on their menu, more build power and health), the gun upgrades (farther, faster or
+  harder), the missile launchers, more armour and mending, sensors, and the Cybran's stealth and
+  cloak. The build menu's ENHANCE tab lists them, a slot each, with their price and what they need
+  first (the classic interface: an ENHANCE button); a click installs one, built on the commander
+  with its own build power as an upgrade is, a right-click takes one out. The information page
+  (F1) shows them, those installed marked, and the range overlays show what an enhanced unit
+  reaches. The computer players install engineering suites and a gun upgrade. Any mod can use them (`[ENHANCEMENTS]`, see
+  [docs/MODDING.md](docs/MODDING.md#enhancements)); make the factions' mod again (UPDATE) to have
+  them. Shields, teleporting, drones, resource allocation and the other enhancements TA Reborn
+  does not play yet are left out.
 - Models can be painted beyond TA's palette and textures: a 3DO with a surface beside it
   (`objects3d/<name>.surface`) takes texture coordinates and smooth normals for its vertices and
   materials for its polygons, each a colour map, a specular map (gloss, mirroring, lights and where
@@ -39,17 +223,53 @@
   with more than three weapons now fire them all: the Fatboy, the CZAR, the Monkeylord and the
   battleships among them (make the factions again in the launcher: it offers UPDATE). See
   [docs/MODDING.md](docs/MODDING.md#units-weapons-and-features).
+- **RANGES** (Interface, in the game's options and the launcher's settings) chooses what the
+  selected units, the building being placed and the unit under the pointer show of their reach,
+  on the battlefield and the minimap: everything (weapons, sight, radar, sonar, jammers and
+  missile defence), their radar, sonar and jammers only, or nothing. Alt+O steps through them in
+  battle (the key can be changed under Controls).
+- The launcher's Settings have **ENABLE EXPERIMENTAL FEATURES** (under LAUNCHER, off by default).
+  Features still being tested ship with it off, so testers can try them before they become a
+  normal part of the game. With it on, they show in the launcher, each with an EXPERIMENTAL tag.
+  The Supreme Commander import is the first: its SUPREME COMMANDER… buttons on the Maps and Mods
+  pages, and the Mods page's UPDATE… for what it made, show only with the setting on. Maps and
+  factions imported before stay installed and play as any mod, and an import already under way
+  can still be watched to its end.
+- The modern interface's build menus tell where each unit goes by the ground behind its picture,
+  as Supreme Commander: Forged Alliance's do: grass for land, water for the sea, the two split on
+  the diagonal for hovercraft, amphibians and what can stand on land or out in the water, sky for
+  aircraft (the plants that make them stand on grass). Each tab, and a factory's list, now puts land first, then
+  what goes on both, then the sea's, then aircraft, keeping TA's order within each; so do the
+  radial menu's rings of buildings and units. The classic interface keeps TA's pages and pictures,
+  and the Supreme Commander factions' pictures keep their own game's frames.
+- Computer players have personas, as Forged Alliance's had, and play the whole game. Each
+  computer seat of a skirmish or a lobby now shows its difficulty plainly, EASY, NORMAL or HARD
+  under the seat, and a persona beside it: Balanced, Rush (attacks early and often), Turtle
+  (towers, heavy defences, long-range guns), Tech (up the tech tree fast: its factories' and
+  extractors' upgrades and its commander's engineering suites sooner, a Rush's later), Air, Naval
+  or Random;
+  saved games, replays and multiplayer keep the choice, and the battle names it ("AI (Hard,
+  Rush)"). On a long game they now put up anti-nuclear defences once they find a silo, nuclear
+  silos, heavy defences, long-range guns that shell the bases they have found (the Big Bertha,
+  the Intimidator), experimentals (the Core's Krogoth Gantry, Forged Alliance's) and more of the
+  top tier as their economy grows (more advanced factories, upgraded where a factory upgrades,
+  as the Supreme Commander factions' do); Easy stays gentle. And they clear wreckage out of their way:
+  a pass shut by wrecks (Last Stand's, or a skirmish's) is reclaimed by their constructors, the
+  Commander too when it is near and safe, or broken up by their army's guns, and a scenario's
+  waves break up the wrecks that shut their way instead of piling up behind them.
 
 ### Changed
 - The modern interface's DETAILS tell what the selection makes and uses of metal and energy a
   second, as the classic interface's unit bar does: a metal extractor the metal it mines, a power
   plant its energy, the Commander both, a factory at work what it spends; several selected, all of
   them together. A factory with a queue or a constructor with plans shows them under its queue.
-- While a building is being placed, the ground it will take shows as TA's grid of the cells it
-  snaps to, under its ghost and under each site of a row or block being dragged out: green where it
-  can go and red where it cannot (blue and orange with the colour-blind marks), in both interfaces
-  and both cameras, laid over the ground and the sea, and gone once the building is put down. The
-  squares round the plans that Shift shows follow the ground the same way.
+- While a building is being placed, the cells of the ground it will take show as in TA, under its
+  ghost and under each site of a row or block being dragged out: each cell green where the building
+  can stand and red where it cannot (a tree, a rock, another building, water, a slope too steep),
+  blue and orange with the colour-blind marks, in both interfaces and both cameras, laid over the
+  ground and the sea, and gone once the building is put down. No grid is drawn over the cells or
+  the ground round them. The squares round the plans that Shift shows follow the ground the same
+  way.
 - Over the minimap the cursor says what an order given there would do: over an enemy's mark that
   the selection would attack with a right-click, or that the order waiting for its click would aim
   at, it turns into the attack sight (the air-strike sight for bombers), as over the battlefield,
@@ -57,6 +277,21 @@
   repair or load.
 
 ### Fixed
+- Selecting a unit that reaches far, such as TA: Escalation's Shaper (radar 13,440, jammer
+  2,688) or a mod's long-range radar, slowed the game down, froze it for a while or crashed it,
+  worse the closer the camera: its rims were laid out far beyond the screen and dashed all along,
+  up to hundreds of thousands of dashes a frame. Only the part of a rim in view is drawn
+  now, whatever its reach (the Shaper's ranges from 13 ms of a frame to 0.1 ms), and the rims follow
+  the ground more closely.
+- In TA: Escalation, construction planes landed on a flying carrier (or any unit resting on a
+  bigger one) were hard to click: the carrier took the click. A click on the plane now selects
+  the plane; anywhere else on the carrier, the carrier.
+- TA: Escalation's repair tower upgrades, which its air repair pads make ("Automatically repairs
+  all nearby units"), did nothing. They now mend the damaged units of their side and its allies in
+  their reach by themselves, the nearest first, aircraft too, whether their pad took them on or
+  they stand beside it.
+- Turning COMPANION SCREEN off in the options did nothing while the companion screen was open: it
+  now closes at once, and turning it back on in a battle opens it again on your second display.
 - The Supreme Commander factions play as Forged Alliance's (make the factions again in the
   launcher: it offers UPDATE). Their tech 2 and 3 factories, which the game makes only by
   upgrading the one below, are on their engineers' menus, so every unit can now be built, and the
@@ -192,6 +427,17 @@
   two rows instead of leaving an empty band; Shift+Tab and a gamepad go back up the list; one map
   or one faction is told as one, and none chosen as none; the units that could not be made are
   named; the "Still to come" line is up to date; and an error from the system is said once.
+- The Supreme Commander factions look as they do in their game (make the factions again in the
+  launcher: it offers UPDATE). Their paint was drawn about half as bright as their game lights it,
+  the UEF's and the Cybran's units dark as if unpainted, and a selected Commander was a pale haze
+  the ground seemed to show through; their metal now has its game's broad sheen, and the player's
+  colour is as bright as on TA's units. Their build pictures are their game's own build icons in
+  the modern interface too (a mass extractor's was a dark shape, drawn before its paint was read),
+  without the white edge each had; the classic interface shows their build menus (it showed none),
+  laid out as the pages of the side whose panels they wear. Their buildings stand on footprints as
+  wide as what of them meets the ground (a point defence's was a quarter of its turret's: on a
+  hillside it ran into the ground beside it, and neighbours were built into it) and on slopes no
+  steeper than TA's buildings take.
 
 ## 1.0.7 — 2026-11-16
 

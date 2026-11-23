@@ -374,7 +374,7 @@ fn glass_status(painter: &Painter, r: Rect, p: &Perspective, game: &Game, now: f
     let (doing, colour) = doing(game, u, p);
     let progress = u.build.and_then(|job| game.sim.unit(job.target)).map(|work| {
         let wt = game.sim.unit_type(work);
-        let done = if work.is_complete() { (work.health / wt.max_health.max(Fx::ONE)).to_f32() } else { work.build_progress.to_f32() };
+        let done = if work.is_complete() { (work.health / work.max_health(wt).max(Fx::ONE)).to_f32() } else { work.build_progress.to_f32() };
         done.clamp(0.0, 1.0)
     });
     if weapons.is_empty() {
@@ -408,7 +408,7 @@ fn glass_status(painter: &Painter, r: Rect, p: &Perspective, game: &Game, now: f
     let name_px = (row_h * if n == 1 { 0.3 } else { 0.36 }).min(mm(12.5));
     for (i, w) in weapons.iter().enumerate() {
         let y = rows.top() + i as f32 * row_h;
-        let cost = ty.weapons.iter().flatten().map(|&w| game.sim.weapon_types.get(w)).find(|wt| wt.command_fire && w.manual).map_or(0.0, |wt| game.sim.shot_energy(u.id, wt).to_f32());
+        let cost = u.weapon_slots(ty).iter().flatten().map(|&w| game.sim.weapon_types.get(w)).find(|wt| wt.command_fire && w.manual).map_or(0.0, |wt| game.sim.shot_energy(u.id, wt).to_f32());
         let starved = w.manual && cost > energy;
         let fired = now - w.latest(&p.hud.last_shot) < 0.12;
         let colour = if starved { RED } else if w.ready { GREEN } else { AMBER };
@@ -431,7 +431,7 @@ fn glass_status(painter: &Painter, r: Rect, p: &Perspective, game: &Game, now: f
         let bar = Rect::from_min_size(pos2(name_x, y + name_px * 1.3), vec2(g.right() - name_x, (row_h * 0.13).clamp(mm(3.2), mm(8.0))));
         segment_bar(painter, bar, 24, 1.0 - w.left, colour, fade(PHOSPHOR_DIM, 0.45));
         // Its reach and its reload (or the D-gun's energy), and a stockpile's count.
-        let stock = ty.weapons.get(w.slot).copied().flatten().is_some_and(|id| game.sim.weapon_types.get(id).def.stockpile);
+        let stock = u.weapon_slots(ty).get(w.slot).copied().flatten().is_some_and(|id| game.sim.weapon_types.get(id).def.stockpile);
         let mut detail = if w.manual && cost > 0.0 {
             tf("RNG {range} · {energy} E A SHOT", &[("range", &(w.range.round() as i32)), ("energy", &(cost.round() as i32))])
         } else {
@@ -1402,7 +1402,7 @@ fn status_panel(painter: &Painter, r: Rect, p: &Perspective, game: &Game, on: f3
         let galley = painter.layout_job(job);
         let bar = u.build.and_then(|job| game.sim.unit(job.target)).map(|work| {
             let wt = game.sim.unit_type(work);
-            if work.is_complete() { (work.health / wt.max_health.max(Fx::ONE)).to_f32() } else { work.build_progress.to_f32() }
+            if work.is_complete() { (work.health / work.max_health(wt).max(Fx::ONE)).to_f32() } else { work.build_progress.to_f32() }
         });
         let bar_h = if bar.is_some() { 14.0 * k } else { 0.0 };
         let top = glass.center().y - (galley.size().y + bar_h) * 0.5;
@@ -1422,7 +1422,7 @@ fn status_panel(painter: &Painter, r: Rect, p: &Perspective, game: &Game, on: f3
     for (i, w) in weapons.iter().enumerate() {
         let y = first + i as f32 * row;
         // The D-gun wants energy.
-        let cost = ty.weapons.iter().flatten().map(|&w| game.sim.weapon_types.get(w)).find(|wt| wt.command_fire && w.manual).map_or(0.0, |wt| game.sim.shot_energy(u.id, wt).to_f32());
+        let cost = u.weapon_slots(ty).iter().flatten().map(|&w| game.sim.weapon_types.get(w)).find(|wt| wt.command_fire && w.manual).map_or(0.0, |wt| game.sim.shot_energy(u.id, wt).to_f32());
         let starved = w.manual && cost > energy;
         let fired = now - w.latest(&p.hud.last_shot) < 0.12;
         let colour = if starved { RED } else if w.ready { GREEN } else { AMBER };
@@ -1449,7 +1449,7 @@ fn status_panel(painter: &Painter, r: Rect, p: &Perspective, game: &Game, on: f3
             painter.text(pos2(glass.left() + 24.0 * k, y + 36.0 * k), Align2::LEFT_TOP, detail, mono(11.5 * k), fade(PHOSPHOR, on * 0.65));
         }
     }
-    if u.stockpile > 0 || ty.weapons.iter().flatten().any(|&w| game.sim.weapon_types.get(w).def.stockpile) {
+    if u.stockpile > 0 || u.weapon_slots(ty).iter().flatten().any(|&w| game.sim.weapon_types.get(w).def.stockpile) {
         painter.text(pos2(glass.right() - 2.0, glass.bottom() - 2.0), Align2::RIGHT_BOTTOM, tf("MISSILES {n}", &[("n", &u.stockpile)]), mono(14.0), fade(AMBER, on));
     }
 }

@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Jared-woodruff/TA-Reborn/releases/latest"><img src="https://img.shields.io/badge/release-1.0.7-d8b456?style=flat-square&labelColor=1f1e1a" alt="Release 1.0.7"></a>
+  <a href="https://github.com/Jared-woodruff/TA-Reborn/releases/latest"><img src="https://img.shields.io/badge/release-1.0.9-d8b456?style=flat-square&labelColor=1f1e1a" alt="Release 1.0.9"></a>
   <img src="https://img.shields.io/badge/windows%20%C2%B7%20macOS%20%C2%B7%20linux-x64%20%C2%B7%20ARM64-9e998a?style=flat-square&labelColor=1f1e1a" alt="Windows, macOS and Linux, x64 and ARM64">
   <img src="https://img.shields.io/badge/built%20in-rust-9e998a?style=flat-square&labelColor=1f1e1a&logo=rust&logoColor=e2deb6" alt="Built in Rust">
   <a href="#credits"><img src="https://img.shields.io/badge/licence-GPL%20v3-e2deb6?style=flat-square&labelColor=1f1e1a" alt="GNU GPL v3 licence"></a>
@@ -523,7 +523,8 @@ https://github.com/user-attachments/assets/0c29747c-1139-4f19-877a-3661836a55c5
   map in miniature, a check for problems and TEST PLAY; it takes your pictures as heights, art or
   tile brushes, shows features as pictures and scatters them, and saves maps as mods the skirmish
   page lists at once.
-- **Supreme Commander's maps play too**: with Supreme Commander: Forged Alliance installed (GOG's or
+- **Supreme Commander's maps play too** (an experimental feature for now: Settings, LAUNCHER,
+  ENABLE EXPERIMENTAL FEATURES): with Supreme Commander: Forged Alliance installed (GOG's or
   Steam's), the Maps page's SUPREME COMMANDER… makes its skirmish maps (and your own downloaded and
   Forged Alliance Forever ones) into TA Reborn maps from your copy: their land and painted ground,
   cliffs that still stop tanks, forests, rocks, mass points as metal, hydrocarbons as vents, and
@@ -628,7 +629,7 @@ credits name everyone who made the game, read from your install.
 
 > [!NOTE]
 > This page shows the current development build. The latest release is
-> [1.0.7](https://github.com/Jared-woodruff/TA-Reborn/releases/latest); [CHANGELOG.md](CHANGELOG.md)
+> [1.0.9](https://github.com/Jared-woodruff/TA-Reborn/releases/latest); [CHANGELOG.md](CHANGELOG.md)
 > says what each release brought.
 
 Settings, mods, skins and downloads live in `%APPDATA%\TA Reborn` (each commander's own below

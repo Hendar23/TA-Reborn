@@ -800,3 +800,92 @@ fn a_builder_whose_arm_is_still_out_builds_the_next_job_at_once() {
     }
     assert!(!sim.unit(builder).unwrap().in_build_stance, "and drops as the script takes the arm in");
 }
+
+/// A unit built in the field by a mobile builder (Forged Alliance's engineers put up their
+/// experimentals so): one frame, worked on till it is finished. A mobile unit takes no cells, so
+/// the builder found no frame on the site whenever it lost hold of the one it had (the frame pushed
+/// out of its reach) and laid another there, again and again: twenty piled on one site, each left
+/// to un-build.
+#[test]
+fn a_unit_built_in_the_field_is_one_frame_however_it_is_jostled() {
+    let data = data_of(&[
+        unit("ENGINEER", "Builder=1; WorkerTime=300; CanMove=1; MaxVelocity=2; Acceleration=1; BrakeRate=1; TurnRate=32768; BuildDistance=96; FootprintX=2; FootprintZ=2;"),
+        unit("WALKER", "CanMove=1; MaxVelocity=1; BuildTime=300; BuildCostMetal=100; FootprintX=4; FootprintZ=4;"),
+    ]);
+    let mut sim = sim_of(with_menu(data, "ENGINEER", &["WALKER"]), 1);
+    sim.players[0].endless = true;
+    sim.set_starting_resources(0, Fx::from_int(100_000), Fx::from_int(100_000));
+    let walker = sim.types.id("WALKER").unwrap();
+    let engineer = sim.spawn_unit(sim.types.id("ENGINEER").unwrap(), 0, FxVec3::from_ints(300, 60, 300), 0, true).unwrap();
+    let site = FxVec3::from_ints(420, 60, 300);
+    sim.step(&[Command::Order { player: 0, units: vec![engineer], order: Order::Build { type_id: walker, pos: site }, queue: false }]);
+    let mut frames = std::collections::BTreeSet::new();
+    for tick in 0..30 * 30 {
+        // (The frame shoved off the site now and then, further than the builder reaches from
+        // where it stands: as a crowd's pushing does.)
+        let frame = sim.units().find(|u| u.type_id == walker && !u.is_complete()).map(|u| u.id);
+        if tick % 60 == 30 && let Some(f) = frame {
+            sim.unit_mut(f).unwrap().pos.x += Fx::from_int(48);
+        }
+        sim.step(&[]);
+        frames.extend(sim.units().filter(|u| u.type_id == walker).map(|u| u.id));
+        if sim.units().any(|u| u.type_id == walker && u.is_complete()) {
+            break;
+        }
+    }
+    assert!(sim.units().any(|u| u.type_id == walker && u.is_complete()), "the unit was finished");
+    assert_eq!(frames.len(), 1, "one frame, not a pile of them: {frames:?}");
+}
+
+/// Two constructors told to build the same mobile unit at two sites near each other build two
+/// units: a frame laid for one site is that order's, not the other's (the second took up the
+/// first's frame, both orders ended with it, and one unit was built for two). Two told to build
+/// at one site build one unit together.
+#[test]
+fn units_built_in_the_field_at_two_sites_are_two_units_and_at_one_site_one() {
+    let data = data_of(&[
+        unit("ENGINEER", "Builder=1; WorkerTime=300; CanMove=1; MaxVelocity=2; Acceleration=1; BrakeRate=1; TurnRate=32768; BuildDistance=96; FootprintX=2; FootprintZ=2;"),
+        unit("WALKER", "CanMove=1; MaxVelocity=1; BuildTime=600; BuildCostMetal=100; FootprintX=4; FootprintZ=4;"),
+    ]);
+    let data = with_menu(data, "ENGINEER", &["WALKER"]);
+    let run = |sites: [FxVec3; 2]| {
+        let mut sim = sim_of(data.clone(), 1);
+        sim.players[0].endless = true;
+        sim.set_starting_resources(0, Fx::from_int(100_000), Fx::from_int(100_000));
+        let walker = sim.types.id("WALKER").unwrap();
+        let engineer = sim.types.id("ENGINEER").unwrap();
+        let builders: Vec<UnitId> = [300, 380].iter().map(|&z| sim.spawn_unit(engineer, 0, FxVec3::from_ints(300, 60, z), 0, true).unwrap()).collect();
+        let mut orders: Vec<Command> = builders.iter().zip(sites).map(|(&b, pos)| Command::Order { player: 0, units: vec![b], order: Order::Build { type_id: walker, pos }, queue: false }).collect();
+        // (The second told a second later, the first's frame laid by then: on the same tick each
+        // laid its own, whatever the sites.)
+        let second = orders.pop().unwrap();
+        sim.step(&orders);
+        for _ in 0..30 {
+            sim.step(&[]);
+        }
+        sim.step(&[second]);
+        let mut frames = std::collections::BTreeSet::new();
+        // (Which frame each builder worked on.)
+        let mut worked: Vec<std::collections::BTreeSet<UnitId>> = vec![Default::default(); 2];
+        for _ in 0..30 * 30 {
+            sim.step(&[]);
+            frames.extend(sim.units().filter(|u| u.type_id == walker).map(|u| u.id));
+            for (k, &b) in builders.iter().enumerate() {
+                worked[k].extend(sim.unit(b).and_then(|u| u.build).map(|j| j.target));
+            }
+            if builders.iter().all(|&b| sim.unit(b).is_some_and(|u| u.orders.is_empty())) {
+                break;
+            }
+        }
+        let built = sim.units().filter(|u| u.type_id == walker && u.is_complete()).count();
+        (built, frames.len(), worked)
+    };
+    // Two sites 80 px apart (well within the reach a pushed frame is looked for in).
+    let (built, frames, worked) = run([FxVec3::from_ints(420, 60, 300), FxVec3::from_ints(420, 60, 380)]);
+    assert_eq!((built, frames), (2, 2), "two orders, two units");
+    assert!(worked[0].is_disjoint(&worked[1]), "each at its own frame: {worked:?}");
+    // One site: one frame, both builders at it.
+    let (built, frames, worked) = run([FxVec3::from_ints(420, 60, 340); 2]);
+    assert_eq!((built, frames), (1, 1), "one site, one unit");
+    assert!(!worked[0].is_empty() && worked[0] == worked[1], "both at the one frame: {worked:?}");
+}

@@ -138,6 +138,15 @@ fn air_only(w: &WeaponBlueprint) -> bool {
     !w.target_layers.is_empty() && w.target_layers.iter().all(|(_, to)| to.split('|').all(|l| l.trim().eq_ignore_ascii_case("air")))
 }
 
+/// Whether it is anti-air that takes on aircraft alone in Forged Alliance, of its own accord or by
+/// order: 'Air' from every layer ([`air_only`]: the anti-air towers, mobile and ships' anti-air),
+/// or none but `AIR` units (`TargetRestrictOnlyAllow`: the aircraft's guns and missiles, an
+/// interceptor's among them, whose layers name the land as well). Not a missile defence, whose
+/// 'Air' is the missiles it shoots down (TA Reborn's interceptors take nothing else anyway).
+pub fn aircraft_alone(w: &WeaponBlueprint) -> bool {
+    kind(w) == Kind::AntiAir && (air_only(w) || restricts_to(w, "AIR"))
+}
+
 /// Whether it may shoot at aircraft (its `FireTargetLayerCapsTable` names 'Air' from some layer;
 /// none given, it may).
 pub fn shoots_air(w: &WeaponBlueprint) -> bool {
@@ -279,24 +288,27 @@ fn power(w: &WeaponBlueprint) -> f64 {
     fa_dps(w) + w.nuke.as_ref().map_or(0.0, |n| n.inner_damage)
 }
 
+/// Whether a weapon of `u`'s takes a slot: not its death or its kamikaze blast, a dummy, an
+/// anti-torpedo defence or a weapon of a point a shot (the Galactic Colossus's tractor claws); nor,
+/// unless `enhanced` (one its enhancements switch on, `factions::enhance`), one an enhancement
+/// switches on or its script switches off as it is made (a toggled second gun; the Overcharge, off
+/// until ordered, is TA's D-gun).
+pub fn usable(u: &UnitBlueprint, w: &WeaponBlueprint, enhanced: bool) -> bool {
+    let k = kind(w);
+    !w.category.eq_ignore_ascii_case("death")
+        && !w.category.eq_ignore_ascii_case("kamikaze")
+        && (enhanced || w.table.get_ci("EnabledByEnhancement").is_none())
+        && (enhanced || k == Kind::Overcharge || !u.birth.weapon_off(&w.label))
+        && !w.label.to_ascii_lowercase().contains("dummy")
+        && !w.label.to_ascii_lowercase().contains("antitorpedo")
+        && !w.projectile.as_deref().unwrap_or("").to_ascii_lowercase().contains("antitorpedo")
+        && !restricts_to(w, "TORPEDO")
+        && (w.damage > 1.0 || w.nuke.is_some() || k == Kind::AntiMissile || k == Kind::Overcharge)
+}
+
 /// The weapons that take its slots (eight at most), the death weapon and its kamikaze blast.
 pub fn weapons(u: &UnitBlueprint) -> Weapons<'_> {
-    let usable = |w: &&WeaponBlueprint| {
-        let k = kind(w);
-        !w.category.eq_ignore_ascii_case("death")
-            && !w.category.eq_ignore_ascii_case("kamikaze")
-            && w.table.get_ci("EnabledByEnhancement").is_none()
-            // (What its script switches off as it is made: a toggled second gun, a missile an
-            // enhancement switches on. The Overcharge, off until ordered, is TA's D-gun.)
-            && (k == Kind::Overcharge || !u.birth.weapon_off(&w.label))
-            && !w.label.to_ascii_lowercase().contains("dummy")
-            && !w.label.to_ascii_lowercase().contains("antitorpedo")
-            && !w.projectile.as_deref().unwrap_or("").to_ascii_lowercase().contains("antitorpedo")
-            && !restricts_to(w, "TORPEDO")
-            // (A weapon dealing a point a shot at most is no gun: the Galactic Colossus's tractor
-            // claws.)
-            && (w.damage > 1.0 || w.nuke.is_some() || k == Kind::AntiMissile || k == Kind::Overcharge)
-    };
+    let usable = |w: &&WeaponBlueprint| usable(u, w, false);
     let death = u.weapons.iter().find(|w| w.category.eq_ignore_ascii_case("death") || w.label.eq_ignore_ascii_case("DeathWeapon"));
     let kamikaze = u.weapons.iter().find(|w| w.category.eq_ignore_ascii_case("kamikaze") && w.damage > 0.0);
     let mut armed: Vec<&WeaponBlueprint> = u.weapons.iter().filter(usable).collect();
@@ -452,6 +464,11 @@ pub fn missile_price(u: &UnitBlueprint, w: &WeaponBlueprint) -> (f64, f64, f64) 
 /// A weapon's section: its range, reload, speed, blast and damage Forged Alliance's at TA's
 /// scale; how it flies and looks as TA's weapons of its kind.
 pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
+    weapon_section_named(u, w, &weapon_name(u, w))
+}
+
+/// A weapon's section under `name` (an enhancement's changed gun: `factions::enhance`).
+pub fn weapon_section_named(u: &UnitBlueprint, w: &WeaponBlueprint, name: &str) -> String {
     let k = kind(w);
     let px = |ogrids: f64| (ogrids * UNIT_SCALE).round() as i64;
     let mut s = String::new();
@@ -666,7 +683,7 @@ pub fn weapon_section(u: &UnitBlueprint, w: &WeaponBlueprint) -> String {
         None if stock => cycle(w).per_shot,
         None => fire.damage,
     };
-    format!("[{}]\n\t{{\n{s}\t[DAMAGE]\n\t\t{{\n\t\tdefault={};\n\t\t}}\n\t}}\n", weapon_name(u, w), number(damage.max(1.0)))
+    format!("[{}]\n\t{{\n{s}\t[DAMAGE]\n\t\t{{\n\t\tdefault={};\n\t\t}}\n\t}}\n", name, number(damage.max(1.0)))
 }
 
 /// A unit's death: its death weapon's section (a blast where it falls), or none.
@@ -778,6 +795,25 @@ pub fn footprint(u: &UnitBlueprint) -> (i64, i64) {
     (cells(x), cells(z))
 }
 
+/// A structure's footprint (ogrids) widened to what of its model stands on the ground (`ground`:
+/// its extent there, `model::ground_extent`), where that is wider than its blueprint's: none where
+/// it is not. Forged Alliance's footprints are what its units may not cross, smaller than many of
+/// its buildings (a point defence's half an ogrid against its turret's whole one), the ground round
+/// them levelled for them and kept clear (their skirts). TA Reborn levels the ground drawn under a
+/// footprint, and a model reaching past its footprint ran into the hillside beside it (the
+/// placement's grid smaller than the building, as well, and its neighbours built into it). A wall
+/// keeps its own, to stand in line with the next; a building on the water or the sea bed alone
+/// meets no hillside.
+pub fn fitted_footprint(u: &UnitBlueprint, ground: Option<[f64; 2]>) -> Option<[f64; 2]> {
+    let ground = ground?;
+    if u.motion != Motion::None || !u.layers.land || u.is("WALL") {
+        return None;
+    }
+    let [x, z] = u.footprint.unwrap_or([u.size[0].max(0.5), u.size[2].max(0.5)]);
+    let fitted = [x.max(ground[0]), z.max(ground[1])];
+    (fitted != [x, z]).then_some(fitted)
+}
+
 /// A factory's yard: a corridor of cells open while it works, from the middle to its front edge
 /// (TA's buildings face +z, the yard map's last rows), the rest solid.
 pub fn yard_map(fx: i64, fz: i64) -> String {
@@ -801,6 +837,15 @@ pub fn yard_map(fx: i64, fz: i64) -> String {
 fn upkeep_pays(u: &UnitBlueprint) -> bool {
     let watches = (u.intel.radar > 0.0 && !u.birth.intel_off("Radar")) || (u.intel.sonar > 0.0 && !u.birth.intel_off("Sonar"));
     u.is("MASSEXTRACTION") || u.production_mass > 0.0 || watches && u.is("INTELLIGENCE") && (u.is("RADAR") || u.is("SONAR") || u.is("OMNI")) && !u.is("COUNTERINTELLIGENCE")
+}
+
+/// Whether its file has it switched on once built (`ActivateWhenBuilt`: TA's engine runs its
+/// script's `Activate` then), as [`unit_file`] writes it: an extractor, a fabricator, what pays an
+/// upkeep for its radar or sonar, an air staging platform. (Its `Deactivate` runs as its player
+/// switches it off, where it has a switch.)
+pub fn activated_when_built(u: &UnitBlueprint) -> bool {
+    let upkeep = if upkeep_pays(u) { u.upkeep_energy } else { 0.0 };
+    u.is("MASSEXTRACTION") || upkeep > 0.0 || u.is("AIRSTAGINGPLATFORM") && builds(u) == Builds::No && u.motion == Motion::None
 }
 
 /// An aircraft's movement (`Air`): its top speed (px a tick), its acceleration and braking (px a
@@ -842,8 +887,162 @@ fn winged(u: &UnitBlueprint) -> bool {
     u.table.path(&["Air"]).and_then(|a| a.get_ci("Winged")).and_then(crate::lua::Value::bool).unwrap_or(false)
 }
 
+/// What a unit's file says that its own blueprint does not tell alone: what it upgrades into in
+/// place (the unit its `General.UpgradesTo` names, of its faction and made), its enhancements'
+/// section (`factions::enhance::section`), and its adjacency: the buffs it gives the structures
+/// beside it (its `Adjacency` table's, as the game's file has them: `crate::adjacency`) and the
+/// categories buffs name besides the size classes (`ARTILLERY`), which it carries in its
+/// `Category` where it has them.
+#[derive(Clone, Debug, Default)]
+pub struct Extra<'a> {
+    pub upgrades_to: Option<&'a str>,
+    pub enhancements: String,
+    /// The weapons its enhancements switch on, in the slots after its own
+    /// (`factions::enhance::extra_weapons`): what of theirs holds for a slot whatever fills it.
+    pub weapons: Vec<&'a WeaponBlueprint>,
+    /// A factory's ways out ([`exits`]: they need its mesh).
+    pub exits: Vec<Exit>,
+    pub adjacency: &'a [crate::adjacency::Buff],
+    pub adjacency_categories: Option<&'a std::collections::BTreeSet<String>>,
+}
+
+/// One of a factory's ways out, for its unit file's `[EXITS]` (docs/MODDING.md; `ta_data`'s
+/// `ExitDef`): where it leads (px from the factory's middle, the factory facing south), the
+/// heading a unit made for it takes (degrees, as TA counts headings), and its ramp (px along the
+/// way from the pad: the pad's height kept to the first, the ground reached at the second).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Exit {
+    pub x: i64,
+    pub z: i64,
+    pub heading: i64,
+    pub ramp: (i64, i64),
+}
+
+/// How far past a factory's footprint (px) a way out leads at least: TA's plants send their units
+/// as far past their front (`Sim::factory_exit`), and a unit is let go once it is out of the
+/// footprint (the factory's walls are its way out until then).
+pub const CLEAR: f64 = 48.0;
+
+/// How near (px) a way's floor must stand to the pad's height to count as level with it, and to
+/// the ground to count as down.
+const LEVEL: f64 = 1.5;
+
+/// A factory's ways out ([`Exit`]), from its roll-off points (`Physics.RollOffPoints`, ogrids from
+/// its middle; Forged Alliance sends a unit to the one nearest its rally point, and turns its build
+/// bone for it by its `UnitSpin` as it is built, `FactoryUnit:CalculateRollOffPoint` and
+/// `CreateBuildRotator`):
+///
+/// - **Where:** the point, as far out along the way from the pad (its `BuildAttachBone`) as clears
+///   the factory's footprint by [`CLEAR`] at least: in TA Reborn a unit is let go once out of the
+///   footprint, which a fitted one (`fitted_footprint`) may reach past Forged Alliance's points.
+/// - **Heading:** the build bone's own at rest (the Cybran quantum gateway's rests turned half
+///   round) and the point's `UnitSpin` (by the right hand about y: 90 towards +x, as TA's headings).
+/// - **Ramp:** as far along the way as the floor of its model (under the pad's height: its build
+///   platform; `model::floor_under`, the floats `left_out`) stands level with the pad, and where it
+///   has come down to the ground or the model ends: the unit keeps the platform's height that far
+///   and comes down its ramp, rather than dropping through it.
+///
+/// Integer roots and plain arithmetic: the same on every computer.
+pub fn exits(u: &UnitBlueprint, mesh: &crate::scm::Mesh, left_out: &[usize]) -> Vec<Exit> {
+    if u.roll_off.is_empty() || builds(u) != Builds::Factory {
+        return Vec::new();
+    }
+    let px = u.display.uniform_scale * UNIT_SCALE;
+    if px <= 0.0 {
+        return Vec::new();
+    }
+    let rest = mesh.rest_poses();
+    let bone = u.display.build_attach_bone.as_deref().and_then(|b| mesh.bone(b));
+    let pad = bone.map_or([0.0; 3], |b| rest[b].0.map(|v| v as f64 * px));
+    let rest_heading = bone.map_or(0, |b| super::script::rest_aim(mesh, b).heading as i64);
+    let (fx, fz) = footprint(u);
+    let half = [fx as f64 * 8.0 + CLEAR, fz as f64 * 8.0 + CLEAR];
+    u.roll_off
+        .iter()
+        .map(|p| {
+            let mut end = [p.x * UNIT_SCALE, p.z * UNIT_SCALE];
+            let dir = [end[0] - pad[0], end[1] - pad[2]];
+            // (Out along the way to the edge of the footprint cleared, where the point is short of it.)
+            if end[0].abs() < half[0] && end[1].abs() < half[1] {
+                let from = [pad[0], pad[2]];
+                let reach = (0..2).filter(|&a| dir[a] != 0.0).map(|a| (half[a] * dir[a].signum() - from[a]) / dir[a]).fold(f64::INFINITY, f64::min);
+                if reach.is_finite() && reach > 1.0 {
+                    end = [from[0] + dir[0] * reach, from[1] + dir[1] * reach];
+                }
+            }
+            let end = [end[0].round(), end[1].round()];
+            let way = [end[0] - pad[0], end[1] - pad[2]];
+            let length = ((way[0] * way[0] + way[1] * way[1]).round() as i64).max(0) as u64;
+            let length = length.isqrt() as i64;
+            // The floor under the way, a pixel at a time, under the pad's height.
+            let ramp = if pad[1] <= LEVEL || length == 0 {
+                (0, 0)
+            } else {
+                let points: Vec<[f64; 2]> = (0..=length).map(|s| [(pad[0] + way[0] * s as f64 / length as f64) / px, (pad[2] + way[1] * s as f64 / length as f64) / px]).collect();
+                let floor: Vec<Option<f64>> = super::model::floor_under(mesh, left_out, &points, (pad[1] + LEVEL) / px).into_iter().map(|h| h.map(|h| h * px)).collect();
+                let level = floor.iter().take_while(|h| h.is_some_and(|h| h >= pad[1] - LEVEL)).count() as i64;
+                let top = (level - 1).max(0);
+                let foot = (top..=length).find(|&s| floor[s as usize].is_none_or(|h| h <= LEVEL)).unwrap_or(length);
+                (top, foot.max(top))
+            };
+            let spin = (p.spin * 65536.0 / 360.0).round() as i64;
+            let heading = (rest_heading + spin).rem_euclid(65536);
+            // (Degrees, whole, from -180 to 180.)
+            let degrees = (heading * 360 + 32768).div_euclid(65536);
+            let degrees = if degrees > 180 { degrees - 360 } else { degrees };
+            Exit { x: end[0] as i64, z: end[1] as i64, heading: degrees, ramp }
+        })
+        .collect()
+}
+
+/// A factory's `[EXITS]` section (within its `[UNITINFO]`), or nothing.
+pub fn exits_section(exits: &[Exit]) -> String {
+    if exits.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("\t[EXITS]\n\t\t{\n");
+    for (k, e) in exits.iter().enumerate() {
+        let _ = write!(s, "\t\t[EXIT{}]\n\t\t\t{{\n\t\t\tX={};\n\t\t\tZ={};\n\t\t\tHeading={};\n\t\t\tRamp={} {};\n\t\t\t}}\n", k + 1, e.x, e.z, e.heading, e.ramp.0, e.ramp.1);
+    }
+    s.push_str("\t\t}\n");
+    s
+}
+
+/// An engineering station's build power and reach (ogrids): its own `BuildRate`, or its drones'
+/// together where they have more (the tech 3 Kennel's two), and its `MaxBuildDistance`, or how far
+/// round it its drones look for work (`AI.GuardScanRadius`), or five ogrids. TA Reborn's station
+/// builds with its own beams: its drones are not made (the Kennel's), their work its own.
+pub fn station_work(u: &UnitBlueprint) -> (f64, f64) {
+    let pods: f64 = u.pods.iter().map(|p| p.build_rate.max(0.0)).sum();
+    let own_reach = u.table.path(&["Economy"]).and_then(|e| e.get_ci("MaxBuildDistance")).and_then(|v| v.num());
+    let pod_reach = u.pods.iter().map(|p| p.reach).fold(0.0f64, f64::max);
+    (u.build_rate.max(pods), own_reach.or((pod_reach > 0.0).then_some(pod_reach)).unwrap_or(5.0))
+}
+
+/// The `[ADJACENCY]` section of a unit's file: each buff it gives the structures beside it, by
+/// name, what it changes in them (`Affects`), by how much (`Add`), and which take it (`Size`, their
+/// size class; `Category`, what else they must have).
+pub fn adjacency_section(buffs: &[crate::adjacency::Buff]) -> String {
+    if buffs.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("\t[ADJACENCY]\n\t\t{\n");
+    for b in buffs {
+        let _ = writeln!(s, "\t\t[{}]\n\t\t\t{{\n\t\t\tAffects={};\n\t\t\tAdd={};", tdf_text(&b.name), b.affect.key(), b.add);
+        if let Some(size) = b.size {
+            let _ = writeln!(s, "\t\t\tSize={size};");
+        }
+        if !b.categories.is_empty() {
+            let _ = writeln!(s, "\t\t\tCategory={};", b.categories.join(" "));
+        }
+        s.push_str("\t\t\t}\n");
+    }
+    s.push_str("\t\t}\n");
+    s
+}
+
 /// The unit's file.
-pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32)>) -> String {
+pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32)>, extra: &Extra) -> String {
     let id = u.id.to_ascii_uppercase();
     let (fx, fz) = footprint(u);
     let side = side(&u.faction);
@@ -930,13 +1129,47 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
     }
     // Building.
     if builds != Builds::No {
+        // (An engineering station by its drones' work where they have more, and their reach.)
+        let (rate, reach) = if builds == Builds::Assist {
+            station_work(u)
+        } else {
+            (u.build_rate, u.table.path(&["Economy"]).and_then(|e| e.get_ci("MaxBuildDistance")).and_then(|v| v.num()).unwrap_or(5.0))
+        };
         put("Builder", "1".into());
-        put("WorkerTime", ((u.build_rate * WORK).round().max(1.0) as i64).to_string());
-        let reach = u.table.path(&["Economy"]).and_then(|e| e.get_ci("MaxBuildDistance")).and_then(|v| v.num()).unwrap_or(5.0);
+        put("WorkerTime", ((rate * WORK).round().max(1.0) as i64).to_string());
         put("BuildDistance", ((reach * UNIT_SCALE).round() as i64).max(64).to_string());
         put("CanReclamate", "1".into());
+        // (A factory with ways out is solid, as Forged Alliance's are: its units leave by them,
+        // through its walls as TA Reborn has a factory's units leave, and no other walks over
+        // its platform; TA's open their yards to the front.)
         if builds == Builds::Factory {
-            put("YardMap", yard_map(fx, fz));
+            put("YardMap", if extra.exits.is_empty() { yard_map(fx, fz) } else { "o".repeat((fx * fz).max(1) as usize) });
+        }
+        if builds == Builds::Assist {
+            // An engineering station works round it by itself whenever it has no orders, as
+            // Forged Alliance's do: it helps build what is going up within its reach, mends the
+            // damaged and reclaims wreckage (`AssistPatrol`, docs/MODDING.md). Told to help a
+            // unit where Forged Alliance lets it (`CommandCaps`' guard: the tech 3 Kennel, the
+            // Hives).
+            put("DefaultMissionType", "AssistPatrol".into());
+            let guards = u.table.path(&["General", "CommandCaps"]).and_then(|c| c.get_ci("RULEUCC_Guard")).and_then(crate::lua::Value::bool).unwrap_or(false);
+            if guards {
+                put("canguard", "1".into());
+            }
+        }
+    }
+    // Built facing a way of its own on a factory with ways out, whichever it takes (its
+    // `ForcedBuildSpin`, the turn its air factory's build bone is given for it: those bones all rest
+    // facing their factory's front, so it is a heading from there, docs/MODDING.md).
+    if let Some(spin) = u.display.forced_build_spin {
+        put("BuildHeading", (spin.round() as i64).to_string());
+    }
+    // Upgrading in place (`UpgradesTo`): on its own build power, which a building that builds
+    // nothing else is given for it (an extractor's, a radar's: Forged Alliance's `BuildRate`).
+    if let Some(to) = extra.upgrades_to {
+        put("UpgradesTo", to.to_ascii_uppercase());
+        if builds == Builds::No {
+            put("WorkerTime", ((u.build_rate * WORK).round().max(1.0) as i64).to_string());
         }
     }
     // An air staging platform repairs the aircraft landed on it, as TA's repair pads do (their
@@ -979,6 +1212,16 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
     }
     if !weapons.slots.is_empty() && !chases_air {
         put("NoChaseCategory", "VTOL".into());
+    }
+    // Anti-air that takes on aircraft alone in Forged Alliance ([`aircraft_alone`]) takes none but
+    // aircraft on, by order too (`OnlyTargetCategory<n>`: an anti-air tower or an interceptor told
+    // to attack a tank or the ground does not; `toairweapon` alone keeps TA's rule, its own choice
+    // of targets aircraft, an order firing on anything). Its own slots and those its enhancements
+    // fill after them (the Cybran support commander's anti-air missiles).
+    for (slot, w) in weapons.slots.iter().chain(&extra.weapons).take(MAX_WEAPONS).enumerate() {
+        if aircraft_alone(w) {
+            put(&format!("OnlyTargetCategory{}", slot + 1), "VTOL".into());
+        }
     }
     if weapons.dgun.is_some() {
         put("canDgun", "1".into());
@@ -1035,7 +1278,26 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
     if u.motion == Motion::None && weapons.slots.is_empty() {
         cats.push("NOWEAPON".into());
     }
+    // (Of a structure, the categories the adjacency buffs name that it has, `ARTILLERY`: a
+    // neighbour's buff for them reaches it.)
+    if u.motion == Motion::None
+        && let Some(words) = extra.adjacency_categories
+    {
+        for c in &u.categories {
+            let c = c.to_ascii_uppercase();
+            if words.contains(&c) && !cats.contains(&c) {
+                cats.push(c);
+            }
+        }
+    }
     put("Category", cats.join(" "));
+    // Its size class among structures, for adjacency: which of a neighbour's buffs it takes, and
+    // from how many neighbours at most (as many of the smallest structures as fit round it).
+    if u.motion == Motion::None
+        && let Some(size) = u.size_class()
+    {
+        put("AdjacencySize", size.to_string());
+    }
     let ted = match (u.motion, builds) {
         _ if commander => "COMMANDER",
         (Motion::None, Builds::Factory) => "PLANT",
@@ -1126,7 +1388,9 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
         }
     } else {
         put("BMcode", "0".into());
-        put("MaxSlope", "15".into());
+        // (As steep as TA's own buildings stand on: Forged Alliance levels the ground under its
+        // buildings, TA Reborn the ground drawn under a footprint, a slope taken up round it.)
+        put("MaxSlope", "10".into());
         // On the water (floating), under it (on the sea bed, or below the surface: extractors and
         // power plants on deposits there too), or on land.
         let under = u.layers.seabed || u.layers.sub;
@@ -1140,7 +1404,8 @@ pub fn unit_file(u: &UnitBlueprint, weapons: &Weapons, carries: Option<(u32, u32
             }
         }
     }
-    format!("[UNITINFO]\n\t{{\n{f}\t}}\n")
+    let adjacency = if u.motion == Motion::None { adjacency_section(extra.adjacency) } else { String::new() };
+    format!("[UNITINFO]\n\t{{\n{f}{}{}{adjacency}\t}}\n", extra.enhancements, exits_section(&extra.exits))
 }
 
 /// TA's sound category for the unit's kind (TA's own sounds, `gamedata/sound.tdf`'s: Forged
@@ -1232,7 +1497,7 @@ mod tests {
         let u = striker();
         let w = weapons(&u);
         assert_eq!(w.slots.len(), 1);
-        let file = unit_file(&u, &w, None);
+        let file = unit_file(&u, &w, None, &Extra::default());
         for line in ["UnitName=UEL0201;", "Side=UEF;", "MaxDamage=300;", "BuildCostMetal=56;", "BuildCostEnergy=266;", "BuildTime=2800;", "FootprintX=2;", "SightDistance=640;", "Weapon1=UEL0201_MAINGUN;", "MovementClass=TANKSH2;", "TEDClass=TANK;", "TurnRate=546;", "Corpse=uel0201_dead;"] {
             assert!(file.contains(line), "{line} in {file}");
         }
@@ -1267,7 +1532,7 @@ mod tests {
         let w = weapons(&u);
         assert_eq!(w.slots.iter().map(|w| w.label.as_str()).collect::<Vec<_>>(), ["RightZephyr", "OverCharge"]);
         assert_eq!(w.dgun, Some(1));
-        let file = unit_file(&u, &w, None);
+        let file = unit_file(&u, &w, None, &Extra::default());
         assert!(file.contains("canDgun=1;") && file.contains("Commander=1;") && file.contains("TEDClass=COMMANDER;"), "{file}");
         assert!(weapon_section(&u, w.slots[1]).contains("commandfire=1;"));
         let _ = Rack::default();
@@ -1347,7 +1612,7 @@ mod tests {
         }
         assert!(value(&section, "tracks").is_empty(), "a nuke strikes a place: {section}");
         assert!(value(&section, "interceptor").is_empty(), "{section}");
-        assert!(unit_file(&silo(), &Weapons { slots: vec![&nuke_weapon()], death: None, dgun: None, kamikaze: None }, None).contains("onoffable=0;"));
+        assert!(unit_file(&silo(), &Weapons { slots: vec![&nuke_weapon()], death: None, dgun: None, kamikaze: None }, None, &Extra::default()).contains("onoffable=0;"));
     }
 
     /// A tactical missile launcher's missiles are stored too (180 mass and 3,600 energy, 2,400 at
@@ -1490,22 +1755,66 @@ mod tests {
         use crate::unit::Layers;
         let none = Weapons { slots: Vec::new(), death: None, dgun: None, kamikaze: None };
         let engineer = UnitBlueprint { id: "UEL0105".into(), faction: Faction::Uef, motion: Motion::Land, build_rate: 5.0, buildable: vec!["BUILTBYTIER1ENGINEER UEF".into()], categories: vec!["ENGINEER".into()], ..Default::default() };
-        assert!(unit_file(&engineer, &none, None).contains("CanReclamate=1;"));
+        assert!(unit_file(&engineer, &none, None, &Extra::default()).contains("CanReclamate=1;"));
         let radar = UnitBlueprint { id: "UEB3101".into(), faction: Faction::Uef, categories: vec!["STRUCTURE".into(), "INTELLIGENCE".into(), "RADAR".into()], upkeep_energy: 20.0, intel: crate::unit::Intel { radar: 115.0, ..Default::default() }, layers: Layers { land: true, ..Default::default() }, ..Default::default() };
-        let file = unit_file(&radar, &none, None);
+        let file = unit_file(&radar, &none, None, &Extra::default());
         assert!(file.contains("EnergyUse=20;") && file.contains("ActivateWhenBuilt=1;") && file.contains("OnOffable=1;") && file.contains("MaxWaterDepth=0;"), "{file}");
         let transport = UnitBlueprint { id: "UEA0107".into(), faction: Faction::Uef, motion: Motion::Air, categories: vec!["AIR".into(), "TRANSPORTATION".into()], ..Default::default() };
-        let file = unit_file(&transport, &none, Some((6, 3)));
+        let file = unit_file(&transport, &none, Some((6, 3)), &Extra::default());
         assert!(file.contains("TransportCapacity=6;") && file.contains("TransportMaxUnits=6;") && file.contains("TransportSize=3;") && file.contains("canload=1;"), "{file}");
-        assert!(!unit_file(&transport, &none, None).contains("canload"), "no attach bones, no transport");
+        assert!(!unit_file(&transport, &none, None, &Extra::default()).contains("canload"), "no attach bones, no transport");
         // An extractor on land or the sea bed; a torpedo trap on the sea bed alone; a sonar afloat.
         let structure = |id: &str, layers: Layers| UnitBlueprint { id: id.into(), faction: Faction::Uef, categories: vec!["STRUCTURE".into()], layers, ..Default::default() };
-        let file = unit_file(&structure("UEB1103", Layers { land: true, seabed: true, ..Default::default() }), &none, None);
+        let file = unit_file(&structure("UEB1103", Layers { land: true, seabed: true, ..Default::default() }), &none, None, &Extra::default());
         assert!(file.contains("MaxWaterDepth=255;") && !file.contains("MinWaterDepth"), "{file}");
-        let file = unit_file(&structure("XRB2308", Layers { sub: true, ..Default::default() }), &none, None);
+        let file = unit_file(&structure("XRB2308", Layers { sub: true, ..Default::default() }), &none, None, &Extra::default());
         assert!(file.contains("MaxWaterDepth=255;") && file.contains("MinWaterDepth=15;") && !file.contains("Floater"), "{file}");
-        let file = unit_file(&structure("UEB3102", Layers { water: true, ..Default::default() }), &none, None);
+        let file = unit_file(&structure("UEB3102", Layers { water: true, ..Default::default() }), &none, None, &Extra::default());
         assert!(file.contains("MinWaterDepth=5;") && file.contains("Floater=1;"), "{file}");
+    }
+
+    /// A structure's adjacency: the buffs it gives as its section, its size class, and the
+    /// categories buffs name that it has in its `Category` (an artillery piece's); a unit that
+    /// moves gives and takes nothing. An engineering station works round it by itself, by its own
+    /// work or its drones' (the more) and its drones' reach where it gives none of its own.
+    #[test]
+    fn adjacency_and_stations_are_written_into_the_unit_file() {
+        use crate::adjacency::{Affect, Buff};
+        let none = Weapons { slots: Vec::new(), death: None, dgun: None, kamikaze: None };
+        let buffs = [
+            Buff { name: "GenBuildSize4".into(), size: Some(4), categories: Vec::new(), affect: Affect::EnergyActive, add: -0.05 },
+            Buff { name: "GenReloadSize4".into(), size: Some(4), categories: vec!["ARTILLERY".into()], affect: Affect::RateOfFire, add: -0.03 },
+        ];
+        let words: std::collections::BTreeSet<String> = ["ARTILLERY".to_string()].into();
+        let extra = Extra { adjacency: &buffs, adjacency_categories: Some(&words), ..Extra::default() };
+        let generator = UnitBlueprint { id: "UEB1101".into(), faction: Faction::Uef, categories: vec!["STRUCTURE".into(), "SIZE4".into()], production_energy: 20.0, ..Default::default() };
+        let file = ta_formats::tdf::parse(&unit_file(&generator, &none, None, &extra)).sections.remove(0);
+        assert_eq!(file.get("AdjacencySize"), Some("4"));
+        let section = file.sections.iter().find(|s| s.name == "ADJACENCY").unwrap();
+        assert_eq!(section.sections.iter().map(|s| (s.name.as_str(), s.get("Affects"), s.get("Add"), s.get("Size"), s.get("Category"))).collect::<Vec<_>>(), [
+            ("GenBuildSize4", Some("BuildEnergy"), Some("-0.05"), Some("4"), None),
+            ("GenReloadSize4", Some("ReloadTime"), Some("-0.03"), Some("4"), Some("ARTILLERY")),
+        ]);
+        let artillery = UnitBlueprint { id: "UEB2303".into(), faction: Faction::Uef, categories: vec!["STRUCTURE".into(), "ARTILLERY".into(), "SIZE4".into()], ..Default::default() };
+        assert_eq!(ta_formats::tdf::parse(&unit_file(&artillery, &none, None, &extra)).sections[0].get("Category"), Some("UEF LEVEL1 NOTAIR NOTSUB NOWEAPON ARTILLERY"));
+        let tank = UnitBlueprint { id: "UEL0201".into(), faction: Faction::Uef, motion: Motion::Land, categories: vec!["ARTILLERY".into(), "SIZE4".into()], ..Default::default() };
+        let file = unit_file(&tank, &none, None, &extra);
+        assert!(!file.contains("ADJACENCY") && !file.contains("AdjacencySize") && !file.contains(" ARTILLERY"), "{file}");
+        // Stations: the Hive by its own work and reach; the Kennel by its drones'.
+        let station = |id: &str, rate: f64, economy: &str, pods: Vec<crate::unit::Pod>| {
+            let mut u = crate::unit::parse(id, &format!("UnitBlueprint {{ Categories = {{ 'STRUCTURE', 'ENGINEERSTATION' }}, General = {{ FactionName = 'Cybran' }}, Economy = {{ {economy} }} }}")).unwrap();
+            u.build_rate = rate;
+            u.pods = pods;
+            u
+        };
+        // (Made-up figures.)
+        let drone = |rate: f64| crate::unit::Pod { id: "XEA3204".into(), build_rate: rate, reach: 12.0 };
+        assert_eq!(station_work(&station("XRB0104", 14.0, "MaxBuildDistance = 13", Vec::new())), (14.0, 13.0));
+        assert_eq!(station_work(&station("XEB0104", 18.0, "", vec![drone(12.0)])), (18.0, 12.0), "its own work, the more; its drone's reach");
+        assert_eq!(station_work(&station("XEB0204", 18.0, "", vec![drone(12.0), drone(12.0)])), (24.0, 12.0), "two drones' work");
+        assert_eq!(station_work(&station("XEB0304", 18.0, "", Vec::new())), (18.0, 5.0), "no drones and no reach of its own: five ogrids");
+        let hive = unit_file(&station("XRB0104", 14.0, "MaxBuildDistance = 13", Vec::new()), &none, None, &Extra::default());
+        assert!(hive.contains("DefaultMissionType=AssistPatrol;") && hive.contains("WorkerTime=140;") && hive.contains("BuildDistance=416;") && hive.contains("CanReclamate=1;"), "{hive}");
     }
 
     /// Upkeep only for what TA Reborn plays: a shield's (or the Fatboy's) and a stealth unit's is
@@ -1514,14 +1823,49 @@ mod tests {
     fn upkeep_is_paid_only_for_what_is_there() {
         let none = Weapons { slots: Vec::new(), death: None, dgun: None, kamikaze: None };
         let shield = UnitBlueprint { id: "UEB4202".into(), faction: Faction::Uef, categories: vec!["STRUCTURE".into(), "SHIELD".into()], upkeep_energy: 200.0, ..Default::default() };
-        let file = unit_file(&shield, &none, None);
+        let file = unit_file(&shield, &none, None, &Extra::default());
         assert!(!file.contains("EnergyUse") && !file.contains("OnOffable"), "{file}");
         let stealthy = UnitBlueprint { id: "URA0303".into(), faction: Faction::Cybran, motion: Motion::Air, upkeep_energy: 25.0, intel: crate::unit::Intel { radar_stealth: true, ..Default::default() }, ..Default::default() };
-        let file = unit_file(&stealthy, &none, None);
+        let file = unit_file(&stealthy, &none, None, &Extra::default());
         assert!(file.contains("Stealth=1;") && !file.contains("EnergyUse"), "{file}");
         let mex = UnitBlueprint { id: "UEB1103".into(), faction: Faction::Uef, categories: vec!["MASSEXTRACTION".into()], upkeep_energy: 2.0, production_mass: 2.0, ..Default::default() };
-        let file = unit_file(&mex, &none, None);
+        let file = unit_file(&mex, &none, None, &Extra::default());
         assert!(file.contains("EnergyUse=2;") && file.contains("ExtractsMetal=0.001;") && !file.contains("MetalStorage"), "{file}");
+    }
+
+    /// What the scripts take a unit's `Activate` to come with (`activated_when_built`) is what its
+    /// file says: an extractor, a radar paying its upkeep, a fabricator and a staging platform are
+    /// switched on once built; a power plant, a shield (its upkeep left out) and a factory are not.
+    #[test]
+    fn switched_on_once_built_as_the_file_says() {
+        let none = Weapons { slots: Vec::new(), death: None, dgun: None, kamikaze: None };
+        let building = |id: &str, cats: &[&str], upkeep: f64, mass: f64, energy: f64| UnitBlueprint {
+            id: id.into(),
+            faction: Faction::Uef,
+            categories: cats.iter().map(|c| c.to_string()).collect(),
+            upkeep_energy: upkeep,
+            production_mass: mass,
+            production_energy: energy,
+            intel: crate::unit::Intel { radar: if cats.contains(&"RADAR") { 115.0 } else { 0.0 }, ..Default::default() },
+            ..Default::default()
+        };
+        let mut factory = building("UEB0101", &["STRUCTURE", "FACTORY"], 0.0, 0.0, 0.0);
+        factory.build_rate = 20.0;
+        factory.buildable = vec!["BUILTBYTIER1FACTORY UEF MOBILE".into()];
+        let mut pad = building("UEB5202", &["STRUCTURE", "AIRSTAGINGPLATFORM"], 0.0, 0.0, 0.0);
+        pad.motion = Motion::None;
+        for (u, on) in [
+            (building("UEB1103", &["STRUCTURE", "MASSEXTRACTION"], 2.0, 2.0, 0.0), true),
+            (building("UEB3101", &["STRUCTURE", "RADAR", "INTELLIGENCE"], 20.0, 0.0, 0.0), true),
+            (building("UEB1104", &["STRUCTURE", "MASSFABRICATION"], 100.0, 1.0, 0.0), true),
+            (pad, true),
+            (building("UEB1101", &["STRUCTURE", "ENERGYPRODUCTION"], 0.0, 0.0, 20.0), false),
+            (building("UEB4202", &["STRUCTURE", "SHIELD"], 200.0, 0.0, 0.0), false),
+            (factory, false),
+        ] {
+            let file = unit_file(&u, &none, None, &Extra::default());
+            assert_eq!((activated_when_built(&u), file.contains("ActivateWhenBuilt=1;")), (on, on), "{}: {file}", u.id);
+        }
     }
 
     /// What a unit's script switches off as it is made is not given it: the Cybran commander's
@@ -1531,7 +1875,7 @@ mod tests {
         let none = Weapons { slots: Vec::new(), death: None, dgun: None, kamikaze: None };
         let mut acu = UnitBlueprint { id: "URL0001".into(), faction: Faction::Cybran, motion: Motion::Amphibious, regen: 15.0, intel: crate::unit::Intel { sonar: 60.0, radar_stealth: true, ..Default::default() }, ..Default::default() };
         acu.birth.intel_off = vec!["RadarStealth".into(), "Sonar".into()];
-        let file = unit_file(&acu, &none, None);
+        let file = unit_file(&acu, &none, None, &Extra::default());
         assert!(!file.contains("SonarDistance") && !file.contains("Stealth=1;") && file.contains("HealTime=6.67;"), "{file}");
         // An amphibian goes by its own limits, to the deepest sea bed.
         assert!(file.contains("MaxWaterDepth=255;") && !file.contains("MovementClass"), "{file}");
@@ -1553,9 +1897,34 @@ mod tests {
         assert_eq!(turn.round(), 522.0, "86° a second");
         let gun = WeaponBlueprint { label: "Gun".into(), category: "Anti Air".into(), damage: 50.0, rate_of_fire: 1.0, turreted: true, ..Default::default() };
         let armed = Weapons { slots: vec![&gun], death: None, dgun: None, kamikaze: None };
-        assert!(!unit_file(&fighter, &armed, None).contains("HoverAttack"), "a fighter makes passes");
+        assert!(!unit_file(&fighter, &armed, None, &Extra::default()).contains("HoverAttack"), "a fighter makes passes");
         let gunship = plane("UEA0203", &["GROUNDATTACK"], "KMove = 0.8, KMoveDamping = 2, KTurn = 0.8");
-        assert!(unit_file(&gunship, &armed, None).contains("HoverAttack=1;"));
+        assert!(unit_file(&gunship, &armed, None, &Extra::default()).contains("HoverAttack=1;"));
+    }
+
+    /// A building's footprint covers what of its model stands on the ground where its blueprint's
+    /// is smaller (a point defence's 0.6 ogrids, a cell, round a turret of almost an ogrid: 2 by 2
+    /// cells), one way or both; a wall's, a unit's and a building's at sea alone stay as they are;
+    /// and a building stands on slopes as steep as TA's own do.
+    #[test]
+    fn a_buildings_footprint_covers_its_model_on_the_ground() {
+        let land = crate::unit::Layers { land: true, ..Default::default() };
+        let pd = UnitBlueprint { id: "UEB2101".into(), faction: Faction::Uef, categories: vec!["STRUCTURE".into()], footprint: Some([0.6, 0.6]), layers: land, ..Default::default() };
+        assert_eq!(footprint(&pd), (1, 1));
+        let fitted = fitted_footprint(&pd, Some([0.98, 0.98]));
+        assert_eq!(fitted, Some([0.98, 0.98]));
+        assert_eq!(footprint(&UnitBlueprint { footprint: fitted, ..pd.clone() }), (2, 2));
+        assert_eq!(fitted_footprint(&pd, Some([0.4, 1.3])), Some([0.6, 1.3]), "wider one way");
+        assert_eq!(fitted_footprint(&pd, Some([0.5, 0.6])), None, "no wider");
+        assert_eq!(fitted_footprint(&pd, None), None, "nothing on the ground");
+        let wall = UnitBlueprint { categories: vec!["STRUCTURE".into(), "WALL".into()], ..pd.clone() };
+        let tank = UnitBlueprint { motion: Motion::Land, ..pd.clone() };
+        let sonar = UnitBlueprint { layers: crate::unit::Layers { water: true, ..Default::default() }, ..pd.clone() };
+        for other in [&wall, &tank, &sonar] {
+            assert_eq!(fitted_footprint(other, Some([2.0, 2.0])), None, "{:?}", other.categories);
+        }
+        let none = Weapons { slots: Vec::new(), death: None, dgun: None, kamikaze: None };
+        assert!(unit_file(&pd, &none, None, &Extra::default()).contains("MaxSlope=10;"));
     }
 
     /// A ship stands on a square of its hull's area (a frigate's 2 by 6 ogrids, 4 by 12 cells: 7);
@@ -1567,18 +1936,18 @@ mod tests {
         let frigate = UnitBlueprint { id: "UES0103".into(), faction: Faction::Uef, motion: Motion::Water, footprint: Some([2.0, 6.0]), ..Default::default() };
         assert_eq!(footprint(&frigate), (7, 7));
         let plant = UnitBlueprint { id: "UEB1102".into(), faction: Faction::Uef, categories: vec!["HYDROCARBON".into()], footprint: Some([1.0, 1.0]), ..Default::default() };
-        assert!(unit_file(&plant, &none, None).contains("YardMap=GGGG;"));
+        assert!(unit_file(&plant, &none, None, &Extra::default()).contains("YardMap=GGGG;"));
         let station = UnitBlueprint { id: "XRB0104".into(), faction: Faction::Cybran, build_rate: 15.0, categories: vec!["ENGINEERSTATION".into()], buildable: vec!["xrb0204".into()], ..Default::default() };
         assert_eq!(builds(&station), Builds::Assist);
-        let file = unit_file(&station, &none, None);
+        let file = unit_file(&station, &none, None, &Extra::default());
         assert!(file.contains("Builder=1;") && file.contains("WorkerTime=150;") && !file.contains("YardMap"), "{file}");
         let pad = UnitBlueprint { id: "UEB5202".into(), faction: Faction::Uef, categories: vec!["AIRSTAGINGPLATFORM".into()], ..Default::default() };
-        assert!(unit_file(&pad, &none, None).contains("IsAirBase=1;"));
+        assert!(unit_file(&pad, &none, None, &Extra::default()).contains("IsAirBase=1;"));
         let suicide = WeaponBlueprint { label: "Suicide".into(), category: "Kamikaze".into(), damage: 4500.0, damage_radius: 3.0, max_radius: 3.0, ..Default::default() };
         let beetle = UnitBlueprint { id: "XRL0302".into(), faction: Faction::Cybran, motion: Motion::Land, weapons: vec![suicide], ..Default::default() };
         let w = weapons(&beetle);
         assert!(w.slots.is_empty() && w.kamikaze.is_some());
-        let file = unit_file(&beetle, &w, None);
+        let file = unit_file(&beetle, &w, None, &Extra::default());
         for line in ["Kamikaze=1;", "KamikazeDistance=48;", "SelfDestructAs=XRL0302_BLAST;", "canattack=1;"] {
             assert!(file.contains(line), "{line} in {file}");
         }
@@ -1592,11 +1961,103 @@ mod tests {
         let gun = |label: &str, layers: &str| WeaponBlueprint { label: label.into(), category: "Direct Fire".into(), damage: 50.0, rate_of_fire: 1.0, ballistic_arc: "RULEUBA_None".into(), target_layers: vec![("Land".into(), layers.into())], ..Default::default() };
         let (a, b) = (gun("A", "Land|Water"), gun("B", "Land|Air"));
         let u = UnitBlueprint { id: "UEL0202".into(), faction: Faction::Uef, motion: Motion::Land, ..Default::default() };
-        let file = unit_file(&u, &Weapons { slots: vec![&a, &b], death: None, dgun: None, kamikaze: None }, None);
+        let file = unit_file(&u, &Weapons { slots: vec![&a, &b], death: None, dgun: None, kamikaze: None }, None, &Extra::default());
         assert!(file.contains("wpri_badTargetCategory=VTOL;") && !file.contains("wsec_badTargetCategory") && !file.contains("NoChaseCategory"), "{file}");
         let five: Vec<WeaponBlueprint> = (0..5).map(|k| gun(&format!("G{k}"), "Land")).collect();
-        let file = unit_file(&u, &Weapons { slots: five.iter().collect(), death: None, dgun: None, kamikaze: None }, None);
+        let file = unit_file(&u, &Weapons { slots: five.iter().collect(), death: None, dgun: None, kamikaze: None }, None, &Extra::default());
         assert!(file.contains("BadTargetCategory5=VTOL;") && file.contains("wspe_badTargetCategory=VTOL;") && file.contains("NoChaseCategory=VTOL;"), "{file}");
+    }
+
+    /// Anti-air that takes on aircraft alone in Forged Alliance (`FireTargetLayerCapsTable` 'Air' from
+    /// every layer, or `TargetRestrictOnlyAllow = 'AIR'` as the interceptors' guns say beside the land
+    /// in their layers) names them its only targets, by order too, in its own slot or one an
+    /// enhancement fills; a gun that also shoots the ground names none, nor does a missile defence
+    /// (its 'Air' the missiles it shoots down).
+    #[test]
+    fn anti_air_takes_no_other_target() {
+        let weapon = |label: &str, layers: &[(&str, &str)]| WeaponBlueprint {
+            label: label.into(),
+            category: "Anti Air".into(),
+            damage: 50.0,
+            rate_of_fire: 1.0,
+            max_radius: 40.0,
+            target_layers: layers.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect(),
+            ..Default::default()
+        };
+        let (gun, aa) = (weapon("Gun", &[("Land", "Land|Air")]), weapon("AA", &[("Land", "Air"), ("Water", "Air")]));
+        let defence = WeaponBlueprint { category: "Defense".into(), only_allow: "TACTICAL MISSILE".into(), ..weapon("AntiMissile", &[("Land", "Air")]) };
+        let interceptor = WeaponBlueprint { only_allow: "AIR".into(), ..weapon("Railgun", &[("Air", "Air|Land"), ("Land", "Air|Land")]) };
+        assert_eq!((kind(&aa), kind(&defence), kind(&interceptor)), (Kind::AntiAir, Kind::AntiMissile, Kind::AntiAir));
+        assert!(aircraft_alone(&aa) && aircraft_alone(&interceptor) && !aircraft_alone(&gun) && !aircraft_alone(&defence));
+        let tower = UnitBlueprint { id: "UEB2104".into(), faction: Faction::Uef, ..Default::default() };
+        let file = unit_file(&tower, &Weapons { slots: vec![&gun, &aa, &defence, &interceptor], death: None, dgun: None, kamikaze: None }, None, &Extra::default());
+        let only: Vec<&str> = file.lines().filter(|l| l.contains("OnlyTargetCategory")).map(str::trim).collect();
+        assert_eq!(only, ["OnlyTargetCategory2=VTOL;", "OnlyTargetCategory4=VTOL;"], "{file}");
+        let fbi = ta_formats::tdf::parse(&file);
+        assert_eq!(fbi.section("UNITINFO").and_then(|u| u.get("OnlyTargetCategory2")), Some("VTOL"));
+        // A support commander's gun, and the anti-air missiles an enhancement brings in the slot after it.
+        let commander = UnitBlueprint { id: "URL0301".into(), faction: Faction::Cybran, ..Default::default() };
+        let file = unit_file(&commander, &Weapons { slots: vec![&gun], death: None, dgun: None, kamikaze: None }, None, &Extra { weapons: vec![&aa], ..Extra::default() });
+        let only: Vec<&str> = file.lines().filter(|l| l.contains("OnlyTargetCategory")).map(str::trim).collect();
+        assert_eq!(only, ["OnlyTargetCategory2=VTOL;"], "{file}");
+    }
+
+    /// A factory's ways out, from its roll-off points and its model: a platform 16 px up (its build
+    /// bone's height) over the middle, a ramp down to the ground on its east side. The east way (its
+    /// point 96 px out, short of the footprint cleared: 64 and 48) is made to lead 112 px out, its
+    /// unit facing east (`UnitSpin` 90), keeping the platform's height to where the ramp starts down
+    /// and on the ground where it ends; the south one (160 px out, past the footprint) is kept as it
+    /// is, its floor ending with the platform. Written as the unit file's `[EXITS]`, read back as the
+    /// game reads it; the factory solid.
+    #[test]
+    fn a_factorys_ways_out_follow_its_roll_off_points_and_its_platform() {
+        let still = [1.0f32, 0.0, 0.0, 0.0];
+        let corners = [
+            ([-10.0f32, 5.0, -10.0], 0u8),
+            ([10.0, 5.0, -10.0], 0),
+            ([10.0, 5.0, 10.0], 0),
+            ([-10.0, 5.0, 10.0], 0),
+            ([20.0, 0.0, -10.0], 0),
+            ([20.0, 0.0, 10.0], 0),
+        ];
+        let vertices: Vec<([f32; 3], [f32; 2], u8)> = corners.iter().map(|&(p, b)| (p, [0.0, 0.0], b)).collect();
+        let file = crate::scm::tests::write(&[("Factory", -1, [0.0; 3], still), ("Attachpoint", 0, [0.0, 5.0, 0.0], still)], &vertices, &[[0, 1, 2], [0, 2, 3], [1, 4, 5], [1, 5, 2]]);
+        let mesh = crate::scm::parse(&file).unwrap();
+        let u = crate::unit::parse(
+            "UEB0101",
+            "UnitBlueprint { Categories = { 'PRODUCTSC1', 'UEF', 'STRUCTURE', 'FACTORY', 'LAND', 'TECH1', 'BUILTBYTIER1ENGINEER' }, \
+             General = { FactionName = 'UEF' }, Economy = { BuildRate = 20, BuildableCategory = { 'BUILTBYTIER1FACTORY UEF MOBILE' } }, \
+             Footprint = { SizeX = 4, SizeZ = 4 }, Display = { UniformScale = 0.1, BuildAttachBone = 'Attachpoint' }, \
+             Physics = { MotionType = 'RULEUMT_None', RollOffPoints = { { UnitSpin = 90, X = 3, Y = 0, Z = 0 }, { UnitSpin = 0, X = 0, Y = 0, Z = 5 } } } }",
+        )
+        .unwrap();
+        assert_eq!(builds(&u), Builds::Factory);
+        let ways = exits(&u, &mesh, &[]);
+        assert_eq!(ways.len(), 2);
+        let east = ways[0];
+        assert_eq!((east.x, east.z, east.heading), (112, 0, 90), "{east:?}");
+        // (The platform 32 px out at 16 px; the ramp down to the ground at 64 px.)
+        assert!((32..=36).contains(&east.ramp.0) && (60..=64).contains(&east.ramp.1), "{east:?}");
+        let south = ways[1];
+        assert_eq!((south.x, south.z, south.heading), (0, 160, 0), "{south:?}");
+        assert!((31..=33).contains(&south.ramp.0) && south.ramp.1 <= 34, "the floor ends with the platform: {south:?}");
+        let file = unit_file(&u, &weapons(&u), None, &Extra { exits: ways.clone(), ..Extra::default() });
+        let info = ta_formats::tdf::parse(&file).section("UNITINFO").cloned().unwrap();
+        let section = info.sections.iter().find(|s| s.name == "EXITS").expect("[EXITS]");
+        assert_eq!(section.sections.len(), 2);
+        assert_eq!((section.sections[0].get("X"), section.sections[0].get("Heading")), (Some("112"), Some("90")));
+        assert_eq!(section.sections[0].get("Ramp"), Some(format!("{} {}", east.ramp.0, east.ramp.1).as_str()));
+        assert!(info.get("YardMap").is_some_and(|y| y.chars().all(|c| c == 'o')), "solid: {file}");
+        // A factory without roll-off points has none, and its yard open to its front, as TA's.
+        let plain = UnitBlueprint { roll_off: Vec::new(), ..u.clone() };
+        assert!(exits(&plain, &mesh, &[]).is_empty());
+        assert!(unit_file(&plain, &weapons(&plain), None, &Extra::default()).contains('c'));
+        // A transport whose factory's build bone is turned a quarter for it, whatever way it takes,
+        // faces so as it is built (`BuildHeading`); a tank names nothing.
+        let transport = UnitBlueprint { id: "UEA0104".into(), display: crate::unit::Display { forced_build_spin: Some(90.0), ..Default::default() }, ..Default::default() };
+        let file = unit_file(&transport, &weapons(&transport), None, &Extra::default());
+        assert_eq!(ta_formats::tdf::parse(&file).section("UNITINFO").and_then(|u| u.get("BuildHeading")), Some("90"), "{file}");
+        assert!(!unit_file(&plain, &weapons(&plain), None, &Extra::default()).contains("BuildHeading"));
     }
 
     #[test]

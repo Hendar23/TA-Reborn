@@ -94,6 +94,7 @@ const SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("{share}", n("Share resources and units with an ally")),
             ("{jukebox}", n("Jukebox: TA's music and your own")),
             ("{health_bars}", n("Health bars: our damaged units, every damaged unit, or the selection")),
+            ("{range_overlays}", n("Ranges: all, radar, sonar and jammers only, none")),
             (n("Shift over a unit"), n("A constructor: everyone's planned buildings; one that cloaks: how near an enemy may come")),
             ("{quick_save}", n("Quick save (Continue in the main menu loads it)")),
             (n("Alt+click"), n("Ping the map for your team")),

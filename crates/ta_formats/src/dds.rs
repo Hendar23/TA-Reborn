@@ -425,6 +425,17 @@ pub fn encode_colour_block(texels: &[[u8; 4]; 16]) -> [u8; 8] {
     if refined.1 < first.1 { refined.0 } else { first.0 }
 }
 
+/// The side a texture is made a model's paint at ([`to_bc3_levels`]): the largest power of two
+/// its larger side reaches, at least 512 (a smaller texture is enlarged) and at most `most` (a
+/// larger one is taken at that level): a texture of 1024 keeps its texels where `most` allows it.
+pub fn paint_side(header: &Header, most: u32) -> u32 {
+    let side = 1u32 << header.width.max(header.height).ilog2();
+    side.clamp(PAINT_LEAST, most.max(PAINT_LEAST))
+}
+
+/// The least side of a model's paint ([`paint_side`]).
+pub const PAINT_LEAST: u32 = 512;
+
 /// A texture as BC3 mip levels of `side` by `side` texels (a power of two) down to 1 by 1, each
 /// level's blocks, the largest first: as the paint of a model with a surface is drawn (TA
 /// Reborn's arrays of such layers). DXT5's blocks as they are; DXT1's and DXT3's made BC3 block
@@ -458,8 +469,9 @@ pub fn bc3_levels(mut image: Image) -> Vec<Vec<u8>> {
 }
 
 /// A level's blocks made BC3's: DXT5's as they are; DXT1's colours as they are where they take
-/// four (an opaque alpha block before them), encoded again where they take three and a
-/// transparent black (which BC3 cannot); DXT3's colours as they are, their alpha encoded.
+/// four (an opaque alpha block before them), and where they take three ([`three_as_four`]) as the
+/// same colours where BC3 can give them, else encoded again (a block taking the transparent black,
+/// which BC3's colours cannot); DXT3's colours as they are, their alpha encoded.
 fn blocks_to_bc3(format: Format, data: &[u8]) -> Vec<u8> {
     match format {
         Format::Dxt1 => {
@@ -468,6 +480,9 @@ fn blocks_to_bc3(format: Format, data: &[u8]) -> Vec<u8> {
                 if u16::from_le_bytes([block[0], block[1]]) > u16::from_le_bytes([block[2], block[3]]) {
                     out.extend_from_slice(&[255, 255, 0, 0, 0, 0, 0, 0]);
                     out.extend_from_slice(block);
+                } else if let Some(four) = three_as_four(block) {
+                    out.extend_from_slice(&[255, 255, 0, 0, 0, 0, 0, 0]);
+                    out.extend_from_slice(&four);
                 } else {
                     out.extend_from_slice(&encode_bc3_block(&dxt1(block, true)));
                 }
@@ -485,6 +500,53 @@ fn blocks_to_bc3(format: Format, data: &[u8]) -> Vec<u8> {
         }
         _ => data.to_vec(),
     }
+}
+
+/// A BC1 block of three colours (its first end not the greater: the two ends, the colour halfway
+/// between them and a see-through black) as a block of four, as BC3's colour half always reads,
+/// where none of its texels is the black: one end kept and the other moved half as far again past
+/// the first (`a, (3b - a) / 2`), so that a third of the way along is the halfway colour and two
+/// thirds the other end. Of that both ways round and the block encoded again, whichever comes
+/// nearest its sixteen texels (encoded again, a block's halfway colour fell between the thirds:
+/// Forged Alliance's colour maps are two thirds such blocks).
+fn three_as_four(block: &[u8; 8]) -> Option<[u8; 8]> {
+    let bits = u32::from_le_bytes([block[4], block[5], block[6], block[7]]);
+    if (0..16).any(|i| (bits >> (2 * i)) & 3 == 3) {
+        return None;
+    }
+    let texels = dxt1(block, true);
+    let rgb: [[i64; 3]; 16] = texels.map(|t| [t[0] as i64, t[1] as i64, t[2] as i64]);
+    let (c0, c1) = (u16::from_le_bytes([block[0], block[1]]), u16::from_le_bytes([block[2], block[3]]));
+    let off = |four: &[u8; 8]| -> i64 {
+        let back = dxt1(four, false);
+        rgb.iter().zip(back).map(|(c, b)| (0..3).map(|k| (c[k] - b[k] as i64).pow(2)).sum::<i64>()).sum()
+    };
+    let mut best = {
+        let again = encode_colour_block(&texels);
+        (off(&again), again)
+    };
+    // (Index 0 the kept end, 1 the moved one, 2 a third of the way: the halfway colour, 3 two
+    // thirds: the other end. Three colours' indices 0, 1, 2 to those.)
+    for (kept, other, to) in [(c0, c1, [0u32, 3, 2]), (c1, c0, [3u32, 0, 2])] {
+        let (a, b) = (rgb565(kept), rgb565(other));
+        let moved: [i64; 3] = std::array::from_fn(|k| (3 * b[k] as i64 - a[k] as i64 + 1).div_euclid(2));
+        if moved.iter().any(|&v| !(0..=255).contains(&v)) {
+            continue;
+        }
+        let mut four = [0u8; 8];
+        four[..2].copy_from_slice(&kept.to_le_bytes());
+        four[2..4].copy_from_slice(&to_565(moved).to_le_bytes());
+        let mut indices = 0u32;
+        for i in 0..16 {
+            indices |= to[((bits >> (2 * i)) & 3) as usize] << (2 * i);
+        }
+        four[4..].copy_from_slice(&indices.to_le_bytes());
+        let error = off(&four);
+        if error < best.0 {
+            best = (error, four);
+        }
+    }
+    Some(best.1)
 }
 
 /// An image as BC3 blocks, row by row (the texels past its edge, in a level smaller than a
@@ -534,12 +596,58 @@ pub fn halve(image: &Image) -> Image {
     Image { width: w, height: h, rgba }
 }
 
-/// `image` at `width` by `height`: halved while it is twice as large or more, then sampled
-/// between texels (bilinear, in 256ths).
+/// `image` twice as large each way, each texel made four where its quarters lie: a cubic through
+/// the four by four texels round each (Catmull-Rom's, whose weights at a quarter of a texel are
+/// whole 128ths), kept within the colours of the two by two texels nearest it, so that no edge
+/// rings. Edges come out as sharp as the texture has them, where sampling between texels
+/// (bilinear) blurs them over two of the new texels. In whole numbers: the same everywhere.
+pub fn enlarge(image: &Image) -> Image {
+    // The weights of the four texels from one before the nearer pair, for a new texel a quarter
+    // of a texel past a texel's middle and for one three quarters past it.
+    const QUARTER: [i64; 4] = [-9, 111, 29, -3];
+    const THREE_QUARTERS: [i64; 4] = [-3, 29, 111, -9];
+    let (w, h) = (image.width as i64, image.height as i64);
+    // For each new column (row): the first of its four texels, and their weights.
+    let taps = |n: i64| -> Vec<(i64, [i64; 4])> {
+        (0..2 * n).map(|o| if o % 2 == 0 { (o / 2 - 2, THREE_QUARTERS) } else { (o / 2 - 1, QUARTER) }).collect()
+    };
+    let (across, down) = (taps(w), taps(h));
+    let mut rgba = Vec::with_capacity((4 * w * h) as usize);
+    for &(y0, wy) in &down {
+        for &(x0, wx) in &across {
+            let mut sum = [0i64; 4];
+            let (mut least, mut most) = ([255i64; 4], [0i64; 4]);
+            for (j, &ky) in wy.iter().enumerate() {
+                for (i, &kx) in wx.iter().enumerate() {
+                    let texel = image.clamped(x0 + i as i64, y0 + j as i64);
+                    let near = (i == 1 || i == 2) && (j == 1 || j == 2);
+                    for c in 0..4 {
+                        let v = texel[c] as i64;
+                        sum[c] += v * kx * ky;
+                        if near {
+                            least[c] = least[c].min(v);
+                            most[c] = most[c].max(v);
+                        }
+                    }
+                }
+            }
+            // (In 16384ths, rounded to the nearest: the weights' sum is 128 each way.)
+            rgba.push(std::array::from_fn(|c| ((sum[c] + 8192).div_euclid(16384)).clamp(least[c], most[c]) as u8));
+        }
+    }
+    Image { width: image.width * 2, height: image.height * 2, rgba }
+}
+
+/// `image` at `width` by `height`: halved while it is twice as large or more, or enlarged
+/// ([`enlarge`]) while it is half as large or less, then sampled between texels (bilinear, in
+/// 256ths) for what is left.
 pub fn resize(image: &Image, width: u32, height: u32) -> Image {
     let mut image = image.clone();
     while image.width >= 2 * width && image.height >= 2 * height && (image.width, image.height) != (width, height) {
         image = halve(&image);
+    }
+    while image.width * 2 <= width && image.height * 2 <= height {
+        image = enlarge(&image);
     }
     if (image.width, image.height) == (width, height) {
         return image;
@@ -747,6 +855,48 @@ pub(crate) mod tests {
         assert!(to_bc3_levels(&file, 6).is_err(), "not a power of two");
     }
 
+    /// BC1's three-colour blocks made BC3's four-colour ones: where no texel is the see-through
+    /// black, the same three colours (to a 565's rounding of the moved end: three steps of 255 at most), which encoding them
+    /// again missed by a sixth of the way between the ends; with the black, encoded again.
+    #[test]
+    fn three_colour_blocks_keep_their_colours() {
+        // Ends 40 and 220 grey (the first the lesser: three colours), every texel one of the ends
+        // or halfway between them.
+        let grey = |v: u16| ((v >> 3) << 11) | ((v >> 2) << 5) | (v >> 3);
+        let mut block = [0u8; 8];
+        block[..2].copy_from_slice(&grey(40).to_le_bytes());
+        block[2..4].copy_from_slice(&grey(120).to_le_bytes());
+        block[4..].copy_from_slice(&0b10_01_00_10_01_00_10_01_00_10_01_00_10_01_00_10u32.to_le_bytes());
+        let want = dxt1(&block, true);
+        let mut file = header(4, 4, 3, Some(b"DXT1"));
+        for _ in 0..3 {
+            file.extend_from_slice(&block);
+        }
+        let levels = to_bc3_levels(&file, 4).unwrap();
+        let back = decode_bc3(&levels[0], 4, 4);
+        for (w, b) in want.iter().zip(&back) {
+            assert!((0..3).all(|k| w[k].abs_diff(b[k]) <= 2) && b[3] == 255, "{w:?} came back {b:?}");
+        }
+        // (Encoded again, the halfway colour came back further off.)
+        let again = dxt1(&encode_colour_block(&want), false);
+        assert!(want.iter().zip(&again).any(|(w, b)| (0..3).any(|k| w[k].abs_diff(b[k]) > 6)), "{again:?}");
+        // Ends far apart (moved from the lesser, past white): moved from the greater.
+        let mut wide = block;
+        wide[..2].copy_from_slice(&grey(100).to_le_bytes());
+        wide[2..4].copy_from_slice(&grey(230).to_le_bytes());
+        let four = three_as_four(&wide).unwrap();
+        let (w, b) = (dxt1(&wide, true), dxt1(&four, false));
+        assert!(w.iter().zip(&b).all(|(w, b)| (0..3).all(|k| w[k].abs_diff(b[k]) <= 2)), "{w:?} {b:?}");
+        // (Further apart than BC3's thirds reach either way: encoded again, as near as that gets.)
+        wide[..2].copy_from_slice(&grey(30).to_le_bytes());
+        wide[2..4].copy_from_slice(&grey(240).to_le_bytes());
+        assert_eq!(three_as_four(&wide), Some(encode_colour_block(&dxt1(&wide, true))));
+        // A texel taking the see-through black: encoded again.
+        let mut black = block;
+        black[4] |= 0b11;
+        assert!(three_as_four(&black).is_none());
+    }
+
     /// A file claiming more mip levels than its size halves into (the review's 300 x 300 claiming
     /// four billion froze the game for seconds a frame, and the shift past 31 levels panicked in a
     /// debug build) is read with the levels its size has, and those it holds.
@@ -815,10 +965,61 @@ pub(crate) mod tests {
         assert_eq!(halve(&image).rgba, [[50, 50, 0, 255]]);
         let grown = resize(&image, 4, 4);
         assert_eq!((grown.width, grown.height), (4, 4));
-        // (The corners the corners' colours; between them, between.)
+        // (Enlarged: the corners the corners' colours; between them, between, nearer the nearer.)
         assert_eq!(grown.rgba[0], [0, 0, 0, 255]);
         assert_eq!(grown.rgba[15], [100, 100, 0, 255]);
-        assert_eq!(grown.rgba[1], [25, 0, 0, 255]);
+        assert_eq!(grown.rgba[1], [20, 0, 0, 255]);
         assert_eq!(resize(&grown, 2, 2).rgba.len(), 4);
+        // (To a size not twice another: sampled between texels.)
+        let odd = resize(&image, 3, 3);
+        assert_eq!((odd.width, odd.height, odd.rgba[4]), (3, 3, [50, 50, 0, 255]));
+    }
+
+    /// An image enlarged twice each way: a plain colour stays plain, an edge stays an edge (the
+    /// two new texels across it nearer each side's colour than sampling between texels makes
+    /// them) without ringing past either side's colour, a ramp stays a ramp, and every texel's
+    /// four new ones come back to it on average; the same bytes every time.
+    #[test]
+    fn an_enlarged_image_keeps_its_edges_sharp() {
+        let image = |w: u32, h: u32, f: &dyn Fn(u32, u32) -> [u8; 4]| Image { width: w, height: h, rgba: (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).map(|(x, y)| f(x, y)).collect() };
+        let plain = image(5, 3, &|_, _| [90, 120, 30, 200]);
+        let big = enlarge(&plain);
+        assert_eq!((big.width, big.height), (10, 6));
+        assert!(big.rgba.iter().all(|&t| t == [90, 120, 30, 200]));
+        // A dark half and a light one, the edge between texels 3 and 4.
+        let edge = image(8, 4, &|x, _| if x < 4 { [20, 20, 20, 255] } else { [220, 200, 180, 0] });
+        let big = enlarge(&edge);
+        let row: Vec<u8> = (0..16).map(|x| big.rgba[(16 * 3 + x) as usize][0]).collect();
+        assert!(row.iter().all(|&v| (20..=220).contains(&v)), "no ringing: {row:?}");
+        assert_eq!(&row[..6], &[20; 6], "{row:?}");
+        assert_eq!(&row[10..], &[220; 6], "{row:?}");
+        // (The two new texels between, a quarter of a texel either side of the edge: sampled
+        // between texels, 70 and 170.)
+        assert_eq!((row[6], row[9]), (20, 220), "{row:?}");
+        assert!(row[7] < 65 && row[8] > 175, "{row:?}");
+        // A ramp: rising evenly, as it did.
+        let ramp = image(8, 1, &|x, _| [(x * 30) as u8, 0, 0, 255]);
+        let big = enlarge(&ramp);
+        let row: Vec<i32> = (0..16).map(|x| big.rgba[x][0] as i32).collect();
+        for x in 3..12 {
+            let step = row[x + 1] - row[x];
+            assert!((14..=16).contains(&step), "{row:?}");
+        }
+        // Each texel's four new ones, on average, are it (to a step or two).
+        let busy = image(6, 6, &|x, y| [(x * 37 + y * 11) as u8, (x * x * 5 + 3 * y) as u8, (x * y * 7) as u8, 255]);
+        let big = enlarge(&busy);
+        for y in 1..5 {
+            for x in 1..5 {
+                for c in 0..3 {
+                    let four: i32 = [(0, 0), (1, 0), (0, 1), (1, 1)].iter().map(|&(dx, dy)| big.rgba[((2 * y + dy) * 12 + 2 * x + dx) as usize][c] as i32).sum();
+                    let was = busy.rgba[(y * 6 + x) as usize][c] as i32 * 4;
+                    assert!((four - was).abs() <= 4 * 2, "texel {x},{y} channel {c}: {four} for {was}");
+                }
+            }
+        }
+        assert_eq!(enlarge(&busy).rgba, big.rgba);
+        // Grown to a side four times as large: enlarged twice.
+        let grown = resize(&busy, 24, 24);
+        assert_eq!(grown.rgba, enlarge(&big).rgba);
     }
 }

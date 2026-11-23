@@ -582,7 +582,7 @@ impl SkirmishAi {
     /// on land or in water, whichever suits the site) and the part for its own element.
     fn duty_options(&self, sim: &Sim, b: &Unit) -> (Vec<usize>, Vec<usize>) {
         let naval = self.info[b.type_id].kind == Locomotion::Naval;
-        let all: Vec<usize> = sim.unit_type(b).build_options.iter().copied().filter(|&o| sim.is_allowed(o)).collect();
+        let all: Vec<usize> = b.build_options(sim.unit_type(b)).iter().copied().filter(|&o| sim.is_allowed(o)).collect();
         let own = all.iter().copied().filter(|&o| self.info[o].land != naval).collect();
         (all, own)
     }
@@ -854,7 +854,7 @@ impl SkirmishAi {
                 continue;
             }
             let t = sim.unit_type(u);
-            if u.health * 100 >= t.max_health * MEND_BELOW || self.unreachable_units.iter().any(|&(id, _)| id == u.id) {
+            if u.health * 100 >= u.max_health(t) * MEND_BELOW || self.unreachable_units.iter().any(|&(id, _)| id == u.id) {
                 continue;
             }
             // (A unit that moves is not chased, nor one that is on its way somewhere; one that
@@ -866,7 +866,7 @@ impl SkirmishAi {
             if d > reach || !u.pos.within_xz(self.base, fx(SCRAP_RANGE + 200)) || self.threat.at(u.pos) > 0 {
                 continue;
             }
-            let missing = ((t.max_health - u.health) * 1000 / t.max_health.max(Fx::ONE)).to_int();
+            let missing = ((u.max_health(t) - u.health) * 1000 / u.max_health(t).max(Fx::ONE)).to_int();
             let i = &self.info[u.type_id];
             let weight = if i.commander { 400 } else { (i.cost / 20).min(120) };
             cands.push((missing + weight - d / 8, u.id, u.pos));

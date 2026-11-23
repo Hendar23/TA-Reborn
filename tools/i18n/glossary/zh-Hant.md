@@ -544,3 +544,20 @@ print them (Alt, Ctrl, Shift, Cmd, Option, Enter, Esc, Tab, Home, End).
 | proxy / redirect / timed out / exception / the launcher crashed | 代理伺服器 / 重新導向 / 逾時 / 例外狀況 / 啟動器當機 |
 | stealth field (Forged Alliance's) / teleporting / upgrading buildings in place | 匿蹤力場 (as Stealthy 匿蹤; cloak stays 隱形) / 傳送 / 建築原地升級 |
 | the launcher's footer (its activity chips) / Held until the import ends | 啟動器底部的狀態列 / 匯入結束前無法變更 |
+| experimental features / EXPERIMENTAL (tag) | 實驗性功能 / 實驗性 |
+
+## Upgrades in place and enhancements (Forged Alliance's; `orders.rs`, `hud/enhance.rs`, `hud/deck.rs`, `hud/info.rs`, `hud_classic.rs`)
+
+| English | 繁體中文 |
+|---|---|
+| upgrade (in place) / Upgrade in place (the key) / UPGRADE, UPGR (the classic panel) | 升級 / 原地升級 / 升級 (as 建築原地升級) |
+| Upgrade ({key}): into {name} / upgrades in place into / upgrading into, about to upgrade into | 升級為 {name}（{key}） / 可原地升級為 / 正在升級為、即將升級為 |
+| enhancement(s) / ENHANCE, ENH (tab and classic button) / ENHANCEMENTS (the info page's heading) | 強化（一項強化） / 強化 / 強化項目 (as 指揮官強化) |
+| slot (an enhancement's: left arm, right arm, back; one enhancement a slot) / Slot {slot} | 槽位（每個槽位限一項） / 槽位 {slot} (as TEXTURE SLOTS 紋理槽) |
+| install / installed / being installed, installing / about to install | 安裝 / 已安裝 / 安裝中、正在安裝 / 即將安裝 |
+| take out (an installed enhancement) / Right-click: take it out / Taking out {name} | 拆除 / 右鍵：拆除 / 正在拆除 {name} |
+| {duration} on its own build power | 以自身建造力需時 {duration} |
+| Stop calls it off, its metal back | 按「停止」可取消並退還金屬 |
+| Shift: queued / queued after the upgrade under way | Shift：排入佇列 / 排在進行中的升級之後 |
+| Builds {n} more kinds / Mends {n} hit points a second / {weapon}: stronger | 可額外建造 {n} 種 / 每秒修復 {n} 點生命值 / {weapon}：威力提升 |
+| Weapon: {weapon} (a weapon the enhancement adds) | 新增武器：{weapon} |

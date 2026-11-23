@@ -30,7 +30,7 @@ fn selection_summary(game: &crate::game::Game) -> String {
         [] => t("No units selected").to_string(),
         [unit] => tf("Selected {unit}. Health {health} of {maximum}.", &[
             ("unit", &crate::chat::unit_label(&game.sim, unit.type_id)),
-            ("health", &unit.health.to_int()), ("maximum", &game.sim.unit_type(unit).max_health.to_int()),
+            ("health", &unit.health.to_int()), ("maximum", &unit.max_health(game.sim.unit_type(unit)).to_int()),
         ]),
         units => tf("{count} units selected", &[("count", &units.len())]),
     }

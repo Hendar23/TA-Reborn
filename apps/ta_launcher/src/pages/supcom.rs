@@ -203,7 +203,14 @@ impl LauncherApp {
     fn supcom_body(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         ui.spacing_mut().item_spacing.y = 6.0;
         let mut tab = self.supcom.tab;
-        if widgets::segmented(ui, &mut tab, &[(Tab::Maps, Tab::Maps.label()), (Tab::Factions, Tab::Factions.label())]).changed() {
+        // (Beside the tabs, the tag of a feature still being tried out: `crate::experimental`.)
+        let changed = ui.horizontal(|ui| {
+            let changed = widgets::segmented(ui, &mut tab, &[(Tab::Maps, Tab::Maps.label()), (Tab::Factions, Tab::Factions.label())]).changed();
+            ui.add_space(space::M);
+            crate::experimental::tag(ui);
+            changed
+        }).inner;
+        if changed {
             self.supcom.set_tab(tab);
         }
         ui.add_space(space::XS);
@@ -347,7 +354,7 @@ impl LauncherApp {
         ui.add_space(space::XS);
         // (A footnote: at the foot of the room where the tab leaves some, under the cards where it
         // does not.)
-        let note = RichText::new(t("Still to come: Forged Alliance's own sounds and weapon effects, the commanders' enhancements, upgrading buildings in place, shields, stealth fields and teleporting.")).color(STEEL);
+        let note = RichText::new(t("Still to come: Forged Alliance's own sounds and weapon effects, shields, stealth fields and teleporting.")).color(STEEL);
         let tall = widgets::wrapped_galley(ui, note.clone(), ui.available_width()).size().y;
         let spare = ui.available_height() - tall - ui.spacing().item_spacing.y - 2.0;
         if spare > 0.0 {
@@ -1002,7 +1009,7 @@ mod tests {
         for _ in 0..4 { frame(&ctx, &mut app, size, Vec::new()); }
         let (_, texts) = frame(&ctx, &mut app, size, Vec::new());
         // (The mod holds the UEF and the Aeon: those are chosen at first.)
-        assert!(texts.iter().any(|(text, _, _)| text == "2 of 4 factions chosen, 178 units, about 0.2 GB on the disk"), "{:?}", texts_of(&texts));
+        assert!(texts.iter().any(|(text, _, _)| text == "2 of 4 factions chosen, 178 units, about 0.3 GB on the disk"), "{:?}", texts_of(&texts));
         assert!(texts.iter().any(|(text, _, _)| text.starts_with("Still to come: Forged Alliance's own sounds")), "{:?}", texts_of(&texts));
         // The keys stop at each faction's box once.
         let tab = egui::Event::Key { key: egui::Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };

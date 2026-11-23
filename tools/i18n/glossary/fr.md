@@ -669,3 +669,28 @@ importées : {n} ; non créées : {failed}.", "Aucune des cartes choisies n'a pu
 | Supreme Commander's (still to come): the commanders' enhancements / upgrading buildings in place / shields / stealth fields / teleporting | les améliorations des commandants / la mise à niveau des bâtiments sur place (never amélioration twice) / boucliers / champs de furtivité / téléportation |
 | the launcher's footer (its activity chips and save status) / the Mods page | la barre d'état du lanceur (as "Réessayer dans la barre d'état") / la page MODS (as la page CARTES) |
 | Held until the import ends (beside greyed controls) / then import these (the maps or factions chosen; one string serves both tabs) / Update: import it again | Indisponible pendant l'importation / puis importez votre sélection / Mise à jour : à réimporter |
+| experimental features / EXPERIMENTAL (tag) | fonctions expérimentales / EXPÉRIMENTAL |
+
+## Supreme Commander's upgrades in place and enhancements (`orders.rs`, `hud/enhance.rs`, `hud/deck.rs`, `hud/info.rs`, `hud_classic.rs`)
+
+A building upgrading itself into its higher-tech version is a mise à niveau (as "la mise à niveau des
+bâtiments sur place"); a commander's enhancement is an amélioration (f.: installée, celle-ci, la
+retirer), never the other way round. Enhancement and weapon names come from Forged Alliance's data in
+English, often starting with a vowel: no "de {name}" before them ("Installe {name}", "(remplace
+{name})", "Nécessite d'abord {name}"), nothing agreeing with them ("{weapon} : puissance accrue").
+Straight apostrophes and no-break spaces, as the HUD's other strings.
+
+| English | Français |
+|---|---|
+| upgrade (in place) / Upgrade (the order: radial, tip) / UPGRADE (classic button, tip title) / UPGR | mise à niveau (sur place) / Mettre à niveau / MISE À NIVEAU / NIV+ |
+| upgrading into {name} / about to upgrade into {name} | Mise à niveau vers {name} / Mise à niveau imminente vers {name} |
+| enhancement / ENHANCEMENTS (info page) / ENHANCE (build menu tab, classic button) / ENH | amélioration / AMÉLIORATIONS / AMÉLIORER (beside ÉCONOMIE, CAPTEURS) / AMÉL. |
+| slot (LCH, RCH, Back: the data's names, kept) / one a slot / parts (an enhancement's) | emplacement / un par emplacement / modules |
+| install / installed / being installed / installing / take out | installer / installée / en cours d'installation / Installe {name} / retirer (Retire {name}) |
+| {duration} on its own build power | {duration} avec sa propre puissance de construction |
+| Stop calls it off, its metal back | Arrêter l'annule, métal remboursé |
+| Shift: queued | Shift : en file |
+| Builds {n} more kinds (an enhancement's effect) / {more} others | Options de construction +{n} (as Santé +{n}, Vue +{n}) / {more} de plus |
+| Mends {n} hit points a second | Régénère {n} de santé par seconde |
+| {n} of the selection upgrade | Unités de la sélection concernées : {n} |
+| refusals after "Ordre impossible :" it has no build power / cannot upgrade into that / needs another enhancement first | aucune puissance de construction / aucune mise à niveau vers ce type / nécessite d'abord une autre amélioration |

@@ -234,7 +234,13 @@ pub(crate) fn plant(legs: &[Leg], out: &mut [Mat4], base: f32, forward: Vec3, gr
         // Where the ankle goes, as near it as the leg reaches.
         let wanted = ankle + Vec3::Y * dh;
         let to = wanted - hip;
-        let d = to.length().clamp((a - b).abs() + FOLDED * (a + b), STRAIGHTEST * (a + b));
+        // (A thigh some eighty times its shin has no bend between folded and straight: left as
+        // its walk has it.)
+        let (folded, straight) = ((a - b).abs() + FOLDED * (a + b), STRAIGHTEST * (a + b));
+        if !(folded <= straight) {
+            continue;
+        }
+        let d = to.length().clamp(folded, straight);
         let Some(x) = to.try_normalize() else { continue };
         // The knee to the side it bends to now (a leg in line: forward).
         let line = (ankle - hip).normalize_or_zero();

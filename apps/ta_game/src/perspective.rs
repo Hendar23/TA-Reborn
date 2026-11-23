@@ -489,7 +489,7 @@ impl Perspective {
         let t = game.sim.unit_type(u);
         let cockpit = Cockpit::of(t);
         let heading = u.heading as f32 * std::f32::consts::TAU / 65536.0;
-        let health = (u.health / t.max_health.max(Fx::ONE)).to_f32();
+        let health = (u.health / u.max_health(t).max(Fx::ONE)).to_f32();
         let kills = u.kills;
         let type_id = u.type_id;
         let ours = u.owner == game.local_player || game.spectator;
@@ -809,7 +809,7 @@ impl Perspective {
         let named = |names: &[&str]| names.iter().find_map(|n| t.model.pieces.iter().position(|p| p.name.eq_ignore_ascii_case(n))).filter(|&i| i < self.pieces.len() && self.pieces[i] != Mat4::ZERO);
         // The piece the main gun aims from, and the piece under the body that carries it (a
         // barrel's turret).
-        let aim_piece = (0..ta_data::unit::MAX_WEAPONS).filter(|&s| t.weapons[s].is_some()).find_map(|s| game.sim.aim_from_piece(u, s)).filter(|&i| i < self.pieces.len());
+        let aim_piece = (0..ta_data::unit::MAX_WEAPONS).filter(|&s| u.weapon_slots(t)[s].is_some()).find_map(|s| game.sim.aim_from_piece(u, s)).filter(|&i| i < self.pieces.len());
         let gun_mount = aim_piece.map(|mut i| {
             while let Some(parent) = t.model.pieces.get(i).and_then(|p| p.parent) {
                 if t.model.pieces.get(parent).is_none_or(|p| p.parent.is_none()) {
@@ -931,7 +931,7 @@ impl Perspective {
     fn watch(&mut self, game: &mut Game, now: f64, dt: f32) {
         let Some(u) = game.sim.unit(self.unit) else { return };
         let t = game.sim.unit_type(u);
-        let health = (u.health / t.max_health.max(Fx::ONE)).to_f32().clamp(0.0, 1.0);
+        let health = (u.health / u.max_health(t).max(Fx::ONE)).to_f32().clamp(0.0, 1.0);
         let top = t.max_speed.to_f32().max(0.01);
         // Hits: the way they came from, and a jolt as hard as the blow.
         if health < self.hud.health - 0.001 {
@@ -985,7 +985,7 @@ impl Perspective {
             let r = u.weapons[s].reload;
             if r > self.hud.reloads[s] + 1 {
                 self.hud.last_shot[s] = now;
-                if let Some(w) = t.weapons[s] {
+                if let Some(w) = u.weapon_slots(t)[s] {
                     let wt = game.sim.weapon_types.get(w);
                     let heavy = (wt.default_damage.to_f32() / 400.0).clamp(0.2, 1.0);
                     self.hud.kick = (self.hud.kick + 0.004 + heavy * 0.012).min(0.03);
@@ -1019,9 +1019,10 @@ impl Perspective {
     pub fn weapons(&self, game: &Game) -> Vec<WeaponState> {
         let Some(u) = game.sim.unit(self.unit) else { return Vec::new() };
         let t = game.sim.unit_type(u);
-        let has_normal = t.weapons.iter().flatten().any(|&w| !game.sim.weapon_types.get(w).command_fire);
+        let slots = u.weapon_slots(t);
+        let has_normal = slots.iter().flatten().any(|&w| !game.sim.weapon_types.get(w).command_fire);
         let each = (0..ta_data::unit::MAX_WEAPONS).filter_map(|s| {
-            let w = game.sim.weapon_types.get(t.weapons[s]?);
+            let w = game.sim.weapon_types.get(slots[s]?);
             let full = w.reload_ticks.max(1) as f32;
             Some(WeaponState {
                 slot: s,

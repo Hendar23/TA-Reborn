@@ -850,6 +850,14 @@ details. What mod makers ask about most:
   targets are `wpri_`, `wsec_` or `wspe_badTargetCategory` for the first three, or
   `BadTargetCategory<n>` for any slot (`n` from 1), else the unit's `BadTargetCategory`. TA
   itself never fires a fourth weapon, and the mod check reads the numbered functions too.
+- **A weapon's only targets.** `OnlyTargetCategory<n>` (Spring's name; `n` the weapon's slot,
+  from 1) names the categories of the only units the weapon takes on: of its own accord, firing
+  back, and by order too. Told to attack any other unit, or a place on the ground, it does not
+  fire (an attack order none of the unit's weapons may take ends at once); nor does it take on a
+  unit it names where it cannot hit it (an aircraft landed, for a `toairweapon=1` weapon). TA's
+  `toairweapon=1` alone keeps a weapon's own choice of targets to aircraft, an attack order still
+  firing it at anything, as TA Reborn plays TA's own units. The Supreme Commander factions'
+  anti-air, which shoots aircraft alone in its game, says `OnlyTargetCategory<n>=VTOL` beside it.
 - **Missile defences by class.** A weapon's `interceptor` and a missile's `targetable` are read
   as sets of classes, bits of a number, as the Spring engine reads them: an interceptor shoots
   down a missile whose `targetable` shares a bit with its `interceptor`. TA's own all say 1 (its
@@ -865,6 +873,20 @@ details. What mod makers ask about most:
   them there. The no-nukes mutator leaves out
   what fires or stops the strategic class (bit 1), and the computer players build anti-nukes
   against strategic silos alone and count only the defences of a missile's classes in its way.
+- **Missile speeds.** A missile leaves at its `startvelocity` (none: at its `weaponvelocity`, or
+  launched upright with a `weaponacceleration`, at rest) and its `weaponacceleration` takes its
+  speed towards its `weaponvelocity`, stopping there: up to it, or (a negative acceleration) down
+  to it. One launched faster than its `weaponvelocity` is never pulled down to it, and with a
+  negative acceleration slows as it flies (no slower than half a pixel a tick, never turned
+  about): TA: Escalation's vertical missiles say `weaponvelocity=-10` and slow from their start
+  speed. Launched upright (`vlaunch=1`) at a negative `startvelocity`, a missile goes straight
+  down. Its `flighttime` is its life: give one that slows the time to get where it is sent.
+- **Where a shot leaves from.** The piece the weapon's `Query` function names, where it is once
+  the weapon's `Fire` function has run as far as its first wait (`sleep`, `wait-for-turn`,
+  `wait-for-move`): a fire function may move that piece into place before the shot leaves (as TA:
+  Escalation's C.O.R.E. brings its launch points back into its pods), or kick it back, and the shot
+  leaves from there. The query is asked first, so a fire function that switches barrels for the
+  next shot flashes the barrel the query named.
 
 #### Sides of a mod's own
 
@@ -877,6 +899,22 @@ interface (the places of its resource bars and numbers, its logo, its lettering)
 box from a side before it drawn in the same panels (its `intgaf`), else from the first side: a side
 may name its art and nothing more. The Supreme Commander factions add theirs so
 (`gamedata/sidedata_supcom.tdf`).
+
+#### Campaigns and missions
+
+A mod's `camps/` adds campaigns, and a mission OTA of its own in `maps/` takes the place of TA's of
+that name (TA: Escalation and Total Mayhem ship their copies of TA's). A schema's units are read
+from its `[units]` section, or, where it has none, from the section whose entries name units
+(`Unitname`) whatever it is called: TA: Escalation's patched engine read its missions' units from
+`[unitsE]`, as it read `unitse` for `units`. The units are those of the mod's data by name: TA's
+missions with a mod that redefines `ARMCOM` place the mod's.
+
+A mission the data with your mod cannot play is not started: the campaign page marks it
+**MISSION NOT PLAYABLE**, with why, when it gives the player no units (a map made for skirmishes
+listed as a mission), none the data has (a total conversion's units in place of TA's), no Commander
+where it is lost with one, or when every way to win it names a unit type the data lacks. `ta-tools
+--mod <folder> missions` lists the unit names a mod's data lacks mission by mission; the campaign
+smoke test plays every mission with a mod ([Testing in the game](#testing-in-the-game)).
 
 #### Models with surfaces of their own
 
@@ -892,27 +930,34 @@ Supreme Commander's units are painted so. The format is in [FORMATS.md](FORMATS.
   vertices; one that does not (or does not read) is left out, the model drawn as TA draws its
   faces (without Reborn's plates and seams, which would cut a dense mesh up along every
   triangle), and the log and the mod check say so.
-- The textures must be DDS; they are drawn at 512 × 512 with every mip level, BC3. Give them so
-  (DXT5, or DXT1 or DXT3, of 512 × 512 or larger with every level below it;
+- The textures must be DDS; they are drawn BC3 with every mip level, at 512 × 512, or at 1024 ×
+  1024 for a texture of 1024 or more a side with HD surfaces (larger ones at their 1024 level; at
+  their 512 level without HD surfaces, as small graphics cards want it). Give them so (DXT5, or
+  DXT1 for a colour map or DXT3, of 512 × 512 or 1024 × 1024 with every level below it;
   `ta_formats::dds::to_bc3_levels` makes them) and they are read as they are, in about a
   millisecond. Any other is decoded, resized and encoded again the first time it is drawn: tens of
-  milliseconds a texture, three to a material (a 1024 × 1024 uncompressed one, about forty). That
-  is done on workers of the game's own, the model drawn in its colours on average meanwhile, but a
-  battle of many such materials is painted seconds late; the mod check notes each such texture.
-  Mip levels past what a texture's size halves into, or past the end of its file, are not read
-  (the mod check says so).
+  milliseconds a texture, three to a material (a 1024 × 1024 uncompressed one, about forty); a
+  smaller one is enlarged to 512 keeping its edges sharp. That is done on workers of the game's
+  own, the model drawn in its colours on average meanwhile, but a battle of many such materials is
+  painted seconds late; the mod check notes each such texture. Mip levels past what a texture's
+  size halves into, or past the end of its file, are not read (the mod check says so).
 - A material's paint is read the first time a model of it is drawn, and kept for the battle (the
   next battle lets it go and reads its own); until then its faces are drawn in its colour on
-  average, as they are in ray-traced reflections. The paint takes about a megabyte a material on
-  the graphics card (four where the card reads no block-compressed textures), room made 32
-  materials at a time; when the card has no more, the materials left over stay in their colours on
-  average.
+  average, as they are in ray-traced reflections. Each texture takes a third of a megabyte on the
+  graphics card at 512, 1.3 at 1024 (four times that where the card reads no block-compressed
+  textures, and never 1024 there), room made about 32 MB at a time; when the card has no more room
+  for 1024s, those are drawn at 512, and when it has none at all, the materials left over stay in
+  their colours on average.
 - A surface may name a lighter model drawn in its place far off (`far`), of the same pieces in the
   same order (the mod check says when it has not): under 48 pixels across on the screen, though a
   model drawn as itself a moment before stays so down to 42 (no swapping back and forth as the
   camera shakes or a walker bobs).
 - Models with surfaces take no skins, liveries or Reborn's plates and bolts: their paint is their
-  own, in either art style.
+  own, in either art style. Enhanced Classic lights it as Supreme Commander does (the specular
+  map's green a broad, cool sheen); Reborn finishes it as it finishes TA's paint (greys without
+  their cast, painted highlights on a shoulder, matte paint as glossy as the green is round about,
+  the green's outlines worn bright, strong red polished metal; its colour map read sharp where it
+  is magnified): see docs/SUPCOM_UNITS.md, "Light".
 - In TA itself, such a model shows its palette colours.
 
 #### Models that move by clips of their own
@@ -922,8 +967,23 @@ pieces, played on the screen alone (the simulation, and so multiplayer, never se
 named `walk` is played as a ground unit of the model walks, in step with the ground it covers,
 instead of its script's walk (the pieces its script aims with keep the script's turns); clips
 named `death`, `death2`... play where one dies on the ground, its wreck lying in the pose the
-clip ends in. The Supreme Commander units walk and die so, their clips made from their game's own
-animations. The format is in [FORMATS.md](FORMATS.md#model-animations-objects3dnameanims-ta-reborns-own);
+clip ends in. Three more show a unit's work (meant for buildings, played for any unit):
+
+- `active`: played round and round while the unit works: finished, switched on (or with no
+  switch), its energy upkeep paid, and, a factory or a unit with `Builder=1`, building something.
+  An extractor's pump, a factory's arms at work. It slows to a stop where it is as the unit stops
+  working (switched off, out of energy, starting an upgrade), and goes on from there.
+- `open`: played once as the unit starts working, held open while it works, and played back as it
+  stops: a hatch opening once the building is up, or every time it is switched on.
+- `upgrade`: posed by how far an upgrade in place has come ([Units that upgrade in
+  place](#units-that-upgrade-in-place)), from its first frame to its last: the building turning
+  into the next, which then stands in its place.
+
+These are added to what the unit's script does with the same pieces, so a script can go on
+spinning a radar dish that an `active` clip raises and lowers; leave the pieces a weapon aims to
+its script. The Supreme Commander units walk and die so, and their buildings pump, open and
+upgrade so, their clips made from their game's own animations (their spinning parts are their
+scripts' `spin`s). The format is in [FORMATS.md](FORMATS.md#model-animations-objects3dnameanims-ta-reborns-own);
 `ta_formats::anims::Anims::to_bytes` writes it. A clip that does not fit its model (it moves pieces
 the model has not, or its keys are out of order or past its end) is left out, the others played;
 the log and the mod check name it. A death fades into its wreck's look in the moment its last pose
@@ -947,6 +1007,18 @@ A builder's menu, what its player is offered, comes from two places:
 Units the data does not define are left out. In the classic interface a page's buttons show
 `anims/<page>.gaf`'s art of their names, a download entry's `anims/<unit>_gadget.gaf`; without art,
 the unit's picture.
+
+The modern interface lays the same menu out on its own tabs (by what each building is for), and
+lists each tab, and a factory's units, by where they go: land first, then what goes on both, then
+the sea's, then aircraft, in the pages' order within each. Each picture stands on that ground
+(grass, grass and water, water, sky). Where a unit goes is read from its data as the game plays
+it: an aircraft (`CanFly`) the air; a hovercraft (`CanHover`) both; a unit that needs water
+(`MinWaterDepth` above 0, or `Floater` without a `MaxWaterDepth`) the sea; another unit both when
+its `MovementClass` (else its own `MaxWaterDepth`) lets it go 50 or more under the water, else land;
+a building the sea when it has a `MinWaterDepth` above 0, both when its `MaxWaterDepth` is 50 or
+more, else land. There is no key to order a menu otherwise. A unit with a picture of its own
+ground (a model with a surface and a `unitpics` picture, as the Supreme Commander factions' are) is
+shown as its picture is.
 
 **Build power makes a builder.** A unit with a `WorkerTime` above 0 has a menu and builds what it
 offers, whatever its `Builder` flag says: the mods' buildings that build their own upgrades have
@@ -991,7 +1063,8 @@ draws nothing.
 
 Scripts read (`get`) and set (`set`) unit values. TA Reborn answers TA's own (1 to 20),
 `VETERAN_LEVEL` (32: kills × 100), TA 3.1's questions about units by id, which the later mods'
-scripts ask (`exthead.h`), and `UNIT_CLOAKED` from a later patch:
+scripts ask (`exthead.h`), Spring's `TARGET_ID`, `UNIT_CLOAKED` from a later patch, and a value of
+its own, `IMMOBILE`:
 
 | Value | Name | Answer |
 | --- | --- | --- |
@@ -1002,13 +1075,21 @@ scripts ask (`exthead.h`), and `UNIT_CLOAKED` from a later patch:
 | 73 | `UNIT_BUILD_PERCENT_LEFT` | How much of that unit is left to build |
 | 74 | `UNIT_ALLIED` | Whether that unit is an ally of the unit asking |
 | 75 | `UNIT_IS_ON_THIS_COMP` | 1: every computer plays the whole battle |
+| 83 | `TARGET_ID` | Spring's: the target of the unit's weapon given (from 1): a unit's id, -1 none, -2 a place on the ground, -3 a missile it intercepts, -4 no such weapon |
 | 111 | `UNIT_CLOAKED` | Whether the unit is cloaked; setting it cloaks or uncloaks the unit |
+| 200 | `IMMOBILE` | TA Reborn's own: whether the script holds its unit still; setting it holds it or lets it go |
 
-Asked about an id no unit has, 72 to 75 read 0. Any other value reads 0, and setting it does
-nothing. The mod check names such values
-(`script.value`) where a script names them outright. The answers are in `crates/ta_sim/src/host.rs`;
-the check's list, `ANSWERED_VALUES` in `crates/ta_data/src/validation.rs`, is held to them by a
-test.
+Asked about an id no unit has, 72 to 75 read 0. A unit held still (`IMMOBILE` set to 1, as a
+weapon of the Supreme Commander factions does while it is unpacked: `WeaponUnpackLocksMotion`)
+neither moves nor turns, its orders waiting, and nothing pushes it (a unit on the ground or the
+water: aircraft fly on); told to go somewhere meanwhile, its script is told `StartMoving` at once
+(once), as though it were setting off, so that it can pack up and let it go, and `StopMoving` if
+the way is given up before then. From then until it is let go, its weapons fire nothing, though
+they aimed before (Supreme Commander's weapons fire nothing as they pack up). Let go, it sets off
+without being told again. Any other value reads 0, and setting it does nothing. The mod check
+names such values (`script.value`) where a script names them outright. The answers are in
+`crates/ta_sim/src/host.rs`; the check's list, `ANSWERED_VALUES` in
+`crates/ta_data/src/validation.rs`, is held to them by a test.
 
 #### Buildings that build their own upgrade modules
 
@@ -1026,9 +1107,259 @@ pad and takes on through its scripts. TA Reborn plays them as those engines did:
   the stance in `StartBuilding`.
 - A building that builds only its own upgrade is no factory to the player's idle factories or to
   the computer players.
+- A module with build power and `DefaultMissionType=RepairPatrol` (TA: Escalation's repair tower
+  upgrades) mends the damaged units of its side and its allies within its `BuildDistance` by
+  itself whenever it has no orders, the nearest first, standing loose or on its building. Any
+  builder with that mission does the same, standing where it is
+  ([below](#buildings-that-work-round-them-by-themselves)).
 
 [FORMATS.md](FORMATS.md) gives the details, mod by mod; `crates/ta_sim/tests/mod_upgrades.rs` plays
 every building of a mod that offers an upgrade ([testing](#from-the-source-tree)).
+
+#### Factories' ways out
+
+A factory's units drive out of its front, as TA's do: from its pad (the piece its script's
+`QueryBuildInfo` names) to a point just past the front of its footprint, through its walls, which
+are their way out until they are clear of it. A factory may name its own ways out instead, as
+Supreme Commander's factories roll their units off their build platforms to their sides: an
+`[EXITS]` section within its `[UNITINFO]`, a section for each way (any name), in order:
+
+```text
+[UNITINFO]
+{
+    UnitName=UEB0101;
+    ...
+    [EXITS]
+    {
+        [EXIT1] { X=128; Z=-4; Heading=90; Ramp=36 60; }
+        [EXIT2] { X=-128; Z=-4; Heading=-90; Ramp=36 60; }
+    }
+}
+```
+
+- **`X`, `Z`**: where the way leads, in pixels from the factory's middle as it stands facing south
+  (x east, z south), turned with the factory. Lead it past the footprint: the factory lets its unit
+  go once it is out of the footprint.
+- **`Heading`**: the way the unit faces while it is built, in degrees as a unit's heading is
+  counted (0 the factory's front, its +z; 90 towards its +x), turned with the factory and with the
+  pad as TA's plants turn theirs.
+- **`Ramp`**: two numbers, pixels along the way from the pad: the unit keeps the pad's height (its
+  build platform's) as far as the first, and comes down evenly to the ground at the second, tipped
+  down the slope as it goes. Without it the unit is on the ground as soon as it is done.
+
+A unit may name the way it faces while such a factory builds it, whichever way out it takes:
+`BuildHeading` in its own `[UNITINFO]`, in degrees as a way's `Heading` (from the factory's front,
+turned with the pad). The Supreme Commander factions' long transports and gunships say so
+(`ForcedBuildSpin`), built along their air factories' platforms rather than across them.
+
+A unit is built facing the way out nearest where it goes next (the first place of the factory's
+route, else the factory's front), of those whose end it may stand on (not built over), the first of
+equals; done, it rolls off along that way to its end, then follows the route. An aircraft lifts
+off its pad, as before (built facing its way), and a unit that never moves (a module) takes no
+way: it is made as the pad faces. Such a factory's units stand on its pad from the moment they are
+begun. With ways out a factory's `YardMap` may be solid (`o` throughout): its units leave by their
+way through its walls, and no other unit walks over its platform. The Supreme Commander factions'
+factories name theirs so, from their roll-off points and their models' platforms.
+
+#### Buildings that work round them by themselves
+
+A builder that cannot move (a building with `WorkerTime`, `Builder=1` and a `BuildDistance`)
+waits for orders, as TA's do. Its `DefaultMissionType` sets it to work round it by itself whenever
+it has no orders, standing where it is, within its `BuildDistance`:
+
+| `DefaultMissionType` | What it does |
+| --- | --- |
+| `RepairPatrol` | Mends the damaged units of its side and its allies, the nearest first (TA: Escalation's repair towers) |
+| `AssistPatrol` | Helps build what its player is putting up (a frame, a factory's unit, a building upgrading in place), else mends the damaged units of its side and its allies, else reclaims wreckage (wrecks and their heaps, not trees or rocks), the nearest of each first: as a builder on patrol does on its way, and as Supreme Commander's engineering stations, the Kennel and the Hive, do |
+
+What it finds itself is its only order, and gives way to its player's: any order, queued or not,
+takes its place, and once that is done it goes back to its own work. Something that leaves its reach
+while it works on it is let go, without a word, and taken up again once it is back within it;
+waiting for work it is no idle builder (the
+idle builders' button and the coach pass it over). It needs build power: the mod check tells an
+`AssistPatrol` without a `WorkerTime` (`unit.assist_patrol`). Give it `canguard=1` to let players
+tell it to help a unit of theirs. The Supreme Commander factions' engineering stations work so
+([SUPCOM_UNITS.md](SUPCOM_UNITS.md#gameplay)). None of TA's own units has either mission.
+
+#### Adjacency
+
+A building may give the finished buildings of its player that touch it bonuses, as Supreme
+Commander's structures do (power generators cutting what the factories beside them pay to build,
+storage raising what the extractors beside it make): an `[ADJACENCY]` section within its
+`[UNITINFO]` holds one section for each bonus (named as you like), and `AdjacencySize` gives the
+building's size class for the bonuses it takes.
+
+```
+[UNITINFO]
+	{
+	UnitName=MYPLANT;
+	AdjacencySize=4;
+	...
+	[ADJACENCY]
+		{
+		[CheaperBuilds]
+			{
+			Affects=BuildEnergy;
+			Add=-0.05;
+			Size=16;
+			}
+		[QuickerGuns]
+			{
+			Affects=ReloadTime;
+			Add=-0.1;
+			Size=4;
+			Category=ARTILLERY;
+			}
+		}
+	}
+```
+
+- **Touching:** two buildings touch where their footprints meet along an edge, a cell of it at
+  least (corners alone do not, nor buildings a cell apart). Both must be finished and the same
+  player's: an ally's building gives nothing. Units that take no ground (the mods' modules) neither
+  give nor take.
+- **`Affects`**: what of the building beside it the bonus changes. The building must have it for
+  the bonus to reach it (and for the link between them to show):
+
+  | `Affects` | What it changes | Who has it |
+  | --- | --- | --- |
+  | `BuildEnergy`, `BuildMetal` | The energy and metal its building costs it a second: construction, its upgrades in place, its stockpiled missiles. Its builds take as long, for less (or more) | Builders and silos (build power, or a stockpiling weapon) |
+  | `EnergyUse` | Its upkeep while it is on | A positive `EnergyUse` |
+  | `EnergyPerShot` | The energy its weapons' shots cost (not stockpiled missiles') | A weapon with `energypershot` |
+  | `ReloadTime` | Its weapons' reload: below one, it fires faster | A weapon |
+  | `EnergyMake` | The energy it makes (`EnergyMake`, the wind's and the tide's share, a solar collector's) | Something that makes energy |
+  | `MetalMake` | The metal it makes (`MetalMake`, what it extracts, what it makes of energy) | Something that makes metal |
+
+- **`Add`**: the share it adds to that figure: -0.0625 cuts it by a sixteenth, 0.125 raises it by an
+  eighth. The shares of every neighbour giving a figure are summed, and the figure multiplied by
+  one and the sum, never below none (four generators of -0.25 beside a factory: it builds for
+  nothing). A bonus adding nothing does nothing (the mod check says so, `unit.adjacency`, as it
+  does of an `Affects` TA Reborn does not play).
+- **`Size`**: the size class of the buildings that take it (their `AdjacencySize`); none, any.
+- **`Category`**: tokens a building that takes it must have in its `Category`, every one; none,
+  any. A token no unit's `Category` names reaches nothing.
+- **`AdjacencySize`**: the building's size class, which `Size` names, and the most neighbours it
+  takes bonuses from: as many as touch it where it gives none; else that many, those touching it
+  along the most of its edge first. (Supreme Commander names its structures' size classes by how
+  many of the smallest fit round them, `SIZE4` to `SIZE20`: its wider footprints keep that many
+  there, TA's footprints pack closer.)
+
+A bonus is paid where the economy pays, in every player's game alike (in multiplayer and replays
+too): a builder's draw shows it, the figures over a building (the hover card, TA's unit bar) say
+what it makes and uses with its bonuses, the hover card, the selection's details and the information
+page (F1) say what the buildings beside it give it and how many it helps, and a building being
+placed shows the links it would make and what it would take. A frame or an upgrade given up, and a
+unit its player takes apart, gives back what was paid for it, not its price. The battlefield shows a
+link across the seam between two buildings that help each other, a chevron for each kind of bonus
+pointing at the one it helps. The computer players put a generator beside a factory it helps and
+storage beside an extractor it raises, where that pays. The Supreme Commander factions' structures
+carry Forged Alliance's own adjacency ([SUPCOM_UNITS.md](SUPCOM_UNITS.md#adjacency)). TA's own units
+have none.
+
+#### Units that upgrade in place
+
+A unit may become another where it stands, as Supreme Commander's factories, extractors and radars
+do: `UpgradesTo=<UnitName>` in its `[UNITINFO]` names the unit it becomes. It is offered UPGRADE
+(in the modern interface's orders, with its own key, Alt+U, and a factory's build menu offers the
+unit it becomes first among its pictures, as Forged Alliance's do; on the classic interface's
+orders page, among the buttons TA has no gadget for), and builds that unit on itself:
+
+- **With its own build power** (`WorkerTime`): give a unit that builds nothing else one for its
+  upgrades. The upgrade takes the new unit's `BuildTime` at that power, and builders helping it
+  (guarding it, or told to repair it) lend theirs, their side paying for their share.
+- **At the new unit's price**, paid as construction pays: a share of its metal and energy for each
+  share of the work, slowed by the economy as construction is (short of metal, it waits).
+- **While it upgrades** a factory makes nothing: the unit on its pad and its queue wait. Any other
+  unit works on: an extractor extracts, a power plant makes power, a radar watches. A mobile unit
+  stands still.
+- **Called off** by Stop, or by any order not queued after it, the metal paid for the upgrade
+  comes back (as a frame given up gives its metal back); its energy is spent. A unit captured
+  while it upgrades loses the upgrade.
+- **Room for it:** a unit whose next form takes more ground than it stands on (a larger footprint)
+  upgrades only while no other building stands on that ground: it is refused ("no room to upgrade
+  into that"), or called off, its metal back, if one is put there meanwhile.
+- **Done**, the new unit stands where the old one stood, facing as it faced, its owner's and
+  finished, with the old one's share of its health; it keeps the orders queued after the upgrade
+  (so `UpgradesTo` chains may be queued one step after another, with Shift), a factory's queue,
+  route, repeat and the unit on its pad, its fire and move orders and its experience; the rest is
+  a fresh unit's (its script starts anew). The old unit is gone without a wreck, a blast or a
+  loss; the selection and control groups move to the new one.
+
+The computer players upgrade factories into a higher tier, and extractors into better ones (where
+`ExtractsMetal` grows), when their economy allows; they climb the tiers so rather than build the
+next tier's factory wherever a factory of theirs upgrades into it. A unit of a type the battle does
+not allow (a mission's, the mutators') is no upgrade. `ta-tools data --unit <name>` shows a unit's
+`upgrades_to`.
+
+#### Enhancements
+
+A unit may install parts on itself, as Supreme Commander's commanders do: an `[ENHANCEMENTS]`
+section within its `[UNITINFO]` holds one section for each, named by its id. The order of the
+sections is the order the menus show them in.
+
+```
+[UNITINFO]
+	{
+	UnitName=UEL0001;
+	...
+	[ENHANCEMENTS]
+		{
+		[AdvancedEngineering]
+			{
+			Name=Tech 2 Engineering Suite;
+			Description=Builds tech 2 structures, builds faster;
+			Slot=LCH;
+			BuildCostMetal=720;
+			BuildCostEnergy=18000;
+			BuildTime=9000;
+			WorkerTime=200;
+			MaxDamage=3000;
+			HealRate=20;
+			BuildOptions=UEB0201 UEB0202 UEB1202;
+			Picture=uel0001_advancedengineering;
+			}
+		[T3Engineering]
+			{
+			Prerequisite=AdvancedEngineering;
+			Slot=LCH;
+			...
+			}
+		}
+	}
+```
+
+- **`Slot`**: one enhancement a slot (any name; the menus show it). One installed in a taken slot
+  takes the place of the one there.
+- **`Prerequisite`**: the id of one that must be installed first. Installed, this one takes its
+  slot (give them the same slot, as Supreme Commander's suites do, so that its numbers stand in
+  place of the other's).
+- **`BuildCostMetal`, `BuildCostEnergy`, `BuildTime`**: its price and work, as a unit's. The unit
+  stands and builds it on itself with its own build power, as an upgrade in place is built:
+  paid as construction pays, slowed by the economy, helped by builders guarding or repairing it
+  (a factory's guards turn from the unit on its pad to it); called off by Stop or another order,
+  its metal comes back. A factory with enhancements makes nothing while it installs one.
+- **What it changes** while installed, added to the unit's own: `MaxDamage` (its health rises by as
+  much), `HealRate` (hit points a second it mends), `WorkerTime` (build power), `SightDistance`,
+  `RadarDistance`, `SonarDistance`, `BuildOptions` (units added to its menu, and to what the
+  computer players may build with it), `CloakCost`, `CloakCostMoving` and `MinCloakDistance` (a
+  cloak it may switch on), `Stealth=1` (radar does not show it).
+- **`Weapon1`** to **`Weapon8`**: the weapon a slot fires while it is installed, in place of the
+  unit's own there; give the unit's file an empty slot (no `WeaponN`) for a weapon an
+  enhancement adds. A launcher that stockpiles its missiles, swapped for another or taken out,
+  loses the missiles built and the one under way.
+- **`Name`**, **`Description`** and **`Picture`** (`unitpics/<Picture>.pcx`, shown as a unit's) for
+  the menus.
+
+The modern interface shows them in the build menu's ENHANCE tab (a click installs one, Shift
+queues it, one whose prerequisite is missing comes after it; a right-click takes an installed one
+out, at once and for nothing, its health falling to its most); the classic interface, behind an
+ENHANCE button among the buttons TA has no gadget for. The information page (F1) lists them, those
+installed marked. A unit's script with a function `SetEnhancement(index, on)` is called with an
+enhancement's index (in the file's order) as it is installed (`on` 1) or taken out (`on` 0), to show
+or hide its parts. The computer players install on their Commander the engineering suites (those
+adding units to its menu) and one improving a weapon (reaching farther, hitting harder or firing
+faster, or arming an empty slot), near their base and when they can afford it; more health when
+rich.
 
 #### What TA Reborn does not run
 
@@ -1119,10 +1450,12 @@ The game's options for trying a mod:
 | `--classic-ui` | The classic interface whatever the settings say (side panels made for 768-pixel screens, shared places) |
 | `--game-dir <folder>` | The original game's folder, when it is not found |
 | `--load <file.tasav>`, `--replay <file.tarep>`, with `--anyway` | Opens a saved game or replay; `--anyway` opens it as it is, though made with other mods |
+| `--mission "<campaign>:<n>"` | Starts a campaign's mission at once (`"arm campaign:0"`, the first; a campaign by its file's name or its title) |
 | `--screenshot <file.png> --frames <n>` | Saves a picture after n frames and closes |
 
 The game's log (`logs\game.log` in the settings folder) names the mods mounted, and the original
-game's archives they replace.
+game's archives they replace; for a mission, how many units it placed (and the names it left out,
+unknown), and once it is decided, the goals that decided it.
 
 #### From the source tree
 
@@ -1134,6 +1467,7 @@ names the mod's folder (an absolute path, with its `mod.toml`):
 | `cargo test --release -p ta_ai --test skirmish -- --nocapture` | Computer players fight a battle with the mod (`TA_TEST_SIDES=TAL,CORE` its sides, `TA_TEST_MAP`, `TA_TEST_MINUTES`) |
 | `cargo test --release -p ta_sim --test animation_scan -- --ignored --nocapture` | Every unit's animations, checked for pieces sunk into the ground, flown off or crossed over, and pieces standing on nothing (`TA_UNITS=a,b` for some) |
 | `cargo test --release -p ta_sim --test mod_upgrades -- --ignored --nocapture` | Each building and factory builds the module or upgrade its menu offers, and takes it on |
+| `cargo test --release -p ta_sim --test mission every_mission -- --ignored --nocapture` | Every campaign mission with the mod, 30 seconds each with the computer players: those decided early, and the goals that decided them; `every_campaign_mission_can_be_played` (not ignored) lists those the mod's data cannot play, and why |
 | `TA_LAYOUT_DIR=<dir> cargo test --release -p ta_game --bin ta-reborn scenario::placement_tests::scenario_layout_maps -- --ignored --nocapture` | Every scenario's layout pictured from above, with its faults listed |
 
 ### Publishing a mod
@@ -1166,6 +1500,8 @@ names the mod's folder (an absolute path, with its `mod.toml`):
 | A mod's presentation: its pictures, preview and links, and their check | `crates/ta_vfs/src/mods.rs` (`Media`), `apps/ta_launcher/src/mod_media.rs`, `crates/ta_data/src/presentation.rs` |
 | A mod's interface theme: the palette, applying it in battle (the HUD alone: `hud`, `reborn`), its check | `crates/ta_vfs/src/mods.rs` (`Theme`), `crates/ta_ui/src/theme.rs` (`Palette`, `hud`), `apps/ta_game/src/mod_theme.rs`, `apps/ta_game/src/hud_skin.rs`, `crates/ta_data/src/presentation.rs` |
 | Script values | `crates/ta_sim/src/host.rs` |
+| Adjacency, buildings working round them | `crates/ta_data/src/adjacency.rs`, `crates/ta_sim/src/sim/adjacency.rs`, `crates/ta_sim/src/sim/repair_round.rs`, `apps/ta_game/src/hud/adjacency.rs` |
+| Models' surfaces and clips (walks, deaths, buildings at work) | `crates/ta_formats/src/surface.rs`, `crates/ta_formats/src/anims.rs`, `apps/ta_game/src/scene/walk.rs`, `apps/ta_game/src/scene/work.rs`, `apps/ta_game/src/effects_remains.rs` |
 | The classic build pages, 768-pixel layouts, shared places | `apps/ta_game/src/hud_classic_art.rs` |
 | The catalogue, installs, the MODS page | `apps/ta_launcher/src/catalogue.rs`, `getmods.rs`, `modlist.rs`, `mod_library.rs`, `pages/mods.rs`, `pages/mod_order.rs`, `pages/mod_report.rs` |
 | The mods of saved games and replays | `crates/ta_config/src/records/mods.rs` |

@@ -57,7 +57,9 @@ impl Hud {
                 list = ta_ui::scroll::show(ui, area, ta_ui::scroll::Behind::Plate, |ui| {
                     ui.set_width(ui.available_width());
                     head(ui, game, ty, unit, pic);
-                    facts(ui, game, ty);
+                    facts(ui, game, ty, unit);
+                    adjacency(ui, game, ty, unit);
+                    enhancements(ui, game, ty, unit);
                 })
                 .inner_rect;
             });
@@ -105,11 +107,20 @@ pub(crate) fn head(ui: &mut egui::Ui, game: &Game, ty: &UnitType, unit: Option<&
     lines.push(painter.layout(moves(ty), body(12.5), pal().text, column));
     // A unit in play: its health as a bar, how far it is built and its rank.
     let bar = unit.map(|u| {
-        let max = ty.max_health.to_f32();
+        let max = u.max_health(ty).to_f32();
         let health = u.health.to_f32().max(0.0);
         let mut state = Vec::new();
         if !u.is_complete() {
             state.push(tf("{pct}% built", &[("pct", &format!("{:.0}", (u.build_progress.to_f32() * 100.0).floor()))]));
+        }
+        match game.sim.self_work_progress(u).filter(|_| game.may_inspect(u.owner)) {
+            Some((ta_sim::SelfJob::Upgrade(to), done)) => {
+                state.push(tf("Upgrading into {name}: {pct}%", &[("name", &crate::orders::upgrade_name(&game.sim, u.type_id, to)), ("pct", &format!("{:.0}", (done.to_f32() * 100.0).floor()))]));
+            }
+            Some((ta_sim::SelfJob::Enhance(index), done)) => {
+                state.push(tf("Installing {name}: {pct}%", &[("name", &super::enhance::name(ty, index)), ("pct", &format!("{:.0}", (done.to_f32() * 100.0).floor()))]));
+            }
+            None => {}
         }
         if u.kills > 0 {
             let rank = [n("Recruit"), n("Veteran"), n("Hardened"), n("Elite")][usize::from(u.rank().min(3))];
@@ -118,7 +129,7 @@ pub(crate) fn head(ui: &mut egui::Ui, game: &Game, ty: &UnitType, unit: Option<&
         let state = (!state.is_empty()).then(|| painter.layout(state.join("  ·  "), body(12.0), pal().text, column));
         ((health / max.max(1.0)).clamp(0.0, 1.0), tf("Health {now} / {max}", &[("now", &figure(health)), ("max", &figure(max))]), state)
     });
-    let figures = key_figures(game, ty, unit.is_none());
+    let figures = key_figures(game, ty, unit, unit.is_none());
     let beside = column >= BESIDE_MIN;
     let rows = figure_rows(&painter, &figures, if beside { column } else { width });
 
@@ -209,8 +220,9 @@ pub(crate) struct KeyFigure {
 }
 
 /// What it costs and how long it takes to build, its health (`health`: a kind of unit's; one
-/// in play shows its own as a bar) and how far it sees, by eye, radar and sonar.
-fn key_figures(game: &Game, ty: &UnitType, health: bool) -> Vec<KeyFigure> {
+/// in play shows its own as a bar) and how far it sees, by eye, radar and sonar (`unit`: one
+/// in play, as its enhancements have it).
+fn key_figures(game: &Game, ty: &UnitType, unit: Option<&ta_sim::Unit>, health: bool) -> Vec<KeyFigure> {
     let d = &ty.def;
     let plain = |caption: &'static str, value: String| KeyFigure { caption, value, color: pal().text_bright, hover: None };
     let mut out = vec![
@@ -225,12 +237,16 @@ fn key_figures(game: &Game, ty: &UnitType, health: bool) -> Vec<KeyFigure> {
     if health {
         out.push(plain(n("HEALTH"), figure(ty.max_health.to_f32())));
     }
-    out.push(plain(n("SIGHT"), figure(d.sight_distance as f32)));
-    if d.radar_distance > 0.0 {
-        out.push(plain(n("RADAR"), figure(d.radar_distance as f32)));
+    let (sight, radar, sonar) = match unit {
+        Some(u) => (u.sight(ty).to_f32(), u.radar(ty).to_f32(), u.sonar(ty).to_f32()),
+        None => (d.sight_distance as f32, d.radar_distance as f32, d.sonar_distance as f32),
+    };
+    out.push(plain(n("SIGHT"), figure(sight)));
+    if radar > 0.0 {
+        out.push(plain(n("RADAR"), figure(radar)));
     }
-    if d.sonar_distance > 0.0 {
-        out.push(plain(n("SONAR"), figure(d.sonar_distance as f32)));
+    if sonar > 0.0 {
+        out.push(plain(n("SONAR"), figure(sonar)));
     }
     out
 }
@@ -238,11 +254,11 @@ fn key_figures(game: &Game, ty: &UnitType, health: bool) -> Vec<KeyFigure> {
 /// The command deck's figures for a kind of unit at a glance: what it fights with (the damage
 /// a second of its ordinary weapons together, their longest range), how fast it goes, how hard
 /// it builds; then what it costs and sees, as the head of the information page has them.
-pub(crate) fn summary_figures(game: &Game, ty: &UnitType) -> Vec<KeyFigure> {
+pub(crate) fn summary_figures(game: &Game, ty: &UnitType, unit: Option<&ta_sim::Unit>) -> Vec<KeyFigure> {
     let plain = |caption: &'static str, value: String| KeyFigure { caption, value, color: pal().text_bright, hover: None };
     let mut out = Vec::new();
     let (mut dps, mut range) = (0.0f32, 0.0f32);
-    for w in ty.weapons.iter().flatten().map(|&w| game.sim.weapon_types.get(w)) {
+    for w in unit.map_or(&ty.weapons, |u| u.weapon_slots(ty)).iter().flatten().map(|&w| game.sim.weapon_types.get(w)) {
         if w.command_fire || w.def.stockpile || w.paralyzer {
             continue;
         }
@@ -257,9 +273,10 @@ pub(crate) fn summary_figures(game: &Game, ty: &UnitType) -> Vec<KeyFigure> {
         out.push(KeyFigure { hover: Some(moves(ty)), ..plain(n("SPEED"), format!("{:.1}", ty.def.max_velocity)) });
     }
     if ty.worker_rate > Fx::ZERO && (ty.is_builder || ty.is_factory) {
-        out.push(plain(n("BUILD POWER"), figure(ty.def.worker_time as f32)));
+        let power = unit.map_or(ty.def.worker_time, |u| u.work_rate(ty) as f64 / 65536.0);
+        out.push(plain(n("BUILD POWER"), figure(power as f32)));
     }
-    out.extend(key_figures(game, ty, false));
+    out.extend(key_figures(game, ty, unit, false));
     out
 }
 
@@ -329,14 +346,15 @@ pub(crate) fn paint_figures(ui: &egui::Ui, top_left: egui::Pos2, width: f32, fig
     }
 }
 
-/// Its weapons, what it makes and what else it can do.
-pub(crate) fn facts(ui: &mut egui::Ui, game: &Game, ty: &UnitType) {
+/// Its weapons, what it makes and what else it can do (`unit`: one in play, as its
+/// enhancements have it).
+pub(crate) fn facts(ui: &mut egui::Ui, game: &Game, ty: &UnitType, unit: Option<&ta_sim::Unit>) {
     let whole = |v: f64| format!("{v:.0}");
     let d = &ty.def;
 
     // (Weapons that read the same, in several of its slots, once, with how many it carries.)
     let mut weapons: Vec<(WeaponBlock, usize)> = Vec::new();
-    for &id in ty.weapons.iter().flatten() {
+    for &id in unit.map_or(&ty.weapons, |u| u.weapon_slots(ty)).iter().flatten() {
         let block = WeaponBlock::of(game.sim.weapon_types.get(id));
         match weapons.iter_mut().find(|(seen, _)| *seen == block) {
             Some((_, count)) => *count += 1,
@@ -359,8 +377,9 @@ pub(crate) fn facts(ui: &mut egui::Ui, game: &Game, ty: &UnitType) {
     }
 
     let mut can = Vec::new();
+    let power = unit.map_or(d.worker_time, |u| u.work_rate(ty) as f64 / 65536.0);
     if ty.worker_rate > Fx::ZERO && (ty.is_builder || ty.is_factory) {
-        let what = if ty.is_factory { tf("Builds units: build power {n}", &[("n", &whole(d.worker_time))]) } else { tf("Builds: build power {n}, reach {range}", &[("n", &whole(d.worker_time)), ("range", &whole(d.build_distance))]) };
+        let what = if ty.is_factory { tf("Builds units: build power {n}", &[("n", &whole(power))]) } else { tf("Builds: build power {n}, reach {range}", &[("n", &whole(power)), ("range", &whole(d.build_distance))]) };
         can.push(what);
     }
     if d.can_reclaim && ty.is_builder && !ty.is_factory {
@@ -377,11 +396,15 @@ pub(crate) fn facts(ui: &mut egui::Ui, game: &Game, ty: &UnitType) {
     } else if ty.transport_capacity > 1 {
         can.push(tf("Carries {n} units", &[("n", &ty.transport_capacity)]));
     }
-    if d.cloak_cost > 0.0 {
-        can.push(if d.cloak_cost_moving > d.cloak_cost {
-            tf("Cloaks for {rate} energy a second, {moving} on the move", &[("rate", &whole(d.cloak_cost)), ("moving", &whole(d.cloak_cost_moving))])
+    let cloak = match unit {
+        Some(u) => u.cloak_costs(ty).map(|(still, moving, _)| (still.to_f64(), moving.to_f64())),
+        None => (d.cloak_cost > 0.0).then_some((d.cloak_cost, d.cloak_cost_moving)),
+    };
+    if let Some((still, moving)) = cloak {
+        can.push(if moving > still {
+            tf("Cloaks for {rate} energy a second, {moving} on the move", &[("rate", &whole(still)), ("moving", &whole(moving))])
         } else {
-            tf("Cloaks for {rate} energy a second", &[("rate", &whole(d.cloak_cost))])
+            tf("Cloaks for {rate} energy a second", &[("rate", &whole(still))])
         });
     }
     if d.radar_jam > 0.0 {
@@ -390,11 +413,18 @@ pub(crate) fn facts(ui: &mut egui::Ui, game: &Game, ty: &UnitType) {
     if d.sonar_jam > 0.0 {
         can.push(tf("Jams sonar {range}", &[("range", &whole(d.sonar_jam))]));
     }
-    if d.stealth {
+    if unit.map_or(d.stealth, |u| u.stealthy(ty)) {
         can.push(t("Stealthy: not on radar").to_string());
     }
     if d.on_offable {
         can.push(t("Switches on and off").to_string());
+    }
+    if let Some(to) = ty.upgrades_to {
+        let kind = game.sim.types.get(to);
+        can.push(tf(
+            "Upgrades in place into {name}: metal {metal}, energy {energy}",
+            &[("name", &crate::orders::upgrade_name(&game.sim, ty.id, to)), ("metal", &whole(kind.cost_metal.to_f64())), ("energy", &whole(kind.cost_energy.to_f64()))],
+        ));
     }
     if d.is_airbase {
         can.push(t("Repairs aircraft that land on it").to_string());
@@ -410,6 +440,60 @@ pub(crate) fn facts(ui: &mut egui::Ui, game: &Game, ty: &UnitType) {
         for c in can {
             line(ui, &c);
         }
+    }
+}
+
+/// Its adjacency (Supreme Commander's: `[ADJACENCY]`, `AdjacencySize`): its size class, what it
+/// gives the buildings beside it, and, one in play of ours, what those give it now and how many it
+/// helps.
+pub(crate) fn adjacency(ui: &mut egui::Ui, game: &Game, ty: &UnitType, unit: Option<&ta_sim::Unit>) {
+    // Its size class, then what the buildings beside it give it and how many it helps, then
+    // what it gives.
+    let mut lines = super::adjacency::type_lines(ty);
+    if let Some(u) = unit.filter(|u| game.may_inspect(u.owner) && u.is_complete()) {
+        let at = usize::from(ty.adjacency_size > 0);
+        lines.splice(at..at, super::adjacency::card_lines(game, u));
+    }
+    if lines.is_empty() {
+        return;
+    }
+    panel::section(ui, n("ADJACENCY"));
+    for l in lines {
+        line(ui, &l);
+    }
+}
+
+/// Its enhancements (`[ENHANCEMENTS]`): each with its slot, price, what it needs first and
+/// what it does; those `unit` has installed marked, and the one it is installing.
+pub(crate) fn enhancements(ui: &mut egui::Ui, game: &Game, ty: &UnitType, unit: Option<&ta_sim::Unit>) {
+    if ty.enhancements.is_empty() {
+        return;
+    }
+    panel::section(ui, n("ENHANCEMENTS"));
+    let whole = |v: Fx| format!("{:.0}", v.to_f32());
+    let installing = unit.and_then(|u| game.sim.self_work_progress(u)).and_then(|(job, done)| match job {
+        ta_sim::SelfJob::Enhance(i) => Some((i, done)),
+        ta_sim::SelfJob::Upgrade(_) => None,
+    });
+    for (k, e) in ty.enhancements.iter().enumerate() {
+        let index = k as u16;
+        let name = super::enhance::name(ty, index);
+        let on = unit.is_some_and(|u| u.enhancements.contains(&index));
+        let title = match installing {
+            _ if on => tf("{name} · installed", &[("name", &name)]),
+            Some((i, done)) if i == index => tf("{name} · installing, {pct}%", &[("name", &name), ("pct", &format!("{:.0}", (done.to_f32() * 100.0).floor()))]),
+            _ => name,
+        };
+        ui.label(RichText::new(title).font(strong(13.0)).color(if on { pal().good } else { pal().text_bright }));
+        let mut costs = tf("Slot {slot} · metal {metal} · energy {energy}", &[("slot", &super::enhance::slot_name(ty, index)), ("metal", &whole(e.cost_metal)), ("energy", &whole(e.cost_energy))]);
+        if let Some(p) = e.prerequisite {
+            costs = tf("{costs} · needs {name}", &[("costs", &costs), ("name", &super::enhance::name(ty, p))]);
+        }
+        line(ui, &costs);
+        for effect in super::enhance::effects(game, ty, index) {
+            line(ui, &effect);
+        }
+        ui.add_space(4.0);
     }
 }
 

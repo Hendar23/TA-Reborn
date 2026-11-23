@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use ta_data::{GameData, MapInfo};
+use ta_data::{AdjacencyAffect, GameData, MapInfo};
 use ta_formats::tnt::TntMap;
 
 use crate::cob::{CobHost, CobInstance, ThreadTag, TICKS_PER_SECOND};
@@ -13,11 +13,16 @@ use crate::fixed::{FULL_TURN, Fx, FxVec3, QUARTER_TURN, atan2, cos, heading_of, 
 use crate::host::{HostRequest, OtherUnit, UnitHost, script_angle};
 use crate::path::{FlowField, PathQuery, Pathfinder};
 use crate::rng::Rng;
-use crate::unit::{BuildJob, Drift, Economy, MAX_PLAYERS, Order, Player, PlayerSetup, Unit, UnitId, piece_world_heading, piece_world_position, player_bit};
+use crate::unit::{BuildJob, Drift, Economy, MAX_PLAYERS, Order, Player, PlayerSetup, RollOff, Unit, UnitId, Way, piece_world_heading, piece_world_position, player_bit};
 use crate::vision::{self, Seen, Sensor, Vision};
 use crate::world::{CELL, MoveSpec, Occupant, Region, World};
 
+pub mod adjacency;
 mod air;
+mod blockers;
+pub mod enhance;
+mod repair_round;
+mod upgrade;
 
 /// Base resource storage every player has regardless of buildings (TA default).
 const BASE_STORAGE: i64 = 1000;
@@ -335,7 +340,11 @@ struct CachedPath {
     path: Vec<(i32, i32)>,
     goal_pos: FxVec3,
     tick: u64,
+    /// The world's `blocking_version` it was planned at; for one stopping short of its goal
+    /// (`short`), its `occupancy_version`: whatever opens up on the ground (wreckage cleared out
+    /// of a pass) may let it through, and it is planned again.
     occupancy_version: u64,
+    short: bool,
 }
 
 /// Cached paths expire after this many ticks.
@@ -852,8 +861,10 @@ impl Sim {
             return;
         }
         let moving = u.speed > Fx::ZERO;
-        let per_second = if moving && t.def.cloak_cost_moving > 0.0 { t.def.cloak_cost_moving } else { t.def.cloak_cost };
-        let cost = Fx::from_f64(per_second) / TICKS_PER_SECOND;
+        // (Its own cloak, or its enhancements'.)
+        let (still, on_the_move, within) = u.cloak_costs(t).unwrap_or((Fx::ZERO, Fx::ZERO, Fx::ZERO));
+        let per_second = if moving && on_the_move > Fx::ZERO { on_the_move } else { still };
+        let cost = per_second / TICKS_PER_SECOND;
         let (owner, pos) = (u.owner, u.pos);
         let e = &mut self.players[owner as usize].economy;
         let paid = e.energy >= cost;
@@ -862,7 +873,7 @@ impl Sim {
             e.energy -= cost;
             e.tick_energy_out += cost;
         }
-        let reach = Fx::from_f64(t.def.min_cloak_distance.max(8.0));
+        let reach = within.max(Fx::from_int(8));
         let mut near = std::mem::take(&mut self.scratch);
         self.grid.query(pos, reach + Fx::from_int(48), &mut near);
         let mut mask = 0u64;
@@ -908,10 +919,11 @@ impl Sim {
             return Seen::Visible;
         }
         let t = self.types.get(u.type_id);
-        if t.def.stealth && !sonar {
+        let stealth = u.stealthy(t);
+        if stealth && !sonar {
             return Seen::Hidden;
         }
-        let radar = !t.def.stealth && !submerged && flags & vision::RADAR != 0 && jammed & vision::RADAR_JAM == 0;
+        let radar = !stealth && !submerged && flags & vision::RADAR != 0 && jammed & vision::RADAR_JAM == 0;
         if radar || sonar { Seen::Radar } else { Seen::Hidden }
     }
 
@@ -1045,12 +1057,14 @@ impl Sim {
         let (types, tick) = (self.types.clone(), self.tick);
         for u in self.units.iter_mut().flatten() {
             let t = types.get(u.type_id);
-            if t.heal_ticks == 0 || u.dead || !u.is_complete() || u.health <= Fx::ZERO || u.health >= t.max_health {
+            // (Its own, with its enhancements': they mend faster, and to more.)
+            let (ticks, most) = (u.heal_ticks(t), u.max_health(t));
+            if ticks == 0 || u.dead || !u.is_complete() || u.health <= Fx::ZERO || u.health >= most {
                 continue;
             }
-            let k = tick % t.heal_ticks;
-            let heal = crate::defs::HEAL_POINTS.share(k + 1, t.heal_ticks) - crate::defs::HEAL_POINTS.share(k, t.heal_ticks);
-            u.health = (u.health + heal).min(t.max_health);
+            let k = tick % ticks;
+            let heal = crate::defs::HEAL_POINTS.share(k + 1, ticks) - crate::defs::HEAL_POINTS.share(k, ticks);
+            u.health = (u.health + heal).min(most);
         }
     }
 
@@ -1078,7 +1092,7 @@ impl Sim {
             let pos = u.pos;
             let complete = u.is_complete();
             // Nanoframes only reveal their immediate surroundings.
-            let sight = if complete { t.sight.to_int() } else { t.sight.to_int().min(t.radius.to_int() * 2) };
+            let sight = if complete { u.sight(t).to_int() } else { t.sight.to_int().min(t.radius.to_int() * 2) };
             // (The eye: about the unit's size above where it stands, flies or floats.)
             let eye = pos.y.to_int() + (t.radius.to_int() + 8).clamp(16, 72);
             sensors.push(Sensor { player, pos, radius: sight.max(t.radius.to_int() + 16), flag: vision::LOS, eye });
@@ -1086,8 +1100,8 @@ impl Sim {
                 continue;
             }
             for (range, flag) in [
-                (t.radar.to_int(), vision::RADAR),
-                (t.def.sonar_distance as i64, vision::SONAR),
+                (u.radar(t).to_int(), vision::RADAR),
+                (u.sonar(t).to_int(), vision::SONAR),
                 (t.def.radar_jam as i64, vision::RADAR_JAM),
                 (t.def.sonar_jam as i64, vision::SONAR_JAM),
             ] {
@@ -1680,6 +1694,25 @@ impl Sim {
         out
     }
 
+    /// `name(args)` tried on a copy of the unit's script, as far as its first wait, nothing it
+    /// does reaching the game or the script itself (`host::TrialHost`): the copy, its pieces where
+    /// the function put them. None without the function.
+    pub(crate) fn trial_script(&self, id: UnitId, name: &str, args: &[i32]) -> Option<CobInstance> {
+        let u = self.unit(id)?;
+        let cob = u.cob.as_ref().filter(|c| c.has_function(name))?;
+        let mut trial = cob.trial();
+        let types = &self.types;
+        // (Another unit by its script id; its own reads as no one, as `with_script` has it.)
+        let lookup = |sid: i32| -> Option<OtherUnit> {
+            let other = self.units.get(usize::try_from(sid.checked_sub(1)?).ok()?)?.as_ref()?;
+            (other.id != id).then(|| OtherUnit::of(other, types))
+        };
+        let allies = self.ally_masks().get(u.owner as usize).copied().unwrap_or(0);
+        let mut host = crate::host::TrialHost { unit: u, unit_type: types.get(u.type_id), world: &self.world, now_ms: self.now_ms(), lookup: &lookup, max_id: self.units.len() as i32, allies, rng: u.rng.clone() };
+        trial.call(&mut host, name, args);
+        Some(trial)
+    }
+
     /// A unit finished: its event, and what a unit does as it is finished. Once only: a unit
     /// taken apart by its own side and built back up is not finished again (it was counted,
     /// switched on and given its fire orders already; `Unit::finished`).
@@ -1761,7 +1794,8 @@ impl Sim {
         }
         if let Order::Build { type_id: product, pos } = order {
             let t = self.types.get(type_id);
-            if !t.is_builder || !self.is_allowed(*product) || !t.ai_build_options.contains(product) {
+            // (Its menu as its enhancements have it.)
+            if !t.is_builder || !self.is_allowed(*product) || !self.unit(id).is_some_and(|u| u.ai_build_options(t).contains(product)) {
                 return;
             }
             if self.ceasefire_bars(player, *pos) {
@@ -1772,9 +1806,18 @@ impl Sim {
         if let Order::Guard(target) = order && self.unit(*target).is_none_or(|u| u.dead || u.id == id || !self.allied(player, u.owner)) {
             return;
         }
+        // An upgrade its type has, a step or more along (queued after the steps before it).
+        if let Order::Upgrade(to) = order && !self.unit(id).is_some_and(|u| self.can_upgrade_into(u, *to)) {
+            return;
+        }
+        // An enhancement its type has (whether it may be installed is seen when its turn comes).
+        if let Order::Enhance { index, .. } = order && !self.unit(id).is_some_and(|u| (*index as usize) < self.types.get(u.type_id).enhancements.len()) {
+            return;
+        }
         let (factory, fires) = {
             let t = self.types.get(type_id);
-            let mut weapons = t.weapons.iter().flatten().map(|&w| self.weapon_types.get(w));
+            let slots = self.unit(id).map_or(t.weapons, |u| *u.weapon_slots(t));
+            let mut weapons = slots.iter().flatten().map(|&w| self.weapon_types.get(w));
             let fires = match order {
                 Order::Attack(_) => weapons.any(|w| !w.def.interceptor && (!w.command_fire || w.def.stockpile)),
                 Order::ManualFire(_) => weapons.any(|w| w.command_fire && !w.def.interceptor),
@@ -1807,6 +1850,16 @@ impl Sim {
                     let pos = u.pos;
                     queue_order(&mut u.orders, order, queue, pos);
                 }
+                // An upgrade starts at once (queued, after the factory's other orders): it makes
+                // nothing meanwhile, its queue waiting. So does an enhancement (a removal is done at
+                // once).
+                Order::Upgrade(_) | Order::Enhance { .. } => {
+                    if !queue {
+                        u.orders.clear();
+                    }
+                    let pos = u.pos;
+                    queue_order(&mut u.orders, order, queue, pos);
+                }
                 Order::Stop => {
                     u.rally.clear();
                     u.orders.clear();
@@ -1821,6 +1874,10 @@ impl Sim {
             return;
         }
         let Some(u) = self.unit_mut(id) else { return };
+        // (Work a building found itself, its only order, gives way to the player's: queued after
+        // it, an order would wait on the building's own choice.)
+        let queue = queue && !(u.auto_work && u.orders.len() <= 1);
+        u.auto_work = false;
         if queue && !has_order_room(&u.orders, order) {
             return;
         }
@@ -1919,7 +1976,7 @@ impl Sim {
             Command::Produce { player, factory, type_id, count } => {
                 let types = self.types.clone();
                 let Some(f) = self.unit_mut(*factory) else { return };
-                if f.owner != *player || f.dead || !types.get(f.type_id).is_factory || !types.get(f.type_id).ai_build_options.contains(type_id) {
+                if f.owner != *player || f.dead || !types.get(f.type_id).is_factory || !f.ai_build_options(types.get(f.type_id)).contains(type_id) {
                     return;
                 }
                 if !self.is_allowed(*type_id) {
@@ -1969,7 +2026,7 @@ impl Sim {
             Command::SetCloak { player, units, on } => {
                 let types = self.types.clone();
                 for &id in units {
-                    if let Some(u) = self.unit_mut(id).filter(|u| u.owner == *player) && types.get(u.type_id).def.cloak_cost > 0.0 {
+                    if let Some(u) = self.unit_mut(id).filter(|u| u.owner == *player) && u.cloak_costs(types.get(u.type_id)).is_some() {
                         u.cloak_on = *on;
                     }
                 }
@@ -2275,7 +2332,7 @@ impl Sim {
         let tick = self.tick;
         due.retain(|&id| self.unit(id).is_some_and(|u| u.self_destruct_at.is_some_and(|t| t <= tick)));
         for id in due {
-            let max = self.unit(id).map(|u| self.types.get(u.type_id).max_health).unwrap_or(Fx::ONE);
+            let max = self.unit(id).map(|u| u.max_health(self.types.get(u.type_id))).unwrap_or(Fx::ONE);
             self.damage_unit(id, max * 2, id, FxVec3::ZERO);
         }
         if !self.events.is_empty() {
@@ -2315,8 +2372,8 @@ impl Sim {
         let Some(u) = self.unit(id) else { return };
         let t = types.get(u.type_id);
         // Passengers ride along; paralyzed units are frozen: no orders, movement, weapons or
-        // animation.
-        if u.carried_by.is_some() || self.tick < u.paralyzed_until {
+        // animation. (A module that repairs round itself works on the building that took it on.)
+        if u.carried_by.is_some() && !self.module_at_work(u, t) || self.tick < u.paralyzed_until {
             return;
         }
         if u.is_complete() && !u.dead && t.def.kamikaze && (self.tick + id.slot as u64).is_multiple_of(3) {
@@ -2332,7 +2389,8 @@ impl Sim {
             if !held {
                 self.update_orders(id, t);
             }
-            if t.is_factory {
+            // (Not one upgraded just now: it is gone, the new one in its place.)
+            if t.is_factory && self.unit(id).is_some_and(|u| !u.dead) {
                 self.update_factory(id, t);
             }
             if t.locomotion == Locomotion::Air {
@@ -2358,6 +2416,10 @@ impl Sim {
         let t = types.get(u.type_id);
         if u.carried_by.is_some() {
             self.follow_transport(id);
+            // (A module at work on its building aims its nano-lathe from its own piece.)
+            if self.unit(id).is_some_and(|u| self.module_at_work(u, t)) {
+                self.feed_script(id, t);
+            }
             return;
         }
         if t.locomotion == Locomotion::Air {
@@ -2374,9 +2436,10 @@ impl Sim {
         let Some(u) = self.unit(id) else { return };
         if u.is_complete() && !u.dead {
             let tc = timed.then(std::time::Instant::now);
-            if t.weapons.iter().any(|w| w.is_some()) {
+            if u.armed(t) {
+                let stockpiles = u.stockpiles(t);
                 self.update_weapons(id, types, weapons);
-                if t.stockpile {
+                if stockpiles {
                     self.update_stockpile(id);
                 }
             }
@@ -2384,7 +2447,7 @@ impl Sim {
                 self.stats.weapons_ns += tc.elapsed().as_nanos() as u64 * PHASE_SAMPLE;
             }
             // (A script may cloak a unit its file gives no cloak cost: `UNIT_CLOAKED`.)
-            if t.def.cloak_cost > 0.0 || self.unit(id).is_some_and(|u| u.cloak_on || u.cloaked) {
+            if self.unit(id).is_some_and(|u| u.cloak_costs(t).is_some() || u.cloak_on || u.cloaked) {
                 self.update_cloak(id, t);
             }
             if t.def.is_airbase {
@@ -2526,7 +2589,7 @@ impl Sim {
             return;
         }
         let (pos, owner, move_state) = (u.pos, u.owner, u.move_state);
-        let armed: Vec<Fx> = t.weapons.iter().flatten().map(|&w| self.weapon_types.get(w)).filter(|w| !w.command_fire).map(|w| w.range).collect();
+        let armed: Vec<Fx> = u.weapon_slots(t).iter().flatten().map(|&w| self.weapon_types.get(w)).filter(|w| !w.command_fire).map(|w| w.range).collect();
         if armed.is_empty() {
             return;
         }
@@ -2584,7 +2647,21 @@ impl Sim {
     }
 
     fn update_orders(&mut self, id: UnitId, t: &UnitType) {
+        // Work on itself whose order is gone (Stop, an order not queued after it) is called off,
+        // its metal back.
+        if let Some(u) = self.unit(id)
+            && let Some(w) = u.self_work
+            && !matches!((u.orders.front(), w.job), (Some(Order::Upgrade(to)), crate::unit::SelfJob::Upgrade(job)) if *to == job)
+            && !matches!((u.orders.front(), w.job), (Some(Order::Enhance { index, remove: false }), crate::unit::SelfJob::Enhance(job)) if *index == job)
+        {
+            self.cancel_self_work(id, true);
+        }
         let Some(order) = self.unit(id).and_then(|u| u.orders.front().cloned()) else {
+            if Self::repairs_round(t) {
+                self.repair_round(id, t);
+            } else if Self::works_round(t) {
+                self.work_round(id, t);
+            }
             self.idle_response(id, t);
             return;
         };
@@ -2670,6 +2747,8 @@ impl Sim {
             }
             Order::Load(target) => self.update_load_order(id, t, target),
             Order::Unload(dest) => self.update_unload_order(id, t, dest),
+            Order::Upgrade(to) => self.update_upgrade_order(id, t, to),
+            Order::Enhance { index, remove } => self.update_enhance_order(id, t, index, remove),
             Order::SetStates { fire, movement } => {
                 if let Some(u) = self.unit_mut(id) {
                     u.fire_state = fire.min(2);
@@ -2754,9 +2833,10 @@ impl Sim {
         let cost = tt.cost_metal + tt.cost_energy / 60 + Fx::from_int(20);
         let work = (cost * 4).min(Fx::from_int(CAPTURE_WORK_MOST));
         let total = (work.0.max(1) as u64).saturating_mul(TICKS_PER_SECOND as u64);
+        let rate = self.unit(id).map_or(t.work_rate, |u| u.work_rate(t));
         let finished = {
             let Some(tu) = self.unit_mut(target) else { return };
-            tu.capture_work = tu.capture_work.saturating_add(t.work_rate.max(1)).min(total);
+            tu.capture_work = tu.capture_work.saturating_add(rate.max(1)).min(total);
             tu.capture_progress = Fx::fraction(tu.capture_work, total);
             tu.capture_work >= total
         };
@@ -2811,6 +2891,8 @@ impl Sim {
             u.self_destruct_at = None;
             u.self_destruct_manual = false;
             u.last_attacker = None;
+            // (What it was building on itself is lost with its old side's orders.)
+            u.self_work = None;
             for w in &mut u.weapons {
                 w.target = None;
             }
@@ -2921,8 +3003,11 @@ impl Sim {
     /// Records an unreachable work target; explicit orders report the failure, automatic
     /// work picked up while patrolling or guarding fails silently.
     fn give_up(&mut self, id: UnitId, key: u64) {
+        // (A repair round's own work, its only order, is as automatic: a unit walking out of a
+        // repair tower's reach is no refusal; an engineering station's too.)
+        let round = self.unit(id).is_some_and(|u| u.orders.len() == 1 && u.auto_work);
         let Some(u) = self.unit_mut(id) else { return };
-        let automatic = matches!(u.orders.get(1), Some(Order::Patrol(_) | Order::Guard(_)));
+        let automatic = round || matches!(u.orders.get(1), Some(Order::Patrol(_) | Order::Guard(_)));
         if u.unreachable.len() >= 8 {
             u.unreachable.remove(0);
         }
@@ -2951,7 +3036,7 @@ impl Sim {
             let ot = self.types.get(o.type_id);
             let rank = if !o.is_complete() {
                 0
-            } else if o.health < ot.max_health && ot.locomotion != Locomotion::Air {
+            } else if o.health < o.max_health(ot) && ot.locomotion != Locomotion::Air {
                 1
             } else {
                 continue;
@@ -3009,7 +3094,10 @@ impl Sim {
         let (target_pos, target_job, needs_work) = (tu.pos, tu.build, self.needs_work(tu, tt));
         let follow = tt.radius + t.radius + Fx::from_int(40);
         if t.is_builder && self.allied(owner, tu.owner) && (self.tick + id.slot as u64).is_multiple_of(8) {
-            let assist = target_job.map(|j| j.target).filter(|&b| b != id && self.unit(b).is_some_and(|b| !b.dead && !b.is_complete() && b.carried_by.is_none() && self.allied(owner, b.owner)));
+            // (One working on itself, an upgrade or an enhancement, is helped with that: what it
+            // was building waits, as it does.)
+            let on_itself = tu.self_work.is_some() && tu.is_complete();
+            let assist = target_job.map(|j| j.target).filter(|&b| !on_itself && b != id && self.unit(b).is_some_and(|b| !b.dead && !b.is_complete() && b.carried_by.is_none() && self.allied(owner, b.owner)));
             let work = assist.or(needs_work.then_some(target));
             if let Some(w) = work {
                 let reachable = t.locomotion != Locomotion::Static || {
@@ -3308,7 +3396,7 @@ impl Sim {
         let cached = self
             .path_cache
             .get(&key)
-            .filter(|c| c.occupancy_version == version && self.tick < c.tick + PATH_CACHE_TICKS && unit_factory.is_none())
+            .filter(|c| c.occupancy_version == if c.short { self.world.occupancy_version } else { version } && self.tick < c.tick + PATH_CACHE_TICKS && unit_factory.is_none())
             .filter(|c| c.path.first().map_or(start == goal, |&w| crate::path::line_clear(&self.world, &spec, start, w, None)));
         let path = if let Some(route) = flow_route {
             route
@@ -3376,7 +3464,9 @@ impl Sim {
                 self.path_cache.retain(|_, c| now < c.tick + PATH_CACHE_TICKS);
                 self.path_cache_limit = (self.path_cache.len() * 2).max(PATH_CACHE_PURGE);
             }
-            self.path_cache.insert(key, CachedPath { path: path.clone(), goal_pos, tick: self.tick, occupancy_version: version });
+            let short = !reached;
+            let occupancy_version = if short { self.world.occupancy_version } else { version };
+            self.path_cache.insert(key, CachedPath { path: path.clone(), goal_pos, tick: self.tick, occupancy_version, short });
             path
         };
         if radius > 0 && let Some(&c) = path.last() {
@@ -3770,7 +3860,7 @@ impl Sim {
 
     fn update_build_order(&mut self, id: UnitId, t: &UnitType, type_id: usize, pos: FxVec3) {
         // Orders may also come from mission scripts or a previously queued job.
-        if !t.is_builder || !self.is_allowed(type_id) || !t.ai_build_options.contains(&type_id) {
+        if !t.is_builder || !self.is_allowed(type_id) || !self.unit(id).is_some_and(|u| u.ai_build_options(t).contains(&type_id)) {
             self.finish_build_job(id);
             self.stop(id);
             if let Some(u) = self.unit_mut(id) {
@@ -3794,10 +3884,27 @@ impl Sim {
             return;
         }
 
-        let u = self.unit(id).unwrap();
         let anchor = World::pos_to_anchor(pos, bt.footprint);
         let site = self.world.anchor_to_pos(anchor, bt.footprint);
         let reach = t.build_distance + t.radius;
+        // A mobile unit built in the field (Forged Alliance's experimentals, by its engineers)
+        // takes no cells: the frame laid for this site is found where it stands, wherever the
+        // crowd has pushed it, and the builder goes on with it (to it, out of reach). Not looked
+        // for, a new frame was laid on the site whenever the builder lost hold of the last: a pile
+        // of them. (Only the frame laid for this site: one laid for another order's site nearby is
+        // that order's, or the two orders would finish one unit between them.)
+        if bt.locomotion != Locomotion::Static && let Some(frame) = self.field_frame(type_id, site, owner, Fx::from_int(bt.footprint.0.max(bt.footprint.1) as i64 * CELL) + reach * 2) {
+            let (u, at) = (self.unit(id).unwrap(), self.unit(frame).unwrap().pos);
+            if self.in_build_range(u, at, bt.footprint) {
+                if let Some(u) = self.unit_mut(id) {
+                    u.build = Some(BuildJob { target: frame, started: false });
+                }
+            } else if u.path_goal.is_none() || u.stuck_ticks > 60 || u.move_request.is_none_or(|m| !m.within_xz(at, Fx::from_int(CELL * 4))) {
+                self.move_to_work(id, t, at, bt.footprint);
+            }
+            return;
+        }
+        let u = self.unit(id).unwrap();
         let gap = Self::distance_to_footprint(u.pos, site, bt.footprint);
         if gap > reach {
             if u.path_goal.is_none() && u.move_request == Some(site) && gap > reach + Fx::from_int(32) {
@@ -3822,6 +3929,7 @@ impl Sim {
             Occupant::Unit(slot) => self.units.get(slot as usize).and_then(|u| u.as_ref()).filter(|u| u.type_id == type_id && !u.dead && !u.is_complete() && self.allied(owner, u.owner)).map(|u| u.id),
             _ => None,
         };
+
         let mut standing = Vec::new();
         let target = match existing {
             Some(e) => e,
@@ -3845,8 +3953,13 @@ impl Sim {
                 match self.spawn_unit(type_id, owner, site, 0, false) {
                     Some(n) => {
                         let tick = self.tick;
+                        let mobile = bt.locomotion != Locomotion::Static;
                         if let Some(frame) = self.unit_mut(n) {
                             frame.worked_at = Some(tick);
+                            // (The site it was laid for: `field_frame`.)
+                            if mobile {
+                                frame.field_site = Some(site);
+                            }
                         }
                         n
                     }
@@ -3879,6 +3992,20 @@ impl Sim {
         for o in standing {
             self.step_aside(o, &next);
         }
+    }
+
+    /// The frame of a mobile unit of `type_id` laid in the field (not in a factory) by `owner`'s
+    /// side for `site` (`Unit::field_site`), within `near` of it however it has been pushed: a
+    /// second builder ordered to that site helps with it, and one ordered to another site, however
+    /// near, lays a frame of its own. (Among all units, not those the unit grid had: one laid this
+    /// tick is not in it yet.)
+    fn field_frame(&self, type_id: usize, site: FxVec3, owner: u8, near: Fx) -> Option<UnitId> {
+        self.units
+            .iter()
+            .flatten()
+            .filter(|u| u.type_id == type_id && u.field_site == Some(site) && !u.dead && !u.is_complete() && u.factory.is_none() && self.allied(owner, u.owner) && u.pos.within_xz(site, near))
+            .min_by_key(|u| u.id.slot)
+            .map(|u| u.id)
     }
 
     /// Mobile units (finished, on the ground or landed) standing on the blocking cells a
@@ -4059,8 +4186,9 @@ impl Sim {
         // TA's (players), its income felt at once. (The work stays on it if left unfinished.)
         let work = (metal + energy / 10).max(Fx::from_int(5)) * 20;
         let total = (work.0 as u64).saturating_mul(TICKS_PER_SECOND as u64);
+        let rate = self.unit(id).map_or(t.work_rate, |u| u.work_rate(t));
         let f = &mut self.features[index];
-        f.reclaim_work = f.reclaim_work.saturating_add(t.work_rate.max(1)).min(total);
+        f.reclaim_work = f.reclaim_work.saturating_add(rate.max(1)).min(total);
         f.reclaimed = Fx::fraction(f.reclaim_work, total);
         if f.reclaim_work >= total {
             let owner = self.unit(id).map_or(0, |u| u.owner) as usize;
@@ -4097,7 +4225,7 @@ impl Sim {
         };
         let types = self.types.clone();
         let tt = types.get(tu.type_id);
-        let (target_pos, work) = (tu.pos, tu.build_work);
+        let (target_pos, work, saved) = (tu.pos, tu.build_work, tu.metal_saved);
         let u = self.unit(id).unwrap();
         let reach = t.build_distance + t.radius;
         if Self::distance_to_footprint(u.pos, target_pos, tt.footprint) > reach {
@@ -4143,15 +4271,20 @@ impl Sim {
         // costs none, is gone at once.
         let total = tt.build_work;
         let reclaim_total = ((tt.cost_metal * 20).0.max(0) as u64).saturating_mul(TICKS_PER_SECOND as u64).max(1);
-        let step = ((t.work_rate.max(1) as u128 * total as u128) / reclaim_total as u128).clamp(1, u64::MAX as u128) as u64;
+        let rate = self.unit(id).map_or(t.work_rate, |u| u.work_rate(t));
+        let step = ((rate.max(1) as u128 * total as u128) / reclaim_total as u128).clamp(1, u64::MAX as u128) as u64;
         let left = work.saturating_sub(step);
-        let refund = tt.cost_metal.share(work, total) - tt.cost_metal.share(left, total);
+        // (Less its share of what adjacency spared its builders: one built for less gives back
+        // what was paid for it, not its price.)
+        let spared = saved.share(work - left, work.max(1));
+        let refund = (tt.cost_metal.share(work, total) - tt.cost_metal.share(left, total) - spared).max(Fx::ZERO);
         let tick = self.tick;
         let mut owed = Fx::ZERO;
         if let Some(tu) = self.unit_mut(target) {
             tu.set_build_work(left, total);
             tu.health = tu.health.min(tt.max_health * tu.build_progress).max(Fx::ONE);
             tu.taken_apart_at = Some(tick);
+            tu.metal_saved -= spared;
             tu.reclaim_owed += refund;
             owed = tu.reclaim_owed;
             // Taken apart: it stops working.
@@ -4204,9 +4337,12 @@ impl Sim {
         for id in decaying {
             let Some(u) = self.unit(id) else { continue };
             let tt = self.types.get(u.type_id);
-            let (total, work, owner, cost, max_health) = (tt.build_work, u.build_work, u.owner, tt.cost_metal, tt.max_health);
+            let (total, work, owner, cost, max_health, saved) = (tt.build_work, u.build_work, u.owner, tt.cost_metal, tt.max_health, u.metal_saved);
             let left = work.saturating_sub((total / FRAME_DECAY).max(1));
-            let mut refund = cost.share(work, total) - cost.share(left, total);
+            // (What the work undone was worth, less its share of what adjacency spared its
+            // builders.)
+            let spared = saved.share(work - left, work.max(1));
+            let mut refund = (cost.share(work, total) - cost.share(left, total) - spared).max(Fx::ZERO);
             // (Gone: what its side's reclaiming took off it before comes too.)
             if left == 0 {
                 refund += u.reclaim_owed;
@@ -4218,6 +4354,7 @@ impl Sim {
             }
             if let Some(u) = self.unit_mut(id) {
                 u.set_build_work(left, total);
+                u.metal_saved -= spared;
                 u.health = u.health.min(max_health * u.build_progress).max(Fx::ONE);
                 if left == 0 {
                     // Gone without a Killed script, wreck or blast; given up, so no battle loss.
@@ -4233,10 +4370,14 @@ impl Sim {
     /// Whether a builder has anything to do for `u` (of type `t`): finish it, or mend it (one
     /// being taken apart only up to what is left of it).
     fn needs_work(&self, u: &Unit, t: &UnitType) -> bool {
+        // (Upgrading in place: its builders lend it their power.)
+        if u.self_work.is_some() && u.is_complete() {
+            return true;
+        }
         if self.being_taken_apart(u) {
-            u.health < t.max_health * u.build_progress
+            u.health < u.max_health(t) * u.build_progress
         } else {
-            !u.is_complete() || u.health < t.max_health
+            !u.is_complete() || u.health < u.max_health(t)
         }
     }
 
@@ -4323,7 +4464,8 @@ impl Sim {
         let rt = self.types.get(type_id);
         let total = rt.build_work;
         let before = self.features[index].resurrect_work;
-        let full = self.mutator_work_rate(self.perk_work_rate(id, t.work_rate)).min(total.saturating_sub(before));
+        let own = self.unit(id).map_or(t.work_rate, |u| u.work_rate(t));
+        let full = self.mutator_work_rate(self.perk_work_rate(id, own)).min(total.saturating_sub(before));
         let owner = self.unit(id).map_or(0, |u| u.owner);
         let e = &mut self.players[owner as usize].economy;
         // Resurrection spends no metal: unrelated metal-starved construction must not
@@ -4446,6 +4588,20 @@ impl Sim {
         if !needs_work {
             self.finish_build_job(id);
             self.stop(id);
+            if let Some(u) = self.unit_mut(id) {
+                u.orders.pop_front();
+            }
+            return;
+        }
+        // A guard's help with what the unit it guards was building (`update_guard_order`) gives
+        // way once that unit works on itself (an upgrade, an enhancement): the guard turns to help
+        // with that, and what it was building waits, as it does.
+        let guarded = self.unit(id).and_then(|u| match u.orders.get(1) {
+            Some(Order::Guard(g)) => Some(*g),
+            _ => None,
+        });
+        if guarded.is_some_and(|g| g != target && self.unit(g).is_some_and(|gu| gu.self_work.is_some() && gu.is_complete())) {
+            self.finish_build_job(id);
             if let Some(u) = self.unit_mut(id) {
                 u.orders.pop_front();
             }
@@ -4594,7 +4750,7 @@ impl Sim {
     fn repair_health(&mut self, target: UnitId, rate: u64) {
         let Some(u) = self.unit(target).filter(|u| !u.dead && (u.is_complete() || u.finished) && u.carried_by.is_none()) else { return };
         let t = self.unit_type(u);
-        let (total, max_health) = (t.build_work, t.max_health);
+        let (total, max_health) = (t.build_work, u.max_health(t));
         // (Whole, all of it; else what is left of it, and never less than it has.)
         let most = if u.is_complete() { max_health } else { (max_health * u.build_progress).max(u.health) };
         let rate = rate.min(total);
@@ -4624,12 +4780,20 @@ impl Sim {
             return;
         }
         let tt = types.get(tu.type_id);
+        // One upgrading in place: the builder's power goes into its upgrade, paid by the builder's
+        // side.
+        let own = self.unit(builder).map_or(t.work_rate, |b| b.work_rate(t));
+        if tu.self_work.is_some() && tu.is_complete() {
+            let rate = self.mutator_work_rate(self.perk_work_rate(builder, own));
+            self.work_on_self(target, rate, owner, builder);
+            return;
+        }
         // A unit is finished once. While its own side takes it apart, work on it mends it and
         // no more, as TA's repair does (the reclaim goes on, not undone); one left part taken
         // apart is built back up, paid for as a build is, and is simply whole again.
         let repairing = tu.is_complete() || self.being_taken_apart(tu);
         let (total, done, finished) = (tt.build_work, tu.build_work, tu.finished);
-        let rate = self.mutator_work_rate(self.perk_work_rate(builder, t.work_rate));
+        let rate = self.mutator_work_rate(self.perk_work_rate(builder, own));
         if self.players.get(owner as usize).is_some_and(|p| p.cheats.instant_build) {
             // The instant-build cheat: finished (or mended) at once, for nothing.
             let mut owner = None;
@@ -4638,7 +4802,7 @@ impl Sim {
                     tu.set_build_work(total, total);
                 }
                 // (All of it when whole; one being taken apart, what is left of it.)
-                tu.health = (tt.max_health * tu.build_progress).max(tu.health);
+                tu.health = (tu.max_health(tt) * tu.build_progress).max(tu.health);
                 tu.repair_work = 0;
                 owner = Some(tu.owner);
             }
@@ -4664,13 +4828,20 @@ impl Sim {
         if full == 0 {
             return;
         }
+        // (A builder beside a building that cuts what building costs it pays less: adjacency. What
+        // it was spared is no metal of the frame's, given up.)
+        let (metal_factor, energy_factor) = self.unit(builder).map_or((None, None), |b| (b.adjacency_factor(AdjacencyAffect::BuildMetal), b.adjacency_factor(AdjacencyAffect::BuildEnergy)));
+        let (metal_price, energy_price) = (adjacency::scaled(tt.cost_metal, metal_factor), adjacency::scaled(tt.cost_energy, energy_factor));
         let eco = &mut self.players[owner as usize].economy;
-        let work = eco.spend_work(done, total, full, tt.cost_metal, tt.cost_energy, eco.build_factor);
+        let work = eco.spend_work(done, total, full, metal_price, energy_price, eco.build_factor);
+        let worth = |price: Fx| price.share(done + work, total) - price.share(done, total);
+        let saved = if metal_factor.is_some() { worth(tt.cost_metal) - worth(metal_price) } else { Fx::ZERO };
         let heal = tt.max_health.share(done + work, total) - tt.max_health.share(done, total);
         let mut completed = false;
         if let Some(tu) = self.unit_mut(target) {
             tu.set_build_work(done + work, total);
             tu.health = (tu.health + heal).min(tt.max_health);
+            tu.metal_saved += saved;
             completed = tu.is_complete();
         }
         if completed && !finished {
@@ -4691,8 +4862,9 @@ impl Sim {
         let Some(frame) = self.unit(factory).and_then(|f| f.build).map(|b| b.target) else { return };
         let Some(u) = self.unit(frame).filter(|u| u.factory == Some(factory) && !u.is_complete() && !u.dead) else { return };
         let tt = self.types.get(u.type_id);
-        // What was put into it, and what its side's reclaiming took off it before.
-        let (owner, refund) = (u.owner, tt.cost_metal.share(u.build_work, tt.build_work) + u.reclaim_owed);
+        // What was put into it (less what adjacency spared its builders), and what its side's
+        // reclaiming took off it before.
+        let (owner, refund) = (u.owner, (tt.cost_metal.share(u.build_work, tt.build_work) - u.metal_saved).max(Fx::ZERO) + u.reclaim_owed);
         let e = &mut self.players[owner as usize].economy;
         e.metal = (e.metal + refund).min(e.metal_capacity.max(e.metal));
         e.tick_metal_in += refund;
@@ -4717,6 +4889,11 @@ impl Sim {
         let Some(f) = self.unit(id) else { return };
         let current = f.build;
         let has_queue = !f.factory_queue.is_empty();
+        // Upgrading in place, or installing an enhancement, it makes nothing: the unit on its pad
+        // and its queue wait.
+        if matches!(f.orders.front(), Some(Order::Upgrade(_) | Order::Enhance { remove: false, .. })) {
+            return;
+        }
 
         if let Some(job) = current {
             let Some(target) = self.unit(job.target) else {
@@ -4729,13 +4906,29 @@ impl Sim {
                 let unit_id = job.target;
                 let tt = types.get(target.type_id);
                 let rally = self.unit(id).map(|f| f.rally.clone()).unwrap_or_default();
+                // A factory with ways out sends it out by the one nearest where it goes, from the
+                // pad along the factory's floor and down its ramp (`Sim::settle`), not out of its
+                // front through its walls; an aircraft lifts off the pad, as Supreme Commander's
+                // do (`FactoryUnit:OnStopBuild` rolls off all but aircraft).
+                let way = if !t.exits.is_empty() && !matches!(tt.locomotion, Locomotion::Static | Locomotion::Air) {
+                    let k = self.choose_exit(id, t, target.type_id);
+                    let to = self.exit_end(id, &t.exits[k]);
+                    Some((k, Way { from: target.pos, to, ramp: t.exits[k].ramp }))
+                } else {
+                    None
+                };
+                let out = way.map_or(exit, |(_, w)| w.to);
+                if let Some((k, w)) = way
+                    && let Some(nu) = self.unit_mut(unit_id)
+                {
+                    nu.roll_off = Some(RollOff { exit: k as u8, way: Some(w) });
+                }
                 if tt.locomotion != Locomotion::Static && let Some(nu) = self.unit_mut(unit_id) && nu.orders.is_empty() {
-                    nu.orders.push_back(Order::Move(exit));
+                    nu.orders.push_back(Order::Move(out));
                     for o in &rally {
-                        queue_order(&mut nu.orders, o, true, exit);
+                        queue_order(&mut nu.orders, o, true, out);
                     }
                 }
-                let _ = tt;
                 if let Some(f) = self.unit_mut(id) {
                     f.build = None;
                     let done = f.factory_queue.pop_front();
@@ -4777,11 +4970,20 @@ impl Sim {
             return;
         }
         let pad_piece = self.call_script(id, "QueryBuildInfo", &[0]).and_then(|p| p.first().copied()).unwrap_or(-1);
+        // (With ways out, it is built facing the one it will leave by: Supreme Commander turns its
+        // factories' build bone so, `UnitSpin`. Not one that never moves: it stays as it is made.)
+        let exit = (!t.exits.is_empty() && types.get(type_id).locomotion != Locomotion::Static).then(|| self.choose_exit(id, t, type_id));
         let f = self.unit(id).unwrap();
         let pad_pos = self.cob_piece_position(f, t, pad_piece).unwrap_or(f.pos);
         let owner = f.owner;
         // (Facing as the pad is turned: `Sim::follow_build_pad`.)
         let heading = self.cob_piece_heading(f, t, pad_piece).unwrap_or(f.heading);
+        // (A unit that names its own way to face as it is built faces that, whichever way it takes:
+        // Supreme Commander's long transports, `ForcedBuildSpin`.)
+        let heading = match exit {
+            Some(k) => wrap_angle(heading + types.get(type_id).build_heading.unwrap_or(t.exits[k].heading)),
+            None => heading,
+        };
         // The pad clear first: one of its own side's units standing still where the next would
         // go (built in no time, the instant-build cheat or many builders helping; given an
         // order as it was done: to guard the factory, or to build beside it) is sent off it, to
@@ -4799,6 +5001,11 @@ impl Sim {
         if let Some(new) = self.spawn_unit(type_id, owner, pad_pos, heading, false) {
             if let Some(nu) = self.unit_mut(new) {
                 nu.factory = Some(id);
+                nu.roll_off = exit.map(|k| RollOff { exit: k as u8, way: None });
+            }
+            // (On its pad from the first: `spawn_unit` stood it on the ground under the pad.)
+            if exit.is_some() {
+                self.follow_build_pad(new, id);
             }
             if let Some(f) = self.unit_mut(id) {
                 f.build = Some(BuildJob { target: new, started: true });
@@ -4870,15 +5077,18 @@ impl Sim {
                 gone.push(id);
                 return false;
             }
-            leaving |= u.path_goal.is_some() || u.orders.front() == Some(&Order::Move(exit));
+            // (Its way out: the factory's front, or the end of the way it was sent out by.)
+            let way_out = u.roll_off.and_then(|r| r.way).map_or(exit, |w| w.to);
+            leaving |= u.path_goal.is_some() || u.orders.front() == Some(&Order::Move(way_out));
             true
         });
-        // (Out of the yard: no longer the factory's to see out.)
+        // (Out of the yard: no longer the factory's to see out, and off its floor.)
         for id in gone {
             if let Some(u) = self.unit_mut(id)
                 && u.factory == Some(factory)
             {
                 u.factory = None;
+                u.roll_off = None;
             }
         }
         if let Some(f) = self.unit_mut(factory) {
@@ -4896,6 +5106,33 @@ impl Sim {
         FxVec3::new(p.x, self.world.height_at(p.x, p.z), p.z)
     }
 
+    /// Where factory `id`'s way out `e` leads, on the ground (its place turned with the factory).
+    fn exit_end(&self, id: UnitId, e: &crate::defs::Exit) -> FxVec3 {
+        let f = self.unit(id).unwrap();
+        let p = f.pos + rotate_y(e.to, f.heading);
+        FxVec3::new(p.x, self.world.height_at(p.x, p.z), p.z)
+    }
+
+    /// Which of factory `id`'s ways out (its type `t` has some) a unit of `unit_type` it makes
+    /// takes: the nearest to where it goes next (the first place of its rally orders; with none,
+    /// the factory's front, where TA's plants send theirs), of those whose end it may stand on
+    /// (not built over), the first of equals, as Supreme Commander takes the roll-off point
+    /// nearest the factory's rally point (`CalculateRollOffPoint`); with none open, the nearest.
+    fn choose_exit(&self, id: UnitId, t: &UnitType, unit_type: usize) -> usize {
+        let Some(f) = self.unit(id) else { return 0 };
+        let dest = f.rally.iter().find_map(crate::formation::order_point).unwrap_or_else(|| self.factory_exit(id, t));
+        let ut = self.types.get(unit_type);
+        // (Aircraft lift off the pad: any end will do.)
+        let spec = (ut.locomotion != Locomotion::Air).then(|| self.move_spec(unit_type));
+        (0..t.exits.len())
+            .min_by_key(|&k| {
+                let end = self.exit_end(id, &t.exits[k]);
+                let blocked = spec.as_ref().is_some_and(|s| !self.world.passable(s, World::pos_to_anchor(end, ut.footprint), None));
+                (blocked, (end - dest).xz().length_sq_raw(), k)
+            })
+            .unwrap_or(0)
+    }
+
     /// The unit in production rides the factory's build pad (`QueryBuildInfo`'s piece): where it
     /// is, and turned as it is turned (TA's plants spin the pad about y while they build, 30
     /// degrees a second, and the unit goes round with it); finished, it keeps the heading the pad
@@ -4908,6 +5145,13 @@ impl Sim {
         let Some(f) = self.unit(factory) else { return };
         if let Some(mut p) = self.cob_piece_position(f, t, pad) {
             let heading = self.cob_piece_heading(f, t, pad).unwrap_or(f.heading);
+            // (Turned to face the way out it will leave by, where the factory has ways out, or the
+            // way it names to face as it is built.)
+            let turn = self.unit(id).and_then(|u| {
+                let e = t.exits.get(u.roll_off?.exit as usize)?;
+                Some(types.get(u.type_id).build_heading.unwrap_or(e.heading))
+            });
+            let heading = turn.map_or(heading, |turn| wrap_angle(heading + turn));
             // A ship is built at the surface, where it floats once done: a shipyard's pad is under
             // the water (the Core's yard stands 22 px deep). A hovercraft on a pad under the water
             // (a floating hover plant's) is on the water too.
@@ -4945,6 +5189,26 @@ impl Sim {
     /// unit, so every unit's step can be taken at once; returns the goal to plan a new route
     /// to when the unit got stuck.
     fn ground_step(u: &mut Unit, t: &UnitType, spec: MoveSpec, world: &World, steer: crate::avoid::Steer, tick: u64) -> Option<FxVec3> {
+        // Held still by its script (`IMMOBILE`: a weapon unpacked that keeps its unit where it
+        // stands, Supreme Commander's `WeaponUnpackLocksMotion`): it neither moves nor turns, its
+        // way waiting. With somewhere to go it is on its way as far as its script is told
+        // (`StartMoving`, once), which packs up and lets it go; its way given up, `StopMoving`.
+        if u.immobile {
+            u.speed = Fx::ZERO;
+            let wants = u.path_goal.is_some();
+            if wants != u.moving {
+                u.moving = wants;
+                if wants {
+                    // (Packing up to go: what it aimed unpacked would fire it once let go, packed
+                    // and on its way. It aims anew, its script answering for a unit that moves.)
+                    u.forget_aims();
+                }
+                if let Some(c) = &mut u.cob {
+                    c.start(if wants { "StartMoving" } else { "StopMoving" }, &[], ThreadTag::None);
+                }
+            }
+            return None;
+        }
         let Some(goal) = u.path_goal else {
             // Standing in a building (a constructor left on a site as the building went up round
             // it, its way off blocked; a unit pushed into one): onto the nearest free cell, as a
@@ -5183,6 +5447,7 @@ impl Sim {
                                 u.pos.x = p.x;
                                 u.pos.z = p.z;
                                 u.factory = None;
+                                u.roll_off = None;
                                 placed = true;
                                 break 'search;
                             }
@@ -5288,6 +5553,12 @@ impl Sim {
             Locomotion::Hover | Locomotion::Naval => ground.max(world.sea_level),
             _ => ground,
         };
+        // On its way out of a factory with ways out, on the factory's floor where that stands
+        // higher (the pad's height, down the ramp to the ground: `Way::floor`).
+        let way = u.roll_off.and_then(|r| r.way).filter(|_| u.factory.is_some());
+        if let Some(floor) = way.and_then(|w| w.floor(u.pos, u.pos.y)) {
+            u.pos.y = u.pos.y.max(floor);
+        }
         if !t.level() && t.locomotion != Locomotion::Naval {
             // The slope under its whole footprint (half its length and width each way, 16
             // units a cell): a tank rides its tracks over a bump rather than tipping with
@@ -5297,7 +5568,12 @@ impl Sim {
             let left = rotate_y(FxVec3::new(half_w, Fx::ZERO, Fx::ZERO), u.heading);
             let h = |p: FxVec3| {
                 let g = world.height_at(p.x, p.z);
-                if t.locomotion == Locomotion::Hover { g.max(world.sea_level) } else { g }
+                let g = if t.locomotion == Locomotion::Hover { g.max(world.sea_level) } else { g };
+                // (Tipped down the ramp as it comes down it.)
+                match way.and_then(|w| w.floor(p, g)) {
+                    Some(floor) => g.max(floor),
+                    None => g,
+                }
             };
             let (hf, hb) = (h(u.pos + fwd), h(u.pos - fwd));
             let (hl, hr) = (h(u.pos + left), h(u.pos - left));
@@ -5361,6 +5637,8 @@ impl Sim {
     }
 
     fn economy_end(&mut self) {
+        // (What the buildings give those beside them, for what they make and pay now.)
+        self.update_adjacency();
         let types = self.types.clone();
         let n = self.players.len();
         let mut metal_cap: Vec<Fx> = self.players.iter().map(|p| p.base_storage.0).collect();
@@ -5417,7 +5695,8 @@ impl Sim {
                 if t.energy_use < Fx::ZERO {
                     energy_in -= t.energy_use;
                 } else {
-                    upkeep = t.energy_use;
+                    // (Less beside a building that cuts it: adjacency.)
+                    upkeep = adjacency::scaled(t.energy_use, u.adjacency_factor(AdjacencyAffect::EnergyUse));
                 }
             }
             let paid = upkeep.is_zero() || e.energy >= upkeep;
@@ -5441,6 +5720,9 @@ impl Sim {
                     metal_in += t.makes_metal;
                 }
             }
+            // (More beside a building that raises it: adjacency.)
+            let energy_in = adjacency::scaled(energy_in, u.adjacency_factor(AdjacencyAffect::EnergyMake));
+            let metal_in = adjacency::scaled(metal_in, u.adjacency_factor(AdjacencyAffect::MetalMake));
             // (The resources mutator's flow.)
             let (energy_in, metal_in) = (crate::mutators::income(energy_in, resources), crate::mutators::income(metal_in, resources));
             e.energy += energy_in;
@@ -5495,8 +5777,10 @@ impl Sim {
             let e = &mut p.economy;
             e.metal_capacity = metal_cap[i];
             e.energy_capacity = energy_cap[i];
-            e.metal = e.metal.clamp(Fx::ZERO, e.metal_capacity);
-            e.energy = e.energy.clamp(Fx::ZERO, e.energy_capacity);
+            // (As a clamp to 0..storage, but storage a mod's units take below nothing holds
+            // nothing: a clamp's bounds crossed would stop the game.)
+            e.metal = e.metal.min(e.metal_capacity).max(Fx::ZERO);
+            e.energy = e.energy.min(e.energy_capacity).max(Fx::ZERO);
             if p.cheats.unlimited {
                 e.metal = e.metal_capacity;
                 e.energy = e.energy_capacity;
@@ -5528,7 +5812,7 @@ impl Sim {
         let mut army = vec![Fx::ZERO; n];
         for u in self.units.iter().flatten() {
             let t = self.types.get(u.type_id);
-            if !u.dead && u.is_complete() && t.locomotion != Locomotion::Static && t.weapons.iter().any(|w| w.is_some()) && let Some(a) = army.get_mut(u.owner as usize) {
+            if !u.dead && u.is_complete() && t.locomotion != Locomotion::Static && u.armed(t) && let Some(a) = army.get_mut(u.owner as usize) {
                 *a += t.cost_metal + t.cost_energy / 60;
             }
         }
@@ -5558,6 +5842,7 @@ impl Sim {
             for product in u.yard {
                 if let Some(product) = self.unit_mut(product) && product.factory == Some(u.id) {
                     product.factory = None;
+                    product.roll_off = None;
                     if !product.is_complete() {
                         product.worked_at = Some(tick);
                     }
@@ -5645,7 +5930,7 @@ impl Sim {
 
     /// Unit type ids a unit can build.
     pub fn build_options(&self, id: UnitId) -> &[usize] {
-        self.unit(id).map_or(&[], |u| &self.types.get(u.type_id).build_options)
+        self.unit(id).map_or(&[], |u| u.build_options(self.types.get(u.type_id)))
     }
 
     /// Whether a building of `type_id` fits centred at `pos` (for placement previews).
@@ -5658,6 +5943,23 @@ impl Sim {
         let anchor = World::pos_to_anchor(pos, t.footprint);
         let origin = World::footprint_origin(anchor, t.footprint);
         self.world.placement_error(t, self.move_specs[type_id].max_slope.max(t.def.max_slope as i32), origin)
+    }
+
+    /// Which cells of the footprint of a building of `type_id` centred at `pos` it may have under
+    /// it, row by row from its north-west corner (a building being placed shows them, green and
+    /// red): those taken, off the map, too steep, too deep or dry where it needs water may not;
+    /// where the site will not do as a whole (a geothermal plant off a vent, an extractor off
+    /// metal), none may.
+    pub fn placement_cells(&self, type_id: usize, pos: FxVec3) -> Vec<bool> {
+        let t = self.types.get(type_id);
+        let origin = World::footprint_origin(World::pos_to_anchor(pos, t.footprint), t.footprint);
+        let slope = self.move_specs[type_id].max_slope.max(t.def.max_slope as i32);
+        let (fx, fz) = (t.footprint.0 as i32, t.footprint.1 as i32);
+        let mut cells: Vec<bool> = (0..fz).flat_map(|dz| (0..fx).map(move |dx| (dx, dz))).map(|(dx, dz)| self.world.cell_placement_error(t, slope, origin.0 + dx, origin.1 + dz).is_none()).collect();
+        if cells.iter().all(|&ok| ok) && self.world.placement_error(t, slope, origin).is_some() {
+            cells.fill(false);
+        }
+        cells
     }
 
     /// Sets a unit's experience (scenario set-up: veterans brought into a battle).
@@ -5685,7 +5987,7 @@ impl Sim {
     /// Sets a unit's health, kept between 1 and its most (scenario set-up: the tutorial's
     /// damaged building to mend).
     pub fn set_health(&mut self, id: UnitId, health: Fx) {
-        let Some(most) = self.unit(id).map(|u| self.unit_type(u).max_health) else { return };
+        let Some(most) = self.unit(id).map(|u| u.max_health(self.unit_type(u))) else { return };
         if let Some(u) = self.unit_mut(id) {
             u.health = health.max(Fx::ONE).min(most);
         }
@@ -5802,6 +6104,8 @@ impl Sim {
                 Order::Load(id) => { mix(17); target(mix, Some(Target::Unit(*id))); }
                 Order::Unload(p) => { mix(18); target(mix, Some(Target::Ground(*p))); }
                 Order::Stop => mix(19),
+                Order::Upgrade(t) => { mix(20); mix(*t as i64); }
+                Order::Enhance { index, remove } => { mix(21); mix(*index as i64); mix(*remove as i64); }
             }
         }
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -5884,6 +6188,7 @@ impl Sim {
             mix(u.taken_apart_at.map_or(-1, |t| t as i64));
             mix(u.reclaim_owed.0);
             mix(u.worked_at.map_or(-1, |t| t as i64));
+            target(&mut mix, u.field_site.map(Target::Ground));
             mix(u.capture_work as i64);
             mix(u.in_build_stance as i64);
             mix(u.yard_open as i64);
@@ -5893,7 +6198,45 @@ impl Sim {
             mix(u.busy as i64);
             target(&mut mix, u.build.map(|b| Target::Unit(b.target)));
             mix(u.build.is_some_and(|b| b.started) as i64);
+            // (Work on itself only where there is some: a game without any, TA's, sums as before.)
+            if let Some(w) = u.self_work {
+                match w.job {
+                    crate::unit::SelfJob::Upgrade(t) => { mix(-21); mix(t as i64); }
+                    crate::unit::SelfJob::Enhance(i) => { mix(-22); mix(i as i64); }
+                }
+                mix(w.work as i64);
+                if !w.metal_saved.is_zero() { mix(-24); mix(w.metal_saved.0); }
+            }
+            if !u.enhancements.is_empty() {
+                mix(-23);
+                mix(u.enhancements.len() as i64);
+                for &i in &u.enhancements { mix(i as i64); }
+            }
+            // (Adjacency, and work a building found itself, only where there is some: TA's games
+            // sum as before.)
+            if !u.metal_saved.is_zero() { mix(-25); mix(u.metal_saved.0); }
+            if let Some(a) = &u.adjacency {
+                mix(-26);
+                for c in a.change { mix(c.0); }
+                mix(a.from.len() as i64);
+                for &(g, bits) in &a.from { target(&mut mix, Some(Target::Unit(g))); mix(bits as i64); }
+            }
+            if u.auto_work { mix(-27); }
             target(&mut mix, u.factory.map(Target::Unit));
+            // (A way out only where there is one: a game without, TA's, sums as before.)
+            if let Some(r) = u.roll_off {
+                mix(-25);
+                mix(r.exit as i64);
+                if let Some(w) = r.way {
+                    for v in [w.from, w.to] { mix(v.x.0); mix(v.y.0); mix(v.z.0); }
+                    mix(w.ramp.0.0);
+                    mix(w.ramp.1.0);
+                }
+            }
+            // (A script's hold likewise.)
+            if u.immobile {
+                mix(-24);
+            }
             mix(u.orders.len() as i64);
             for o in &u.orders { order(&mut mix, o); }
             mix(u.factory_queue.len() as i64);

@@ -141,6 +141,11 @@ pub struct UnitDef {
     /// for the third), or for any slot `BadTargetCategory<n>` (Spring's, `n` from 1); empty, the
     /// unit's [`UnitDef::bad_target_category`] goes for it.
     pub weapon_bad_target_category: [String; MAX_WEAPONS],
+    /// The categories of the only units each weapon may take on, of its own accord or by order
+    /// (`OnlyTargetCategory<n>`, Spring's, `n` from 1): none given, any (TA's own name none).
+    /// A weapon that names some never fires on the ground, nor on a unit of no category named,
+    /// whatever it is told: Supreme Commander's anti-air (`VTOL`).
+    pub weapon_only_target_category: [Option<String>; MAX_WEAPONS],
     /// The categories of the units it never goes after (TA: `NoChaseCategory`).
     pub no_chase_category: String,
     pub category: String,
@@ -194,6 +199,29 @@ pub struct UnitDef {
     /// Units this builder offers a player, in menu order: its GUI pages' and the download
     /// entries naming it (`GameData::build_menus`).
     pub build_options: Vec<String>,
+    /// The unit it becomes when upgraded in place (`UpgradesTo`, Supreme Commander's
+    /// `General.UpgradesTo`): given the order, it builds that unit on itself with its own build
+    /// power (`WorkerTime`), paying the unit's cost over its build time as construction does, and
+    /// is that unit when done, where it stood. Upper case; empty: none (TA's own units have none).
+    pub upgrades_to: String,
+    /// What it may install on itself (`[ENHANCEMENTS]` within its `[UNITINFO]`, in the file's
+    /// order: [`crate::EnhancementDef`]): Supreme Commander's commander enhancements. None of TA's.
+    pub enhancements: Vec<crate::EnhancementDef>,
+    /// A factory's ways out (`[EXITS]` within its `[UNITINFO]`, in the file's order:
+    /// [`ExitDef`]): Supreme Commander's roll-off points. None of TA's, whose units drive out of
+    /// the front.
+    pub exits: Vec<ExitDef>,
+    /// The way it faces while a factory with ways out builds it, whichever way it will leave by
+    /// (`BuildHeading`, degrees from the factory's front as a way's `Heading` counts them):
+    /// Supreme Commander's `ForcedBuildSpin`, its long transports and gunships built along their
+    /// air factories' platforms. None given, it faces its way out.
+    pub build_heading: Option<f64>,
+    /// What it gives the buildings of its player beside it (`[ADJACENCY]` within its `[UNITINFO]`,
+    /// in the file's order: [`crate::AdjacencyDef`]), and its size class for what it takes from
+    /// them (`AdjacencySize`; 0: none, it takes any size's bonus and from as many as touch it):
+    /// Supreme Commander's adjacency. None of TA's.
+    pub adjacency: Vec<crate::AdjacencyDef>,
+    pub adjacency_size: u32,
     /// What the computer players build with it besides: the 3.1 patch's `[CANBUILD]` list for it
     /// (`gamedata/sidedata.tdf`), its entries not on its menu. TA's computer players went by
     /// these lists, its players by the menus: mods list units of their AI there that players are
@@ -320,6 +348,7 @@ impl UnitDef {
                 };
                 if ta.is_empty() { st(&format!("BadTargetCategory{}", slot + 1)) } else { ta }
             }),
+            weapon_only_target_category: std::array::from_fn(|slot| Some(st(&format!("OnlyTargetCategory{}", slot + 1))).filter(|v| !v.is_empty())),
             no_chase_category: st("NoChaseCategory"),
             category: st("Category"),
             tedclass: st("TEDClass").to_ascii_uppercase(),
@@ -362,6 +391,12 @@ impl UnitDef {
             pitch_scale: f("PitchScale", 1.0),
             steering_mode: s.get_i64_or("SteeringMode", 1).clamp(0, u32::MAX as i64) as u32,
             unit_number: count("UnitNumber", 0),
+            upgrades_to: st("UpgradesTo").to_ascii_uppercase(),
+            enhancements: crate::EnhancementDef::of_unit(s),
+            exits: ExitDef::of_unit(s),
+            build_heading: s.get_f64("BuildHeading").filter(|v| v.is_finite()),
+            adjacency: crate::AdjacencyDef::of_unit(s),
+            adjacency_size: s.get_i64_or("AdjacencySize", 0).clamp(0, u32::MAX as i64) as u32,
             build_options: Vec::new(),
             ai_build_options: Vec::new(),
             name,
@@ -376,6 +411,66 @@ impl UnitDef {
 
     pub fn has_category(&self, cat: &str) -> bool {
         self.category.split_whitespace().any(|c| c.eq_ignore_ascii_case(cat))
+    }
+}
+
+/// Most ways out a factory's file may give (the rest are left out, with a warning).
+pub const MAX_EXITS: usize = 16;
+
+/// One of a factory's ways out (a section of the `[EXITS]` within its `[UNITINFO]`, any name):
+/// Supreme Commander's roll-off points. A unit the factory makes is built facing the way out
+/// nearest where it is sent next (its first rally point; with none, the factory's front), rolls
+/// off its pad along it as far as its end, and goes on from there. The pad keeps its height to
+/// the top of the way's ramp, and the unit comes down it to the ground at its foot, rather than
+/// dropping through the factory's floor.
+///
+/// ```text
+/// [UNITINFO]
+/// {
+///     UnitName=UEB0101;
+///     ...
+///     [EXITS]
+///     {
+///         [EXIT1] { X=96; Z=0; Heading=90; Ramp=40 68; }
+///         [EXIT2] { X=-96; Z=0; Heading=-90; Ramp=40 68; }
+///     }
+/// }
+/// ```
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ExitDef {
+    /// Where the way out leads (`X`, `Z`): pixels from the factory's middle as it stands facing
+    /// south, TA's buildings' way (x east, z south), turned with it.
+    pub x: f64,
+    pub z: f64,
+    /// The way a unit made for it faces as it is built (`Heading`, degrees as TA counts a unit's
+    /// heading: 0 the factory's front, its +z; 90 towards its +x), turned with the factory.
+    pub heading: f64,
+    /// Its ramp (`Ramp`, two numbers: pixels along the way from the pad): the unit keeps the pad's
+    /// height as far as the first, and comes down evenly to the ground at the second. None given,
+    /// it is on the ground at once.
+    pub ramp: (f64, f64),
+}
+
+impl ExitDef {
+    pub fn from_tdf(s: &TdfSection) -> ExitDef {
+        let f = |k: &str| s.get_f64_or(k, 0.0);
+        let numbers: Vec<f64> = s.get("Ramp").unwrap_or("").split([' ', ',', '\t']).filter_map(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite()).collect();
+        let ramp = match numbers.as_slice() {
+            [] => (0.0, 0.0),
+            [top] => (top.max(0.0), top.max(0.0)),
+            [top, foot, ..] => (top.max(0.0), foot.max(top.max(0.0))),
+        };
+        ExitDef { x: f("X"), z: f("Z"), heading: f("Heading"), ramp }
+    }
+
+    /// The ways out of a unit's `[UNITINFO]` section: its `[EXITS]` section's own, in the file's
+    /// order (the first of two equally near is taken).
+    pub fn of_unit(info: &TdfSection) -> Vec<ExitDef> {
+        let Some(list) = info.sections.iter().find(|s| s.name.eq_ignore_ascii_case("EXITS")) else { return Vec::new() };
+        if list.sections.len() > MAX_EXITS {
+            log::warn!("{}: more than {MAX_EXITS} ways out; the rest are left out", info.get("UnitName").unwrap_or("?"));
+        }
+        list.sections.iter().take(MAX_EXITS).map(ExitDef::from_tdf).collect()
     }
 }
 
@@ -420,6 +515,42 @@ mod tests {
         let x = read("[UNITINFO]{UnitName=X; MaxDamage=0; BuildTime=.5; MaxVelocity=2.5 fast; Builder=yes; WorkerTime=-;}").unwrap();
         assert_eq!((x.max_damage, x.build_time, x.max_velocity, x.worker_time), (1.0, 1.0, 2.5, 0.0), "at least a point of damage and a tick of building");
         assert!(!x.builder, "yes is no number: 0, as TA read it");
+        assert!(u.upgrades_to.is_empty(), "TA's units upgrade into nothing");
+        assert_eq!(read("[UNITINFO]{UnitName=UEB0101; UpgradesTo= ueb0201 ;}").unwrap().upgrades_to, "UEB0201", "the unit it upgrades into, in capitals");
+        // TA's units restrict no weapon's targets.
+        assert!(u.weapon_only_target_category.iter().all(Option::is_none));
+        // TA's factories name no ways out, nor its units a way to face while built.
+        assert!(u.exits.is_empty() && u.build_heading.is_none());
+    }
+
+    /// A weapon's only targets (`OnlyTargetCategory<n>`, by slot from 1).
+    #[test]
+    fn only_targets_are_read() {
+        let u = read("[UNITINFO]{UnitName=TOWER; Weapon1=GUN; Weapon3=AA; OnlyTargetCategory3= VTOL ; OnlyTargetCategory1=; }").unwrap();
+        assert_eq!(u.weapon_only_target_category[2].as_deref(), Some("VTOL"));
+        assert!(u.weapon_only_target_category[0].is_none(), "an empty list is none");
+        assert!(u.weapon_only_target_category[1].is_none(), "none given");
+    }
+
+    /// A factory's ways out (`[EXITS]`, a section each, in the file's order; a ramp of one number
+    /// is a step, of none on the ground at once), and the way a unit faces while built by one
+    /// (`BuildHeading`).
+    #[test]
+    fn ways_out_are_read() {
+        let u = read(
+            "[UNITINFO]{UnitName=PLANT;
+             [EXITS]{ [EXIT1]{ X=96; Z=0; Heading=90; Ramp=40 68; } [WEST]{ X=-96; Z=8; Heading=-90; Ramp=30; } [FRONT]{ Z=80; } } }",
+        )
+        .unwrap();
+        assert_eq!(
+            u.exits,
+            [
+                ExitDef { x: 96.0, z: 0.0, heading: 90.0, ramp: (40.0, 68.0) },
+                ExitDef { x: -96.0, z: 8.0, heading: -90.0, ramp: (30.0, 30.0) },
+                ExitDef { x: 0.0, z: 80.0, heading: 0.0, ramp: (0.0, 0.0) },
+            ]
+        );
+        assert_eq!(read("[UNITINFO]{UnitName=LIFTER; BuildHeading= 90 ;}").unwrap().build_heading, Some(90.0));
     }
 
     /// The mods' upgrade modules: a footprint of none, or a speed with an acceleration of none (a
