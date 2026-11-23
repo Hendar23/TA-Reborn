@@ -12,6 +12,90 @@ fn game() -> Sim {
     ])
 }
 
+#[test]
+fn possession_turns_in_place_even_when_normal_steering_requires_movement() {
+    let mut sim = game_of(&[("DRIVER", "CanMove=1; MaxVelocity=2; SteeringMode=1; TurnRate=1000;")]);
+    let unit = spawn(&mut sim, "DRIVER", 0, 300, 300);
+    let position = sim.unit(unit).unwrap().pos;
+    let input = crate::DirectInput { throttle: 0, turn: 1, heading: 0, pitch: 0, fire: false };
+    sim.step(&[crate::Command::DirectControl { player: 0, unit, input: Some(input) }]);
+    let u = sim.unit(unit).unwrap();
+    assert_eq!(u.heading, -sim.unit_type(u).turn_rate);
+    assert_eq!(u.pos.x, position.x);
+    assert_eq!(u.pos.z, position.z);
+    assert!(u.speed.is_zero());
+}
+
+#[test]
+fn possession_preserves_orders_limits_motion_and_resumes_them() {
+    let mut sim = game_of(&[("DRIVER", "CanMove=1; MaxVelocity=2; Acceleration=0.5; BrakeRate=0.5; TurnRate=1000; SteeringMode=2;")]);
+    let unit = spawn(&mut sim, "DRIVER", 0, 300, 300);
+    let order = Order::Move(FxVec3::from_ints(800, 0, 300));
+    sim.step(&[crate::Command::Order { player: 0, units: vec![unit], order: order.clone(), queue: false }]);
+    let before = sim.unit(unit).unwrap().pos;
+    let input = crate::DirectInput { throttle: 1, turn: 1, heading: 0, pitch: 0, fire: false };
+    let command = crate::Command::DirectControl { player: 0, unit, input: Some(input) };
+    for _ in 0..20 {
+        let heading = sim.unit(unit).unwrap().heading;
+        sim.step(&[command.clone()]);
+        let u = sim.unit(unit).unwrap();
+        let ty = sim.unit_type(u);
+        assert!(crate::fixed::wrap_angle(u.heading - heading).abs() <= ty.turn_rate);
+        assert!(u.speed.abs() <= ty.max_speed);
+        assert_eq!(u.orders.front(), Some(&order));
+    }
+    assert_ne!(sim.unit(unit).unwrap().pos, before);
+    sim.step(&[crate::Command::DirectControl { player: 0, unit, input: None }]);
+    let u = sim.unit(unit).unwrap();
+    assert!(u.direct_control.is_none());
+    assert_eq!(u.orders.front(), Some(&order));
+    assert!(u.path_goal.is_some());
+}
+
+#[test]
+fn possession_rejects_foreign_and_invalid_input_and_expires_safely() {
+    let mut sim = game_of(&[("DRIVER", "CanMove=1; MaxVelocity=2; SteeringMode=2;")]);
+    let unit = spawn(&mut sim, "DRIVER", 0, 300, 300);
+    let input = crate::DirectInput { throttle: -1, turn: 0, heading: 0, pitch: 0, fire: false };
+    sim.step(&[crate::Command::DirectControl { player: 1, unit, input: Some(input) }]);
+    assert!(sim.unit(unit).unwrap().direct_control.is_none());
+    sim.step(&[crate::Command::DirectControl { player: 0, unit, input: Some(crate::DirectInput { throttle: 2, ..input }) }]);
+    assert!(sim.unit(unit).unwrap().direct_control.is_none());
+    let z = sim.unit(unit).unwrap().pos.z;
+    sim.step(&[crate::Command::DirectControl { player: 0, unit, input: Some(input) }]);
+    assert!(sim.unit(unit).unwrap().pos.z < z);
+    for _ in 0..91 { sim.step(&[]); }
+    assert!(sim.unit(unit).unwrap().direct_control.is_none());
+    assert!(sim.unit(unit).unwrap().weapons.iter().all(|weapon| weapon.target.is_none()));
+}
+
+#[test]
+fn possession_fires_only_on_trigger_and_replays_deterministically() {
+    let make = || game_of(&[("GUN", "CanMove=1; MaxVelocity=1; Weapon1=LASER;"), ("TARGET", "")]);
+    let (mut sim, mut replay) = (make(), make());
+    let mut ids = Vec::new();
+    for game in [&mut sim, &mut replay] {
+        let unit = spawn(game, "GUN", 0, 300, 300);
+        spawn(game, "TARGET", 1, 300, 500);
+        ids.push(unit);
+    }
+    assert_eq!(ids[0], ids[1]);
+    let unit = ids[0];
+    let mut fired = 0;
+    for tick in 0..60 {
+        let input = crate::DirectInput { throttle: 0, turn: 0, heading: 0, pitch: 0, fire: tick >= 30 };
+        let command = crate::Command::DirectControl { player: 0, unit, input: Some(input) };
+        let decoded = command.clone();
+        sim.step(&[command]);
+        replay.step(&[decoded]);
+        assert_eq!(sim.checksum(), replay.checksum());
+        let shots = sim.take_events().iter().filter(|event| matches!(event, SimEvent::WeaponFired { unit: shooter, .. } if *shooter == unit)).count();
+        if tick < 30 { assert_eq!(shots, 0); }
+        fired += shots;
+    }
+    assert!(fired > 0);
+}
+
 /// A game of made-up units (`UnitName` and their FBI keys) armed with LASER, on flat ground.
 fn game_of(units: &[(&str, &str)]) -> Sim {
     static NEXT: AtomicU32 = AtomicU32::new(0);

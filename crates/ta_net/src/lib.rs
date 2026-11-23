@@ -97,7 +97,8 @@ pub use transport::{Client, Host, HostEvent};
 /// are within their range.)
 /// [`Msg::Hello`] and [`Refusal::Version`] keep their layout, so builds of other protocols are
 /// still told why they cannot meet.
-pub const PROTOCOL: u32 = 107;
+/// 108: deterministic direct-control input and release commands.
+pub const PROTOCOL: u32 = 108;
 pub const DEFAULT_PORT: u16 = 7890;
 /// Ticks between state hash reports (which double as progress reports).
 pub const HASH_INTERVAL: u64 = 15;
@@ -1408,6 +1409,7 @@ pub fn command_player(c: &Command) -> u8 {
         | Command::SetSharing { player, .. }
         | Command::SetShootAll { player, .. }
         | Command::DropOrder { player, .. }
+        | Command::DirectControl { player, .. }
         | Command::Formation { player, .. }
         | Command::Signal { player, .. }
         | Command::Abandon { player }
@@ -1435,6 +1437,18 @@ fn preferred_address(mut addresses: impl Iterator<Item = SocketAddr>) -> io::Res
 #[cfg(test)]
 mod address_tests {
     use super::*;
+
+    #[test]
+    fn possession_commands_round_trip_and_keep_the_controlling_player() {
+        let unit = ta_sim::UnitId { slot: 7, generation: 2 };
+        for input in [None, Some(ta_sim::DirectInput { throttle: -1, turn: 1, heading: -1234, pitch: 567, fire: true })] {
+            let command = Command::DirectControl { player: 3, unit, input };
+            let decoded: Command = bincode::deserialize(&bincode::serialize(&command).unwrap()).unwrap();
+            assert_eq!(decoded, command);
+            assert_eq!(command_player(&decoded), 3);
+            assert!(validation::player_command(&decoded));
+        }
+    }
 
     #[test]
     fn literal_addresses_accept_default_and_explicit_ports() {

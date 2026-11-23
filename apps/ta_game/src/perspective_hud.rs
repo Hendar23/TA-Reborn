@@ -81,27 +81,34 @@ impl View {
     }
 }
 
-fn draw_minimalist(ctx: &egui::Context, health: f32) {
+fn draw_minimalist(ctx: &egui::Context, health: f32, p: &Perspective, game: &Game, camera: &Camera, now: f64) {
     let painter = ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("minimalist_first_person")));
-    painter.extend(minimalist_shapes(ctx.content_rect(), health));
+    let rect = ctx.content_rect();
+    let bar = minimalist_health_rect(rect);
+    let health_pen = Pen::new(&painter, 1.0, true, 1.0);
+    let color = crate::palette::health_color(health);
+    health_pen.text(bar.left_top() - vec2(0.0, 3.0), Align2::LEFT_BOTTOM, t("HULL"), 11.0, PHOSPHOR);
+    health_pen.text(bar.right_top() - vec2(0.0, 3.0), Align2::RIGHT_BOTTOM, format!("{}%", (health * 100.0).round() as i32), 14.0, color);
+    health_pen.bar(bar, 10, health.clamp(0.0, 1.0), color, PHOSPHOR_DIM.gamma_multiply(0.45));
+    let view = View { rect, vp: camera.view_proj(), ppp: ctx.pixels_per_point(), viewport: camera.viewport };
+    let pen = Pen::new(&painter, rect.height() / 1080.0, true, 1.0);
+    if let Some(readouts) = Readouts::of(p, game) {
+        health_pen.text(bar.center_bottom() + vec2(0.0, 4.0), Align2::CENTER_TOP, format!("{} / {}", readouts.hp, readouts.hp_max), 11.0, PHOSPHOR);
+        armour::sight(&pen, &view, &Window { rect, round: false }, p, game, &readouts, now);
+    }
+    let radar = minimalist_radar_rect(rect);
+    painter.circle_filled(radar.center(), radar.width() * 0.5, Color32::from_black_alpha(150));
+    glass_radar(&painter, radar, p, game, now);
 }
 
-fn minimalist_shapes(rect: Rect, health: f32) -> Vec<Shape> {
-    let center = rect.center();
-    let mut shapes = Vec::new();
-    for width in [3.0, 1.0] {
-        let color = if width > 1.0 { Color32::BLACK } else { Color32::WHITE };
-        for direction in [vec2(5.0, 0.0), vec2(0.0, 5.0)] {
-            shapes.push(Shape::line_segment([center - direction, center + direction], Stroke::new(width, color)));
-        }
-    }
+fn minimalist_health_rect(rect: Rect) -> Rect {
     let width = (rect.width() - 32.0).clamp(0.0, 480.0);
-    let bar = Rect::from_center_size(pos2(center.x, rect.top() + 20.0), vec2(width, 8.0));
-    shapes.push(Shape::rect_filled(bar, 0.0, Color32::from_black_alpha(190)));
-    let fill = Rect::from_min_size(bar.min, vec2(bar.width() * health.clamp(0.0, 1.0), bar.height()));
-    shapes.push(Shape::rect_filled(fill, 0.0, Color32::from_rgb(140, 220, 160)));
-    shapes.push(Shape::rect_stroke(bar, 0.0, Stroke::new(1.0, Color32::WHITE), egui::StrokeKind::Inside));
-    shapes
+    Rect::from_center_size(pos2(rect.center().x, rect.top() + 35.0), vec2(width, 10.0))
+}
+
+fn minimalist_radar_rect(rect: Rect) -> Rect {
+    let size = (rect.height() * 0.25).clamp(80.0, 220.0).min((rect.width() - 32.0).max(0.0));
+    Rect::from_center_size(pos2(rect.center().x, rect.bottom() - size * 0.5 - 12.0), Vec2::splat(size))
 }
 
 /// The side's colour on the cockpit's trim.
@@ -139,7 +146,7 @@ pub fn draw(p: &Perspective, ctx: &egui::Context, game: &Game, camera: &Camera, 
     if p.minimalist {
         if let Some(unit) = game.sim.unit(p.unit).filter(|_| p.lost.is_none() && !p.leaving) {
             let maximum = game.sim.types.get(unit.type_id).max_health.max(Fx::ONE);
-            draw_minimalist(ctx, (unit.health / maximum).to_f32());
+            draw_minimalist(ctx, (unit.health / maximum).to_f32(), p, game, camera, now);
         }
         return;
     }
@@ -1768,24 +1775,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn minimalist_view_contains_only_a_centered_crosshair_and_clamped_health_bar() {
+    fn minimalist_health_and_radar_stay_centered_inside_the_view() {
         for size in [vec2(320.0, 240.0), vec2(1920.0, 1080.0), vec2(3440.0, 1440.0)] {
             let rect = Rect::from_min_size(pos2(10.0, 30.0), size);
-            for health in [-0.5_f32, 0.0, 0.5, 1.0, 1.5] {
-                let shapes = minimalist_shapes(rect, health);
-                assert_eq!(shapes.len(), 7);
-                for shape in &shapes[..4] {
-                    let Shape::LineSegment { points, .. } = shape else { panic!("crosshair must be lines") };
-                    assert_eq!(points[0].lerp(points[1], 0.5), rect.center());
-                    assert_eq!(points[0].distance(points[1]), 10.0);
-                }
-                let Shape::Rect(background) = &shapes[4] else { panic!("health background") };
-                let Shape::Rect(fill) = &shapes[5] else { panic!("health fill") };
-                assert_eq!(fill.rect.width(), background.rect.width() * health.clamp(0.0, 1.0));
-                assert!(rect.contains_rect(background.rect));
-                assert_eq!(background.rect.center().x, rect.center().x);
-                assert_eq!(background.rect.top(), rect.top() + 16.0);
-            }
+            let health = minimalist_health_rect(rect);
+            let radar = minimalist_radar_rect(rect);
+            assert!(rect.contains_rect(health) && rect.contains_rect(radar));
+            assert_eq!(health.center().x, rect.center().x);
+            assert_eq!(radar.center().x, rect.center().x);
+            assert_eq!(radar.bottom(), rect.bottom() - 12.0);
+            assert!(health.bottom() < rect.center().y);
+            assert!(radar.top() > rect.center().y);
         }
     }
 

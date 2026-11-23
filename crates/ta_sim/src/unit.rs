@@ -133,8 +133,26 @@ pub struct BuildJob {
     pub started: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DirectInput {
+    pub throttle: i8,
+    pub turn: i8,
+    pub heading: i32,
+    pub pitch: i32,
+    pub fire: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DirectControl {
+    pub aim_piece: Option<usize>,
+    pub player: u8,
+    pub input: DirectInput,
+    pub expires: u64,
+}
+
 #[derive(Clone)]
 pub struct Unit {
+    pub direct_control: Option<DirectControl>,
     pub id: UnitId,
     pub type_id: usize,
     pub owner: u8,
@@ -358,6 +376,7 @@ impl Unit {
     /// A unit with default state; used by the simulation and for previews.
     pub fn new(id: UnitId, type_id: usize, owner: u8, pos: FxVec3) -> Unit {
         Unit {
+            direct_control: None,
             id,
             type_id,
             owner,
@@ -574,10 +593,23 @@ pub fn piece_world_position(unit: &Unit, t: &UnitType, cob: Option<&CobInstance>
     unit.model_pos(t) + v
 }
 
-/// The heading of what stands on a model piece: the unit's own, turned as the piece and every
-/// piece it hangs from are turned about y by the unit's script (a factory's build pad spinning as
-/// it builds: TA's plants `spin pad around y-axis` from `StartBuilding` to `StopBuilding`). Turns
-/// about x and z, which would tilt it, are left out: no factory of TA's tilts its pad.
+/// A piece's forward axis, including all scripted parent turns and the hull's terrain tilt.
+/// Hidden muzzle pieces retain their orientation even though the renderer omits their mesh.
+pub fn piece_world_direction(unit: &Unit, t: &UnitType, model_piece: usize) -> FxVec3 {
+    let mut direction = FxVec3::new(Fx::ZERO, Fx::ZERO, Fx::ONE);
+    let mut current = Some(model_piece);
+    for _ in 0..256 {
+        let Some(index) = current else { break };
+        let Some(piece) = t.model.pieces.get(index) else { break };
+        if let Some(animation) = unit.cob.as_ref().and_then(|script| t.model_to_cob.get(index).copied().flatten().and_then(|index| script.pieces.get(index))) {
+            direction = rotate_y(rotate_x(rotate_z(direction, animation.rotation[2].wrapping_neg()), animation.rotation[0]), animation.rotation[1]);
+        }
+        current = piece.parent;
+    }
+    rotate_y(rotate_x(rotate_z(direction, unit.roll), unit.pitch), unit.heading)
+}
+
+/// A piece's heading, including parent turns about y. Factories use it for build pads.
 pub fn piece_world_heading(unit: &Unit, t: &UnitType, cob: Option<&CobInstance>, model_piece: usize) -> i32 {
     let mut heading = unit.heading;
     let mut cur = Some(model_piece);

@@ -4543,6 +4543,7 @@ impl State {
     fn enter_perspective(&mut self, id: ta_sim::UnitId, now: f64) {
         let Some(mut p) = crate::perspective::Perspective::enter(&mut self.game, &self.camera, id, now) else { return };
         p.minimalist = self.settings.gameplay.minimalist_first_person;
+        p.load_wireframe(&self.assets.vfs, &self.game);
         self.renderer.set_cockpit(if p.minimalist { None } else { p.model.as_deref() });
         self.perspective = Some(p);
         self.perspective_post = Some(self.settled_post());

@@ -1,9 +1,7 @@
-//! Perspective: riding along in a unit. The camera sits in it (on its turret, in a walker's
-//! head, on a ship's bridge, in a plane's canopy) and the mouse looks round, while the unit goes
-//! on with whatever it was doing: its orders are never touched, and nothing is sent to the
-//! simulation. The view is the player's alone, so it works the same in multiplayer, in a
-//! replay and when spectating: in the player's own units and their allies' (spectating, in
-//! anyone's). The cockpit round the view is drawn by `perspective_hud`.
+//! Perspective: view from a unit, with direct control of the player's ground units and ships.
+//! Camera aiming uses the script's turning speeds without depending on muzzle model axes.
+//! Orders are suspended until leaving. Allies, aircraft, replays and spectators remain view-only.
+//! The cockpit round the view is drawn by `perspective_hud`.
 //!
 //! Entering, the camera dives from the map view into the unit; leaving (Escape), it climbs back
 //! out. A unit destroyed with the player inside loses its signal before the camera pulls away.
@@ -383,6 +381,11 @@ impl HudState {
 }
 
 pub struct Perspective {
+    pub wireframe: Vec<(usize, Vec<[Vec3; 2]>)>,
+    controlling: bool,
+    control_tick: Option<u64>,
+    fire_pending: bool,
+    aim_rates: Vec2,
     pub minimalist: bool,
     pub reduced_motion: bool,
     pub reduced_flashes: bool,
@@ -442,7 +445,7 @@ pub struct Perspective {
     pub centre: Vec3,
     /// The unit's body at this frame (its matrix), and its pieces' matrices.
     pub body: Mat4,
-    pieces: Vec<Mat4>,
+    pub(crate) pieces: Vec<Mat4>,
     /// Where the eye sits across a turret, over its guns: the turret's piece and the line (its
     /// own x), measured once on the model as built (see [`gun_line`]).
     gun_line: Option<(usize, f32)>,
@@ -496,6 +499,11 @@ impl Perspective {
         let ours = u.owner == game.local_player || game.spectator;
         let model = cockpit.model();
         let mut p = Perspective {
+            wireframe: Vec::new(),
+            controlling: false,
+            control_tick: None,
+            fire_pending: false,
+            aim_rates: Vec2::splat(std::f32::consts::FRAC_PI_2),
             reduced_motion: false,
             minimalist: false,
             reduced_flashes: false,
@@ -568,12 +576,30 @@ impl Perspective {
         Some(p)
     }
 
-    /// Climbs back out of the unit.
+    pub fn load_wireframe(&mut self, vfs: &ta_vfs::Vfs, game: &Game) {
+        let object = &game.sim.types.get(self.type_id).def.object;
+        let Some(model) = vfs.read_opt(&format!("objects3d/{object}.3do")).and_then(|bytes| ta_formats::model3do::Model3do::parse(&bytes).ok()) else { return };
+        self.wireframe = model.pieces.iter().enumerate().map(|(piece, geometry)| {
+            let mut used = std::collections::BTreeSet::new();
+            let mut edges = Vec::new();
+            for (index, face) in geometry.primitives.iter().enumerate() {
+                if Some(index) == geometry.selection_primitive || face.indices.len() < 3 { continue; }
+                for (&a, &b) in face.indices.iter().zip(face.indices.iter().cycle().skip(1)).take(face.indices.len()) {
+                    if !used.insert((a.min(b), a.max(b))) { continue; }
+                    let vertex = |index: u16| geometry.vertices.get(index as usize).map(|v| Vec3::new(v[0] as f32, v[1] as f32, -v[2] as f32) / ta_formats::model3do::FIXED_ONE);
+                    if let (Some(a), Some(b)) = (vertex(a), vertex(b)) { edges.push([a, b]); }
+                }
+            }
+            (piece, edges)
+        }).collect();
+    }
+
     pub fn leave(&mut self, game: &mut Game) {
         if self.leaving {
             return;
         }
         self.leaving = true;
+        self.release_control(game);
         game.scene.hide_near = None;
     }
 
@@ -615,8 +641,12 @@ impl Perspective {
             self.blend = (self.blend + dt / ENTER_TIME).min(1.0);
         }
         if alive && !self.leaving {
+            self.update_aim_rates(game);
             self.look(input, dt, now);
+            self.control(game, input);
             self.place_eye(game, dt);
+        } else {
+            self.release_control(game);
         }
         // The camera: between the map view and the eye while diving or climbing.
         let e = ease(self.blend);
@@ -791,15 +821,69 @@ impl Perspective {
         let delta = if input.raw_seen { input.raw_delta } else { input.mouse_delta };
         let steady = ZOOMS[self.zoom].sqrt();
         let turn = delta * (0.0022 / steady) + input.pad_pan * (2.0 * dt / steady);
+        let turn = if self.controlling { limit_aim_motion(turn, self.aim_rates, dt) } else { turn };
         if self.cockpit.flies() {
             // Aircraft: round from the nose, which the view turns with.
             self.look_yaw = (self.look_yaw - turn.x).clamp(-2.4, 2.4);
             self.look_pitch = (self.look_pitch - turn.y).clamp(-1.1, 0.8);
         } else {
-            let (lo, hi) = self.cockpit.pitch_range();
+            let (lo, hi) = if self.controlling { (-1.56, 1.56) } else { self.cockpit.pitch_range() };
             self.look_yaw -= turn.x;
             self.look_pitch = (self.look_pitch - turn.y).clamp(lo, hi);
         }
+    }
+
+    fn update_aim_rates(&mut self, game: &Game) {
+        let Some(unit) = game.sim.unit(self.unit) else { return };
+        let Some(script) = unit.cob.as_ref() else { return };
+        let ty = game.sim.unit_type(unit);
+        let mut piece = unit.direct_control.and_then(|control| control.aim_piece);
+        let mut rates = [None::<i32>; 2];
+        for _ in 0..256 {
+            let Some(index) = piece else { break };
+            if let Some(animated) = ty.model_to_cob.get(index).copied().flatten().and_then(|index| script.pieces.get(index)) {
+                for (slot, axis) in [1, 0].into_iter().enumerate() {
+                    if let Some(speed) = animated.turn_speed(axis).filter(|speed| *speed > 0) {
+                        rates[slot] = Some(rates[slot].map_or(speed, |old| old.min(speed)));
+                    }
+                }
+            }
+            piece = ty.model.pieces.get(index).and_then(|piece| piece.parent);
+        }
+        for axis in 0..2 {
+            if let Some(speed) = rates[axis] { self.aim_rates[axis] = speed as f32 * std::f32::consts::TAU / 65536.0; }
+        }
+    }
+
+    fn release_control(&mut self, game: &mut Game) {
+        if self.controlling {
+            game.issue(ta_sim::Command::DirectControl { player: game.local_player, unit: self.unit, input: None });
+            self.controlling = false;
+            self.control_tick = None;
+            self.fire_pending = false;
+        }
+    }
+
+    fn control(&mut self, game: &mut Game, input: &Input) {
+        let allowed = game.can_order() && game.playback.is_none() && game.sim.unit(self.unit).is_some_and(|unit| {
+            unit.owner == game.local_player && matches!(game.sim.unit_type(unit).locomotion, Locomotion::Ground | Locomotion::Hover | Locomotion::Naval)
+        });
+        if !allowed { self.release_control(game); return; }
+        self.fire_pending |= input.buttons_pressed.contains(&crate::input::MouseButtonId::Left);
+        if self.control_tick == Some(game.sim.tick) { return; }
+        use winit::keyboard::KeyCode as K;
+        let angle = |radians: f32| ((radians * 65536.0 / std::f32::consts::TAU).round() as i64 + 32768).rem_euclid(65536) as i32 - 32768;
+        let command = ta_sim::DirectInput {
+            throttle: input.held(K::KeyW) as i8 - input.held(K::KeyS) as i8,
+            turn: input.held(K::KeyD) as i8 - input.held(K::KeyA) as i8,
+            heading: angle(self.look_yaw),
+            pitch: angle(self.look_pitch).clamp(-16384, 16384),
+            fire: self.fire_pending || input.buttons_held.contains(&crate::input::MouseButtonId::Left),
+        };
+        game.issue(ta_sim::Command::DirectControl { player: game.local_player, unit: self.unit, input: Some(command) });
+        self.controlling = true;
+        self.control_tick = Some(game.sim.tick);
+        self.fire_pending = false;
     }
 
     /// Puts the eye in the unit as it is drawn this frame, looking where the view looks.
@@ -814,7 +898,7 @@ impl Perspective {
         let named = |names: &[&str]| names.iter().find_map(|n| t.model.pieces.iter().position(|p| p.name.eq_ignore_ascii_case(n))).filter(|&i| i < self.pieces.len() && self.pieces[i] != Mat4::ZERO);
         // The piece the main gun aims from, and the piece under the body that carries it (a
         // barrel's turret).
-        let aim_piece = (0..ta_data::unit::MAX_WEAPONS).filter(|&s| t.weapons[s].is_some()).find_map(|s| game.sim.aim_from_piece(u, s)).filter(|&i| i < self.pieces.len());
+        let aim_piece = u.direct_control.and_then(|control| control.aim_piece).or_else(|| (0..ta_data::unit::MAX_WEAPONS).filter(|&s| t.weapons[s].is_some()).find_map(|s| game.sim.aim_from_piece(u, s))).filter(|&i| i < self.pieces.len());
         let gun_mount = aim_piece.map(|mut i| {
             while let Some(parent) = t.model.pieces.get(i).and_then(|p| p.parent) {
                 if t.model.pieces.get(parent).is_none_or(|p| p.parent.is_none()) {
@@ -828,7 +912,12 @@ impl Perspective {
         self.attitude = attitude_of(&body);
         let drawn = |i: usize| self.pieces.get(i).filter(|m| **m != Mat4::ZERO);
         self.gun_azimuth = gun_mount.and_then(drawn).map(|m| turret_azimuth(&body, m));
-        self.gun_dir = aim_piece.and_then(drawn).map(|m| m.transform_vector3(Vec3::Z).normalize_or(Vec3::Z));
+        self.gun_dir = if self.controlling {
+            t.weapons.iter().position(Option::is_some).and_then(|slot| {
+                let state = u.weapons[slot];
+                state.aim_asked.then(|| aim_direction((u.heading + state.aim_heading) as f32 * std::f32::consts::TAU / 65536.0, state.aim_pitch as f32 * std::f32::consts::TAU / 65536.0))
+            })
+        } else { aim_piece.and_then(drawn).map(|matrix| matrix.transform_vector3(Vec3::Z).normalize_or(Vec3::Z)) };
         let lift = self.cockpit.lift();
         let mid = |lo: Vec3, hi: Vec3| (lo + hi) * 0.5;
         // Where the crew sits: in a walker's head (the visor at its front), in a turret's
@@ -887,9 +976,7 @@ impl Perspective {
             let down = glam::Quat::from_axis_angle(side, -0.1 + self.look_pitch);
             glam::Quat::from_axis_angle(up, self.look_yaw) * down * nose
         } else {
-            let (sy, cy) = self.look_yaw.sin_cos();
-            let (sp, cp) = self.look_pitch.sin_cos();
-            Vec3::new(sy * cp, sp, cy * cp)
+            aim_direction(self.look_yaw, self.look_pitch)
         };
         // The kick of a shot and the jolt of a hit, dying away.
         self.hud.kick *= (-dt * 9.0).exp();
@@ -1225,9 +1312,36 @@ fn slerp_dir(a: Vec3, b: Vec3, t: f32) -> Vec3 {
     glam::Quat::IDENTITY.slerp(q, t) * a
 }
 
+fn limit_aim_motion(motion: Vec2, rates: Vec2, dt: f32) -> Vec2 {
+    let limit = rates * dt.max(0.0);
+    motion.clamp(-limit, limit)
+}
+
+fn aim_direction(yaw: f32, pitch: f32) -> Vec3 {
+    let (sy, cy) = yaw.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    Vec3::new(sy * cp, sp, cy * cp)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn controlled_vertical_aim_remains_free_and_rate_limited() {
+        let rates = Vec2::new(0.5, 1.0);
+        for frames in [30, 60, 144] {
+            let dt = 1.0 / frames as f32;
+            let mut aim = Vec2::ZERO;
+            for _ in 0..frames { aim += limit_aim_motion(Vec2::new(10.0, 10.0), rates, dt); }
+            assert!((aim - rates).length() < 0.0001);
+            let up = aim_direction(aim.x, aim.y);
+            let down = aim_direction(aim.x, -aim.y);
+            assert!(up.y > 0.8 && down.y < -0.8);
+        }
+        assert_eq!(limit_aim_motion(Vec2::new(0.001, -0.002), rates, 1.0 / 60.0), Vec2::new(0.001, -0.002));
+        assert_eq!(limit_aim_motion(Vec2::ONE, rates, 0.0), Vec2::ZERO);
+    }
 
     /// The nearest point of the triangle `a`, `b`, `c` to `p` (Ericson's regions).
     fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {

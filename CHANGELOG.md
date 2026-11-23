@@ -3,8 +3,13 @@
 ## Unreleased
 
 ### Added
-- Optional Minimalist First Person View in Interface settings: only a small crosshair and a
-  health bar at the top, without a cockpit or other instruments.
+- Direct control while riding your own ground units and ships: W/S moves forward and reverses,
+  A/D steers the hull, the mouse aims at the weapon's scripted speed, and left click fires its
+  normal weapons. Leaving resumes the unit's previous orders. The direction indicator uses an
+  animated wireframe of the unit's own model.
+- Optional Minimalist First Person View in Interface settings: retain the aiming sight, range
+  and orientation display, a standalone radar at bottom centre and a segmented health bar at the
+  top, without a cockpit.
 - Models can be painted beyond TA's palette and textures: a 3DO with a surface beside it
   (`objects3d/<name>.surface`) takes texture coordinates and smooth normals for its vertices and
   materials for its polygons, each a colour map, a specular map (gloss, mirroring, lights and where
@@ -59,6 +64,10 @@
   repair or load.
 
 ### Fixed
+- Direct-control aiming follows continuous mouse movement without half-second pauses.
+- Possessed robots can look and aim vertically regardless of their muzzle model's orientation.
+  Possessed units can turn on the spot, and aiming at a visible enemy adjusts the shot's elevation
+  for its height and the weapon's trajectory.
 - The Supreme Commander factions play as Forged Alliance's (make the factions again in the
   launcher: it offers UPDATE). Their tech 2 and 3 factories, which the game makes only by
   upgrading the one below, are on their engineers' menus, so every unit can now be built, and the

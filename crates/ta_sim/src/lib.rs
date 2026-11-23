@@ -41,4 +41,5 @@ pub use signal::{Signal, SignalKind};
 pub use ta_data::STRATEGIC_CLASS;
 pub use sim::{Command, Feature, Sim, SimStats};
 pub use unit::{Drift, GameRules, Order, Player, PlayerSetup, PlayerStats, Sharing, StatSample, Target, Unit, UnitId, WeaponState, piece_world_heading, piece_world_position};
+pub use unit::DirectInput;
 pub use vision::{Seen, Vision};

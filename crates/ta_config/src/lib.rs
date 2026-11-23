@@ -175,7 +175,8 @@ pub const RECORD_VERSION: u32 = 46;
 /// missile's `targetable` are sets of classes (as the Spring engine reads them): an interceptor
 /// shoots down only the missiles whose classes it shares (TA's own all class 1), and once they are
 /// within its range; the no-nukes mutator leaves out the strategic class alone.
-pub const SIMULATION_VERSION: u32 = 102;
+/// 103: direct unit possession, steering and manual weapon control.
+pub const SIMULATION_VERSION: u32 = 103;
 /// Records shorter than one year of simulated time are supported. Shared with the
 /// launcher's metadata reader so impossible durations cannot start endless save catch-up.
 pub const MAX_RECORD_TICKS: u64 = 30 * 3600 * 24 * 365;
