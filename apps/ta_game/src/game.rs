@@ -2360,7 +2360,7 @@ impl Game {
         let faster = self.keys.pressed(input, "faster") || input.pressed(KeyCode::NumpadAdd);
         let slower = self.keys.pressed(input, "slower") || input.pressed(KeyCode::NumpadSubtract);
         if faster || slower {
-            let speed = if faster { (self.speed * 1.5).min(10.0) } else { (self.speed / 1.5).max(0.25) };
+            let speed = step_speed(self.speed, faster);
             self.set_pace(None, Some(speed));
             // (In multiplayer everyone is told, by name.)
             if self.net.is_none() && (speed - self.speed).abs() < 0.001 {
@@ -4514,6 +4514,23 @@ const ALERT_APART: f32 = 400.0;
 const ATTACK_QUIET: f32 = 30.0;
 const ATTACK_FAR: f32 = 700.0;
 
+/// The speeds the faster and slower keys step through (1.0 is TA's 30 ticks a second).
+const SPEED_STEPS: [f32; 11] = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0];
+
+/// The battle's speed after a press of the faster key (`faster`) or the slower: the next of
+/// [`SPEED_STEPS`] past `speed`, which itself may lie between them (a battle started at the
+/// settings' 1.25, a speed another player set), staying at the first or the last. (Multiplied
+/// and divided by 1.5 a press, a speed held at the slowest, 0.25, came back up past 1.0 to 0.84
+/// and 1.27 and never to 1.0 again.)
+fn step_speed(speed: f32, faster: bool) -> f32 {
+    const NEAR: f32 = 0.001;
+    if faster {
+        SPEED_STEPS.iter().copied().find(|&s| s > speed + NEAR).unwrap_or(SPEED_STEPS[SPEED_STEPS.len() - 1])
+    } else {
+        SPEED_STEPS.iter().rev().copied().find(|&s| s < speed - NEAR).unwrap_or(SPEED_STEPS[0])
+    }
+}
+
 /// Which stop the alert key goes to: the newest (0) on a first press, after a pause, or when
 /// something new has happened since the last press (`newest`: when); on a press soon after the
 /// last, the stop before it.
@@ -4950,6 +4967,39 @@ mod replay_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The faster and slower keys step through set speeds, 1.0 among them: held at the slowest
+    /// or the fastest and pressed back, a battle comes to 1.0 again (multiplied by 1.5 a press it
+    /// had come back past it, from 0.84 to 1.27, issue 126), and from a speed between steps
+    /// each key goes to the next step its way.
+    #[test]
+    fn the_speed_keys_always_come_back_to_normal() {
+        let press = |mut speed: f32, faster: bool, times: usize| {
+            for _ in 0..times {
+                speed = step_speed(speed, faster);
+            }
+            speed
+        };
+        // Down to the slowest and past it, then back up; up to the fastest and past it, back down.
+        assert_eq!(press(1.0, false, 9), 0.25);
+        assert_eq!(press(press(1.0, false, 9), true, 3), 1.0);
+        assert_eq!(press(1.0, true, 12), 10.0);
+        assert_eq!(press(press(1.0, true, 12), false, 7), 1.0);
+        // Every step is reached from its neighbours both ways, and each press changes the speed.
+        for w in SPEED_STEPS.windows(2) {
+            assert_eq!(step_speed(w[0], true), w[1]);
+            assert_eq!(step_speed(w[1], false), w[0]);
+        }
+        // Between steps (the old keys' 0.84 and 1.27, the settings' 1.25 and 1.75, a host's 0.3).
+        for (between, up, down) in [(0.84375, 1.0, 0.75), (1.265625, 1.5, 1.0), (1.25, 1.5, 1.0), (1.75, 2.0, 1.5), (0.3, 0.5, 0.25), (0.1, 0.25, 0.25), (12.0, 10.0, 10.0)] {
+            assert_eq!((step_speed(between, true), step_speed(between, false)), (up, down), "from {between}");
+        }
+        // A speed that crossed the network as hundredths steps as it did before it went.
+        for s in SPEED_STEPS {
+            let sent = ((s * 100.0).round() as u16) as f32 / 100.0;
+            assert_eq!((step_speed(sent, true), step_speed(sent, false)), (step_speed(s, true), step_speed(s, false)), "{s}");
+        }
+    }
 
     /// A player beaten in a battle that goes on, who chose KEEP WATCHING, is a spectator from
     /// then on: leaving, their battle's replay was thrown away (the spectator flag stood for
