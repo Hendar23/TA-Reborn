@@ -873,7 +873,7 @@ fn interface(ui: &mut Ui, rows: &mut Rows, p: &mut Gameplay, launcher: &mut Laun
         widgets::segmented_fill(ui, &mut p.range_overlays, &[(RangeOverlays::All, n("ALL")), (RangeOverlays::Sensors, n("SENSORS")), (RangeOverlays::Off, n("OFF"))]);
     });
     toggle_row(ui, rows, "STRATEGIC ICONS", "Far out, where units are a few pixels across, each one shows as an icon in its owner's colour, its shape saying what it is. Off: the units themselves at every height.", "zoom out icons strategic overview symbols far units", &mut p.strategic_icons);
-    toggle_row(ui, rows, "Minimalist First Person View", "", "perspective cockpit hud first person unit eye minimal crosshair health", &mut p.minimalist_first_person);
+    toggle_row(ui, rows, "MINIMALIST FIRST-PERSON VIEW", "Riding in a unit: only its sight, its health and a radar, without the cockpit round them", "perspective cockpit hud first person unit eye minimal crosshair health", &mut p.minimalist_first_person);
     toggle_row(ui, rows, "CLASSIC INTERFACE", "TA's own 1997 side panel, resource bar and build menus in battle", "hud old original panel", &mut p.classic_interface);
     setting_row(ui, rows, "ORIGINAL PIXELS", "The classic interface's art and lettering in TA's own square pixels, enlarged as they are. Off: smoothed for your screen, sharp at any size", "classic interface hud pixels pixelated pixel art sharp smooth blurry retro scaling filter", |ui| {
         let classic = p.classic_interface;
@@ -1397,10 +1397,9 @@ mod tests {
     fn minimalist_first_person_is_searchable_and_resets_with_interface() {
         let mut config = Config::default();
         config.gameplay.minimalist_first_person = true;
-        let mut view = SettingsView { search: "Minimalist First Person View".into(), ..Default::default() };
+        let mut view = SettingsView { search: "first-person".into(), ..Default::default() };
         let (_, texts) = frame(&mut view, &mut config, &host());
-        assert!(texts.iter().any(|text| text == "Minimalist First Person View"));
-        assert!(!texts.iter().any(|text| text.contains("Show only a small crosshair")));
+        assert!(texts.iter().any(|text| text == "MINIMALIST FIRST-PERSON VIEW"));
         restore(Category::Controls, &mut config);
         assert!(config.gameplay.minimalist_first_person);
         restore(Category::Interface, &mut config);
