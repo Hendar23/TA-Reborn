@@ -69,6 +69,34 @@ fn possession_rejects_foreign_and_invalid_input_and_expires_safely() {
     assert!(sim.unit(unit).unwrap().weapons.iter().all(|weapon| weapon.target.is_none()));
 }
 
+/// A driven unit its script holds still (a weapon unpacked: `IMMOBILE`) stays where it stands,
+/// told it is wanted on the move so that its script packs up; let go, it drives off. Astern it
+/// goes at half its top speed.
+#[test]
+fn possession_waits_for_a_held_unit_to_pack_up_and_reverses_at_half_speed() {
+    let mut sim = game_of(&[("DRIVER", "CanMove=1; MaxVelocity=2; Acceleration=1; BrakeRate=1; TurnRate=1000;")]);
+    let unit = spawn(&mut sim, "DRIVER", 0, 300, 300);
+    sim.unit_mut(unit).unwrap().immobile = true;
+    let start = sim.unit(unit).unwrap().pos;
+    let drive = |sim: &mut Sim, input: crate::DirectInput, ticks: usize| {
+        for _ in 0..ticks {
+            sim.step(&[crate::Command::DirectControl { player: 0, unit, input: Some(input) }]);
+        }
+    };
+    let ahead = crate::DirectInput { throttle: 1, turn: 1, heading: 0, pitch: 0, fire: false };
+    drive(&mut sim, ahead, 20);
+    let u = sim.unit(unit).unwrap();
+    assert_eq!((u.pos, u.heading, u.speed), (start, 0, Fx::ZERO), "held, it neither moves nor turns");
+    assert!(u.moving, "wanted on the move, its script is told so");
+    sim.unit_mut(unit).unwrap().immobile = false;
+    drive(&mut sim, crate::DirectInput { turn: 0, ..ahead }, 20);
+    assert_ne!(sim.unit(unit).unwrap().pos, start, "let go, it drives off");
+    drive(&mut sim, crate::DirectInput { throttle: -1, turn: 0, ..ahead }, 60);
+    let u = sim.unit(unit).unwrap();
+    let top = sim.unit_type(u).max_speed;
+    assert_eq!(u.speed, Fx::ZERO - top / 2, "astern at half its top speed");
+}
+
 #[test]
 fn possession_fires_only_on_trigger_and_replays_deterministically() {
     let make = || game_of(&[("GUN", "CanMove=1; MaxVelocity=1; Weapon1=LASER;"), ("TARGET", "")]);

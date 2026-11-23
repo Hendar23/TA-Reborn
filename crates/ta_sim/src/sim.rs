@@ -223,6 +223,8 @@ pub enum Command {
     /// to be reclaimed, a move to a waypoint already set.
     /// (Last: replays keep the earlier variants' numbers.)
     DropOrder { player: u8, unit: UnitId, index: u32, order: Order },
+    /// `player` drives their unit from the first-person view with `input` (sent when it changes,
+    /// and once a second while it does not), or lets it go (`None`): see `sim/possession.rs`.
     DirectControl { player: u8, unit: UnitId, input: Option<crate::unit::DirectInput> },
 }
 
@@ -1787,7 +1789,10 @@ impl Sim {
     }
 
     pub(crate) fn order_unit(&mut self, player: u8, id: UnitId, order: &Order, queue: bool) {
-        if self.unit(id).is_some_and(|unit| unit.direct_control.is_some()) { return; }
+        // (A unit its owner drives takes no orders: its own wait until it is let go.)
+        if self.unit(id).is_some_and(|unit| unit.direct_control.is_some()) {
+            return;
+        }
         if !valid_order_position(order) {
             return;
         }
@@ -2373,10 +2378,14 @@ impl Sim {
     /// A unit's orders, production and flight: the first part of its tick, before the ground
     /// units move (all at once: `move_ground_units`).
     fn unit_orders(&mut self, id: UnitId, types: &UnitTypes) {
+        // A driven unit let go: no input for a while (its player gone), or no longer theirs to
+        // drive (given away, taken aboard, destroyed). It stops and takes up its orders.
         if self.unit(id).and_then(|u| u.direct_control).is_some_and(|control| control.expires <= self.tick || self.unit(id).is_none_or(|u| u.owner != control.player || u.carried_by.is_some() || u.dead)) {
             if let Some(u) = self.unit_mut(id) {
                 u.direct_control = None;
-                for slot in 0..ta_data::unit::MAX_WEAPONS { u.retarget(slot, None); }
+                for slot in 0..ta_data::unit::MAX_WEAPONS {
+                    u.retarget(slot, None);
+                }
             }
             self.halt(id);
         }
@@ -6207,7 +6216,7 @@ impl Sim {
                 mix(control.input.heading as i64);
                 mix(control.input.pitch as i64);
                 mix(control.input.fire as i64);
-            } else { mix(0); }
+            }
             mix(u.build_progress.0);
             mix(u.build_work as i64);
             mix(u.repair_work as i64);

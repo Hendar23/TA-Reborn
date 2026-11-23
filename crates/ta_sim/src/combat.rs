@@ -773,10 +773,13 @@ impl Sim {
         }
     }
 
-    /// Ask the weapon's script to aim and wait for its newest readiness answer. Shared
-    /// by ordinary weapons and missile defence, including deployment delays/refusals.
-    /// Pending deployment finishes before another aim is started; the script's own
-    /// signals cancel older threads, and only the newest answer updates readiness.
+    /// Weapon update for a unit its owner drives (`update_weapons` hands it over): every weapon
+    /// counts down its reload and aims where the sight looks, at the ground at its range, or at
+    /// the visible enemy under the sight with the weapon's own firing solution
+    /// (`direct_aim_target`); with the trigger held it fires once aimed, loaded and, unless it is
+    /// on a turret, with the hull turned its way. Missiles kept in stock, interceptors and the
+    /// weapons fired only on order (the Commander's D-gun), unless one is the unit's first, are
+    /// left out: they are not the trigger's.
     fn direct_weapons(&mut self, id: UnitId, types: &crate::defs::UnitTypes, weapons: &crate::defs::WeaponTypes) {
         let Some(unit) = self.unit(id) else { return };
         let Some(control) = unit.direct_control else { return };
@@ -822,6 +825,10 @@ impl Sim {
         }
     }
 
+    /// The enemy a driven unit's sight lies on: the nearest along the sight from `from`, within the
+    /// weapon's range, that its player sees (not on radar alone), the weapon may take on and has a
+    /// clear line of fire to, within its hit sphere and a little more (wider farther off); with
+    /// where to aim at it and the pitch to fire at to hit it (a shell's arc, not the sight's line).
     fn direct_aim_target(&self, shooter: UnitId, from: FxVec3, direction: FxVec3, weapon: &WeaponType) -> Option<(Target, FxVec3, i32)> {
         let owner = self.unit(shooter)?.owner;
         self.units().filter_map(|unit| {
@@ -841,6 +848,12 @@ impl Sim {
         }).min_by_key(|(distance, id, ..)| (*distance, *id)).map(|(_, _, target, point, pitch)| (target, point, pitch))
     }
 
+    /// Ask the weapon's script to aim and wait for its newest readiness answer. Shared
+    /// by ordinary weapons and missile defence, including deployment delays/refusals.
+    /// Pending deployment finishes before another aim is started; the script's own
+    /// signals cancel older threads, and only the newest answer updates readiness.
+    /// (Driven, it is asked again whenever the sight moves, so that the gun follows the mouse at
+    /// its script's own pace.)
     fn aim_weapon(&mut self, id: UnitId, slot: usize, heading: i32, pitch: i32) -> bool {
         let Some(u) = self.unit(id) else { return false };
         let tag = ThreadTag::Aim(slot as u16);
