@@ -9,6 +9,14 @@
   (including on the spot), the mouse aims, and left mouse fires normal weapons. Leaving resumes
   previous orders. Aiming at a visible enemy assists elevation for its height and shot trajectory.
 
+### Fixed
+- The game speed keys (+ and -) could leave a battle unable to get back to normal speed: each
+  press multiplied or divided the speed by 1.5, so once it was held at the slowest, 0.25, pressing
+  back up gave 0.84 and then 1.27, never 1.0 again. The keys now step through set speeds (0.25,
+  0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8 and 10), and from a speed between them (a battle started at
+  the settings' 1.25, say) go to the next one their way. The GAME SPEED setting is the speed
+  single-player battles start at; the keys change the battle under way.
+
 ## 1.0.9 — 2026-11-23
 
 The game no longer crashes when zoomed all the way out on some maps, and a battle it does crash in
