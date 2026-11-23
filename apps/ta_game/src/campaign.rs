@@ -38,6 +38,9 @@ pub struct CampaignPage {
     pub auto_brief: bool,
     /// The page has just come into view: the list scrolls to the mission chosen (once).
     pub reveal: bool,
+    /// Why each mission can't be played at each difficulty with the mods that are on (`None`: it
+    /// can be), as asked once ([`not_playable`]).
+    not_playable: HashMap<(String, usize), Option<String>>,
 }
 
 impl CampaignPage {
@@ -172,6 +175,8 @@ impl CampaignPage {
                         ui.label(RichText::new(ta_ui::i18n::tf("Mission file {file} is missing.", &[("file", &entry.file)])).color(RED));
                         return;
                     };
+                    let difficulty = self.difficulty();
+                    let why_not = self.not_playable.entry((entry.file.clone(), self.difficulty)).or_insert_with(|| not_playable(assets, &mission, difficulty)).clone();
                     ui.horizontal_top(|ui| {
                         ui.spacing_mut().item_spacing.x = 18.0;
                         if let Some(tex) = self.glamour(&ctx, assets, &mission.glamour) {
@@ -190,6 +195,12 @@ impl CampaignPage {
                             ui.add_space(12.0);
                             panel::section(ui, "OBJECTIVES");
                             objectives(ui, &mission.victory, &mission.defeat, assets);
+                            // A mission the mods that are on can't play: said so, and not offered.
+                            if let Some(why) = &why_not {
+                                ui.add_space(10.0);
+                                ui.label(RichText::new(ta_ui::i18n::t(NOT_PLAYABLE)).font(strong(13.0)).color(RED).extra_letter_spacing(ta_ui::i18n::tracking(1.2)));
+                                ui.add(egui::Label::new(RichText::new(why.as_str()).color(Color32::from_rgb(236, 150, 136))).wrap());
+                            }
                         });
                     });
                     let brief = self.briefings.entry(mission.brief.clone()).or_insert_with(|| ta_data::mission::briefing(&assets.vfs, &mission.brief).unwrap_or_default()).clone();
@@ -216,14 +227,14 @@ impl CampaignPage {
                             // The briefing first, as TA gave it; the mission when the player is ready,
                             // once the campaign has got to it (a victory with cheats unlocks nothing).
                             // (Captures' `--open briefing` opens any mission's.)
-                            let startable = self.mission <= unlocked;
+                            let startable = self.mission <= unlocked && why_not.is_none();
                             let start = panel::hero_button(ui, "START MISSION", vec2(300.0, 56.0), startable);
-                            let start = if startable {
-                                start.on_hover_text(ta_ui::i18n::t("The briefing, then the mission"))
-                            } else {
-                                start.on_hover_text(ta_ui::i18n::t("Win the missions before it first"))
+                            let start = match &why_not {
+                                Some(why) => start.on_hover_text(why.as_str()),
+                                None if startable => start.on_hover_text(ta_ui::i18n::t("The briefing, then the mission")),
+                                None => start.on_hover_text(ta_ui::i18n::t("Win the missions before it first")),
                             };
-                            if (start.clicked() || std::mem::take(&mut self.auto_brief))
+                            if (start.clicked() || std::mem::take(&mut self.auto_brief) && why_not.is_none())
                                 && let Some(setup) = GameSetup::mission(assets, &campaign, self.mission, self.difficulty())
                             {
                                 let title = if entry.name.is_empty() { mission.name.clone() } else { entry.name.clone() };
@@ -248,6 +259,59 @@ impl CampaignPage {
         action
     }
 }
+
+/// The title of what the game says of a mission it can't play ([`not_playable`]).
+pub const NOT_PLAYABLE: &str = ta_ui::i18n::n("MISSION NOT PLAYABLE");
+
+/// Why a mission can't be played with the game's data as it stands, the mods that are on in it
+/// (`ta_sim::mission::unplayable`), in the player's words; `None` when it can be. Asked before the
+/// campaign page offers a mission and before a mission starts: played, it would be decided at
+/// its first look at its goals (lost to `AllUnitsKilled` with nothing placed, the way every
+/// mission of TA: Escalation's was until its units were read where it keeps them).
+pub fn not_playable(assets: &Assets, mission: &Mission, difficulty: &str) -> Option<String> {
+    let schema = mission.schema(difficulty)?;
+    let why = ta_sim::mission::unplayable(mission, schema, &assets.types)?;
+    Some(not_playable_text(&why, !assets.mods.mods().is_empty()))
+}
+
+/// [`not_playable`]'s words for `why`, the mods on or not.
+pub(crate) fn not_playable_text(why: &ta_sim::mission::Unplayable, mods_on: bool) -> String {
+    use ta_sim::mission::Unplayable;
+    // (The first few names: enough to tell what is missing.)
+    let names = |names: &[String]| {
+        let mut list = names.iter().take(6).cloned().collect::<Vec<_>>().join(", ");
+        if names.len() > 6 {
+            list.push_str(", …");
+        }
+        list
+    };
+    let text = match why {
+        Unplayable::NoUnits => return ta_ui::i18n::t("This mission gives you no units to play with, so it can't be played.").to_string(),
+        Unplayable::UnitsMissing(units) => {
+            ta_ui::i18n::tf("The units this mission gives you are not in the game with the mods that are on ({units}), so it can't be played.", &[("units", &names(units))])
+        }
+        Unplayable::CommanderMissing(units) => {
+            ta_ui::i18n::tf("Your Commander in this mission is not in the game with the mods that are on ({units}), so it can't be played.", &[("units", &names(units))])
+        }
+        Unplayable::Unwinnable(units) => {
+            ta_ui::i18n::tf("The units that win this mission are not in the game with the mods that are on ({units}), so it can't be played.", &[("units", &names(units))])
+        }
+    };
+    if mods_on { format!("{text} {}", ta_ui::i18n::t("Turn the mods off in the launcher to play it.")) } else { text }
+}
+
+/// A mission the game's data can't play, and why ([`not_playable`]): what [`crate::game::Game::new`]
+/// refuses to start, for the menu to say.
+#[derive(Debug)]
+pub struct MissionNotPlayable(pub String);
+
+impl std::fmt::Display for MissionNotPlayable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for MissionNotPlayable {}
 
 /// A mission name without the number TA's campaign files put in front ("1: A Hero Returns").
 pub(crate) fn strip_number(name: &str) -> std::borrow::Cow<'_, str> {
@@ -399,6 +463,9 @@ mod tests {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let dir = std::env::temp_dir().join(format!("ta-campaign-lock-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
         std::fs::create_dir_all(dir.join("maps")).unwrap();
+        std::fs::create_dir_all(dir.join("units")).unwrap();
+        // (The unit the missions give the player: a mission the data can't play is not offered.)
+        std::fs::write(dir.join("units").join("armcom.fbi"), "[UNITINFO]{UnitName=ARMCOM;Objectname=armcom;Commander=1;}").unwrap();
         for file in ["one.ota", "two.ota"] {
             std::fs::write(dir.join("maps").join(file), "[GlobalHeader]{missionname=Test;DestroyAllUnits=1;[Schema 0]{Type=Easy;[units]{[unit0]{Unitname=ARMCOM;XPos=100;ZPos=100;Player=1;}}}}").unwrap();
         }
@@ -450,6 +517,61 @@ mod tests {
         page.mission = 0;
         press_start(&mut page);
         assert!(page.briefing.is_some(), "the first mission's briefing opens");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A mission the game's data can't play (with the mods that are on) is marked so on the page,
+    /// with why, and START MISSION does nothing, unlocked as it is; a mission placing no unit for
+    /// the player says that. `--mission` and a restart go through `Game::new`, which refuses it.
+    #[test]
+    fn a_mission_the_data_cannot_play_is_said_and_not_started() {
+        use ta_sim::mission::Unplayable;
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!("ta-campaign-unplayable-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        std::fs::create_dir_all(dir.join("maps")).unwrap();
+        // (No unit files: the ARMCOM the mission gives the player is no unit of this data's.)
+        std::fs::write(dir.join("maps").join("one.ota"), "[GlobalHeader]{missionname=Test;DestroyAllUnits=1;[Schema 0]{Type=Easy;[units]{[unit0]{Unitname=ARMCOM;XPos=100;ZPos=100;Player=1;}}}}").unwrap();
+        let mut vfs = ta_vfs::Vfs::new();
+        vfs.mount_mod_dir(&dir, "campaign-unplayable").unwrap();
+        let vfs = Arc::new(vfs);
+        let data = Arc::new(ta_data::GameData::load(&vfs));
+        let types = Arc::new(ta_sim::UnitTypes::compile(&data, &|_| None));
+        let assets = Assets {
+            vfs, data, types, maps: Vec::new(), selectable_maps: Vec::new(), data_hash: 0,
+            compatibility: Default::default(), mods: Default::default(),
+            campaigns: vec![Campaign { id: "test".into(), title: "Test campaign".into(), side: "ARM".into(), missions: vec![CampaignEntry { file: "one.ota".into(), name: "one".into() }] }],
+        };
+        let mission = Mission::load(&assets.vfs, "one.ota").unwrap();
+        let why = not_playable(&assets, &mission, "Easy").expect("not playable");
+        assert_eq!(why, not_playable_text(&Unplayable::UnitsMissing(vec!["ARMCOM".into()]), false));
+        assert!(why.contains("ARMCOM"), "{why}");
+        // With mods on, it says how to play it.
+        assert!(not_playable_text(&Unplayable::UnitsMissing(vec!["ARMCOM".into()]), true).ends_with(ta_ui::i18n::t("Turn the mods off in the launcher to play it.")));
+        assert!(!not_playable_text(&Unplayable::NoUnits, true).contains("launcher"), "turning the mods off brings no units to a mod's own mission");
+        let ctx = egui::Context::default();
+        crate::theme::install_compact(&ctx);
+        ta_ui::motion::set_reduced(&ctx, true);
+        let progress = ta_config::CampaignProgress::default();
+        let mut page = CampaignPage { mission: 0, ..Default::default() };
+        let mut shown = false;
+        for k in 0..6 {
+            let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1920.0, 1080.0))), time: Some(k as f64 / 60.0), focused: true, ..Default::default() };
+            let output = ctx.run_ui(raw, |ui| {
+                page.auto_brief = true;
+                page.draw(ui, &assets, &progress);
+            });
+            fn has_text(shape: &egui::Shape, label: &str) -> bool {
+                match shape {
+                    egui::Shape::Text(text) => text.galley.text() == label,
+                    egui::Shape::Vec(shapes) => shapes.iter().any(|s| has_text(s, label)),
+                    _ => false,
+                }
+            }
+            shown |= output.shapes.iter().any(|s| has_text(&s.shape, ta_ui::i18n::t(NOT_PLAYABLE)));
+            output.drop_without_applying_deltas();
+        }
+        assert!(shown, "the page says MISSION NOT PLAYABLE");
+        assert!(page.briefing.is_none(), "and opens no briefing, asked as it was");
         std::fs::remove_dir_all(dir).ok();
     }
 }

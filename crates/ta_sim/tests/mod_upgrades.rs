@@ -17,6 +17,13 @@
 //! their side's nearby and armour themselves while it stands): `TA_SHIELD=ARMSHGEN` the shield,
 //! `TA_SHIELD_UNITS=ARMANNI,ARMLLT` the units put beside it and far off, each one's armour and
 //! statics reported after a while, with the shield and once it is gone.
+//!
+//! `mod_repair_report` (TA: Escalation's repair tower upgrades, `ARMASP_UPGRADE` and
+//! `CORASP_UPGRADE`, which its air repair pads make: builders whose `DefaultMissionType` is
+//! `RepairPatrol`): each pad that makes one (`TA_REPAIR=ARMASP,CORASP`) makes it, then units of
+//! `TA_REPAIR_UNITS=ARMSTUMP,ARMCA` worn to a third of their health are put beside it (within its
+//! reach) and far off, and their health is reported every five seconds, with whether the pad took
+//! the tower on and what the tower is doing.
 
 use std::sync::Arc;
 
@@ -210,4 +217,87 @@ fn mod_shield_report() {
     }
     println!("(shield {})", if sim.unit(s).is_none_or(|u| u.dead) { "gone" } else { "still standing" });
     report(&sim, "after");
+}
+
+#[test]
+#[ignore]
+fn mod_repair_report() {
+    let Some(vfs) = game_and_mod() else { return };
+    let data = Arc::new(GameData::load(&vfs));
+    let types = Arc::new(UnitTypes::compile(&data, &|p| vfs.read_opt(p)));
+    let only: Vec<String> = std::env::var("TA_REPAIR").map(|s| s.split(',').map(|n| n.trim().to_ascii_uppercase()).collect()).unwrap_or_default();
+    let units: Vec<usize> = std::env::var("TA_REPAIR_UNITS").unwrap_or_else(|_| "ARMSTUMP,ARMCA".into()).split(',').filter_map(|n| types.id(&n.trim().to_ascii_uppercase())).collect();
+    // The builders whose menu offers a tower that repairs round itself.
+    let mut pads: Vec<(usize, usize)> = Vec::new();
+    for t in &types.types {
+        if !t.is_builder || t.locomotion != Locomotion::Static || (!only.is_empty() && !only.contains(&t.name)) {
+            continue;
+        }
+        for &o in &t.build_options {
+            if types.get(o).def.default_mission.eq_ignore_ascii_case("RepairPatrol") {
+                pads.push((t.id, o));
+            }
+        }
+    }
+    println!("{} builders make a tower that repairs round itself", pads.len());
+    for (pad, tower) in pads {
+        let mut sim = sim_for(&data, &types);
+        fill(&mut sim);
+        let at = FxVec3::from_ints(768, 60, 768);
+        let p = sim.spawn_unit(pad, 0, at, 0, true).unwrap();
+        for _ in 0..60 {
+            fill(&mut sim);
+            sim.step(&[]);
+        }
+        sim.step(&[Command::Produce { player: 0, factory: p, type_id: tower, count: 1 }]);
+        let mut made = None;
+        for _ in 0..12_000 {
+            fill(&mut sim);
+            sim.step(&[]);
+            made = sim.units().find(|u| u.type_id == tower && u.is_complete()).map(|u| u.id);
+            if made.is_some() {
+                break;
+            }
+        }
+        let Some(m) = made else {
+            println!("{} -> {}: not made", types.get(pad).name, types.get(tower).name);
+            continue;
+        };
+        for _ in 0..150 {
+            fill(&mut sim);
+            sim.step(&[]);
+        }
+        let reach = types.get(tower).build_distance.to_f64();
+        let mut patients = Vec::new();
+        for (i, &t) in units.iter().enumerate() {
+            let most = types.get(t).max_health;
+            let near = sim.spawn_unit(t, 0, FxVec3::from_ints(768 + 160 + 60 * i as i64, 60, 768 + 100), 0, true).unwrap();
+            let far = sim.spawn_unit(t, 0, FxVec3::from_ints(200 + 120 * i as i64, 60, 1400), 0, true).unwrap();
+            for id in [near, far] {
+                sim.set_health(id, most / 3);
+            }
+            patients.push((types.get(t).name.clone(), near, far, most));
+        }
+        let mu = sim.unit(m).unwrap();
+        println!(
+            "{} ({}) -> {} ({}): {}, its reach {reach:.0} px",
+            types.get(pad).name, types.get(pad).def.display_name, types.get(tower).name, types.get(tower).def.display_name,
+            if mu.carried_by == Some(p) { "taken on by the pad" } else if mu.carried_by.is_some() { "carried by another" } else { "standing beside it" }
+        );
+        for second in (0..=20).step_by(5) {
+            let line: Vec<String> = patients
+                .iter()
+                .map(|(name, near, far, most)| {
+                    let share = |id| sim.unit(id).map_or(0.0, |u| (u.health / *most).to_f64() * 100.0);
+                    format!("{name} beside it {:.0}%, far off {:.0}%", share(*near), share(*far))
+                })
+                .collect();
+            let doing = sim.unit(m).map(|u| format!("{:?}", u.orders.front())).unwrap_or_default();
+            println!("  {second:>2} s: {} (tower: {doing})", line.join("; "));
+            for _ in 0..150 {
+                fill(&mut sim);
+                sim.step(&[]);
+            }
+        }
+    }
 }

@@ -16,6 +16,12 @@ mod naval;
 #[path = "review_tests.rs"]
 mod review;
 
+#[path = "enhance_tests.rs"]
+mod enhancements;
+
+#[path = "adjacency_tests.rs"]
+mod adjacency;
+
 fn fixture() -> Sim {
     fixture_edit(|_| {})
 }

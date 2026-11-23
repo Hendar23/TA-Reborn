@@ -38,7 +38,7 @@ mod xray;
 
 pub(crate) use remaster::calm_sprite;
 
-pub use pads::lift_ground_pads;
+pub use pads::{flag_ground_plates, lift_ground_pads};
 
 pub const TEXTURE_SIZE: u32 = 64;
 const TEXTURE_MIPS: u32 = 7;
@@ -2644,7 +2644,7 @@ impl ModelRenderer {
                 paint_array(9),
                 paint_array(10),
                 // The paint of models with surfaces of their own, and where each material's is
-                // (surfaced.rs).
+                // (surfaced.rs); its fine array.
                 paint_array(11),
                 wgpu::BindGroupLayoutEntry {
                     binding: 12,
@@ -2656,6 +2656,7 @@ impl ModelRenderer {
                     },
                     count: None,
                 },
+                paint_array(13),
             ],
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -2918,11 +2919,15 @@ impl ModelRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 11,
-                    resource: wgpu::BindingResource::TextureView(&surfaces.view),
+                    resource: wgpu::BindingResource::TextureView(surfaces.views().0),
                 },
                 wgpu::BindGroupEntry {
                     binding: 12,
                     resource: surfaces.table.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 13,
+                    resource: wgpu::BindingResource::TextureView(surfaces.views().1),
                 },
             ],
         })
@@ -3314,6 +3319,74 @@ mod tests {
             }
         }
         println!("{found} plates in {models} models");
+    }
+
+    /// The ground plates the wrecks of the install (and of the mod `TA_TEST_MOD=<mod folder>`
+    /// mounted over it) drew, left out by `flag_ground_plates`: each, where it lies and how wide,
+    /// and how low the faces left drawn reach (`cargo test --release -p ta_render --lib
+    /// wreck_ground_plates -- --ignored --nocapture`). The Sea Serpent's, the EMP launcher's and
+    /// the Thud's among them, and the copies under two flagged ones (`armah_dead`'s,
+    /// `corckfus_dead`'s); left out once, nothing more is.
+    #[test]
+    #[ignore = "requires the locally installed original game"]
+    fn wreck_ground_plates_are_left_out() {
+        let Ok(install) = ta_vfs::install::discover(None) else { return };
+        let module = std::env::var("TA_TEST_MOD").ok().map(|dir| ta_vfs::mods::read_mod(std::path::Path::new(&dir)).unwrap().expect("a mod's folder"));
+        let mounted = ta_vfs::mods::mount(Some(&install.root), None, &module.iter().collect::<Vec<_>>(), &|m| m.manifest.id.clone());
+        mounted.install.unwrap();
+        mounted.mods.unwrap();
+        let vfs = mounted.vfs;
+        let fixed = |v: [i32; 3]| Vec3::new(v[0] as f32, v[1] as f32, -(v[2] as f32)) / FIXED_ONE;
+        // (A heap's model: `2x2a`.)
+        let heap = |n: &str| matches!(n.as_bytes(), [a, b'x', c, _] if a.is_ascii_digit() && c.is_ascii_digit());
+        let (mut models, mut plates, mut left_out) = (0, 0, Vec::new());
+        for path in vfs.list("objects3d", Some("3do"), true) {
+            let stem = path.rsplit('/').next().unwrap().trim_end_matches(".3do").to_ascii_lowercase();
+            if !(stem.ends_with("_dead") || heap(&stem)) {
+                continue;
+            }
+            let Ok(mut model) = Model3do::parse(&vfs.read(&path).unwrap()) else { continue };
+            models += 1;
+            let flagged: Vec<Option<usize>> = model.pieces.iter().map(|p| p.selection_primitive).collect();
+            let emptied: Vec<usize> = model.pieces.iter().map(|p| p.primitives.iter().filter(|q| q.indices.is_empty()).count()).collect();
+            let n = pads::flag_ground_plates(&mut model);
+            if n == 0 {
+                continue;
+            }
+            plates += n;
+            left_out.push(stem.clone());
+            assert_eq!(pads::flag_ground_plates(&mut model), 0, "{stem}: left out once");
+            let mut at: Vec<Vec3> = Vec::new();
+            for p in &model.pieces {
+                let o = fixed(p.offset);
+                at.push(p.parent.map_or(o, |q| at[q] + o));
+            }
+            let low = model
+                .pieces
+                .iter()
+                .enumerate()
+                .flat_map(|(qi, q)| q.primitives.iter().enumerate().filter(move |(j, pr)| Some(*j) != q.selection_primitive && pr.indices.len() >= 3).flat_map(move |(_, pr)| pr.indices.iter().map(move |&i| (qi, i))))
+                .map(|(qi, i)| at[qi].y + fixed(model.pieces[qi].vertices[i as usize]).y)
+                .fold(f32::MAX, f32::min);
+            for (pi, p) in model.pieces.iter().enumerate() {
+                let empty = p.primitives.iter().filter(|q| q.indices.is_empty()).count() - emptied[pi];
+                if p.selection_primitive != flagged[pi] {
+                    let k = p.selection_primitive.unwrap();
+                    let c: Vec<Vec3> = p.primitives[k].indices.iter().map(|&i| at[pi] + fixed(p.vertices[i as usize])).collect();
+                    let (a, b) = c.iter().fold((Vec3::MAX, Vec3::MIN), |(a, b), &q| (a.min(q), b.max(q)));
+                    println!("{stem:16} {:16} plate at {:5.2}, {:5.1} x {:5.1}, colour {:3}; the rest drawn from {low:6.2}", p.name, c[0].y, b.x - a.x, b.z - a.z, p.primitives[k].color_index);
+                }
+                if empty > 0 {
+                    println!("{stem:16} {:16} {empty} copy of its selection plate emptied", p.name);
+                }
+            }
+        }
+        println!("{plates} ground plates left out of {} of {models} wrecks and heaps", left_out.len());
+        if module.is_none() {
+            for wreck in ["armss_dead", "armemp_dead", "corthud_dead", "armah_dead"] {
+                assert!(left_out.iter().any(|w| w == wreck), "{wreck}'s plate");
+            }
+        }
     }
 
     #[test]

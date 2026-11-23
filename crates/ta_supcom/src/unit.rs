@@ -192,12 +192,41 @@ pub struct WeaponBlueprint {
     /// What it may aim at alone (`TargetRestrictOnlyAllow`: 'TACTICAL MISSILE', 'AIR'...), as
     /// written.
     pub only_allow: String,
+    /// It unpacks before it fires (`WeaponUnpacks`): see [`Unpack`].
+    pub unpack: Option<Unpack>,
     /// Its projectile's blueprint (`ProjectileId`'s), where the game has it.
     pub shot: Option<crate::projectile::ProjectileBlueprint>,
     /// What its projectile splits into as it lands, all its splits followed (the Salvation's
     /// shell into six, each of those into six more: 36 pieces, each with the shell's damage).
     pub split: Option<Split>,
     pub table: Table,
+}
+
+/// How a weapon that unpacks before it fires does (`WeaponUnpacks = true`; Forged Alliance's
+/// `lua/sim/defaultweapons.lua`, its `WeaponUnpackingState` and `WeaponPackingState`): given a
+/// target it plays its unpack animation (`WeaponUnpackAnimation`, at `WeaponUnpackAnimationRate`)
+/// and fires once it is done; with none left (or, a weapon whose missiles are counted, once it has
+/// fired) it waits `WeaponRepackTimeout` seconds and plays the animation back. One that locks its
+/// unit's motion (`WeaponUnpackLocksMotion`) keeps the unit where it stands from the moment it
+/// starts unpacking until it is packed up again.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Unpack {
+    /// The animation (the game's path, lower case); none named, it unpacks at once.
+    pub animation: Option<String>,
+    pub rate: f64,
+    pub repack: f64,
+    pub locks_motion: bool,
+}
+
+/// One of a factory's roll-off points (`Physics.RollOffPoints`): where a unit it makes is sent
+/// as it is done (ogrids from the factory's middle: `X`, `Z`; `Y` is never other than 0), and how
+/// its build bone is turned for it as it is built (`UnitSpin`, degrees by the right hand about y:
+/// 90 towards +x). The factory takes the one nearest its rally point (`CalculateRollOffPoint`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RollOffPoint {
+    pub x: f64,
+    pub z: f64,
+    pub spin: f64,
 }
 
 /// A projectile's pieces once it has split, all the way down: how many reach the ground, and the
@@ -254,6 +283,21 @@ pub struct Display {
     pub walk: Option<(String, f64)>,
     pub deaths: Vec<String>,
     pub build_attach_bone: Option<String>,
+    /// The turn its factory's build bone is given for it, whichever roll-off point it takes
+    /// (`ForcedBuildSpin`, degrees by the right hand about y as a point's `UnitSpin`): the long
+    /// transports and gunships, built along their air factories' platforms.
+    pub forced_build_spin: Option<f64>,
+    /// Every animation it names by a key of its own (`AnimationOpen`, `AnimationUpgrade`,
+    /// `LoopingAnimation`...: the key and the path, lower case), which its classes and its script
+    /// play as it works ([`crate::motions`]).
+    pub animations: Vec<(String, String)>,
+}
+
+impl Display {
+    /// The animation its key `key` names (any case).
+    pub fn animation(&self, key: &str) -> Option<&str> {
+        self.animations.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, path)| path.as_str())
+    }
 }
 
 /// What its wreck is worth (`Wreckage`): shares of its cost and its health.
@@ -262,6 +306,16 @@ pub struct Wreckage {
     pub mass: f64,
     pub energy: f64,
     pub health: f64,
+}
+
+/// A drone a structure keeps (`Economy.EngineeringPods`: the UEF's Kennel's), as its own blueprint
+/// gives it: its build power and how far round its station it looks for work (`AI.GuardScanRadius`,
+/// ogrids).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Pod {
+    pub id: String,
+    pub build_rate: f64,
+    pub reach: f64,
 }
 
 /// A unit's blueprint.
@@ -298,6 +352,8 @@ pub struct UnitBlueprint {
     pub size: [f64; 3],
     pub footprint: Option<[f64; 2]>,
     pub skirt: Option<[f64; 2]>,
+    /// A factory's roll-off points (`Physics.RollOffPoints`), in their order.
+    pub roll_off: Vec<RollOffPoint>,
     pub max_slope: Option<f64>,
     pub elevation: Option<f64>,
     pub max_airspeed: Option<f64>,
@@ -309,9 +365,24 @@ pub struct UnitBlueprint {
     pub wreckage: Option<Wreckage>,
     pub upgrades_to: Option<String>,
     pub upgrades_from: Option<String>,
+    /// Made only by upgrading a unit a player can make: no builder's lists name it (it has no
+    /// `BUILTBY…` category), and a unit of its faction a player makes, with build power, upgrades
+    /// into it (`General.UpgradesTo`), as the Kennel's and the Hives' later tiers and the Cybran
+    /// shield generator's are made. Set by [`catalogue`], which knows them all.
+    pub upgrade_only: bool,
+    /// The table of what it gives the structures beside it (`Adjacency =
+    /// 'T1PowerGeneratorAdjacencyBuffs'`: `crate::adjacency`).
+    pub adjacency: Option<String>,
+    /// Its drones (`Economy.EngineeringPods`), with what their blueprints say (set by
+    /// [`catalogue`]).
+    pub pods: Vec<Pod>,
     pub transport_class: Option<u32>,
     /// What its script switches off as it is made (`units/<id>/<id>_script.lua`).
     pub birth: crate::behaviour::Birth,
+    /// What its script's `CreateEnhancement` does for each enhancement it names.
+    pub enhancement_scripts: Vec<crate::behaviour::EnhancementScript>,
+    /// What its script spins, slides and plays as it works.
+    pub motions: crate::motions::Motions,
     pub table: Table,
 }
 
@@ -323,15 +394,34 @@ impl UnitBlueprint {
 
     /// Whether a player may make it in Forged Alliance's skirmish: of one of the four factions,
     /// in the game (not the campaign's own), and built by something (its `BUILTBY…` categories,
-    /// an air transport's `TRANSPORTBUILTBY…`), or a commander.
+    /// an air transport's `TRANSPORTBUILTBY…`), or a commander, or made by upgrading such a unit
+    /// ([`UnitBlueprint::upgrade_only`]: the tech 3 Kennel, the Hives of tech 2 and 3, which nothing
+    /// builds).
     pub fn playable(&self) -> bool {
+        self.built_by_something() || self.upgrade_only
+    }
+
+    /// [`UnitBlueprint::playable`] by its own categories alone: built by something, or a commander.
+    fn built_by_something(&self) -> bool {
         Faction::PLAYABLE.contains(&self.faction)
-            && (self.is("PRODUCTSC1") || self.is("PRODUCTFA"))
+            && self.in_the_game()
             && (self.is("COMMAND")
                 || self.categories.iter().any(|c| {
                     let c = c.to_ascii_uppercase();
                     c.starts_with("BUILTBY") || c.starts_with("TRANSPORTBUILTBY")
                 }))
+    }
+
+    /// Of the game rather than its campaign alone (`PRODUCTSC1`, `PRODUCTFA`).
+    fn in_the_game(&self) -> bool {
+        self.is("PRODUCTSC1") || self.is("PRODUCTFA")
+    }
+
+    /// Its size class among structures (`SIZE4` to `SIZE20`: how many of the smallest structures
+    /// fit round it, side by side), which says which of a neighbour's adjacency bonuses it takes
+    /// (`crate::adjacency`). None for a unit without one (walls, the engineering stations).
+    pub fn size_class(&self) -> Option<u32> {
+        self.categories.iter().find_map(|c| crate::adjacency::size_of(c))
     }
 
     /// Whether a builder whose `buildable` holds `expression` ('BUILTBYTIER1ENGINEER UEF') may
@@ -382,6 +472,19 @@ pub fn parse(id: &str, text: &str) -> Result<UnitBlueprint> {
     let size = [num(&[], "SizeX").unwrap_or(1.0), num(&[], "SizeY").unwrap_or(1.0), num(&[], "SizeZ").unwrap_or(1.0)];
     let footprint = num(&["Footprint"], "SizeX").zip(num(&["Footprint"], "SizeZ")).map(|(x, z)| [x, z]);
     let skirt = num(&["Physics"], "SkirtSizeX").zip(num(&["Physics"], "SkirtSizeZ")).map(|(x, z)| [x, z]);
+    let roll_off = table
+        .path(&["Physics", "RollOffPoints"])
+        .map(|t| {
+            t.array
+                .iter()
+                .filter_map(Value::table)
+                .map(|p| {
+                    let n = |k: &str| p.get_ci(k).and_then(Value::num).unwrap_or(0.0);
+                    RollOffPoint { x: n("X"), z: n("Z"), spin: n("UnitSpin") }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let intel = table.get_ci("Intel").and_then(Value::table).map_or_else(Intel::default, |t| {
         let n = |k: &str| t.get_ci(k).and_then(Value::num).unwrap_or(0.0);
         let b = |k: &str| t.get_ci(k).and_then(Value::bool).unwrap_or(false);
@@ -411,6 +514,11 @@ pub fn parse(id: &str, text: &str) -> Result<UnitBlueprint> {
         Wreckage { mass: n("MassMult"), energy: n("EnergyMult"), health: n("HealthMult") }
     });
     let blueprint_id = |s: Option<String>| s.filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_string());
+    // (Its drones by their blueprints' ids: what they are, `catalogue` reads.)
+    let pods = table
+        .path(&["Economy", "EngineeringPods"])
+        .map(|t| t.array.iter().filter_map(Value::table).filter_map(|p| p.get_ci("PodUnitID").and_then(Value::str)).map(|id| Pod { id: id.trim().to_ascii_uppercase(), ..Pod::default() }).collect())
+        .unwrap_or_default();
     Ok(UnitBlueprint {
         id: id.to_string(),
         faction: Faction::of(&general("FactionName").unwrap_or_default()),
@@ -439,6 +547,7 @@ pub fn parse(id: &str, text: &str) -> Result<UnitBlueprint> {
         size,
         footprint,
         skirt,
+        roll_off,
         max_slope: num(&["Footprint"], "MaxSlope"),
         elevation: num(&["Physics"], "Elevation"),
         max_airspeed: num(&["Air"], "MaxAirspeed"),
@@ -449,8 +558,13 @@ pub fn parse(id: &str, text: &str) -> Result<UnitBlueprint> {
         wreckage,
         upgrades_to: blueprint_id(general("UpgradesTo")),
         upgrades_from: blueprint_id(general("UpgradesFrom")),
+        upgrade_only: false,
+        adjacency: blueprint_id(text_at(&[], "Adjacency")),
+        pods,
         transport_class: num(&["Transport"], "TransportClass").map(|n| n as u32),
         birth: crate::behaviour::Birth::default(),
+        enhancement_scripts: Vec::new(),
+        motions: crate::motions::Motions::default(),
         categories,
         table,
     })
@@ -525,6 +639,12 @@ fn weapon(t: &Table) -> WeaponBlueprint {
         counted: b("CountedProjectile"),
         max_storage: n("MaxProjectileStorage").max(0.0) as u32,
         only_allow: s("TargetRestrictOnlyAllow").unwrap_or_default(),
+        unpack: b("WeaponUnpacks").then(|| Unpack {
+            animation: s("WeaponUnpackAnimation").map(|a| a.trim().trim_start_matches('/').to_ascii_lowercase()),
+            rate: t.get_ci("WeaponUnpackAnimationRate").and_then(Value::num).filter(|r| *r > 0.0).unwrap_or(1.0),
+            repack: n("WeaponRepackTimeout").max(0.0),
+            locks_motion: b("WeaponUnpackLocksMotion"),
+        }),
         shot: None,
         split: None,
         table: t.clone(),
@@ -573,12 +693,21 @@ fn display(id: &str, t: Option<&Table>) -> Display {
         .and_then(Value::table)
         .map(|d| d.array.iter().filter_map(Value::table).filter_map(|e| e.get_ci("Animation").and_then(Value::str)).map(|a| a.trim_start_matches('/').to_ascii_lowercase()).collect())
         .unwrap_or_default();
+    // (Its other animations, by their keys: `AnimationOpen = '/units/x/x_aopen.sca'`.)
+    let animations = t
+        .fields
+        .iter()
+        .filter(|(key, _)| key.to_ascii_lowercase().contains("animation"))
+        .filter_map(|(key, v)| v.str().filter(|p| p.to_ascii_lowercase().ends_with(".sca")).map(|p| (key.clone(), p.trim().trim_start_matches('/').to_ascii_lowercase())))
+        .collect();
     Display {
         uniform_scale: t.get_ci("UniformScale").and_then(Value::num).unwrap_or(1.0),
         lods,
         walk,
         deaths,
         build_attach_bone: t.get_ci("BuildAttachBone").and_then(Value::str).map(str::to_string),
+        forced_build_spin: t.get_ci("ForcedBuildSpin").and_then(Value::num).filter(|v| v.is_finite()),
+        animations,
     }
 }
 
@@ -620,7 +749,50 @@ pub fn catalogue(files: &crate::files::Files) -> Result<Vec<UnitBlueprint>> {
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
     attach(files, &mut out)?;
+    relate(&mut out);
     Ok(out)
+}
+
+/// What each of `units` is to the others: its drones as their blueprints have them
+/// ([`UnitBlueprint::pods`]), and whether it is made only by upgrading a unit a player can make
+/// ([`UnitBlueprint::upgrade_only`]), all the way along a chain of upgrades (the Hive of tech 1
+/// into that of tech 2, and that into tech 3's).
+pub fn relate(units: &mut [UnitBlueprint]) {
+    let pods: Vec<Vec<Pod>> = units
+        .iter()
+        .map(|u| {
+            u.pods
+                .iter()
+                .map(|p| match units.iter().find(|o| o.id.eq_ignore_ascii_case(&p.id)) {
+                    Some(o) => {
+                        let reach = o.table.path(&["AI"]).and_then(|a| a.get_ci("GuardScanRadius")).and_then(Value::num).unwrap_or(0.0);
+                        Pod { id: o.id.clone(), build_rate: o.build_rate, reach }
+                    }
+                    None => p.clone(),
+                })
+                .collect()
+        })
+        .collect();
+    for (u, p) in units.iter_mut().zip(pods) {
+        u.pods = p;
+    }
+    loop {
+        let reached: Vec<usize> = (0..units.len())
+            .filter(|&k| {
+                let u = &units[k];
+                !u.playable()
+                    && Faction::PLAYABLE.contains(&u.faction)
+                    && u.in_the_game()
+                    && units.iter().any(|from| from.playable() && from.faction == u.faction && from.id != u.id && from.build_rate > 0.0 && from.upgrades_to.as_deref().is_some_and(|to| to.eq_ignore_ascii_case(&u.id)))
+            })
+            .collect();
+        if reached.is_empty() {
+            break;
+        }
+        for k in reached {
+            units[k].upgrade_only = true;
+        }
+    }
 }
 
 /// How many times a projectile's splits are followed down (the deepest, the Salvation's, two).
@@ -638,7 +810,10 @@ pub fn attach(files: &crate::files::Files, units: &mut [UnitBlueprint]) -> Resul
     for u in units.iter_mut() {
         let id = u.id.to_ascii_lowercase();
         if let Some(bytes) = files.read(&format!("units/{id}/{id}_script.lua"))? {
-            u.birth = crate::behaviour::birth(&String::from_utf8_lossy(&bytes));
+            let text = String::from_utf8_lossy(&bytes);
+            u.birth = crate::behaviour::birth(&text);
+            u.enhancement_scripts = crate::behaviour::enhancements(&text);
+            u.motions = crate::motions::motions(&text);
         }
         for w in &mut u.weapons {
             let Some(path) = w.projectile.as_deref().map(crate::projectile::normalise) else { continue };
@@ -762,6 +937,71 @@ UnitBlueprint {
         assert_eq!(bp.display.lods[0].mesh, "units/uel0201/uel0201_lod0.scm");
         assert_eq!(bp.display.lods[1].albedo, "units/uel0201/uel0201_lod1_albedo.dds");
         assert_eq!(bp.wreckage, Some(Wreckage { mass: 0.9, energy: 0.0, health: 0.9 }));
+    }
+
+    /// A factory's roll-off points (in their order, `Y` not kept) and a weapon that unpacks: its
+    /// animation's path as the game's files name it (lower case, from the archive's root), its
+    /// rate (1 where none or none above 0 is given), its repack timeout and its hold on its unit;
+    /// a weapon that says it does not unpack, or says nothing, does not.
+    #[test]
+    fn roll_off_points_and_unpacking_weapons_read() {
+        let bp = parse(
+            "UEL0111",
+            "UnitBlueprint { Categories = { 'UEF', 'MOBILE' }, \
+             Physics = { RollOffPoints = { { UnitSpin = 90, X = 3, Y = 0, Z = 0.5 }, { UnitSpin = -90, X = -3, Y = 0, Z = 0 } } }, \
+             Weapon = { \
+               { Label = 'Launcher', WeaponUnpacks = true, WeaponUnpackAnimation = ' /units/UEL0111/UEL0111_aopen01.sca', \
+                 WeaponUnpackAnimationRate = 0, WeaponRepackTimeout = 1.5, WeaponUnpackLocksMotion = true }, \
+               { Label = 'Phalanx', WeaponUnpacks = true }, \
+               { Label = 'Gun', WeaponUnpacks = false, WeaponUnpackAnimation = '/units/x/x_aopen.sca' }, \
+               { Label = 'Plain' } } }",
+        )
+        .unwrap();
+        assert_eq!(bp.roll_off, [RollOffPoint { x: 3.0, z: 0.5, spin: 90.0 }, RollOffPoint { x: -3.0, z: 0.0, spin: -90.0 }]);
+        let unpack = |k: usize| bp.weapons[k].unpack.clone();
+        assert_eq!(
+            unpack(0),
+            Some(Unpack { animation: Some("units/uel0111/uel0111_aopen01.sca".into()), rate: 1.0, repack: 1.5, locks_motion: true })
+        );
+        assert_eq!(unpack(1), Some(Unpack { animation: None, rate: 1.0, repack: 0.0, locks_motion: false }), "unpacking at once");
+        assert_eq!((unpack(2), unpack(3)), (None, None));
+        let tank = parse("UEL0201", TANK).unwrap();
+        assert!(tank.roll_off.is_empty() && tank.display.forced_build_spin.is_none());
+        // A transport's turn on its factory's build bone, whatever point it takes.
+        let transport = parse("UEA0104", "UnitBlueprint { Categories = { 'UEF', 'AIR' }, Display = { UniformScale = 0.1, ForcedBuildSpin = 90 } }").unwrap();
+        assert_eq!(transport.display.forced_build_spin, Some(90.0));
+    }
+
+    /// A unit no builder's lists name, made by upgrading one a player makes, is a player's too,
+    /// all the way along its chain (the Hives: tech 1 into tech 2 into tech 3); not one a unit
+    /// with no build power names (a fabricator's), nor the campaign's. A station's drones are
+    /// read from their own blueprints.
+    #[test]
+    fn units_made_by_upgrading_alone_are_a_players() {
+        let bp = |id: &str, cats: &str, rest: &str| parse(id, &format!("UnitBlueprint {{ Categories = {{ {cats} }}, General = {{ FactionName = 'Cybran', {rest} }} }}")).unwrap();
+        // (Made-up figures.)
+        let mut hive1 = bp("XRB0104", "'PRODUCTFA', 'CYBRAN', 'STRUCTURE', 'BUILTBYCOMMANDER', 'ENGINEERSTATION'", "UpgradesTo = 'xrb0204'");
+        hive1.build_rate = 11.0;
+        let mut hive2 = bp("XRB0204", "'PRODUCTFA', 'CYBRAN', 'STRUCTURE', 'ENGINEERSTATION'", "UpgradesFrom = 'xrb0104', UpgradesTo = 'xrb0304'");
+        hive2.build_rate = 21.0;
+        let hive3 = bp("XRB0304", "'PRODUCTFA', 'CYBRAN', 'STRUCTURE', 'ENGINEERSTATION'", "UpgradesFrom = 'xrb0204'");
+        // (A fabricator naming an upgrade has no build power: it never upgrades.)
+        let fab = bp("URB1104", "'PRODUCTSC1', 'CYBRAN', 'STRUCTURE', 'BUILTBYTIER2ENGINEER'", "UpgradesTo = 'urb9999'");
+        let nowhere = bp("URB9999", "'PRODUCTSC1', 'CYBRAN', 'STRUCTURE'", "");
+        let mut campaign = bp("URB0999", "'CYBRAN', 'STRUCTURE'", "");
+        campaign.upgrades_from = Some("xrb0304".into());
+        let mut hive3_named = hive3.clone();
+        hive3_named.upgrades_to = Some("urb0999".into());
+        hive3_named.build_rate = 31.0;
+        let kennel = parse("XEB0104", "UnitBlueprint { Categories = { 'PRODUCTFA', 'UEF', 'STRUCTURE', 'BUILTBYTIER2ENGINEER', 'ENGINEERSTATION' }, General = { FactionName = 'UEF' }, Economy = { BuildRate = 18, EngineeringPods = { { PodUnitID = 'XEA3204', PodName = 'PodOne' } } } }").unwrap();
+        let drone = parse("XEA3204", "UnitBlueprint { AI = { GuardScanRadius = 12 }, Categories = { 'UEF', 'POD' }, General = { FactionName = 'UEF' }, Economy = { BuildRate = 12 } }").unwrap();
+        let mut all = vec![campaign, fab, nowhere, hive1, hive2, hive3_named, kennel, drone];
+        relate(&mut all);
+        let playable: Vec<&str> = all.iter().filter(|u| u.playable()).map(|u| u.id.as_str()).collect();
+        assert_eq!(playable, ["URB1104", "XRB0104", "XRB0204", "XRB0304", "XEB0104"]);
+        assert!(all.iter().filter(|u| u.upgrade_only).all(|u| u.id.starts_with("XRB0")), "built by none, made by upgrading");
+        let pods = &all.iter().find(|u| u.id == "XEB0104").unwrap().pods;
+        assert_eq!(pods, &[Pod { id: "XEA3204".into(), build_rate: 12.0, reach: 12.0 }]);
     }
 
     #[test]

@@ -94,7 +94,7 @@ impl Advice {
         // builder, Armageddon's, has nothing to build with.)
         let builds = |wanted: &dyn Fn(&ta_sim::UnitType) -> bool| can_build(sim, me, wanted);
         match self {
-            Advice::CommanderHurt => ours().any(|u| sim.unit_type(u).def.is_commander && u.health * 2 < sim.unit_type(u).max_health),
+            Advice::CommanderHurt => ours().any(|u| sim.unit_type(u).def.is_commander && u.health * 2 < u.max_health(sim.unit_type(u))),
             Advice::EnergyDry => dry(e.energy, e.energy_capacity, e.energy_income, e.energy_expense) && builds(&|_| true),
             Advice::MetalDry => dry(e.metal, e.metal_capacity, e.metal_income, e.metal_expense) && builds(&|_| true),
             Advice::NoFactory => sim.tick > 30 * 120 && !ours().any(|u| sim.unit_type(u).is_factory) && builds(&|t| t.is_factory),

@@ -291,7 +291,7 @@ fn content(p: &Painter, sp: &Space, a: f32, (r0, r1): (f32, f32), width: f32, e:
     let top = at.y - (icon + gap + label.size().y + extra) / 2.0 - sp.pt(2.0) - lift;
     let icon_rect = Rect::from_center_size(pos2(at.x, top + icon / 2.0), EVec2::splat(icon * (1.0 + 0.1 * hot)));
     if let Some(pic) = pic {
-        pic.paint(p, icon_rect, Color32::WHITE.gamma_multiply(alpha * if e.disabled { 0.5 } else { 1.0 }));
+        pic.paint_on(p, icon_rect, Color32::WHITE.gamma_multiply(alpha * if e.disabled { 0.5 } else { 1.0 }), e.ground);
         p.add(crate::hud::pic_frame(icon_rect, hot > 0.5));
     } else if let Some(glyph) = e.glyph {
         stamp(p, icon_rect, glyph, ink, alpha, skin.dark_ink_lit && hot > 0.5);

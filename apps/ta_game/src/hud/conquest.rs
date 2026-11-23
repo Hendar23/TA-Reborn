@@ -37,7 +37,7 @@ impl Hud {
         let team = game.setup.players.get(me).map_or(0, |s| s.team);
         let enemies: Vec<ta_ai::Difficulty> = game.setup.players.iter().enumerate()
             .filter(|&(p, s)| p != me && s.team != team)
-            .filter_map(|(_, s)| match s.controller { Controller::Ai(d) => Some(d), Controller::Human => None })
+            .filter_map(|(_, s)| match s.controller { Controller::Ai(d, _) => Some(d), Controller::Human => None })
             .collect();
         let rules = &game.setup.rules;
         let stayed = game.undeployed_conquest_veterans.len().min(cs.veterans.len());

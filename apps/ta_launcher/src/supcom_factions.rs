@@ -30,8 +30,9 @@ pub const MOD_NAME: &str = n("Supreme Commander factions");
 // here to be collected for translation, and held to `make`'s by a test.)
 #[cfg_attr(not(test), allow(dead_code))]
 const MOD_DESCRIPTION: &str = n("Supreme Commander: Forged Alliance's four factions, their units and buildings, made from your own copy of the game.");
-/// What a unit takes on the disk once made, about (its paint the most): 440 MB for the game's 357.
-const UNIT_BYTES: u64 = 1_230_000;
+/// What a unit takes on the disk once made, about (its paint the most, as large as Forged Alliance
+/// paints it: converter version 10): 680 MB for the game's 357.
+const UNIT_BYTES: u64 = 1_910_000;
 
 /// The mod's name as the interface shows it, in the language in use.
 pub fn mod_name() -> &'static str {

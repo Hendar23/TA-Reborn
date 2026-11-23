@@ -4,10 +4,13 @@
 //! time, so that the figures of all the units add up to the income and the spending the top
 //! bar shows.
 
+use ta_data::AdjacencyAffect;
+
 use crate::cob::TICKS_PER_SECOND;
 use crate::fixed::{Fx, FxVec3};
 use crate::sim::Sim;
-use crate::unit::Unit;
+use crate::sim::adjacency::scaled;
+use crate::unit::{Adjacency, Unit};
 use crate::world::World;
 
 /// Metal and energy made and used a second.
@@ -45,7 +48,16 @@ impl Sim {
     pub fn type_flows(&self, type_id: usize, pos: FxVec3) -> UnitFlows {
         let t = self.types.get(type_id);
         let origin = World::footprint_origin(World::pos_to_anchor(pos, t.footprint), t.footprint);
-        self.flows_of(type_id, true, true, Some(origin))
+        self.flows_of(type_id, true, true, Some(origin), None)
+    }
+
+    /// [`Sim::type_flows`] of one of `owner`'s, with what the finished buildings of theirs it would
+    /// touch there would give it (adjacency: `Sim::adjacency_preview`).
+    pub fn type_flows_beside(&self, type_id: usize, pos: FxVec3, owner: u8) -> UnitFlows {
+        let t = self.types.get(type_id);
+        let origin = World::footprint_origin(World::pos_to_anchor(pos, t.footprint), t.footprint);
+        let (taken, _) = self.adjacency_preview(type_id, pos, owner);
+        self.flows_of(type_id, true, true, Some(origin), taken.as_ref())
     }
 
     /// What `u` makes and uses a second now: a finished unit's production and upkeep (while it is
@@ -80,26 +92,30 @@ impl Sim {
             // (As the economy takes it: upkeep is paid while switched on, which TA does when a
             // unit is built or the player does; what is neither idles for free.)
             let active = u.activated || !t.def.on_offable && t.energy_use.is_zero();
-            f = self.flows_of(u.type_id, active, u.upkeep_paid, u.occupied_origin);
+            f = self.flows_of(u.type_id, active, u.upkeep_paid, u.occupied_origin, u.adjacency.as_deref());
         }
-        if u.cloak_on && t.def.cloak_cost > 0.0 && u.carried_by.is_none() {
-            let cost = if u.moving && t.def.cloak_cost_moving > 0.0 { t.def.cloak_cost_moving } else { t.def.cloak_cost };
-            f.energy_use += Fx::from_f64(cost);
+        if u.cloak_on && u.carried_by.is_none()
+            && let Some((still, on_the_move, _)) = u.cloak_costs(t)
+        {
+            f.energy_use += if u.moving && on_the_move > Fx::ZERO { on_the_move } else { still };
         }
         // Building: a second of its work, as a share of what it builds, at the builder's pace (as
         // `Sim::apply_build_power` has it: the engineer's perk and the build-speed mutator too;
         // nothing for mending one being taken apart).
         let working = u.is_complete() && u.carried_by.is_none() && self.tick >= u.paralyzed_until;
         if working && let Some(target) = u.build.and_then(|b| self.unit(b.target)).filter(|b| !b.dead && b.carried_by.is_none() && !b.is_complete() && !self.being_taken_apart(b)) {
-            let rate = self.mutator_work_rate(self.perk_work_rate(u.id, t.work_rate));
+            let rate = self.mutator_work_rate(self.perk_work_rate(u.id, u.work_rate(t)));
             let (tt, per_second) = (self.unit_type(target), rate.saturating_mul(TICKS_PER_SECOND as u64));
-            f.metal_use += tt.cost_metal.share(per_second, tt.build_work.max(1));
-            f.energy_use += tt.cost_energy.share(per_second, tt.build_work.max(1));
+            // (Less beside a building that cuts what building costs it: adjacency.)
+            let metal = scaled(tt.cost_metal, u.adjacency_factor(AdjacencyAffect::BuildMetal));
+            let energy = scaled(tt.cost_energy, u.adjacency_factor(AdjacencyAffect::BuildEnergy));
+            f.metal_use += metal.share(per_second, tt.build_work.max(1));
+            f.energy_use += energy.share(per_second, tt.build_work.max(1));
         }
         if working && u.in_build_stance && u.build.is_some() && let Some(crate::unit::Order::Resurrect(feature)) = u.orders.front()
             && let Some(type_id) = self.wreck_type(*feature).filter(|&t| self.is_allowed(t))
         {
-            let rate = self.mutator_work_rate(self.perk_work_rate(u.id, t.work_rate));
+            let rate = self.mutator_work_rate(self.perk_work_rate(u.id, u.work_rate(t)));
             let rt = self.types.get(type_id);
             if self.features[*feature].resurrect_work < rt.build_work {
                 f.energy_use += rt.cost_energy.share(rate.saturating_mul(TICKS_PER_SECOND as u64), rt.build_work);
@@ -109,15 +125,21 @@ impl Sim {
         // one does. Include it in the unit card's draw, stopping when full or switched off.
         if u.is_complete() && u.carried_by.is_none() && self.tick >= u.paralyzed_until
             && u.stockpile < crate::combat::MAX_STOCKPILE && (u.activated || !t.def.on_offable)
-            && let Some(w) = t.weapons.iter().flatten().map(|&w| self.weapon_types.get(w)).find(|w| w.def.stockpile)
+            && let Some(w) = u.weapon_slots(t).iter().flatten().map(|&w| self.weapon_types.get(w)).find(|w| w.def.stockpile)
         {
-            f.metal_use += w.metal_per_shot.share(TICKS_PER_SECOND as u64, w.reload_ticks.max(1) as u64);
-            f.energy_use += w.energy_per_shot.share(TICKS_PER_SECOND as u64, w.reload_ticks.max(1) as u64);
+            let metal = scaled(w.metal_per_shot, u.adjacency_factor(AdjacencyAffect::BuildMetal));
+            let energy = scaled(w.energy_per_shot, u.adjacency_factor(AdjacencyAffect::BuildEnergy));
+            f.metal_use += metal.share(TICKS_PER_SECOND as u64, w.reload_ticks.max(1) as u64);
+            f.energy_use += energy.share(TICKS_PER_SECOND as u64, w.reload_ticks.max(1) as u64);
         }
         f
     }
 
-    fn flows_of(&self, type_id: usize, active: bool, paid: bool, origin: Option<(i32, i32)>) -> UnitFlows {
+    /// What a unit of `type_id` makes and uses a second (switched on and its upkeep paid, or
+    /// not), with the metal under it at `origin` and what the buildings beside it give it
+    /// (`adjacency`), as `Sim::economy_end` counts it.
+    fn flows_of(&self, type_id: usize, active: bool, paid: bool, origin: Option<(i32, i32)>, adjacency: Option<&Adjacency>) -> UnitFlows {
+        let factor = |a: AdjacencyAffect| adjacency.filter(|j| !j.change[a.index()].is_zero()).map(|j| j.factor(a));
         let t = self.types.get(type_id);
         let per_tick = |v: Fx| v / TICKS_PER_SECOND;
         let mut energy = t.energy_make;
@@ -134,7 +156,7 @@ impl Sim {
             if t.energy_use < Fx::ZERO {
                 energy -= t.energy_use;
             } else if paid {
-                upkeep = t.energy_use;
+                upkeep = scaled(t.energy_use, factor(AdjacencyAffect::EnergyUse));
             }
         }
         if active && paid {
@@ -145,6 +167,7 @@ impl Sim {
                 metal += t.makes_metal;
             }
         }
+        let (energy, metal) = (scaled(energy, factor(AdjacencyAffect::EnergyMake)), scaled(metal, factor(AdjacencyAffect::MetalMake)));
         // (The resources mutator's flow.)
         let resources = self.mutators.resources;
         UnitFlows {

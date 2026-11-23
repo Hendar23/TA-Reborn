@@ -635,3 +635,23 @@ A button named in a launcher sentence goes in «», with кнопка where it i
 | Held until the import ends (amber note by greyed controls, also their tip) / Still to come | Недоступно до кінця імпорту / Ще в планах |
 | SC's commanders' enhancements / upgrading buildings in place / stealth fields / teleporting | удосконалення командирів / модернізація будівель на місці / поля невидимості (not маскування: TA's cloak) / телепортація |
 | then import these (a greyed IMPORT's tip, shared by the maps' and factions' tabs) | потім імпортуйте вибране (вибрані карти / вибрані фракції where one tab alone says it) |
+| experimental features / EXPERIMENTAL (tag) | експериментальні функції / ЕКСПЕРИМЕНТАЛЬНО |
+
+## Upgrades in place and a commander's enhancements (`hud/enhance.rs`, `hud/deck.rs`, `hud/info.rs`, `orders.rs`, `hud_classic.rs`)
+
+Forged Alliance's two features, in the terms the launcher's "Ще в планах" line already used. Enhancement names, slot names (LCH, RCH, Back) and unit names come from the data in English: no word agrees with them ("Спершу потрібно встановити {name}", "{costs} · потребує {name}", "{weapon}: посилено").
+
+| English | Українська |
+|---|---|
+| upgrade (in place) / Upgrade (the radial menu's order, a noun as Атака) / UPGRADE (classic button and tip title) / UPGR | модернізація (на місці) / Модернізація / МОДЕРНІЗАЦІЯ / МОДЕРН. |
+| upgrade into {name} / upgrading into / about to upgrade | модернізація до {name} ("Модернізація ({key}): до {name}") / Модернізується до {name}: {pct}% / Починає модернізацію до {name} (as "Починає наступний юніт") |
+| cannot upgrade into that (after "Неможливо виконати: ") | така модернізація недоступна |
+| enhancement(s) / ENHANCEMENTS (section) / ENHANCE (build-menu tab beside РЕСУРСИ, ЗАВОДИ...: it must stay short) / ENH | удосконалення / УДОСКОНАЛЕННЯ / УДОСКОН. / УДОСК. |
+| parts (what enhancements are) / slot / one a slot | модулі / слот (as СЛОТИ ТЕКСТУР) / по одному на слот |
+| install / installed / being installed / take out | встановити (Встановлює {name}, Починає встановлювати {name}) / встановлено / встановлюється / зняти (ПКМ: зняти; Знімає {name}) |
+| on its own build power (after {duration}) / it has no build power | власною будівельною потужністю / нема будівельної потужності |
+| Stop calls it off, its metal back | «Стоп» скасовує її (модернізацію) / скасовує встановлення й повертає метал |
+| Shift: queued / queued after the upgrade under way | Shift: у чергу / у чергу після поточної модернізації |
+| {n} more kinds (to build) / and {more} others | "Будує нові типи ({n}): {names} і ще {more}" (типи as УСІ ТИПИ) |
+| range {from} to {to} / mends {n} hit points a second | "дальність {to} замість {from}" (no arrow, no span reading) / "Відновлює {n} здоров'я за секунду" |
+| {n} of the selection upgrade | Серед виділених модернізуються: {n} |

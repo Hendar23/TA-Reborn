@@ -570,3 +570,28 @@ End). Words only a screen reader says are natural spoken phrases ({content}を�
 | {seconds} s / SHOW {count} MORE / SHOW THE LATEST TEN | {seconds}秒 / 残り{count}件を表示 / 最新10件のみ表示 |
 | LEGAL / THE PROJECT (About page headings) / MUSIC OPTIONS | 法的情報 / プロジェクト / 音楽のオプション |
 | the launcher crashed / exception {code} | ランチャーがクラッシュしました / 例外{code} |
+| experimental features / EXPERIMENTAL (tag) | 試験的な機能 / 試験的 |
+
+## Forged Alliance's upgrades and enhancements (`orders.rs`, `hud/deck.rs`, `hud/enhance.rs`, `hud/info.rs`, `hud_classic.rs`)
+
+アップグレード is a building turning into its next version on its own build power (never
+アップデート, the launcher's); 強化 is a commander's optional part, 装着 on itself (the
+launcher's software keeps インストール). Refusal reasons after 「実行できません：」 are polite
+clauses without 。. Effect lines are terse nouns (建設力 +{n}, 視界 +{n}).
+
+| English | 日本語 |
+|---|---|
+| upgrade (in place) / Upgrade (the order) / Upgrade in place (key binding) | アップグレード / アップグレード / その場でアップグレード |
+| Upgrading into {name} / About to upgrade into {name} / into {name} (a tip's) | {name}にアップグレード中 / {name}へのアップグレードを準備中 / {name}へ |
+| UPGRADE / UPGR (TA's side panel, long and short) | アップグレード / 格上げ |
+| enhancement / ENHANCE (tab) / ENHANCEMENTS (heading) / ENH (side panel) | 強化 / 強化 / 強化 / 強化 |
+| slot (an enhancement's; the slot's own name stays as the data gives it) | スロット（スロット {slot}、1スロットに1つ） |
+| install / installed / being installed, installing / take out, taking out | 装着 / 装着済み / 装着中 / 取り外し、取り外し中 |
+| install it in place of {name} / {name} first, then this one | {name}と入れ替えて装着 / 先に{name}、続けてこれを装着 |
+| on its own build power ({duration}) | 自身の建設力で{duration} |
+| Stop calls it off, its metal back | 「停止」で中止すると金属が戻ります |
+| Shift: queued / queued after the upgrade under way | Shift：キューに追加 / 進行中のアップグレードに続けてキューに追加 |
+| it works on (while it upgrades) | 稼働を続けます |
+| Builds {n} more kinds: {names} and {more} others | 新たに{n}種を建設可能：{names}ほか{more}種 |
+| Mends {n} hit points a second | 毎秒HPを{n}回復 |
+| {weapon}: range {from} to {to} / stronger / Weapon: {weapon} | {weapon}：射程 {from} → {to} / 威力上昇 / 武器：{weapon} |

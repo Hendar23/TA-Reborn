@@ -7,6 +7,7 @@ use ta_data::{GameData, MapInfo};
 use ta_formats::tdf;
 use ta_render::Renderer;
 use ta_sim::UnitTypes;
+use ta_ui::i18n::n;
 use ta_vfs::Vfs;
 
 /// Everything that does not change between matches.
@@ -135,7 +136,83 @@ pub fn resolve_side<'a>(data: &'a ta_data::GameData, key: &'a str) -> (&'a str, 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Controller {
     Human,
+    /// A computer player: its difficulty and persona (how it plays; `Persona::Random` is drawn
+    /// from the game's seed as the battle starts, the same on every machine).
+    Ai(ta_ai::Difficulty, ta_ai::Persona),
+}
+
+impl Controller {
+    /// A computer player of a difficulty, balanced (missions, Conquest, scenarios).
+    pub fn ai(difficulty: ta_ai::Difficulty) -> Controller {
+        Controller::Ai(difficulty, ta_ai::Persona::Balanced)
+    }
+}
+
+/// A difficulty's name as the interface gives it (through `t`).
+pub fn difficulty_name(difficulty: ta_ai::Difficulty) -> &'static str {
+    match difficulty {
+        ta_ai::Difficulty::Easy => n("Easy"),
+        ta_ai::Difficulty::Normal => n("Normal"),
+        ta_ai::Difficulty::Hard => n("Hard"),
+    }
+}
+
+/// What the difficulties mean, for the tooltip of the control choosing one (through `t`).
+pub const DIFFICULTY_HINT: &str = n("How well this computer player plays. Easy: slow to build up, gentle attacks, for learning. Normal: a fair fight. Hard: builds up fast, attacks in force and climbs the tech tree.");
+
+/// A persona's name as the interface gives it (through `t`).
+pub fn persona_name(persona: ta_ai::Persona) -> &'static str {
+    match persona {
+        ta_ai::Persona::Balanced => n("Balanced"),
+        ta_ai::Persona::Rush => n("Rush"),
+        ta_ai::Persona::Turtle => n("Turtle"),
+        ta_ai::Persona::Tech => n("Tech"),
+        ta_ai::Persona::Air => n("Air"),
+        ta_ai::Persona::Naval => n("Naval"),
+        ta_ai::Persona::Random => n("Random"),
+    }
+}
+
+/// How a persona plays, for its tooltip (through `t`).
+pub fn persona_hint(persona: ta_ai::Persona) -> &'static str {
+    match persona {
+        ta_ai::Persona::Balanced => n("A bit of everything: its economy, an army and defences, up the tech tree in turn."),
+        ta_ai::Persona::Rush => n("Attacks early and often with its first units: more factories, few defences, the tech tree late."),
+        ta_ai::Persona::Turtle => n("Digs in: towers, heavy defences, anti-nuclear cover and long-range guns. Attacks late, in force."),
+        ta_ai::Persona::Tech => n("Races up the tech tree: advanced units, nuclear missiles and experimentals as soon as it can."),
+        ta_ai::Persona::Air => n("Takes to the air: an aircraft plant early, then bombers and gunships."),
+        ta_ai::Persona::Naval => n("Takes to the sea where the sea reaches its enemies: shipyards early, a large fleet. On dry land it plays Balanced."),
+        ta_ai::Persona::Random => n("One of the others, drawn as the battle starts."),
+    }
+}
+
+/// What a persona is, for the tooltip of the control choosing one (through `t`).
+pub const PERSONA_HINT: &str = n("How this computer player plays: what it builds, and when it attacks.");
+
+/// [`Controller`] as saved games and replays before record version 47 laid it out: a computer
+/// player without a persona (it played as Balanced does).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ControllerV46 {
+    Human,
     Ai(ta_ai::Difficulty),
+}
+
+impl From<ControllerV46> for Controller {
+    fn from(old: ControllerV46) -> Controller {
+        match old {
+            ControllerV46::Human => Controller::Human,
+            ControllerV46::Ai(d) => Controller::ai(d),
+        }
+    }
+}
+
+impl From<Controller> for ControllerV46 {
+    fn from(c: Controller) -> ControllerV46 {
+        match c {
+            Controller::Human => ControllerV46::Human,
+            Controller::Ai(d, _) => ControllerV46::Ai(d),
+        }
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -149,6 +226,29 @@ pub struct SlotSetup {
     pub team: u8,
     /// The person's name in multiplayer ("" for the local player and computers).
     pub name: String,
+}
+
+/// [`SlotSetup`] as records before version 47 laid it out (its controller without a persona).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SlotSetupV46 {
+    pub side: String,
+    pub color: u8,
+    pub controller: ControllerV46,
+    pub start: usize,
+    pub team: u8,
+    pub name: String,
+}
+
+impl From<SlotSetupV46> for SlotSetup {
+    fn from(old: SlotSetupV46) -> SlotSetup {
+        SlotSetup { side: old.side, color: old.color, controller: old.controller.into(), start: old.start, team: old.team, name: old.name }
+    }
+}
+
+impl From<&SlotSetup> for SlotSetupV46 {
+    fn from(s: &SlotSetup) -> SlotSetupV46 {
+        SlotSetupV46 { side: s.side.clone(), color: s.color, controller: s.controller.into(), start: s.start, team: s.team, name: s.name.clone() }
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -207,14 +307,14 @@ pub struct ConquestStart {
 }
 
 /// [`GameSetup`] as saved games and replays before record version 42 laid it out, its
-/// Conquest battle without reinforcements, defence or perks (and its rules without mutators):
-/// read from those and brought up to date, and written so again when such a record is (it never
-/// had either).
+/// Conquest battle without reinforcements, defence or perks (and its rules without mutators,
+/// its computer players without personas): read from those and brought up to date, and written
+/// so again when such a record is (it never had either).
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct LegacySetup {
     pub map: String,
     #[serde(deserialize_with = "ta_sim::serde_limits::vector::<_, _, 64>")]
-    pub players: Vec<SlotSetup>,
+    pub players: Vec<SlotSetupV46>,
     pub local_player: Option<u8>,
     pub seed: u64,
     pub mission: Option<MissionStart>,
@@ -223,12 +323,13 @@ pub struct LegacySetup {
     pub scenario: Option<ScenarioStart>,
 }
 
-/// [`GameSetup`] as record version 42 laid it out: the rules without mutators.
+/// [`GameSetup`] as record version 42 laid it out: the rules without mutators (the computer
+/// players without personas).
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct SetupV42 {
     pub map: String,
     #[serde(deserialize_with = "ta_sim::serde_limits::vector::<_, _, 64>")]
-    pub players: Vec<SlotSetup>,
+    pub players: Vec<SlotSetupV46>,
     pub local_player: Option<u8>,
     pub seed: u64,
     pub mission: Option<MissionStart>,
@@ -288,7 +389,7 @@ impl From<&ta_sim::GameRules> for LegacyRules {
 
 impl From<SetupV42> for GameSetup {
     fn from(old: SetupV42) -> GameSetup {
-        GameSetup { map: old.map, players: old.players, local_player: old.local_player, seed: old.seed, mission: old.mission, rules: old.rules.into(), conquest: old.conquest, scenario: old.scenario }
+        GameSetup { map: old.map, players: old.players.into_iter().map(SlotSetup::from).collect(), local_player: old.local_player, seed: old.seed, mission: old.mission, rules: old.rules.into(), conquest: old.conquest, scenario: old.scenario }
     }
 }
 
@@ -296,7 +397,7 @@ impl From<&GameSetup> for SetupV42 {
     fn from(setup: &GameSetup) -> SetupV42 {
         SetupV42 {
             map: setup.map.clone(),
-            players: setup.players.clone(),
+            players: setup.players.iter().map(SlotSetupV46::from).collect(),
             local_player: setup.local_player,
             seed: setup.seed,
             mission: setup.mission.clone(),
@@ -334,7 +435,42 @@ impl From<LegacySetup> for GameSetup {
             defence: false,
             perks: Vec::new(),
         });
-        GameSetup { map: old.map, players: old.players, local_player: old.local_player, seed: old.seed, mission: old.mission, rules: old.rules.into(), conquest, scenario: old.scenario }
+        GameSetup { map: old.map, players: old.players.into_iter().map(SlotSetup::from).collect(), local_player: old.local_player, seed: old.seed, mission: old.mission, rules: old.rules.into(), conquest, scenario: old.scenario }
+    }
+}
+
+/// [`GameSetup`] as record versions 43 to 46 laid it out: its computer players without personas.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct SetupV46 {
+    pub map: String,
+    #[serde(deserialize_with = "ta_sim::serde_limits::vector::<_, _, 64>")]
+    pub players: Vec<SlotSetupV46>,
+    pub local_player: Option<u8>,
+    pub seed: u64,
+    pub mission: Option<MissionStart>,
+    pub rules: ta_sim::GameRules,
+    pub conquest: Option<ConquestStart>,
+    pub scenario: Option<ScenarioStart>,
+}
+
+impl From<SetupV46> for GameSetup {
+    fn from(old: SetupV46) -> GameSetup {
+        GameSetup { map: old.map, players: old.players.into_iter().map(SlotSetup::from).collect(), local_player: old.local_player, seed: old.seed, mission: old.mission, rules: old.rules, conquest: old.conquest, scenario: old.scenario }
+    }
+}
+
+impl From<&GameSetup> for SetupV46 {
+    fn from(setup: &GameSetup) -> SetupV46 {
+        SetupV46 {
+            map: setup.map.clone(),
+            players: setup.players.iter().map(SlotSetupV46::from).collect(),
+            local_player: setup.local_player,
+            seed: setup.seed,
+            mission: setup.mission.clone(),
+            rules: setup.rules.clone(),
+            conquest: setup.conquest.clone(),
+            scenario: setup.scenario.clone(),
+        }
     }
 }
 
@@ -351,7 +487,7 @@ impl From<&GameSetup> for LegacySetup {
         });
         LegacySetup {
             map: setup.map.clone(),
-            players: setup.players.clone(),
+            players: setup.players.iter().map(SlotSetupV46::from).collect(),
             local_player: setup.local_player,
             seed: setup.seed,
             mission: setup.mission.clone(),
@@ -403,7 +539,7 @@ impl GameSetup {
                 SlotSetup {
                     side: side.into(),
                     color: if side == "ARM" { 0 } else { 1 + (i as u8).saturating_sub(1) * 2 },
-                    controller: if i == 0 { Controller::Human } else { Controller::Ai(ai) },
+                    controller: if i == 0 { Controller::Human } else { Controller::ai(ai) },
                     start: i,
                     // The computer players of a mission are all against the human.
                     team: (i > 0) as u8,
@@ -432,7 +568,7 @@ impl GameSetup {
             map: map.to_string(),
             players: vec![
                 SlotSetup { side: "ARM".into(), color: 0, controller: Controller::Human, start: 0, team: 0, name: String::new() },
-                SlotSetup { side: "CORE".into(), color: 1, controller: Controller::Ai(ta_ai::Difficulty::Normal), start: 1, team: 1, name: String::new() },
+                SlotSetup { side: "CORE".into(), color: 1, controller: Controller::ai(ta_ai::Difficulty::Normal), start: 1, team: 1, name: String::new() },
             ],
             local_player: Some(0),
             seed: 0xC0FFEE,

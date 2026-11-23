@@ -33,9 +33,10 @@ pub const MAX_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
 /// data hash covering the units a campaign mission allows (`camps/useonly`, which 41 to 44 left
 /// out: a mod changing them passed the check); 46, the mods it was made with (`records::RecordMod`,
 /// in load order, in a trailer of their own: `records::append_mods`), so a player can be told which
-/// to get or turn on. Simulation changes no longer imply an unreadable file; update
-/// [`SIMULATION_VERSION`] for those instead.
-pub const RECORD_VERSION: u32 = 46;
+/// to get or turn on; 47, each computer player's persona beside its difficulty (how it plays:
+/// Balanced, Rush, Turtle...; 36 to 46 are read as Balanced). Simulation changes no longer imply an
+/// unreadable file; update [`SIMULATION_VERSION`] for those instead.
+pub const RECORD_VERSION: u32 = 47;
 /// Deterministic simulation revision, separate from the record's file layout. Saved
 /// games resume only on a matching revision; older replays can be watched with a warning.
 /// Revision 40 includes factory ownership, transport recovery and AI cancelled-job fixes; 41,
@@ -174,9 +175,46 @@ pub const RECORD_VERSION: u32 = 46;
 /// and its heap) pays its metal alone when reclaimed; 102, an interceptor's `interceptor` and a
 /// missile's `targetable` are sets of classes (as the Spring engine reads them): an interceptor
 /// shoots down only the missiles whose classes it shares (TA's own all class 1), and once they are
-/// within its range; the no-nukes mutator leaves out the strategic class alone.
-/// 103: direct unit possession, steering and manual weapon control.
-pub const SIMULATION_VERSION: u32 = 103;
+/// within its range; the no-nukes mutator leaves out the strategic class alone; 103, a builder whose
+/// `DefaultMissionType` is `RepairPatrol` (TA: Escalation's repair tower upgrades) mends the damaged
+/// units round it by itself when idle, and works as a module on the pad that took it on; 104, a unit
+/// with `UpgradesTo` upgrades in place (`Order::Upgrade`: built on itself with its build power and
+/// its helpers', paid and stalled as construction, a factory making nothing meanwhile; called off,
+/// its metal back), and the computer players upgrade their factories up the tiers and their
+/// extractors; a unit's `[ENHANCEMENTS]` are installed on it (`Order::Enhance`: one a slot, built and
+/// paid as an upgrade, its numbers, weapons, menu, sensors and cloak added to the unit's), and the
+/// computer players install engineering suites and gun upgrades on their commanders; 105, computer
+/// players play their personas (the tiers, upgrades and engineering suites sooner or later as
+/// theirs has it), clear the wreckage shutting their ways (and a scenario's waves break up what
+/// shuts theirs), put up anti-nuclear cover, silos, heavy defences, long-range guns that shell the
+/// enemy's base and experimentals, and build or upgrade more of the top tier as their economy
+/// grows; a constructor's unit built in the field goes on with the frame laid for its order's
+/// site, however far it was pushed off it, rather than starting another (and a frame laid for
+/// another order's site nearby is that order's); 106, computer players tell strategic silos from
+/// tactical launchers (the Supreme Commander factions' strategic ones put up by their tech 3
+/// engineers, tactical ones beside them striking defences, tactical defences against an enemy
+/// launcher seen), help build the experimentals in their factories' yards and hold part of their
+/// production back for them and for strategic silos, build them at the army's size limit and only
+/// on an income that can pay for them, and lean to tech 3 once its factories stand; 107, a
+/// factory with ways out (`[EXITS]`, Supreme Commander's roll-off points) builds its units facing
+/// the one nearest where they go (or as a unit's `BuildHeading` says) and sends them out along it,
+/// on its floor and down its ramp; a script may hold its unit still (`IMMOBILE`, told
+/// `StartMoving` when it has somewhere to go); a weapon naming its only targets
+/// (`OnlyTargetCategory<n>`) takes no other, by order too; 108, a building's `[ADJACENCY]` gives
+/// the finished buildings of its player touching it its bonuses (Supreme Commander's adjacency:
+/// what building costs, upkeep, what is made, a shot's energy, a reload), a frame or an upgrade
+/// given up and a unit its side takes apart give back what was paid for them, builders whose
+/// `DefaultMissionType` is `AssistPatrol` (the factions' engineering stations) help build, mend and
+/// reclaim wreckage round them by themselves, the work a building found itself gives way to its
+/// player's next order, and the computer players put their power generators up beside their
+/// factories and their storage beside their extractors where that pays; 109, a missile's speed
+/// goes from its `startvelocity` by its `weaponacceleration` towards its `weaponvelocity` (one
+/// launched faster than its top speed is not pulled down to it: TA: Escalation's vertical
+/// missiles slow as they fly instead of hanging over their launchers; launched upright at a
+/// negative speed, one drops), and a shot leaves from where its firing piece is once the weapon's
+/// fire function has run as far as its first wait.
+/// 110: direct unit possession, steering and assisted weapon aiming.
+pub const SIMULATION_VERSION: u32 = 110;
 /// Records shorter than one year of simulated time are supported. Shared with the
 /// launcher's metadata reader so impossible durations cannot start endless save catch-up.
 pub const MAX_RECORD_TICKS: u64 = 30 * 3600 * 24 * 365;
@@ -241,6 +279,11 @@ pub struct Launcher {
     /// The newest version whose news the player has been shown (the launcher shows what is new
     /// once after an update); empty before the first start.
     pub seen_version: String,
+    /// The launcher shows the features still being tried out (Settings, LAUNCHER: ENABLE
+    /// EXPERIMENTAL FEATURES), the Supreme Commander import among them; off, they are left out of
+    /// it, and what they made before stays as it is. Off by default: they ship before they are
+    /// ready for everyone, for testers to try early.
+    pub experimental_features: bool,
 }
 
 impl Default for Launcher {
@@ -253,6 +296,7 @@ impl Default for Launcher {
             window: None,
             maximized: false,
             seen_version: String::new(),
+            experimental_features: false,
         }
     }
 }
@@ -327,6 +371,7 @@ impl Keys {
         ("on_off", "On / off", "X"),
         ("duty", "Duty: the constructors work by themselves (economy, repair, reclaim, defence, then none)", "Alt+D"),
         ("cloak", "Cloak / decloak", "K"),
+        ("upgrade", "Upgrade in place (with Shift: queued after the upgrade under way)", "Alt+U"),
         ("self_destruct", "Self-destruct", "Ctrl+D"),
         ("select_all", "Select everything", "Ctrl+A"),
         ("select_commander", "Select the Commander", "Ctrl+C"),
@@ -359,6 +404,7 @@ impl Keys {
         ("players", "Players panel (hold)", "Tab"),
         ("share", "Share resources and units with an ally", "H"),
         ("health_bars", "Health bars: damaged units, every damaged unit, the selection", "Backtick"),
+        ("range_overlays", "Ranges: all, radar, sonar and jammers only, none", "Alt+O"),
         ("quick_save", "Quick save (single player)", "Ctrl+Shift+S"),
         ("cheats", "Cheats (single player)", "Ctrl+Alt+C"),
         ("scroll_up", "Scroll up (Ctrl: tilt)", "Up"),
@@ -607,6 +653,19 @@ pub enum HealthBars {
     Damaged,
     /// Only selected and hovered units.
     Selected,
+}
+
+/// Which ranges show round the selected units, the building being placed and the unit the
+/// pointer rests on (on the battlefield and the minimap).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RangeOverlays {
+    /// What they reach with their weapons, sight, radar, sonar, jammers and missile defence.
+    #[default]
+    All,
+    /// Their radar, sonar and jammers' reach only.
+    Sensors,
+    /// None.
+    Off,
 }
 
 /// What plays behind the game's title menu.
@@ -1221,6 +1280,8 @@ pub struct Gameplay {
     /// Single-player games save themselves every five minutes of game time.
     pub autosave: bool,
     pub health_bars: HealthBars,
+    /// Which ranges the selected units (the building being placed, the unit pointed at) show.
+    pub range_overlays: RangeOverlays,
     /// Far out, each unit also shows as an icon in its owner's colour (strategic zoom); off: the
     /// units alone at every height.
     pub strategic_icons: bool,
@@ -1311,6 +1372,7 @@ impl Default for Gameplay {
             ui_scale: 1.0,
             autosave: true,
             health_bars: HealthBars::Auto,
+            range_overlays: RangeOverlays::All,
             strategic_icons: true,
             ta_cursors: true,
             classic_interface: false,
@@ -1766,7 +1828,7 @@ mod preset_tests {
     fn the_launcher_takes_the_shared_keys_and_only_those() {
         // (Every field set apart from its default: a new one has to be set here too.)
         let other = Launcher { on_play: OnPlay::Close, seasonal_effects: false, seasonal_theme: SeasonalTheme::Halloween, themed_cursor: false,
-            window: Some([800.0, 600.0]), maximized: true, seen_version: "9.9.9".into() };
+            window: Some([800.0, 600.0]), maximized: true, seen_version: "9.9.9".into(), experimental_features: true };
         let mut mine = Launcher::default();
         mine.take_shared(&other);
         let value = |launcher: &Launcher| toml::Value::try_from(launcher).unwrap();
@@ -2182,6 +2244,20 @@ mod tests {
         assert!(!config.launcher.themed_cursor);
         let restored: Config = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
         assert!(!restored.launcher.themed_cursor);
+    }
+
+    /// Experimental features are off until the player turns them on, settings written before the
+    /// switch included, and stay on once turned on.
+    #[test]
+    fn experimental_features_are_off_until_turned_on() {
+        for source in ["", "[launcher]", "[launcher]\nthemed_cursor = false"] {
+            let config: Config = toml::from_str(source).unwrap();
+            assert!(!config.launcher.experimental_features, "{source:?}");
+        }
+        let config: Config = toml::from_str("[launcher]\nexperimental_features = true").unwrap();
+        assert!(config.launcher.experimental_features);
+        let restored: Config = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert!(restored.launcher.experimental_features);
     }
 
     #[test]

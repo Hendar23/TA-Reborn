@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use ta_supcom::files::Files;
 use ta_supcom::install::{self, Install, Store};
 use ta_formats::surface::Material;
-use ta_supcom::factions::{faction, make, model, pictures, textures, units};
+use ta_supcom::factions::{anims, enhance, faction, make, model, pictures, textures, units, work};
 use ta_supcom::unit::{self, Faction, Tech};
 use ta_supcom::{sca, scm};
 
@@ -324,8 +324,9 @@ fn the_mod_is_made_the_same_twice() {
 }
 
 /// Every unit a player can make is reached from its faction's commander: what each builder
-/// builds (its lists' categories, and the buildings made only by upgrading what it builds: the
-/// tech 2 and 3 factories), and what those build, all the way down.
+/// builds (its lists' categories), what each upgrades into in place (the tech 2 and 3 factories,
+/// which nothing builds outright), what its enhancements add to its menu (the engineering
+/// suites'), and what those build and upgrade into, all the way down.
 #[test]
 #[ignore]
 fn every_playable_unit_is_reached_from_its_commander() {
@@ -340,6 +341,8 @@ fn every_playable_unit_is_reached_from_its_commander() {
         let lists = faction::all_builds(&theirs);
         let commander = faction::commander(&theirs).expect("a commander");
         let mut reached: Vec<String> = vec![commander.id.clone()];
+        let mut upgrades = 0;
+        let mut by_enhancements: Vec<String> = Vec::new();
         let mut k = 0;
         while k < reached.len() {
             if let Some((_, built)) = lists.iter().find(|(b, _)| b.id == reached[k]) {
@@ -349,15 +352,92 @@ fn every_playable_unit_is_reached_from_its_commander() {
                     }
                 }
             }
+            if let Some(u) = theirs.iter().find(|u| u.id == reached[k]) {
+                let own = units::weapons(u);
+                let extra = enhance::extra_weapons(u, &own);
+                for e in enhance::enhancements(u, &theirs, &own, &extra).0 {
+                    for o in e.build_options {
+                        if let Some(b) = theirs.iter().find(|b| b.id.eq_ignore_ascii_case(&o))
+                            && !reached.contains(&b.id)
+                        {
+                            reached.push(b.id.clone());
+                            by_enhancements.push(b.id.clone());
+                        }
+                    }
+                }
+            }
+            if let Some(u) = theirs.iter().find(|u| u.id == reached[k]).and_then(|u| faction::upgrade_of(u, &theirs)) {
+                upgrades += 1;
+                if !reached.contains(&u.id) {
+                    reached.push(u.id.clone());
+                }
+            }
             k += 1;
         }
         let missing: Vec<&str> = theirs.iter().filter(|u| !reached.contains(&u.id)).map(|u| u.id.as_str()).collect();
-        eprintln!("{}: {} of {} reached from {}", f.name(), reached.len(), theirs.len(), commander.id);
+        eprintln!("{}: {} of {} reached from {} ({upgrades} upgrade in place; {} first through its enhancements' menus)", f.name(), reached.len(), theirs.len(), commander.id, by_enhancements.len());
+        // Nothing builds what is made by upgrading alone: the factories of tech 2 and 3.
+        for (b, built) in &lists {
+            for u in built {
+                assert!(!(u.is("FACTORY") && u.motion == unit::Motion::None && matches!(u.tech, Some(unit::Tech::T2 | unit::Tech::T3)) && u.upgrades_from.is_some()), "{}: {} builds {}", f.name(), b.id, u.id);
+            }
+        }
         assert!(missing.is_empty(), "{}: not reached: {missing:?}", f.name());
         // The commander builds its own tier: not what its engineering enhancements bring.
         let own = faction::builds(commander, &theirs);
         assert!(!own.iter().any(|u| u.is("BUILTBYTIER2COMMANDER") || u.is("BUILTBYTIER3COMMANDER")), "{}: {:?}", f.name(), own.iter().map(|u| &u.id).collect::<Vec<_>>());
     }
+}
+
+/// The commanders' and support commanders' enhancements as TA Reborn plays them: every commander
+/// has its engineering suites (tech 2, then tech 3 over it, units on their menus that FA keeps
+/// from the commander until then) and a gun upgrade; every prerequisite is among them, in the
+/// same slot where it is a suite; each has a price, and an effect.
+#[test]
+#[ignore]
+fn the_commanders_enhancements_are_played() {
+    let Some(game) = the_game() else {
+        eprintln!("no copy of Forged Alliance found: nothing to read");
+        return;
+    };
+    let files = Files::own(&game).unwrap();
+    let all = unit::catalogue(&files).unwrap();
+    let mut total = 0;
+    for f in Faction::PLAYABLE {
+        let theirs: Vec<&unit::UnitBlueprint> = all.iter().filter(|u| u.playable() && u.faction == f).collect();
+        let commander = faction::commander(&theirs).expect("a commander");
+        for u in theirs.iter().filter(|u| u.table.path(&["Enhancements"]).is_some()) {
+            let own = units::weapons(u);
+            let extra = enhance::extra_weapons(u, &own);
+            let (list, variants) = enhance::enhancements(u, &theirs, &own, &extra);
+            total += list.len();
+            let line: Vec<String> = list
+                .iter()
+                .map(|e| format!("{} [{}{}] {}m {}e {}t{}{}{}{}", e.id, e.slot, e.prerequisite.as_ref().map(|p| format!(" after {p}")).unwrap_or_default(), e.cost_mass, e.cost_energy, e.build_time,
+                    if e.build_options.is_empty() { String::new() } else { format!(" +{} units", e.build_options.len()) },
+                    if e.weapons.is_empty() { String::new() } else { format!(" weapons {:?}", e.weapons) },
+                    if e.max_damage > 0.0 { format!(" +{} hp", e.max_damage) } else { String::new() },
+                    if e.worker_time > 0.0 { format!(" +{} build", e.worker_time) } else { String::new() }))
+                .collect();
+            eprintln!("{} {}: {} enhancements, {} weapon variants\n  {}", f.name(), u.id, list.len(), variants.sections.len(), line.join("\n  "));
+            for e in &list {
+                assert!(e.cost_mass > 0.0 || e.cost_energy > 0.0, "{}: {} has a price", u.id, e.id);
+                assert!(!e.slot.is_empty(), "{}: {} has a slot", u.id, e.id);
+                if let Some(p) = &e.prerequisite {
+                    assert!(list.iter().any(|o| o.id.eq_ignore_ascii_case(p)), "{}: {} needs {p}, which is played", u.id, e.id);
+                }
+            }
+            if u.id == commander.id {
+                let suites: Vec<_> = list.iter().filter(|e| !e.build_options.is_empty()).collect();
+                assert!(suites.len() >= 2, "{}: its engineering suites", u.id);
+                let tech2 = theirs.iter().filter(|b| b.is("BUILTBYTIER2COMMANDER")).count();
+                assert!(tech2 == 0 || suites.iter().any(|e| e.build_options.len() >= tech2.min(1)), "{}: the suites' units", u.id);
+                let main = own.slots.iter().position(|w| units::kind(w) != units::Kind::Overcharge).expect("a gun");
+                assert!(list.iter().any(|e| e.weapons.iter().any(|(slot, _)| *slot == main)), "{}: a gun upgrade", u.id);
+            }
+        }
+    }
+    eprintln!("{total} enhancements in all");
 }
 
 /// A weapon section as TA Reborn reads it: its keys.
@@ -495,7 +575,7 @@ fn walks_end_where_they_start() {
         }
         let material = Material { name: "m".into(), albedo: "a".into(), specular: "s".into(), normals: "n".into(), mean: [0; 3] };
         let near = model::convert(&mesh, u.display.uniform_scale, material).unwrap();
-        let clips = ta_supcom::factions::anims::anims(&mesh, &near.bones, u.display.uniform_scale * 32.0, Some(&anim), &[]);
+        let clips = ta_supcom::factions::anims::anims(&mesh, &near.bones, u.display.uniform_scale * 32.0, Some(&anim), &[], &[]);
         let Some(walk) = clips.clip("walk") else { continue };
         walks += 1;
         let last = walk.times.len() - 1;
@@ -507,4 +587,303 @@ fn walks_end_where_they_start() {
         assert_eq!(walk.frame(0), walk.frame(last), "{}: its walk's last frame its first", u.id);
     }
     eprintln!("{walks} walks: {closed} ending at their length (their last frame their first), {wrapping} wrapping back over the time left; Forged Alliance's own ending out of step: {out_of_step:?}");
+}
+
+/// Every building at work, as the conversion makes it (`factions::work`): the clips its model
+/// plays (`active`, `open`, `upgrade`: each made of the animation its classes or its script play,
+/// those the game has), and what its script spins, swings and slides, listed; then held: every
+/// extractor pumps, every building upgrading in place with an animation for it plays it, the
+/// power generators, fabricators and radars whose scripts spin their parts spin them, and nothing
+/// a script turns is left out unaccounted for.
+#[test]
+#[ignore]
+fn buildings_at_work() {
+    let Some(game) = the_game() else {
+        eprintln!("no copy of Forged Alliance found: nothing to read");
+        return;
+    };
+    let files = Files::own(&game).unwrap();
+    let all = unit::catalogue(&files).unwrap();
+    let playable: Vec<&unit::UnitBlueprint> = all.iter().filter(|u| u.playable() && !u.display.lods.is_empty()).collect();
+    let mut clips_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut spins_of: BTreeMap<String, usize> = BTreeMap::new();
+    let (mut missing, mut fighting, mut left_out) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut buildings, mut with_clips, mut with_motions) = (0, 0, 0);
+    for u in playable.iter().filter(|u| u.motion == unit::Motion::None) {
+        buildings += 1;
+        let faction: Vec<&unit::UnitBlueprint> = playable.iter().copied().filter(|o| o.faction == u.faction).collect();
+        let upgrades = faction::upgrade_of(u, &faction).is_some();
+        let mesh = scm::parse(&files.read(&u.display.lods[0].mesh).unwrap().unwrap()).unwrap();
+        let material = Material { name: "m".into(), albedo: "a".into(), specular: "s".into(), normals: "n".into(), mean: [0; 3] };
+        let near = model::convert(&mesh, u.display.uniform_scale, material).unwrap();
+        let pixels = u.display.uniform_scale * 32.0;
+        let mut read = Vec::new();
+        for s in work::clips(u, upgrades) {
+            match files.read(&s.path).unwrap().map(|b| sca::parse(&b)) {
+                Some(Ok(a)) => read.push((s, a)),
+                Some(Err(e)) => missing.push(format!("{} {}: {e}", u.id, s.path)),
+                None => missing.push(format!("{} {} ({})", u.id, s.path, s.name)),
+            }
+        }
+        let at_work: Vec<anims::Work> = read.iter().map(|(s, a)| anims::Work { name: s.name, animation: a, rate: s.rate, cycle: s.cycle }).collect();
+        let clips = anims::anims(&mesh, &near.bones, pixels, None, &[], &at_work);
+        let (mut kept, mut names) = (Vec::new(), Vec::new());
+        for c in &clips.clips {
+            if matches!(c.name.as_str(), "active" | "open") && work::turns_an_aim(u, &mesh, &near.bones, c) {
+                fighting.push(format!("{} {}", u.id, c.name));
+                continue;
+            }
+            assert!(c.fits(near.model.pieces.len()), "{}: its {} fits its model", u.id, c.name);
+            kept.push(format!("{} {:.2} s, {} pieces", c.name, c.seconds, c.pieces.len()));
+            names.push(c.name.clone());
+        }
+        let pieces: Vec<String> = near.model.pieces.iter().map(|p| p.name.clone()).collect();
+        let motions = work::motions(u, &mesh, &pieces, pixels);
+        left_out.extend(motions.left_out.iter().map(|w| format!("{}: {w}", u.id)));
+        if !kept.is_empty() {
+            with_clips += 1;
+        }
+        if !motions.spins.is_empty() || !motions.slides.is_empty() {
+            with_motions += 1;
+        }
+        let described: Vec<String> = motions
+            .spins
+            .iter()
+            .map(|s| format!("{} {:?}{} about {:?}", pieces[s.piece as usize], s.when, if s.sway.is_some() { " swinging" } else { " spinning" }, s.axes))
+            .chain(motions.slides.iter().map(|s| format!("{} {:?}{} to {:?} (made at {:?})", pieces[s.piece as usize], s.when, if s.shuttle { " shuttling" } else { " sliding" }, s.goals, s.made)))
+            .collect();
+        if !kept.is_empty() || !described.is_empty() {
+            eprintln!("{} ({}): {}{}{}", u.id, u.description, kept.join("; "), if kept.is_empty() || described.is_empty() { "" } else { " | " }, described.join("; "));
+        }
+        clips_of.insert(u.id.clone(), names);
+        spins_of.insert(u.id.clone(), motions.spins.len());
+    }
+    let count = |name: &str| clips_of.values().filter(|c| c.iter().any(|n| n == name)).count();
+    eprintln!("{buildings} buildings: {with_clips} with clips ({} active, {} open, {} upgrade), {with_motions} with parts their scripts move ({} spinning or swinging)", count("active"), count("open"), count("upgrade"), spins_of.values().filter(|&&n| n > 0).count());
+    eprintln!("animations named and not in the game: {missing:?}");
+    eprintln!("clips turning what a weapon aims, not made: {fighting:?}");
+    eprintln!("left out: {left_out:?}");
+    let has = |id: &str, clip: &str| clips_of.get(id).is_some_and(|c| c.iter().any(|n| n == clip));
+    // Every extractor pumps (its loop), and those upgrading with an animation for it play it.
+    for u in playable.iter().filter(|u| u.is("MASSEXTRACTION") && u.motion == unit::Motion::None) {
+        assert!(has(&u.id, "active"), "{}: it pumps", u.id);
+    }
+    for id in ["UEB1103", "UEB1202", "UAB1103", "UAB1202", "URB1103", "URB1202", "UEB0101", "URB0102", "XSB0201", "UEB3101", "UAB3102"] {
+        assert!(has(id, "upgrade"), "{id}: it upgrades as its animation shows");
+    }
+    // Power generators, fabricators and radars spin what their scripts spin.
+    for (id, spins) in [("UEB1101", 2), ("UAB1301", 3), ("XSB1301", 1), ("XAB1401", 1), ("UEB1303", 1), ("URB1104", 1), ("XSB1303", 3), ("UEB3201", 1), ("UAB3104", 3), ("URB3101", 3), ("XSB3104", 3)] {
+        assert_eq!(spins_of.get(id).copied(), Some(spins), "{id}");
+    }
+    assert!(has("XSB1102", "active") && has("URB0101", "active") && has("UAB1102", "open"), "the Seraphim hydrocarbon plant's loop, the Cybran factory's arms, the Aeon hydrocarbon plant's opening");
+    assert!(!has("UAB2301", "open"), "a turret unfolding before it aims is left as it rests");
+    assert!(left_out.iter().all(|w| w.contains("BuildAttachBone")), "{left_out:?}");
+}
+
+/// Every factory, every weapon that unpacks and every anti-air weapon, as the mod has them (made
+/// whole once): each factory's ways out (`[EXITS]`) one for each of its roll-off points, each past
+/// its footprint, its ramp within its way, the units built facing them (`UnitSpin` and the build
+/// bone's own turn: the Cybran quantum gateway's rests turned half round); each weapon whose
+/// unpack animation the game has unpacks in its script (`UnpackWeapon<n>`, `PackWeapon<n>`, its
+/// aim waiting for it), those that lock their unit's motion holding it still (`StartMoving`); every
+/// anti-air weapon that takes on aircraft alone takes no other target (`OnlyTargetCategory<n>=VTOL`):
+/// the anti-air towers (2104, 2204, 2304 of each faction), the interceptors' guns, an enhancement's
+/// missiles; not the missile defences. `--nocapture` lists them.
+#[test]
+#[ignore]
+fn factories_roll_off_weapons_unpack_and_anti_air_shoots_aircraft_alone() {
+    let Some(game) = the_game() else {
+        eprintln!("no copy of Forged Alliance found: nothing to read");
+        return;
+    };
+    let files = Files::own(&game).unwrap();
+    let units: Vec<_> = unit::catalogue(&files).unwrap().into_iter().filter(|u| u.playable()).collect();
+    let mut texts: BTreeMap<String, String> = BTreeMap::new();
+    let mut scripts: BTreeMap<String, ta_formats::cob::CobScript> = BTreeMap::new();
+    make::make(&files, &units, "test", &mut |path, bytes| {
+        if let Some(id) = path.strip_prefix("units/").and_then(|p| p.strip_suffix(".fbi")) {
+            texts.insert(id.to_ascii_uppercase(), String::from_utf8_lossy(bytes).into_owned());
+        } else if let Some(id) = path.strip_prefix("scripts/").and_then(|p| p.strip_suffix(".cob")) {
+            scripts.insert(id.to_ascii_uppercase(), ta_formats::cob::CobScript::parse(bytes).unwrap());
+        }
+        Ok(())
+    }, &mut |_, _| true)
+    .unwrap();
+    let info = |id: &str| ta_formats::tdf::parse(&texts[&id.to_ascii_uppercase()]).section("UNITINFO").cloned().unwrap();
+    // Factories: their ways out.
+    let mut factories = 0;
+    for u in units.iter().filter(|u| units::builds(u) == units::Builds::Factory) {
+        let fbi = info(&u.id);
+        let exits = ta_data::ExitDef::of_unit(&fbi);
+        assert_eq!(exits.len(), u.roll_off.len(), "{}: a way out for each roll-off point", u.id);
+        if exits.is_empty() {
+            continue;
+        }
+        factories += 1;
+        let (fx, fz) = (fbi.get_f64_or("FootprintX", 1.0) * 8.0, fbi.get_f64_or("FootprintZ", 1.0) * 8.0);
+        for e in &exits {
+            assert!(e.x.abs() >= fx + units::CLEAR - 1.0 || e.z.abs() >= fz + units::CLEAR - 1.0, "{}: {e:?} past its footprint", u.id);
+            assert!(e.ramp.0 <= e.ramp.1, "{}: {e:?}", u.id);
+        }
+        assert!(fbi.get("YardMap").is_some_and(|y| !y.contains('c')), "{}: solid", u.id);
+        let ways: Vec<String> = exits.iter().map(|e| format!("({}, {}) facing {} ramp {}-{}", e.x, e.z, e.heading, e.ramp.0, e.ramp.1)).collect();
+        eprintln!("{} ({}): {}", u.id, u.description, ways.join("; "));
+    }
+    assert!(factories >= 40, "{factories} factories with ways out");
+    let heading = |id: &str| ta_data::ExitDef::of_unit(&info(id)).iter().map(|e| e.heading as i64).collect::<Vec<_>>();
+    assert_eq!(heading("UEB0101"), [90, -90], "out to either side, facing the way");
+    assert_eq!(heading("URB0304"), [180, 0], "its build bone rests turned half round");
+    let ramp = |id: &str| ta_data::ExitDef::of_unit(&info(id))[0].ramp;
+    assert!(ramp("UEB0101").0 >= 24.0 && ramp("UEB0101").1 <= 72.0, "the UEF land factory's platform and ramp: {:?}", ramp("UEB0101"));
+    assert_eq!(ramp("UEB0103"), (0.0, 0.0), "a naval factory's ships are built at the water");
+    // Weapons that unpack.
+    let mut unpacking = 0;
+    for u in &units {
+        let own = units::weapons(u);
+        for (slot, w) in own.slots.iter().enumerate() {
+            let Some(up) = &w.unpack else { continue };
+            let Some(path) = &up.animation else { continue };
+            let Some(bytes) = files.read(path).unwrap() else {
+                eprintln!("{} {}: its unpack animation {path} is not in the game", u.id, w.label);
+                continue;
+            };
+            let animation = sca::parse(&bytes).unwrap();
+            let mesh = scm::parse(&files.read(&u.display.lods[0].mesh).unwrap().unwrap()).unwrap();
+            let material = Material { name: "m".into(), albedo: "a".into(), specular: "s".into(), normals: "n".into(), mean: [0; 3] };
+            let near = model::convert(&mesh, u.display.uniform_scale, material).unwrap();
+            let Some(made) = make::unpacking(w, &[(path.clone(), animation.clone())], &mesh, &near.bones, u.display.uniform_scale * 32.0) else {
+                eprintln!("{} {}: its unpack animation moves nothing", u.id, w.label);
+                continue;
+            };
+            unpacking += 1;
+            let script = &scripts[&u.id.to_ascii_uppercase()];
+            for f in [format!("UnpackWeapon{}", slot + 1), format!("PackWeapon{}", slot + 1), "TargetCleared".to_string()] {
+                assert!(script.function(&f).is_some(), "{}: {f}", u.id);
+            }
+            let aim = ["AimPrimary", "AimSecondary", "AimTertiary"].get(slot).map_or(format!("AimWeapon{}", slot + 1), |s| s.to_string());
+            assert!(script.function(&aim).is_some(), "{}: it aims ({aim})", u.id);
+            if up.locks_motion {
+                assert!(script.function("StartMoving").is_some() && script.function("StopMoving").is_some(), "{}: held still", u.id);
+            }
+            // (What it moves, and whether that is what a weapon of the unit aims.)
+            let names: Vec<String> = made.clip.pieces.iter().map(|&p| near.model.pieces[p as usize].name.clone()).collect();
+            let aimed: Vec<&str> = u.weapons.iter().flat_map(|w| [w.yaw_bone.as_deref(), w.pitch_bone.as_deref()]).flatten().collect();
+            let aims: Vec<&String> = names.iter().filter(|n| aimed.iter().any(|a| a.eq_ignore_ascii_case(n))).collect();
+            let kept = ta_supcom::factions::script::kept_frames(&made.clip);
+            eprintln!(
+                "{} {} (slot {}): {} over {:.2} s ({} of {} frames), repacks after {} ms{}{}: {}{}",
+                u.id,
+                w.label,
+                slot + 1,
+                path,
+                made.clip.seconds,
+                kept.len(),
+                made.clip.times.len(),
+                made.repack_ms,
+                if up.locks_motion { ", holding its unit still" } else { "" },
+                if made.after_launch { ", after each launch" } else { "" },
+                names.join(", "),
+                if aims.is_empty() { String::new() } else { format!(" (aimed: {aims:?})") },
+            );
+        }
+    }
+    assert!(unpacking >= 14, "{unpacking} weapons unpack");
+    for id in ["UEL0111", "XEL0306"] {
+        assert!(scripts[id].function("UnpackWeapon1").is_some() && scripts[id].function("AimPrimary").is_some(), "{id}: its launcher raised before it fires");
+    }
+    // Anti-air: aircraft alone.
+    let mut air_only = 0;
+    for u in &units {
+        let fbi = info(&u.id);
+        for slot in 0..units::MAX_WEAPONS {
+            if fbi.get(&format!("OnlyTargetCategory{}", slot + 1)) == Some("VTOL") {
+                air_only += 1;
+            }
+        }
+    }
+    for faction in ["UEB", "URB", "UAB", "XSB"] {
+        for tower in ["2104", "2204", "2304"] {
+            let id = format!("{faction}{tower}");
+            assert_eq!(info(&id).get("OnlyTargetCategory1"), Some("VTOL"), "{id}: aircraft alone");
+        }
+    }
+    // The interceptors' guns (their layers name the land too, but none but `AIR` units), and the
+    // Cybran support commander's anti-air missiles in the slot its enhancement fills; not the
+    // missile defences, nor the Striker's gun.
+    for id in ["UEA0102", "URA0102", "UAA0102", "XSA0102"] {
+        assert_eq!(info(id).get("OnlyTargetCategory1"), Some("VTOL"), "{id}: aircraft alone");
+    }
+    assert_eq!(info("URL0301").get("OnlyTargetCategory2"), Some("VTOL"), "URL0301: its enhancement's missiles");
+    for id in ["UEB4201", "UEB4302", "UEL0201"] {
+        assert!((1..=units::MAX_WEAPONS).all(|slot| info(id).get(&format!("OnlyTargetCategory{slot}")).is_none()), "{id}");
+    }
+    eprintln!("{factories} factories with ways out, {unpacking} weapons unpacking, {air_only} weapons shooting aircraft alone");
+}
+
+/// The engineering stations, the units Forged Alliance makes only by upgrading, and the
+/// structures' adjacency, as the mod is made from the player's copy: every engineering station
+/// works round it by itself (`AssistPatrol`, with build power and a reach); the Kennel upgrades
+/// into the tech 3 Kennel and the Hive into that of tech 2 and that into tech 3's, which no menu
+/// offers; every structure with a size class says it (`AdjacencySize`), what moves neither gives
+/// nor takes, and each bonus given changes something TA Reborn plays, by a share.
+#[test]
+#[ignore]
+fn stations_upgrades_and_adjacency_are_made() {
+    let Some(game) = the_game() else {
+        eprintln!("no copy of Forged Alliance found: nothing to read");
+        return;
+    };
+    let files = Files::own(&game).unwrap();
+    let units: Vec<_> = unit::catalogue(&files).unwrap().into_iter().filter(|u| u.playable()).collect();
+    let mut texts: BTreeMap<String, String> = BTreeMap::new();
+    make::make(&files, &units, "test", &mut |path, bytes| {
+        if path.starts_with("units/") || path.starts_with("download/") {
+            texts.insert(path.to_string(), String::from_utf8_lossy(bytes).into_owned());
+        }
+        Ok(())
+    }, &mut |_, _| true)
+    .unwrap();
+    let info = |id: &str| ta_formats::tdf::parse(&texts[&format!("units/{}.fbi", id.to_ascii_lowercase())]).sections.remove(0);
+    let menus: String = texts.iter().filter(|(p, _)| p.starts_with("download/")).map(|(_, t)| t.as_str()).collect();
+    for (from, to) in [("XEB0104", "XEB0204"), ("XRB0104", "XRB0204"), ("XRB0204", "XRB0304")] {
+        assert_eq!(info(from).get("UpgradesTo"), Some(to), "{from} upgrades into {to}");
+        assert!(units.iter().any(|u| u.id == to && u.upgrade_only), "{to}: made by upgrading alone");
+        assert!(!menus.contains(&format!("UNITNAME={to};")), "{to} is on no menu");
+    }
+    let stations: Vec<&unit::UnitBlueprint> = units.iter().filter(|u| u.is("ENGINEERSTATION")).collect();
+    for s in &stations {
+        let f = info(&s.id);
+        assert_eq!(f.get("DefaultMissionType"), Some("AssistPatrol"), "{}", s.id);
+        assert!(f.get_i64_or("WorkerTime", 0) > 0 && f.get_i64_or("BuildDistance", 0) >= 64 && f.get("CanReclamate") == Some("1"), "{}: build power, a reach, reclaiming", s.id);
+    }
+    assert!(stations.len() >= 5, "the Kennels and the Hives: {:?}", stations.iter().map(|s| &s.id).collect::<Vec<_>>());
+    let (mut sized, mut givers, mut bonuses) = (0, 0, 0);
+    for u in &units {
+        let f = info(&u.id);
+        let size = f.get("AdjacencySize").map(|s| s.parse::<u32>().expect("a number"));
+        let given = f.sections.iter().find(|s| s.name == "ADJACENCY");
+        if u.motion != unit::Motion::None {
+            assert!(size.is_none() && given.is_none(), "{}: what moves gives and takes nothing", u.id);
+            continue;
+        }
+        assert_eq!(size, u.size_class(), "{}", u.id);
+        sized += size.is_some() as usize;
+        if let Some(given) = given {
+            givers += 1;
+            for b in &given.sections {
+                bonuses += 1;
+                assert!(b.get("Affects").and_then(ta_sim::AdjacencyAffect::of).is_some(), "{}: {} changes what is played", u.id, b.name);
+                assert!(b.get_f64_or("Add", 0.0) != 0.0 && b.get("Size").is_some(), "{}: {} adds a share to a size", u.id, b.name);
+            }
+        }
+    }
+    eprintln!("{} engineering stations; {sized} structures with a size class; {givers} giving {bonuses} bonuses", stations.len());
+    assert!(givers >= 30 && sized >= 150, "the generators, extractors, fabricators and storage give; the structures have their sizes");
+    // Every faction's tech 1 power generator cuts what the factories beside it pay to build.
+    for f in Faction::PLAYABLE {
+        let generator = units.iter().find(|u| u.faction == f && u.is("ENERGYPRODUCTION") && u.tech == Some(Tech::T1) && u.adjacency.is_some()).expect("a tech 1 generator with adjacency");
+        let given = info(&generator.id);
+        let given = given.sections.iter().find(|s| s.name == "ADJACENCY").expect("its bonuses");
+        assert!(given.sections.iter().any(|b| b.get("Affects") == Some("BuildEnergy") && b.get("Size") == Some("16")), "{}: build energy to size 16", generator.id);
+    }
 }

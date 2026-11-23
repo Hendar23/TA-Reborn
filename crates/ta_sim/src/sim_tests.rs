@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use ta_data::{GameData, MapInfo};
-use ta_formats::tnt::{FEATURE_NONE, TntMap};
+use ta_formats::tnt::{FEATURE_NONE, FEATURE_VOID, TntMap};
 
 use super::*;
 use crate::unit::{PlayerSetup, Target};
@@ -176,6 +176,15 @@ mod activation_original;
 #[path = "scenario_tests.rs"]
 mod scenarios;
 
+#[path = "upgrade_tests.rs"]
+mod upgrades;
+#[path = "enhance_tests.rs"]
+mod enhancements;
+#[path = "blocker_tests.rs"]
+mod blockers;
+#[path = "adjacency_tests.rs"]
+mod adjacency;
+
 /// Game data from TDF files (path, text), loaded as a mod's folder is.
 fn data_of(files: &[(String, String)]) -> GameData {
     static NEXT: AtomicU32 = AtomicU32::new(0);
@@ -234,6 +243,18 @@ fn checksums_detect_missile_inventory_production_reload_and_flight_divergence() 
         }
         assert_ne!(changed.checksum(), expected, "nuclear state divergence must not pass a lockstep check (field {field})");
     }
+    // A way out of a factory counts too.
+    let mut leaving = sim.clone();
+    let way = crate::unit::Way { from: FxVec3::from_ints(100, 76, 100), to: FxVec3::from_ints(196, 60, 100), ramp: (Fx::from_int(24), Fx::from_int(40)) };
+    leaving.unit_mut(silo).unwrap().roll_off = Some(crate::unit::RollOff { exit: 1, way: Some(way) });
+    let before = leaving.checksum();
+    assert_ne!(before, expected, "a way out");
+    leaving.unit_mut(silo).unwrap().roll_off.as_mut().unwrap().way.as_mut().unwrap().ramp.1 += Fx::ONE;
+    assert_ne!(leaving.checksum(), before, "its ramp");
+    // So does a script's hold.
+    let mut held = sim.clone();
+    held.unit_mut(silo).unwrap().immobile = true;
+    assert_ne!(held.checksum(), expected, "a hold");
 }
 
 #[test]
@@ -3119,6 +3140,33 @@ fn the_mod_check_knows_the_values_the_engine_answers() {
     assert_eq!(crate::host::value::ANSWERED, ta_data::validation::ANSWERED_VALUES);
 }
 
+/// A script asks its weapon's target (`TARGET_ID`, Spring's, the weapon from 1): a unit's script
+/// id, -1 for none, -2 for a place on the ground, -3 for a missile, -4 for no such weapon.
+#[test]
+fn a_script_asks_its_weapons_target() {
+    use crate::host::value::TARGET_ID;
+    use ta_formats::cob::{CobFunction, CobScript, op};
+    let data = data_of(&[unit("GUN", ""), unit("TANK", "")]);
+    let mut sim = sim_of(data, 2);
+    let mut script = CobScript { static_var_count: 1, ..Default::default() };
+    script.functions.push(CobFunction { name: "Ask".into(), offset: 0 });
+    script.code.extend([op::CREATE_LOCAL, op::PUSH_CONSTANT, TARGET_ID as u32, op::PUSH_LOCAL, 0, op::PUSH_CONSTANT, 0, op::PUSH_CONSTANT, 0, op::PUSH_CONSTANT, 0, op::GET, op::POP_STATIC, 0, op::PUSH_CONSTANT, 0, op::RETURN]);
+    Arc::get_mut(&mut sim.types).unwrap().types[0].script = Some(Arc::new(crate::cob::CobProgram::new(script, &[])));
+    let gun = sim.spawn_unit(0, 0, FxVec3::from_ints(400, 60, 400), 0, true).unwrap();
+    let tank = sim.spawn_unit(1, 1, FxVec3::from_ints(500, 60, 400), 0, true).unwrap();
+    let ask = |sim: &mut Sim, weapon: i32| -> i32 {
+        sim.with_script(gun, |cob, host| {
+            cob.call(host, "Ask", &[weapon]).expect("runs");
+        });
+        sim.unit(gun).unwrap().cob.as_ref().unwrap().statics[0]
+    };
+    let u = sim.unit_mut(gun).unwrap();
+    u.retarget(0, Some(Target::Unit(tank)));
+    u.retarget(1, Some(Target::Ground(FxVec3::from_ints(450, 60, 450))));
+    u.retarget(2, Some(Target::Projectile(7)));
+    assert_eq!([ask(&mut sim, 1), ask(&mut sim, 2), ask(&mut sim, 3), ask(&mut sim, 4), ask(&mut sim, 0), ask(&mut sim, 9)], [tank.script_id(), -2, -3, -1, -4, -4]);
+}
+
 /// A script cloaks its own unit (`UNIT_CLOAKED`, a later patch's: Total Mayhem's mines while they
 /// wait), at no cost when its file gives none, and uncloaks it.
 #[test]
@@ -3272,6 +3320,267 @@ fn a_unit_being_built_turns_with_the_factory_pad() {
     assert_eq!(pad(&sim), stopped, "the pad stops when the unit is done");
     let (u, f) = (sim.unit(tank).unwrap(), sim.unit(plant).unwrap());
     assert!(u.factory.is_none() && !u.pos.within_xz(f.pos, Fx::from_int(48)), "out of the plant: {:?} from {:?}", u.pos, f.pos);
+}
+
+/// A plant with ways out (`[EXITS]`: east and west, 96 px from its middle, each with a ramp from
+/// 24 to 40 px along it), its pad raised 16 px over the ground (as a Supreme Commander factory's
+/// build platform), its script readying it as it opens and naming the pad; a tank it makes, a lifter
+/// (a tank that faces the plant's back as it is built, `BuildHeading=180`) and a module (a unit that
+/// never moves, taking no ground); a wall. The sim, the plant's and the tank's types.
+fn plant_with_ways_out() -> (Sim, usize, usize) {
+    use crate::cob::CobProgram;
+    use crate::defs::{ModelDef, PieceDef};
+    use ta_formats::cob::{CobFunction, CobScript, op};
+    let data = data_of(&[
+        unit(
+            "PLANT",
+            "Builder=1; WorkerTime=100; FootprintX=6; FootprintZ=6; BuildTime=1000; BuildCostMetal=100; TEDClass=PLANT;\n\
+             [EXITS] { [EAST] { X=96; Z=0; Heading=90; Ramp=24 40; } [WEST] { X=-96; Z=0; Heading=-90; Ramp=24 40; } }",
+        ),
+        unit("TANK", "CanMove=1; MaxVelocity=1; Acceleration=0.1; BrakeRate=0.1; TurnRate=600; BuildTime=200; BuildCostMetal=10; FootprintX=1; FootprintZ=1;"),
+        unit("LIFTER", "CanMove=1; MaxVelocity=1; Acceleration=0.1; BrakeRate=0.1; TurnRate=600; BuildTime=200; BuildCostMetal=10; FootprintX=1; FootprintZ=1; BuildHeading=180;"),
+        unit("MODULE", "BuildTime=200; BuildCostMetal=10; FootprintX=0; FootprintZ=0;"),
+        unit("WALL", "FootprintX=2; FootprintZ=2; BuildTime=100; BuildCostMetal=1;"),
+    ]);
+    let mut sim = sim_of(with_menu(data, "PLANT", &["TANK", "LIFTER", "MODULE"]), 1);
+    sim.set_starting_resources(0, Fx::from_int(10000), Fx::from_int(10000));
+    let (plant_type, tank_type) = (sim.types.id("PLANT").unwrap(), sim.types.id("TANK").unwrap());
+    let pieces = vec!["base".to_string(), "pad".to_string()];
+    let mut script = CobScript { pieces: pieces.clone(), ..Default::default() };
+    let function = |script: &mut CobScript, name: &str, code: &[u32]| {
+        script.functions.push(CobFunction { name: name.into(), offset: script.code.len() as u32 });
+        script.code.extend_from_slice(code);
+    };
+    function(&mut script, "Activate", &[op::PUSH_CONSTANT, crate::host::value::IN_BUILD_STANCE as u32, op::PUSH_CONSTANT, 1, op::SET_VALUE, op::PUSH_CONSTANT, 0, op::RETURN]);
+    function(&mut script, "QueryBuildInfo", &[op::CREATE_LOCAL, op::PUSH_CONSTANT, 1, op::POP_LOCAL, 0, op::PUSH_CONSTANT, 0, op::RETURN]);
+    {
+        let t = &mut Arc::get_mut(&mut sim.types).unwrap().types[plant_type];
+        assert_eq!(t.exits.len(), 2, "its ways out");
+        t.model = Arc::new(ModelDef {
+            pieces: vec![
+                PieceDef { name: "base".into(), parent: None, offset: FxVec3::ZERO, top: Fx::ZERO },
+                PieceDef { name: "pad".into(), parent: Some(0), offset: FxVec3::from_ints(0, 16, 0), top: Fx::ZERO },
+            ],
+            ..Default::default()
+        });
+        t.model_to_cob = vec![Some(0), Some(1)];
+        t.script = Some(Arc::new(CobProgram::new(script, &pieces)));
+    }
+    (sim, plant_type, tank_type)
+}
+
+/// A plant with ways out builds its tank on its raised pad facing the way it will leave by: the
+/// nearer to where the tank goes next (the plant's front, with no rally point: the first of the
+/// two as near; the west way, with the rally point there). Done, the tank rolls off along that way:
+/// at the pad's height as far as the ramp's top, down the ramp, on the ground past its foot, to
+/// the way's end, never out of the plant's front; then on to the rally point. (TA's plants, which
+/// name no ways out, send theirs out of the front: `a_unit_being_built_turns_with_the_factory_pad`.)
+#[test]
+fn a_factory_with_ways_out_rolls_its_units_off_along_them() {
+    for (rally, side, heading) in [(None, 1i64, 16384), (Some(FxVec3::from_ints(150, 60, 420)), -1, -16384)] {
+        let (mut sim, plant_type, tank_type) = plant_with_ways_out();
+        let plant = sim.spawn_unit(plant_type, 0, FxVec3::from_ints(504, 60, 504), 0, true).unwrap();
+        let f = sim.unit(plant).unwrap().pos;
+        let ground = sim.world.height_at(f.x, f.z);
+        if let Some(pos) = rally {
+            sim.apply(&Command::SetRally { player: 0, factory: plant, pos });
+        }
+        sim.step(&[Command::Produce { player: 0, factory: plant, type_id: tank_type, count: 1 }]);
+        let mut tank = None;
+        for _ in 0..30 * 6 {
+            sim.step(&[]);
+            let Some(id) = tank.or_else(|| sim.units().find(|u| u.type_id == tank_type).map(|u| u.id)) else { continue };
+            tank = Some(id);
+            let u = sim.unit(id).unwrap();
+            if u.is_complete() {
+                break;
+            }
+            assert_eq!(u.heading, heading, "built facing its way out ({side})");
+            assert_eq!(u.pos.y, ground + Fx::from_int(16), "on the raised pad, not the ground under it");
+        }
+        let tank = tank.expect("the plant builds the tank");
+        assert!(sim.unit(tank).unwrap().is_complete());
+        // Rolling off: (px along the way, height over the ground) as it goes.
+        let mut seen: Vec<(i64, i64)> = Vec::new();
+        for _ in 0..30 * 12 {
+            sim.step(&[]);
+            let u = sim.unit(tank).unwrap();
+            let along = ((u.pos.x - f.x) * side).to_int();
+            assert!(u.pos.z - f.z < Fx::from_int(40), "never out of the plant's front: {:?} from {:?}", u.pos, f);
+            seen.push((along, (u.pos.y - ground).to_int()));
+        }
+        assert!(seen.iter().filter(|&&(d, _)| d < 22).all(|&(_, h)| h == 16), "at the pad's height on the floor: {seen:?}");
+        assert!(seen.iter().any(|&(d, h)| (26..38).contains(&d) && h > 0 && h < 16), "down the ramp: {seen:?}");
+        assert!(seen.iter().filter(|&&(d, _)| d > 42).all(|&(_, h)| h == 0), "on the ground past its foot: {seen:?}");
+        let u = sim.unit(tank).unwrap();
+        assert!(u.factory.is_none() && u.roll_off.is_none(), "out of the plant, let go");
+        match rally {
+            // (Gone on to its rally point.)
+            Some(r) => assert!(u.pos.within_xz(r, Fx::from_int(40)), "at its rally point: {:?}", u.pos),
+            None => assert!(u.pos.within_xz(f + FxVec3::from_ints(96, 0, 0), Fx::from_int(24)), "at the way's end: {:?}", u.pos),
+        }
+    }
+}
+
+/// A plant's way out whose end is built over is passed over for another, though it would be taken
+/// first (with no rally point both ways are as near the plant's front, and the east is the first):
+/// the tank is built facing the west way and leaves by it. A unit naming its own way to face as it
+/// is built (`BuildHeading=180`) faces that instead, and leaves by the west way all the same. What
+/// never moves (a module it makes) takes no way out: it is made as the pad faces, and stays there.
+#[test]
+fn a_factory_with_ways_out_takes_one_it_can_leave_by() {
+    let (mut sim, plant_type, tank_type) = plant_with_ways_out();
+    let (module_type, wall_type, lifter_type) = (sim.types.id("MODULE").unwrap(), sim.types.id("WALL").unwrap(), sim.types.id("LIFTER").unwrap());
+    let plant = sim.spawn_unit(plant_type, 0, FxVec3::from_ints(504, 60, 504), 0, true).unwrap();
+    let f = sim.unit(plant).unwrap().pos;
+    sim.spawn_unit(wall_type, 0, f + FxVec3::from_ints(96, 0, 0), 0, true).unwrap();
+    sim.step(&[Command::Produce { player: 0, factory: plant, type_id: tank_type, count: 1 }]);
+    let mut tank = None;
+    for _ in 0..30 * 3 {
+        sim.step(&[]);
+        if let Some(u) = sim.units().find(|u| u.type_id == tank_type) {
+            tank = Some(u.id);
+            break;
+        }
+    }
+    let tank = tank.expect("the plant begins the tank");
+    let u = sim.unit(tank).unwrap();
+    assert_eq!((u.heading, u.roll_off.map(|r| r.exit)), (-16384, Some(1)), "built facing the west way, the east one's end built over");
+    for _ in 0..30 * 20 {
+        sim.step(&[]);
+    }
+    let u = sim.unit(tank).unwrap();
+    assert!(u.is_complete() && u.factory.is_none(), "done and out");
+    assert!(u.pos.within_xz(f - FxVec3::from_ints(96, 0, 0), Fx::from_int(24)), "at the west way's end: {:?} from {:?}", u.pos, f);
+    // The tank on: the lifter faces the plant's back as it is built, then leaves by the west way.
+    sim.step(&[Command::Order { player: 0, units: vec![tank], order: Order::Move(f + FxVec3::from_ints(-96, 0, 200)), queue: false }]);
+    sim.step(&[Command::Produce { player: 0, factory: plant, type_id: lifter_type, count: 1 }]);
+    let mut lifter = None;
+    for _ in 0..30 * 3 {
+        sim.step(&[]);
+        if let Some(u) = sim.units().find(|u| u.type_id == lifter_type) {
+            lifter = Some(u.id);
+            break;
+        }
+    }
+    let lifter = lifter.expect("the plant begins the lifter");
+    let u = sim.unit(lifter).unwrap();
+    assert_eq!((u.heading, u.roll_off.map(|r| r.exit)), (wrap_angle(32768), Some(1)), "facing the plant's back, to leave by the west way");
+    for _ in 0..30 * 20 {
+        sim.step(&[]);
+    }
+    let u = sim.unit(lifter).unwrap();
+    assert!(u.is_complete() && u.factory.is_none() && u.pos.within_xz(f - FxVec3::from_ints(96, 0, 0), Fx::from_int(24)), "out by the west way: {:?}", u.pos);
+    // A module: as the pad faces, no way out.
+    sim.step(&[Command::Produce { player: 0, factory: plant, type_id: module_type, count: 1 }]);
+    let mut module = None;
+    for _ in 0..30 * 3 {
+        sim.step(&[]);
+        if let Some(u) = sim.units().find(|u| u.type_id == module_type) {
+            module = Some(u.id);
+            break;
+        }
+    }
+    let u = sim.unit(module.expect("the plant begins the module")).unwrap();
+    assert_eq!((u.heading, u.roll_off), (0, None), "made as the pad faces");
+}
+
+/// A unit its script holds still (`IMMOBILE`) is not pushed about by the crowd: one standing on it
+/// is pushed off it alone.
+#[test]
+fn a_unit_its_script_holds_still_is_not_pushed_about() {
+    use crate::cob::CobProgram;
+    use crate::host::value::IMMOBILE;
+    use ta_formats::cob::{CobFunction, CobScript, op};
+    let keys = "CanMove=1; MaxVelocity=2; Acceleration=0.2; BrakeRate=0.2; TurnRate=900; FootprintX=2; FootprintZ=2;";
+    let data = data_of(&[unit("TANK", keys), unit("BUGGY", keys)]);
+    let mut sim = sim_of(data, 1);
+    let (tank_type, buggy_type) = (sim.types.id("TANK").unwrap(), sim.types.id("BUGGY").unwrap());
+    let script = CobScript {
+        pieces: vec!["base".into()],
+        functions: vec![CobFunction { name: "Create".into(), offset: 0 }],
+        code: vec![op::PUSH_CONSTANT, IMMOBILE as u32, op::PUSH_CONSTANT, 1, op::SET_VALUE, op::PUSH_CONSTANT, 0, op::RETURN],
+        ..Default::default()
+    };
+    Arc::get_mut(&mut sim.types).unwrap().types[tank_type].script = Some(Arc::new(CobProgram::new(script, &["base".to_string()])));
+    let tank = sim.spawn_unit(tank_type, 0, FxVec3::from_ints(300, 60, 300), 0, true).unwrap();
+    let buggy = sim.spawn_unit(buggy_type, 0, FxVec3::from_ints(304, 60, 300), 0, true).unwrap();
+    let (held_at, buggy_at) = (sim.unit(tank).unwrap().pos, sim.unit(buggy).unwrap().pos);
+    for _ in 0..15 {
+        sim.step(&[]);
+    }
+    let (t, b) = (sim.unit(tank).unwrap(), sim.unit(buggy).unwrap().pos);
+    assert!(t.immobile && t.pos.xz() == held_at.xz(), "held where it stood: {:?}", t.pos);
+    assert!((b - t.pos).xz().length_xz() > (buggy_at - held_at).xz().length_xz() + Fx::from_int(8), "the other pushed off it: {b:?} from {:?}", t.pos);
+}
+
+/// A script holding its unit still (`IMMOBILE`, as a Supreme Commander weapon unpacked does): the
+/// unit given somewhere to go stays where it stands, facing as it was, and its script is told
+/// `StartMoving` once; the script letting it go (packed up a second later), it sets off. Its way
+/// given up while held, `StopMoving`.
+#[test]
+fn a_unit_its_script_holds_still_waits_to_be_let_go() {
+    use crate::cob::CobProgram;
+    use crate::host::value::{ARMORED, IMMOBILE};
+    use ta_formats::cob::{CobFunction, CobScript, op};
+    let data = data_of(&[unit("TANK", "CanMove=1; MaxVelocity=2; Acceleration=0.2; BrakeRate=0.2; TurnRate=900; FootprintX=1; FootprintZ=1;")]);
+    let mut sim = sim_of(data, 1);
+    let tank_type = sim.types.id("TANK").unwrap();
+    let mut script = CobScript { pieces: vec!["base".into()], ..Default::default() };
+    let function = |script: &mut CobScript, name: &str, code: &[u32]| {
+        script.functions.push(CobFunction { name: name.into(), offset: script.code.len() as u32 });
+        script.code.extend_from_slice(code);
+    };
+    let set = |id: i32, v: u32| [op::PUSH_CONSTANT, id as u32, op::PUSH_CONSTANT, v, op::SET_VALUE];
+    // Create: held. StartMoving: marked (ARMORED, as a witness), a second's packing, let go.
+    // StopMoving: the packing called off (its signal), the mark taken off.
+    let mut create = set(IMMOBILE, 1).to_vec();
+    create.extend([op::PUSH_CONSTANT, 0, op::RETURN]);
+    function(&mut script, "Create", &create);
+    let mut start = vec![op::PUSH_CONSTANT, 1, op::SIGNAL, op::PUSH_CONSTANT, 1, op::SET_SIGNAL_MASK];
+    start.extend(set(ARMORED, 1));
+    start.extend([op::PUSH_CONSTANT, 1000, op::SLEEP]);
+    start.extend(set(IMMOBILE, 0));
+    start.extend([op::PUSH_CONSTANT, 0, op::RETURN]);
+    function(&mut script, "StartMoving", &start);
+    let mut stop = vec![op::PUSH_CONSTANT, 1, op::SIGNAL];
+    stop.extend(set(ARMORED, 0));
+    stop.extend([op::PUSH_CONSTANT, 0, op::RETURN]);
+    function(&mut script, "StopMoving", &stop);
+    Arc::get_mut(&mut sim.types).unwrap().types[tank_type].script = Some(Arc::new(CobProgram::new(script, &["base".to_string()])));
+    // Given somewhere to go, then the way given up while it is held: StartMoving, then StopMoving.
+    let tank = sim.spawn_unit(tank_type, 0, FxVec3::from_ints(300, 60, 300), 0, true).unwrap();
+    sim.step(&[]);
+    assert!(sim.unit(tank).unwrap().immobile, "held from its making");
+    let start_at = sim.unit(tank).unwrap().pos;
+    let away = FxVec3::from_ints(300, 60, 700);
+    sim.step(&[Command::Order { player: 0, units: vec![tank], order: Order::Move(FxVec3::from_ints(700, 60, 300)), queue: false }]);
+    for _ in 0..3 {
+        sim.step(&[]);
+    }
+    let u = sim.unit(tank).unwrap();
+    assert!(u.moving && u.armored, "told StartMoving");
+    assert_eq!((u.pos, u.heading), (start_at, 0), "held where it stood, as it faced");
+    sim.step(&[Command::Order { player: 0, units: vec![tank], order: Order::Stop, queue: false }]);
+    for _ in 0..3 {
+        sim.step(&[]);
+    }
+    let u = sim.unit(tank).unwrap();
+    assert!(!u.moving && !u.armored && u.pos == start_at, "told StopMoving, still where it stood");
+    // Somewhere to go again: held for its script's second, then off.
+    sim.step(&[Command::Order { player: 0, units: vec![tank], order: Order::Move(away), queue: false }]);
+    let mut set_off = None;
+    for tick in 0..30 * 10 {
+        sim.step(&[]);
+        let u = sim.unit(tank).unwrap();
+        if set_off.is_none() && u.pos != start_at {
+            set_off = Some(tick);
+        }
+    }
+    let set_off = set_off.expect("let go, it sets off");
+    assert!((28..=36).contains(&set_off), "a second after it was told: tick {set_off}");
+    let u = sim.unit(tank).unwrap();
+    assert!(!u.immobile && u.pos.within_xz(away, Fx::from_int(24)), "gone where it was sent: {:?}", u.pos);
 }
 
 /// TA's `HealTime` (its Commanders', 27): a finished unit of a type that has one mends itself, 100

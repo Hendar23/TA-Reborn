@@ -38,8 +38,9 @@ use crate::words::{en, enf, Fill, Words};
 /// a manifest's keys read otherwise than written, `manifest.*`; 19: DDS textures read as a model's
 /// paint is, their mip levels and texels (`texture.levels`, `texture.paint`), a far model's pieces
 /// (`model.far`), a surface's textures that are no DDS (`model.surface_texture`), animations clip
-/// by clip).
-pub const SCHEMA_VERSION: u32 = 19;
+/// by clip; 20: a unit's adjacency bonuses that do nothing (`unit.adjacency`), and a building
+/// working round it by itself with no build power (`unit.assist_patrol`)).
+pub const SCHEMA_VERSION: u32 = 20;
 
 /// The keys of `gamedata/sound.tdf`'s categories the game plays (`ta_audio`'s sound events), each
 /// with or without a variant number (`select1`, `select2`…), with `count0` to `count9`; the
@@ -60,10 +61,11 @@ fn played_sound_key(key: &str) -> bool {
 
 /// The unit values Reborn's engine answers when a script asks for one (`get`) or sets one
 /// (`set`), as `ta_sim`'s script host does: TA's own 1 to 20, the veteran level (32), TA 3.1's
-/// questions about units by id (69 to 75) and a later patch's cloak (111). A script asking for
-/// another reads 0, and one setting another sets nothing (`script.value`). (A test in `ta_sim`
-/// holds this list to the host's.)
-pub const ANSWERED_VALUES: &[i32] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 32, 69, 70, 71, 72, 73, 74, 75, 111];
+/// questions about units by id (69 to 75), Spring's weapon target (83, `TARGET_ID`), a later
+/// patch's cloak (111) and TA Reborn's own hold (200, `IMMOBILE`: the script keeps its unit
+/// still). A script asking for another reads 0, and one setting another sets nothing
+/// (`script.value`). (A test in `ta_sim` holds this list to the host's.)
+pub const ANSWERED_VALUES: &[i32] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 32, 69, 70, 71, 72, 73, 74, 75, 83, 111, 200];
 
 /// Of [`ANSWERED_VALUES`], those of TA's later patches: TA 3.1's questions about units by id (69
 /// to 75) and a later patch's cloak (111). A mod's scripts asking them are told
@@ -1412,6 +1414,23 @@ impl<'a> Scan<'a> {
             let Some(s) = doc.section("UNITINFO") else { self.issue(Severity::Error, "unit.header", path, Words::text(en("Missing [UNITINFO]; this unit is skipped.")), en("Add a UNITINFO section with a non-empty UnitName.")); return; };
             let Some(unit) = crate::UnitDef::from_tdf(s) else { self.issue(Severity::Error, "unit.name", path, Words::text(en("UNITINFO has no usable UnitName; this unit is skipped.")), en("Give the unit a unique, non-empty UnitName and update its references.")); return; };
             self.footprint(path, s);
+            // Its adjacency (`[ADJACENCY]`): a bonus changing what TA Reborn does not play, or adding
+            // nothing, does nothing; and a building working round it by itself needs build power.
+            for a in &unit.adjacency {
+                if a.affect.is_none() {
+                    let words = enf("{unit}'s adjacency bonus {bonus} changes {what}, which TA Reborn does not play: it does nothing.", [("unit", Fill::name(&unit.name)), ("bonus", Fill::name(&a.name)), ("what", Fill::name(if a.affects.is_empty() { "nothing" } else { a.affects.as_str() }))]);
+                    self.issue(Severity::Warning, "unit.adjacency", path, words, en("Give it Affects=BuildEnergy, BuildMetal, EnergyUse, EnergyPerShot, ReloadTime, EnergyMake or MetalMake."));
+                } else if a.add == 0.0 {
+                    let words = enf("{unit}'s adjacency bonus {bonus} adds nothing (no Add): it does nothing.", [("unit", Fill::name(&unit.name)), ("bonus", Fill::name(&a.name))]);
+                    self.issue(Severity::Warning, "unit.adjacency", path, words, en("Give it the share it adds: Add=-0.0625 cuts what it changes by a sixteenth, Add=0.125 raises it by an eighth."));
+                }
+                if self.halted { return; }
+            }
+            if unit.default_mission.eq_ignore_ascii_case("AssistPatrol") && unit.worker_time <= 0.0 {
+                let words = enf("{unit} works round it by itself (DefaultMissionType=AssistPatrol) but has no build power: it does nothing.", [("unit", Fill::name(&unit.name))]);
+                self.issue(Severity::Warning, "unit.assist_patrol", path, words, en("Give it a WorkerTime, and a BuildDistance for how far round it it works."));
+                if self.halted { return; }
+            }
             // (Its own script, else its model's, as the game runs it.)
             let vfs = self.vfs;
             let script = unit.script_path(|p| vfs.exists(p));
@@ -2312,6 +2331,24 @@ mod tests {
         f.put("mod", "units/gunner.fbi", b"[UNITINFO]{UnitName=GUNNER;ObjectName=nowhere;Side=ARM;}");
         let report = validate(&f.vfs(&["base", "mod"]), &options, |_| true);
         assert!(report.issues.iter().any(|i| i.code == "reference.missing" && i.message.contains("scripts/gunner.cob")), "a missing script is reported as its own: {}", report.to_text());
+    }
+
+    /// A unit's adjacency bonus changing what TA Reborn does not play, or adding nothing, is
+    /// told; one it plays is not. A building working round it by itself with no build power too.
+    #[test]
+    fn adjacency_bonuses_that_do_nothing_and_idle_stations_are_told() {
+        let f = Fixture::new(); f.valid("base");
+        f.put("mod", "units/gen.fbi", b"[UNITINFO]{UnitName=GEN;ObjectName=example;Side=ARM;AdjacencySize=4;[ADJACENCY]{[Good]{Affects=BuildEnergy;Add=-0.0625;Size=16;}[Shield]{Affects=Shields;Add=-0.1;}[Nothing]{Affects=EnergyUse;}}}");
+        f.put("mod", "units/station.fbi", b"[UNITINFO]{UnitName=STATION;ObjectName=example;Side=ARM;DefaultMissionType=AssistPatrol;}");
+        f.put("mod", "units/kennel.fbi", b"[UNITINFO]{UnitName=KENNEL;ObjectName=example;Side=ARM;WorkerTime=200;DefaultMissionType=AssistPatrol;}");
+        let options = Options { target_layer: Some("mod".into()), ..Default::default() };
+        let report = validate(&f.vfs(&["base", "mod"]), &options, |_| true);
+        let told: Vec<&str> = report.issues.iter().filter(|i| i.code == "unit.adjacency").map(|i| i.message.as_str()).collect();
+        assert_eq!(told.len(), 2, "{}", report.to_text());
+        assert!(told.iter().any(|m| m.contains("Shield") && m.contains("Shields")) && told.iter().any(|m| m.contains("Nothing") && m.contains("adds nothing")), "{told:?}");
+        let idle: Vec<&str> = report.issues.iter().filter(|i| i.code == "unit.assist_patrol").map(|i| i.path.as_str()).collect();
+        assert_eq!(idle, ["units/station.fbi"], "{}", report.to_text());
+        assert_words(&report);
     }
 
     #[test]

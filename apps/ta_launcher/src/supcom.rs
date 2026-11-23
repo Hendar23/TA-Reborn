@@ -1902,7 +1902,8 @@ mod tests {
 
     /// The imports' mods made by an older converter than this TA Reborn's are updates on the Mods
     /// page (its UPDATES, the rail's count), made again at their tab; not one made by this
-    /// converter, nor another mod of their id.
+    /// converter, nor another mod of their id, nor any while the import is hidden (experimental
+    /// features off: `crate::experimental`).
     #[test]
     fn an_imports_mod_made_by_an_older_converter_is_an_update() {
         use crate::mod_library::{Facts, Filter, Library};
@@ -1912,18 +1913,20 @@ mod tests {
             std::fs::write(dir.join(id).join("mod.toml"), format!("id = \"{id}\"\nname = \"{name}\"\nversion = \"{version}\"\n")).unwrap();
         };
         let list = || ModList::scan(vec![ModFolder { label: ta_vfs::mods::USER_FOLDER_LABEL, path: dir.clone(), exists: true }], &[]);
-        let updates = |list: &ModList| {
+        let updates_shown = |list: &ModList, supcom: bool| {
             let status = |_: &str| crate::validation::ValidationStatus::Unknown;
-            let facts = Facts { mods: list, enabled: &[], status: &status, hidden: &[] };
+            let facts = Facts { mods: list, enabled: &[], status: &status, hidden: &[], supcom };
             let mut library = Library::default();
             library.filter = Filter::Updates;
             library.visible(&facts).into_iter().map(|item| item.id).filter(|id| id == PACK_ID || id == crate::supcom_factions::MOD_ID).collect::<Vec<_>>()
         };
+        let updates = |list: &ModList| updates_shown(list, true);
         write(PACK_ID, PACK_NAME, "0");
         write(crate::supcom_factions::MOD_ID, crate::supcom_factions::MOD_NAME, &crate::supcom_factions::VERSION.to_string());
         assert_eq!(update_tab(&list(), PACK_ID), Some(Tab::Maps));
         assert_eq!(update_tab(&list(), crate::supcom_factions::MOD_ID), None, "made by this converter");
         assert_eq!(updates(&list()), [PACK_ID]);
+        assert!(updates_shown(&list(), false).is_empty(), "the import hidden (experimental features off): no update to make");
         write(crate::supcom_factions::MOD_ID, crate::supcom_factions::MOD_NAME, "1");
         assert_eq!(update_tab(&list(), crate::supcom_factions::MOD_ID), Some(Tab::Factions));
         write(PACK_ID, "Bob's own maps", "0");

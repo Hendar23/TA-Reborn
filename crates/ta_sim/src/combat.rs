@@ -4,7 +4,8 @@
 //! and starts the script's `AimPrimary/Secondary/Tertiary` thread (`AimWeapon1` to `AimWeapon8`
 //! in a mod's scripts, for up to eight weapons: [`ta_data::unit::WEAPON_FUNCTIONS`]); when that
 //! thread returns non-zero the weapon is aimed. Firing asks `QueryPrimary` for the muzzle piece,
-//! calls `FirePrimary` for recoil/flash animation and launches a projectile from the muzzle.
+//! starts `FirePrimary` (its recoil, its flash) and launches a projectile from where the muzzle
+//! piece is once that has run as far as its first wait (tried on a copy of the script).
 
 use ta_data::RenderType;
 use ta_data::unit::{MAX_WEAPONS, WeaponFunction};
@@ -19,6 +20,9 @@ use crate::unit::{Order, Target, Unit, UnitId, piece_world_position, player_bit}
 use crate::world::{CELL, Occupant, World};
 
 mod projectiles;
+
+#[cfg(test)]
+mod launch_tests;
 
 #[cfg(test)]
 mod targeting_tests;
@@ -402,11 +406,14 @@ impl Sim {
         let weapons = self.weapon_types.clone();
         let Some(u) = self.unit(id) else { return };
         let t = types.get(u.type_id);
-        let Some(w) = t.weapons.iter().flatten().map(|&w| weapons.get(w)).find(|w| w.def.stockpile) else { return };
+        let Some(w) = u.weapon_slots(t).iter().flatten().map(|&w| weapons.get(w)).find(|w| w.def.stockpile) else { return };
         if u.stockpile >= MAX_STOCKPILE || !(u.activated || !t.def.on_offable) {
             return;
         }
         let owner = u.owner as usize;
+        // (Less for a silo beside a building that cuts what building costs it: adjacency.)
+        let metal_per_shot = crate::sim::adjacency::scaled(w.metal_per_shot, u.adjacency_factor(ta_data::AdjacencyAffect::BuildMetal));
+        let energy_per_shot = crate::sim::adjacency::scaled(w.energy_per_shot, u.adjacency_factor(ta_data::AdjacencyAffect::BuildEnergy));
         // A missile takes its reload time of full ticks (each a fraction of a tick by the stall
         // factor, kept whole in 16.16), and each tick pays what its share of the missile's price
         // is worth, so the missile costs exactly that price.
@@ -415,21 +422,21 @@ impl Sim {
         let worth = |amount: Fx, work: u64| amount.share(before + work, total) - amount.share(before, total);
         let full = (Fx::ONE.0 as u64).min(total - before.min(total));
         let e = &mut self.players[owner].economy;
-        e.metal_demand_next += worth(w.metal_per_shot, full);
-        e.energy_demand_next += worth(w.energy_per_shot, full);
-        e.tick_metal_wanted += worth(w.metal_per_shot, full);
-        e.tick_energy_wanted += worth(w.energy_per_shot, full);
+        e.metal_demand_next += worth(metal_per_shot, full);
+        e.energy_demand_next += worth(energy_per_shot, full);
+        e.tick_metal_wanted += worth(metal_per_shot, full);
+        e.tick_energy_wanted += worth(energy_per_shot, full);
         let mut work = (e.build_factor.0.max(0) as u64).min(full);
         // Last tick's demand cannot predict a newly started silo or what another builder
         // has already spent. Limit work to the stores that remain, including rounding at
         // fractional progress, so an empty store never pays for free missile progress.
-        if w.metal_per_shot > Fx::ZERO && e.metal <= Fx::ZERO || w.energy_per_shot > Fx::ZERO && e.energy <= Fx::ZERO {
+        if metal_per_shot > Fx::ZERO && e.metal <= Fx::ZERO || energy_per_shot > Fx::ZERO && e.energy <= Fx::ZERO {
             work = 0;
-        } else if worth(w.metal_per_shot, work) > e.metal || worth(w.energy_per_shot, work) > e.energy {
+        } else if worth(metal_per_shot, work) > e.metal || worth(energy_per_shot, work) > e.energy {
             let (mut lo, mut hi) = (0, work);
             while lo < hi {
                 let mid = lo + (hi - lo).div_ceil(2);
-                if worth(w.metal_per_shot, mid) <= e.metal && worth(w.energy_per_shot, mid) <= e.energy {
+                if worth(metal_per_shot, mid) <= e.metal && worth(energy_per_shot, mid) <= e.energy {
                     lo = mid;
                 } else {
                     hi = mid - 1;
@@ -437,7 +444,7 @@ impl Sim {
             }
             work = lo;
         }
-        let (metal, energy) = (worth(w.metal_per_shot, work), worth(w.energy_per_shot, work));
+        let (metal, energy) = (worth(metal_per_shot, work), worth(energy_per_shot, work));
         e.metal -= metal;
         e.energy -= energy;
         e.tick_metal_out += metal;
@@ -475,7 +482,7 @@ impl Sim {
                 let t = types.get(u.type_id);
                 let weapons = &weapons;
                 (0..MAX_WEAPONS).filter_map(move |slot| {
-                    let w = weapons.get(t.weapons[slot]?);
+                    let w = weapons.get(u.weapon_slots(t)[slot]?);
                     (w.def.interceptor && (!w.def.stockpile || u.stockpile > 0)).then_some((u.id, slot))
                 })
             })
@@ -489,8 +496,8 @@ impl Sim {
             }
             let Some(u) = self.unit(id) else { continue };
             let t = types.get(u.type_id);
-            let w = weapons.get(t.weapons[slot].unwrap());
-            if u.weapons[slot].reload > 0 || !(u.activated || !t.def.on_offable) || !self.weapon_can_fire_from(u, w) {
+            let Some(w) = u.weapon_slots(t)[slot].map(|w| weapons.get(w)) else { continue };
+            if u.weapons[slot].reload > 0 || !(u.activated || !t.def.on_offable) || !self.weapon_can_fire_from(u, w) || u.packing_to_go() {
                 continue;
             }
             let coverage = w.interceptor_coverage();
@@ -532,6 +539,8 @@ impl Sim {
         }
         let Some(u) = self.unit(id) else { return };
         let t = types.get(u.type_id);
+        // (Its own slots: its enhancements fill and swap them.)
+        let slots = *u.weapon_slots(t);
         if u.dead || !u.is_complete() {
             return;
         }
@@ -551,7 +560,7 @@ impl Sim {
         // reload and burst timers run down (as below, for most units on most ticks).
         let looking = fire_state >= 2 && (self.tick + id.slot as u64).is_multiple_of(RETARGET_TICKS);
         if forced.is_none() && !looking && u.weapons.iter().all(|ws| ws.target.is_none()) {
-            let armed = t.weapons;
+            let armed = slots;
             if let Some(u) = self.unit_mut(id) {
                 for (ws, _) in u.weapons.iter_mut().zip(armed).filter(|(_, w)| w.is_some()) {
                     ws.reload = ws.reload.saturating_sub(1);
@@ -560,7 +569,7 @@ impl Sim {
             }
             return;
         }
-        let available = t.weapons.map(|w| w.is_some_and(|w| self.weapon_can_fire_from(u, weapons.get(w))));
+        let available = slots.map(|w| w.is_some_and(|w| self.weapon_can_fire_from(u, weapons.get(w))));
         // Command-fire weapons (D-gun, bombs) fire on manual-fire orders, and on plain
         // attack orders when they are the primary weapon (bombers, the Phoenix's bombs
         // beside its laser) or nothing else the unit carries can hit the target; the
@@ -571,7 +580,7 @@ impl Sim {
         };
         let can_hit = |w: &WeaponType| if flying { w.hits_air } else { w.hits_ground };
         // (Of the weapons that take the order: `Sim::takes_order`.)
-        let has_normal = t.weapons.iter().enumerate().any(|(slot, w)| {
+        let has_normal = slots.iter().enumerate().any(|(slot, w)| {
             available[slot] && w.is_some_and(|w| {
                 let w = weapons.get(w);
                 !w.command_fire && can_hit(w) && forced.is_none_or(|tg| self.takes_order(t, slot, w, tg, owner))
@@ -582,7 +591,7 @@ impl Sim {
         // (Slots index the type's weapons, the unit's weapon states and the aim functions.)
         #[allow(clippy::needless_range_loop)]
         for slot in 0..MAX_WEAPONS {
-            let Some(wid) = t.weapons[slot] else {
+            let Some(wid) = slots[slot] else {
                 // No weapon here: nothing may hold a target in this slot.
                 if let Some(u) = self.unit_mut(id) {
                     u.retarget(slot, None);
@@ -705,7 +714,10 @@ impl Sim {
                 Trajectory::Dropped => self.bomb_on_target(id, from, tp, w, target),
                 _ => heading.abs() <= if w.tolerance > 0 { w.tolerance } else { 3000 },
             };
-            if aimed_now && ready && dist <= reach && lined_up {
+            // Nothing fired by a unit its script holds still and packs up to go (an aim answered
+            // before it was told to go answers no more).
+            let packing = self.unit(id).is_some_and(Unit::packing_to_go);
+            if aimed_now && ready && dist <= reach && lined_up && !packing {
                 // A shot the ground would stop: automatic targeting passes over that target
                 // for a while (another may be in the open); an ordered target is fired at
                 // regardless, as in TA.
@@ -769,11 +781,12 @@ impl Sim {
         let Some(unit) = self.unit(id) else { return };
         let Some(control) = unit.direct_control else { return };
         let ty = types.get(unit.type_id);
+        let slots = *unit.weapon_slots(ty);
         let heading = wrap_angle(control.input.heading - unit.heading);
         let pitch = control.input.pitch;
         let input = control.input;
         for slot in 0..MAX_WEAPONS {
-            let Some(weapon) = ty.weapons[slot] else { continue };
+            let Some(weapon) = slots[slot] else { continue };
             let weapon = weapons.get(weapon);
             if let Some(unit) = self.unit_mut(id) {
                 let state = &mut unit.weapons[slot];
@@ -789,7 +802,7 @@ impl Sim {
             let assisted = self.direct_aim_target(id, from, direction, weapon);
             let (target, point, pitch) = assisted.unwrap_or((Target::Ground(point), point, pitch));
             let heading = if assisted.is_some() { wrap_angle(heading_of(point - from) - body_heading) } else { heading };
-            if control.aim_piece.is_none() && ty.weapons.iter().position(Option::is_some) == Some(slot) {
+            if control.aim_piece.is_none() && slots.iter().position(Option::is_some) == Some(slot) {
                 let query = weapon_function(ty, WeaponFunction::Query, slot);
                 let piece = self.call_script(id, query, &[0]).and_then(|values| values.first().copied()).and_then(|piece| {
                     self.unit(id)?.cob.as_ref()?.program.piece_map.get(usize::try_from(piece).ok()?).copied().flatten()
@@ -966,7 +979,7 @@ impl Sim {
         if !u.orders.is_empty() || u.move_state == 0 || u.fire_state == 0 { return; }
         // (Not after a bad target, which it takes on only when nothing else is near: as units do
         // not chase one.)
-        let engaged = u.weapons.iter().zip(t.weapons).enumerate().any(|(slot, (state, weapon))| {
+        let engaged = u.weapons.iter().zip(*u.weapon_slots(t)).enumerate().any(|(slot, (state, weapon))| {
             weapon.is_some_and(|w| {
                 let w = self.weapon_types.get(w);
                 state.target.is_some_and(|target| self.target_valid(id, w, target) && matches!(target, Target::Unit(tid) if self.unit(tid).is_some_and(|tu| !self.bad_target(t.id, slot, tu))))
@@ -1001,7 +1014,22 @@ impl Sim {
     /// without the order while the others fire as ordered.
     pub(crate) fn takes_order(&self, t: &crate::defs::UnitType, slot: usize, w: &WeaponType, target: Target, owner: u8) -> bool {
         self.weapon_reaches(w, target)
+            && self.only_allows(t, slot, w, target)
             && !matches!(target, Target::Unit(id) if self.unit(id).is_some_and(|tu| self.keeps_to_own_targets(t, slot, w, tu.type_id, owner)))
+    }
+
+    /// Whether the weapon in `slot` of a unit of type `t` may take `target` on at all, by the only
+    /// targets it names (`OnlyTargetCategory<n>`: [`crate::defs::UnitType::weapon_only_masks`]):
+    /// any, where it names none (TA's own weapons); else only a unit of a category it names, where
+    /// it can hit it ([`Sim::can_engage`]: an anti-air gun takes no aircraft landed), never a place
+    /// on the ground, whatever it is told: Supreme Commander's anti-air, which shoots aircraft
+    /// alone, by order too (`FireTargetLayerCapsTable`).
+    pub(crate) fn only_allows(&self, t: &crate::defs::UnitType, slot: usize, w: &WeaponType, target: Target) -> bool {
+        let Some(only) = t.weapon_only_masks[slot] else { return true };
+        match target {
+            Target::Unit(id) => self.unit(id).is_some_and(|tu| self.types.get(tu.type_id).category_mask.intersects(&only) && self.can_engage(w, tu)),
+            Target::Ground(_) | Target::Projectile(_) => false,
+        }
     }
 
     /// Whether the weapon in `slot` of a unit of type `t` (`owner`'s) leaves an attack order on a
@@ -1096,6 +1124,8 @@ impl Sim {
         let u = self.unit(id)?;
         let (pos, radar_guided) = (u.pos, self.fires_on_radar(u));
         let bad_mask = self.types.get(u.type_id).weapon_bad_masks[weapon_slot];
+        // (Of its only targets, where it names some: `Sim::only_allows`.)
+        let only = self.types.get(u.type_id).weapon_only_masks[weapon_slot];
         let attacker = u.last_attacker.filter(|_| self.tick <= u.last_hit_tick + 2 * TICKS_PER_SECOND as u64);
         // (Shells: from about where the gun stands, to the target's middle.)
         let gun_y = u.model_pos(self.unit_type(u)).y + self.unit_type(u).model.height / 2;
@@ -1128,7 +1158,7 @@ impl Sim {
             let seen = self.seen_by(o, owner);
             if seen == crate::vision::Seen::Hidden || seen == crate::vision::Seen::Radar && !radar_guided { continue; }
             // (What it hits, only torpedoes and depth charges under the water.)
-            if !self.can_engage(w, o) {
+            if !self.can_engage(w, o) || only.is_some_and(|m| !ot.category_mask.intersects(&m)) {
                 continue;
             }
             // A shell must also carry that far (to the target's middle).
@@ -1408,6 +1438,15 @@ impl Sim {
             None => return,
         };
         let muzzle_piece = self.call_script(id, query, &[0]).and_then(|p| p.first().copied());
+        // The shot leaves from where the piece the query named is once the fire function has run
+        // as far as its first wait (its flash shown, its barrel kicked back): tried on a copy of
+        // the script, which changes nothing, the fire function itself starting as ever. Scripts
+        // move that piece as they fire: TA: Escalation's C.O.R.E. sends its eighteen launch points
+        // far off as it aims and brings the one firing back to its pod as it fires (read before,
+        // its rockets left from 25,000 px away, off the map, and only their launch flashes were
+        // seen). (Asked first, the query names the barrel the fire function flashes: TA's Hammer
+        // alternates its two.)
+        let fired = self.trial_script(id, fire, &[]);
         self.start_script(id, fire, &[]);
         // The recoil rocks the hull away from the shot, in the unit's own frame (TA's
         // RockUnit: tilts about the x and z axes, 500 at most).
@@ -1418,11 +1457,11 @@ impl Sim {
             let rock = [(cos(away) * 500).to_int() as i32, (sin(away) * 500).to_int() as i32];
             self.start_script(id, "RockUnit", &rock);
         }
-        let u = self.unit(id).unwrap();
+        let Some(u) = self.unit(id) else { return };
         let t = self.types.get(u.type_id);
         let muzzle = muzzle_piece
             .and_then(|p| {
-                let cob = u.cob.as_ref()?;
+                let cob = fired.as_ref().or(u.cob.as_ref())?;
                 let mp = cob.program.piece_map.get(usize::try_from(p).ok()?).copied().flatten()?;
                 Some(piece_world_position(u, t, Some(cob), mp))
             })
@@ -1442,6 +1481,7 @@ impl Sim {
         // Direction: heading to the target plus accuracy error; launch pitch as solved.
         // Veterans aim better (up to 60% less scatter).
         let vet = self.unit(id).map_or(Fx::ZERO, |u| u.veterancy());
+        let quicker = self.unit(id).and_then(|u| u.adjacency_factor(ta_data::AdjacencyAffect::ReloadTime));
         let spread = ((Fx::from_int(w.spread as i64 / 4) * (Fx::ONE - vet * 6 / 10)).to_int()) as i32;
         let err_h = if spread > 0 { self.rng.range_i32(-spread, spread) } else { 0 };
         let err_p = if spread > 0 { self.rng.range_i32(-spread / 2, spread / 2) } else { 0 };
@@ -1456,8 +1496,9 @@ impl Sim {
             // Straight up out of its tube at its start speed, none for most: it gathers speed as
             // it climbs (`weaponacceleration`). At full speed through the whole climb a Merl's
             // rocket rose 2,000 px, out of sight, and came down short of its target as its fuel
-            // ran out; a nuke climbed 1,750 px, an anti-nuke 3,200.
-            let rise = if w.acceleration > Fx::ZERO { w.start_velocity } else { speed };
+            // ran out; a nuke climbed 1,750 px, an anti-nuke 3,200. A negative start sends it
+            // straight down (TA: Escalation's bombers drop their pulse bombs so).
+            let rise = if w.acceleration > Fx::ZERO || !w.start_velocity.is_zero() { w.start_velocity } else { speed };
             vel = FxVec3::new(Fx::ZERO, rise, Fx::ZERO);
         }
         if w.trajectory == Trajectory::Dropped {
@@ -1494,8 +1535,10 @@ impl Sim {
                 // Stockpile reload is the missile's build time; launches only need the
                 // silo to cycle.
                 let reload = if w.def.stockpile { w.reload_ticks.min(90) } else { w.reload_ticks };
-                // Veterans reload up to 30% faster.
-                ws.reload = (Fx::from_int(reload as i64) * (Fx::ONE - vet * 3 / 10)).to_int().max(1) as u32;
+                // Veterans reload up to 30% faster; a building beside one that quickens its reload
+                // (adjacency) faster still.
+                let reload = crate::sim::adjacency::scaled(Fx::from_int(reload as i64), quicker);
+                ws.reload = (reload * (Fx::ONE - vet * 3 / 10)).to_int().max(1) as u32;
             } else {
                 ws.burst_left -= 1;
             }
@@ -1648,14 +1691,15 @@ impl Sim {
             _ => None,
         };
         let harmless = |tg: Target| match tg {
-            Target::Unit(tid) => ordered != Some(tg) && self.unit(tid).is_none_or(|tu| self.types.get(tu.type_id).weapons.iter().all(|w| w.is_none())),
+            Target::Unit(tid) => ordered != Some(tg) && self.unit(tid).is_none_or(|tu| !tu.armed(self.types.get(tu.type_id))),
             _ => false,
         };
+        let own = *u.weapon_slots(t);
         let slots: Vec<usize> = (0..MAX_WEAPONS)
             .filter(|&s| {
-                t.weapons[s].is_some_and(|w| {
+                own[s].is_some_and(|w| {
                     let w = self.weapon_types.get(w);
-                    !w.command_fire && !w.def.stockpile && self.weapon_can_fire_from(u, w) && self.can_engage(w, attacker) && u.weapons[s].target.is_none_or(|tg| harmless(tg) && u.pos.within_xz(apos, w.range + at.radius))
+                    !w.command_fire && !w.def.stockpile && self.weapon_can_fire_from(u, w) && self.can_engage(w, attacker) && self.only_allows(t, s, w, Target::Unit(source)) && u.weapons[s].target.is_none_or(|tg| harmless(tg) && u.pos.within_xz(apos, w.range + at.radius))
                 })
             })
             .collect();
@@ -1726,7 +1770,8 @@ impl Sim {
                 // Killed(severity, corpsetype): scripts explode pieces and pick the wreck.
                 // Severity is the killing blow as a percentage of max health, so units worn
                 // down by small arms leave wrecks while huge explosions leave nothing.
-                let severity = ((last_damage * Fx::from_int(100)) / t.max_health.max(Fx::ONE)).to_int().clamp(0, 100) as i32;
+                let most = self.unit(id).map_or(t.max_health, |u| u.max_health(t));
+                let severity = ((last_damage * Fx::from_int(100)) / most.max(Fx::ONE)).to_int().clamp(0, 100) as i32;
                 let corpse_type = self.call_script(id, "Killed", &[severity, 0]).and_then(|p| p.get(1).copied()).unwrap_or(1);
                 if complete {
                     self.spawn_wreck(&t.def.corpse, corpse_type, pos, heading, id);
@@ -1755,6 +1800,7 @@ impl Sim {
                         && yu.factory == Some(id)
                     {
                         yu.factory = None;
+                        yu.roll_off = None;
                     }
                 }
             }
@@ -2027,7 +2073,7 @@ impl Sim {
             let engaged = u
                 .weapons
                 .iter()
-                .zip(t.weapons.iter())
+                .zip(u.weapon_slots(t).iter())
                 .find_map(|(ws, w)| w.and(ws.target))
                 .filter(|&tg| self.target_known(tg, u.owner) || self.held_building(tg, u.owner))
                 .and_then(|tg| self.target_point(tg));
@@ -2051,9 +2097,10 @@ impl Sim {
             return true;
         }
         let targets = u.weapons.map(|ws| ws.target);
+        let own = *u.weapon_slots(t);
         let owner = u.owner;
         let weapons = self.weapon_types.clone();
-        let engaged = targets.into_iter().zip(t.weapons).enumerate().any(|(slot, (target, weapon))| {
+        let engaged = targets.into_iter().zip(own).enumerate().any(|(slot, (target, weapon))| {
             let (Some(target), Some(wid)) = (target, weapon) else { return false };
             let weapon = weapons.get(wid);
             if !self.unit(id).is_some_and(|u| self.weapon_can_fire_from(u, weapon)) || !self.target_known(target, owner) {
@@ -2099,10 +2146,14 @@ impl Sim {
         };
         let u = self.unit(id).unwrap();
         let t = types.get(u.type_id);
+        // (Its own slots: its enhancements fill and swap them.)
+        let own = *u.weapon_slots(t);
         // Nothing it carries reaches the target where it is (torpedoes a unit or a place out of
-        // the water; surface guns, bombs and missiles what is wholly under it): the order ends,
-        // as a failed one, rather than following the target about for ever.
-        if t.weapons.iter().flatten().next().is_some() && !t.weapons.iter().flatten().any(|&w| self.weapon_reaches(weapons.get(w), target)) {
+        // the water; surface guns, bombs and missiles what is wholly under it), or may take it on
+        // at all (a weapon's only targets: anti-air told to attack a tank or the ground,
+        // `Sim::only_allows`): the order ends, as a failed one, rather than following the target
+        // about for ever.
+        if own.iter().flatten().next().is_some() && !(0..MAX_WEAPONS).any(|s| own[s].is_some_and(|w| self.weapon_reaches(weapons.get(w), target) && self.only_allows(t, s, weapons.get(w), target))) {
             self.halt(id);
             if let Some(u) = self.unit_mut(id) {
                 u.orders.pop_front();
@@ -2122,10 +2173,10 @@ impl Sim {
         };
         let can_hit = |w: &WeaponType| self.weapon_can_fire_from(u, w) && self.weapon_reaches(w, target) && if flying { w.hits_air } else { w.hits_ground };
         let takes = |slot: usize, w: &WeaponType| self.takes_order(t, slot, w, target, owner);
-        let has_normal = (0..MAX_WEAPONS).any(|s| t.weapons[s].is_some_and(|w| { let w = weapons.get(w); !w.command_fire && can_hit(w) && takes(s, w) }));
+        let has_normal = (0..MAX_WEAPONS).any(|s| own[s].is_some_and(|w| { let w = weapons.get(w); !w.command_fire && can_hit(w) && takes(s, w) }));
         let fires = |slot: usize, w: &WeaponType| if w.command_fire { (manual || slot == 0 || !has_normal) && can_hit(w) } else { !manual && can_hit(w) && takes(slot, w) };
         let dy = tp.y - (u.model_pos(t).y + t.model.height / 2);
-        let reaches = (0..MAX_WEAPONS).filter_map(|s| t.weapons[s].map(|w| (s, weapons.get(w))));
+        let reaches = (0..MAX_WEAPONS).filter_map(|s| own[s].map(|w| (s, weapons.get(w))));
         let available = reaches.clone().filter(|&(_, w)| self.weapon_can_fire_from(u, w));
         let submerged_guns = reaches.clone().next().is_some() && available.clone().next().is_none();
         let firing = available.clone().filter(|&(s, w)| fires(s, w)).map(|(_, w)| self.weapon_reach(w, dy)).max().filter(|r| !r.is_zero());

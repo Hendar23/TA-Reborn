@@ -601,3 +601,24 @@ follows a colon, so its items stay nominative noun phrases: "ayrıca şunlar kul
 | the launcher's footer | başlatıcının durum çubuğu (as "status bar") |
 | commanders' enhancements / upgrading buildings in place | komutan geliştirmeleri / binaların yerinde yükseltilmesi |
 | shields / stealth fields / teleporting | kalkanlar / gizlilik alanları (not hayalet, TA's stealthy units) / ışınlanma |
+| experimental features / EXPERIMENTAL (tag) | deneysel özellikler / DENEYSEL |
+
+## Upgrades in place and enhancements (`orders.rs`, `hud/deck.rs`, `hud/enhance.rs`, `hud/info.rs`, `hud_classic.rs`)
+
+A building upgrades itself (kendini yükseltir); a commander attaches parts to itself, a part in
+a slot (yuvaya takmak, as a card into a slot). {name} never takes a suffix: an upgrade's target
+follows "olur" or a colon.
+
+| English | Türkçe |
+|---|---|
+| upgrade (in place) / Upgrade (the order) / UPGRADE / UPGR (classic short) | yerinde yükseltme, yükselt / Yükselt / YÜKSELT / YÜKS |
+| into {name} (the upgrade's target) | "Yükselt ({key}): {name} olur", "Yerinde yükseltilerek {name} olur"; status "Kendini yükseltiyor: {name} %{pct}", "Kendini yükseltmek üzere: {name}" |
+| the upgrade under way / while it upgrades | süren yükseltme / yükseltilirken |
+| enhancement / ENHANCE (deck tab, classic button) / ENHANCEMENTS / ENH (classic short) | geliştirme / GELİŞTİR / GELİŞTİRMELER / GLŞ |
+| slot (LCH, RCH, Back: the data's names, kept) | yuva ("Yuva {slot}", "her yuvaya bir tane") |
+| install / installed / being installed / take out | tak / takılı / takılıyor (status, active: "Takıyor: {name} %{pct}"; alone in a tip: "Yuvaya takılıyor", bare "takılıyor" reads as stuck) / çıkar ("Çıkarıyor: {name}") |
+| Stop calls it off, its metal back | Dur emri iptal eder, metali iade edilir |
+| Shift: queued | Shift: sıraya eklenir (as "Shift: emirleri sıraya ekle") |
+| {duration} on its own build power | kendi inşa gücüyle {duration} |
+| hit points / Mends {n} hit points a second | can puanı / Saniyede {n} can puanı onarır |
+| range {from} to {to} (a weapon replaced) | menzil {from} yerine {to} |

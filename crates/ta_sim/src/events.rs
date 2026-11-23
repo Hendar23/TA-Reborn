@@ -62,4 +62,11 @@ pub enum SimEvent {
     WaveArrived { owner: u8, units: u32, pos: FxVec3 },
     /// A player signalled their allies (see [`crate::signal`]).
     Signal { player: u8, kind: crate::signal::SignalKind, at: FxVec3 },
+    /// A unit finished upgrading in place: `from` is gone (taken off the map: its
+    /// `UnitDestroyed` comes with `removed`), `to` stands where it stood, of `type_id`, finished
+    /// (its `UnitCreated` and `UnitCompleted` came before). The interface carries its selection
+    /// and control groups over.
+    UnitUpgraded { from: UnitId, to: UnitId, type_id: usize },
+    /// A unit installed (`on`) or took out its type's enhancement `index`.
+    UnitEnhanced { id: UnitId, index: u16, on: bool },
 }

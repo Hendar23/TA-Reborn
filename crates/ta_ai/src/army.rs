@@ -353,7 +353,7 @@ impl SkirmishAi {
         let now = s.now;
         let me = self.player;
         let rally = self.rally;
-        self.repairing.retain(|&(id, since)| now < since + 3 * MINUTE && sim.unit(id).is_some_and(|u| !u.dead && u.owner == me && u.health * 10 < sim.unit_type(u).max_health * 9));
+        self.repairing.retain(|&(id, since)| now < since + 3 * MINUTE && sim.unit(id).is_some_and(|u| !u.dead && u.owner == me && u.health * 10 < u.max_health(sim.unit_type(u)) * 9));
         // Ships go back to the naval post (off the shipyard), the rest to the rally point.
         let post = self.naval.as_ref().map(|n| n.post);
         let home_of = |u: &Unit| if self.info[u.type_id].kind == Locomotion::Naval { post } else { Some(rally) };
@@ -362,7 +362,7 @@ impl SkirmishAi {
         let repairing: FxHashSet<UnitId> = self.repairing.iter().map(|r| r.0).collect();
         for u in &s.army {
             let Some(home) = home_of(u) else { continue };
-            if self.info[u.type_id].kind == Locomotion::Air || u.health * 100 >= sim.unit_type(u).max_health * 35 || u.pos.within_xz(home, fx(500)) {
+            if self.info[u.type_id].kind == Locomotion::Air || u.health * 100 >= u.max_health(sim.unit_type(u)) * 35 || u.pos.within_xz(home, fx(500)) {
                 continue;
             }
             if carried.contains(&u.id) {
@@ -618,6 +618,18 @@ impl SkirmishAi {
             .map(|(_, _, t)| self.info[*t].cost)
             .sum();
         towers + self.threat.at(pos)
+    }
+
+    /// What a tactical missile's strike on an enemy building of type `t` is worth: its defences
+    /// (they hold our army off) and its strategic weapons three times their cost, the economy and
+    /// production twice, anything else its cost.
+    pub(crate) fn strike_value(&self, t: usize) -> i64 {
+        let i = &self.info[t];
+        match i.role {
+            Role::Defense | Role::AntiAir | Role::Silo | Role::AntiNuke => i.cost * 3,
+            Role::Extractor | Role::Generator | Role::MetalMaker | Role::Factory => i.cost * 2,
+            _ => i.cost,
+        }
     }
 
     /// What destroying an enemy building of type `t` is worth: the economy and production
@@ -989,7 +1001,7 @@ impl SkirmishAi {
         let me = self.player;
         let ct = sim.unit_type(c);
         // Fall back when badly hurt with enemies close.
-        if c.health * 2 < ct.max_health && s.now >= self.retreat_until && self.enemies_near(s, c.pos, 450) > 0 && !c.pos.within_xz(self.base, fx(150)) {
+        if c.health * 2 < c.max_health(ct) && s.now >= self.retreat_until && self.enemies_near(s, c.pos, 450) > 0 && !c.pos.within_xz(self.base, fx(150)) {
             self.retreat_until = s.now + 20 * SECOND;
             out.push(Command::Order { player: me, units: vec![c.id], order: Order::Move(self.base), queue: false });
             return;
@@ -1026,11 +1038,14 @@ impl SkirmishAi {
 
     // ---- Strategic missiles -------------------------------------------------------------------
 
-    /// Salvos big enough to get through the anti-missile cover over the most valuable target.
+    /// Salvos big enough to get through the anti-missile cover over the most valuable target; a
+    /// look at the enemy's bases when a silo holds missiles and we know of nothing in its reach
+    /// (`send_recon`).
     pub(crate) fn run_silos(&mut self, sim: &Sim, s: &Survey, out: &mut Vec<Command>) {
         if s.peace {
             return;
         }
+        let mut blind = false;
         for silo in s.own.iter().filter(|u| Self::can_command(sim, u) && u.stockpile > 0 && self.info[u.type_id].role == Role::Silo) {
             if silo.orders.iter().any(|o| matches!(o, Order::ManualFire(_))) {
                 continue;
@@ -1038,13 +1053,75 @@ impl SkirmishAi {
             let t = sim.unit_type(silo);
             let Some(weapon) = t.weapons.iter().flatten().map(|&w| sim.weapon_types.get(w)).find(|w| w.def.stockpile && w.def.command_fire && w.def.targetable) else { continue };
             let have = silo.stockpile;
-            let Some((target, need)) = self.pick_nuke_target(sim, silo.pos, weapon, have) else { continue };
+            let Some((target, need)) = self.pick_nuke_target(sim, silo.pos, weapon, have) else {
+                // (Nothing we know of in its reach that its blast would not take our own with.)
+                let known = self.enemy_buildings.iter().filter(|b| b.1.within_xz(silo.pos, weapon.range)).count();
+                if s.now % MINUTE < THINK_TICKS {
+                    log::debug!("{} min: P{}'s {} holds {have} missiles and has no target ({} enemy buildings known, {known} in reach)", s.minutes, self.player, t.name, self.enemy_buildings.len());
+                }
+                blind |= known == 0;
+                continue;
+            };
+            if need > have && s.now % MINUTE < THINK_TICKS {
+                log::debug!("{} min: P{}'s {} holds {have} missiles, {need} wanted to get through at ({}, {})", s.minutes, self.player, t.name, target.x.to_int(), target.z.to_int());
+            }
             if need <= have || silo.stockpile >= ta_sim::combat::MAX_STOCKPILE {
                 for i in 0..need.min(have) {
                     out.push(Command::Order { player: self.player, units: vec![silo.id], order: Order::ManualFire(Target::Ground(target)), queue: i > 0 });
                 }
             }
         }
+        if blind {
+            self.send_recon(sim, s, out);
+        }
+    }
+
+    /// A look at the enemy's bases for our missiles, as a player sends a scout before a launch:
+    /// what our silos could strike there is gone, and what the enemy put up since was never seen.
+    /// A plane flies round the nearest of the enemy's bases (those seen first), far enough out to
+    /// keep off their towers' fire, and comes home; once in two minutes at most. The plane: a
+    /// scout of ours, else the fastest idle one at home, else an idle air transport.
+    pub(crate) fn send_recon(&mut self, sim: &Sim, s: &Survey, out: &mut Vec<Command>) {
+        if self.last_recon.is_some_and(|t| s.now < t + 2 * MINUTE) || self.enemy_bases.is_empty() {
+            return;
+        }
+        let ordered = ordered_units(out);
+        let striking = |id: UnitId| self.air_strike.as_ref().is_some_and(|a| a.planes.iter().any(|p| p.0 == id));
+        let idle = |u: &&&Unit| {
+            u.orders.is_empty() && !ordered.contains(&u.id) && Self::can_command(sim, u) && u.factory.is_none() && !striking(u.id) && Some(u.id) != self.scout && Some(u.id) != self.ground_scout
+        };
+        let fastest = |u: &&&Unit| (self.info[u.type_id].speed, Reverse(self.info[u.type_id].cost), Reverse(u.id.slot));
+        let plane = s
+            .own
+            .iter()
+            .filter(|u| self.is_scout(u.type_id))
+            .filter(idle)
+            .max_by_key(fastest)
+            .or_else(|| s.planes.iter().filter(idle).filter(|u| u.pos.within_xz(self.base, fx(1500))).max_by_key(fastest))
+            .or_else(|| {
+                s.transports
+                    .iter()
+                    .filter(|t| self.info[t.type_id].kind == Locomotion::Air && t.cargo.is_empty() && !self.riders.iter().any(|r| r.transport == t.id))
+                    .filter(idle)
+                    .max_by_key(fastest)
+            })
+            .copied();
+        let Some(plane) = plane else { return };
+        let mut bases: Vec<(bool, FxVec3)> = self.enemy_bases.iter().zip(&self.enemy_base_seen).map(|(&p, &seen)| (seen, p)).collect();
+        bases.sort_by_key(|&(seen, b)| (!seen, dist(b, plane.pos), b.x.0, b.z.0));
+        let (w, h) = sim.world.size_px();
+        let mut k = 0;
+        for (_, b) in bases.into_iter().take(2) {
+            for i in 0..6 {
+                let a = i * 65536 / 6;
+                let p = FxVec3::new((b.x + ta_sim::fixed::cos(a) * 520).clamp(fx(64), w - fx(64)), Fx::ZERO, (b.z + ta_sim::fixed::sin(a) * 520).clamp(fx(64), h - fx(64)));
+                out.push(Command::Order { player: self.player, units: vec![plane.id], order: Order::Move(p), queue: k > 0 });
+                k += 1;
+            }
+        }
+        out.push(Command::Order { player: self.player, units: vec![plane.id], order: Order::Move(self.base), queue: true });
+        self.last_recon = Some(s.now);
+        log::debug!("{} min: P{} sends a {} to look at the enemy's bases for its missiles", s.minutes, self.player, sim.unit_type(plane).name);
     }
 
     /// Where to drop a nuke, and how many missiles it takes to get through: the enemy
@@ -1054,22 +1131,27 @@ impl SkirmishAi {
     /// anti-nuke a nuke, a tactical defence a tactical missile: `WeaponDef::intercepts`); one that
     /// takes them at its reload rather than from a stock (a tactical defence) stops every missile
     /// of a salvo in turn: what it covers is left alone. A strategic missile's blast takes in a
-    /// base, any of it worth one; another (a tactical missile) goes on nothing worth less than it
-    /// costs (never on a wall).
+    /// base, any of it worth one; another (a tactical missile) strikes buildings alone, by what
+    /// their loss costs the enemy (`strike_value`: its defences and strategic weapons first), and
+    /// goes on nothing worth less than it costs (never on a wall).
     pub(crate) fn pick_nuke_target(&self, sim: &Sim, from: FxVec3, weapon: &ta_sim::WeaponType, have: u32) -> Option<(FxVec3, u32)> {
         let (range, aoe, classes) = (weapon.range, weapon.aoe_radius.max(fx(64)), weapon.def.targetable_classes());
-        let worth = if classes & ta_sim::STRATEGIC_CLASS != 0 { 0 } else { (weapon.metal_per_shot + weapon.energy_per_shot / 60).to_int().max(1) };
+        let strategic = classes & ta_sim::STRATEGIC_CLASS != 0;
+        let worth = if strategic { 0 } else { (weapon.metal_per_shot + weapon.energy_per_shot / 60).to_int().max(1) };
         let me = self.player;
         let value = |u: &Unit| self.info[u.type_id].cost;
-        // What we know of the enemy: the buildings we have seen (and not seen gone since), and
-        // the units in sight now.
+        // What we know of the enemy: the buildings we have seen (and not seen gone since), and,
+        // for a strategic missile, whose blast takes in a base, the units in sight now. A tactical
+        // one strikes the buildings that matter most for it (`strike_value`: the defences that
+        // hold our army off, the strategic weapons, then the economy and production); units move
+        // off before it comes down.
         let enemies: Vec<(FxVec3, i64)> = self
             .enemy_buildings
             .iter()
-            .map(|&(_, p, t)| (p, self.info[t].cost))
+            .map(|&(_, p, t)| (p, if strategic { self.info[t].cost } else { self.strike_value(t) }))
             .chain(
                 sim.units()
-                    .filter(|u| !u.dead && sim.is_enemy(me, u.owner) && !sim.ai_ignores(u.id) && sim.unit_type(u).locomotion != Locomotion::Static && sim.seen_by(u, me) == Seen::Visible)
+                    .filter(|u| strategic && !u.dead && sim.is_enemy(me, u.owner) && !sim.ai_ignores(u.id) && sim.unit_type(u).locomotion != Locomotion::Static && sim.seen_by(u, me) == Seen::Visible)
                     .map(|u| (u.pos, value(u))),
             )
             .collect();

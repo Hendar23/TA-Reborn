@@ -111,6 +111,37 @@ impl Objective {
             Goal::AnyUnitPasses(line) => Objective::AnyUnitPasses(Crossing::new(line)),
         })
     }
+
+    /// The goal as TA's mission files name it, its unit types by name (for the logs).
+    pub fn describe(&self, types: &UnitTypes) -> String {
+        let name = |t: usize| types.types.get(t).map_or_else(|| format!("#{t}"), |t| t.name.clone());
+        let at = |p: FxVec3| format!("({}, {})", p.x.to_int(), p.z.to_int());
+        match *self {
+            Objective::DestroyAllUnits => "DestroyAllUnits".into(),
+            Objective::KillAllMobileUnits => "KillAllMobileUnits".into(),
+            Objective::KillEnemyCommander => "KillEnemyCommander".into(),
+            Objective::KillUnitType { unit, count } => format!("KillUnitType {} x{count}", name(unit)),
+            Objective::KillAllOfType(unit) => format!("KillAllOfType {}", name(unit)),
+            Objective::KillAllOfTypeToCome(unit) => format!("KillAllOfType {} (waves too)", name(unit)),
+            Objective::CaptureUnitType(unit) => format!("CaptureUnitType {}", name(unit)),
+            Objective::BuildUnitType(unit) => format!("BuildUnitType {}", name(unit)),
+            Objective::MoveUnitToRadius { unit, pos, radius } => {
+                format!("MoveUnitToRadius {} to {} within {}", unit.map_or_else(|| "any unit".into(), name), at(pos), radius.to_int())
+            }
+            Objective::UnitTypePasses { unit, line } => format!("UnitTypePasses {} {:?} of {}", name(unit), line.toward, line.at.to_int()),
+            Objective::AnyUnitPasses(line) => format!("AnyUnitPasses {:?} of {}", line.toward, line.at.to_int()),
+            Objective::AllUnitsKilled => "AllUnitsKilled".into(),
+            Objective::CommanderKilled => "CommanderKilled".into(),
+            Objective::AllUnitsKilledOfType(unit) => format!("AllUnitsKilledOfType {}", name(unit)),
+            Objective::UnitTypeKilled { unit, count } => format!("UnitTypeKilled {} x{count}", name(unit)),
+            Objective::Timer(ticks) => format!("timer of {} s", ticks / crate::cob::TICKS_PER_SECOND as u64),
+            Objective::HoldArea { pos, radius, .. } => format!("hold {} within {}", at(pos), radius.to_int()),
+            Objective::EnemyHoldsArea { pos, radius, .. } => format!("the enemy holds {} within {}", at(pos), radius.to_int()),
+            Objective::MetalMade(metal) => format!("{} metal made", metal.to_int()),
+            Objective::EnemyMetalMade(metal) => format!("{} metal made by the enemy", metal.to_int()),
+            Objective::UnitLost(id) => format!("MissionCriticalUnit lost (unit {})", id.slot),
+        }
+    }
 }
 
 /// The active mission: the human player, goals, and the result once decided.
@@ -229,13 +260,32 @@ enum Doing {
 }
 
 /// A wave's unit on the hunt: where it was at the last look, and for how many looks it has
-/// hardly moved though it had somewhere to go (wedged in a crowd).
+/// hardly moved though it had somewhere to go (wedged in a crowd); and the wreckage it is
+/// firing on to open its way (a feature), if any.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hunter {
     pub id: UnitId,
     pub mark: FxVec3,
     pub still: u8,
+    pub clearing: Option<usize>,
 }
+
+impl Hunter {
+    /// A unit just come with its wave.
+    pub fn new(id: UnitId) -> Hunter {
+        Hunter { id, mark: FxVec3::ZERO, still: 0, clearing: None }
+    }
+}
+
+/// Wedged hunters of one look whose way is searched for wreckage at most (each search finds it
+/// for those wedged round the same place and going the same way, too).
+const CLEARING_SEARCHES: usize = 3;
+/// A wedged hunter takes the wreckage found for another as its own when it stands this near
+/// where that one stood, and is going this near where it was going (px).
+const CLEARING_SHARE: i64 = 640;
+/// Wedged hunters this near wreckage that closes their way fire on it (px); those further back
+/// wait for the way to open.
+const CLEARING_REACH: i64 = 900;
 
 /// A group of units that arrives on schedule: a scenario's attack.
 #[derive(Clone, Debug, PartialEq)]
@@ -329,7 +379,7 @@ impl MissionRules {
             for &(unit, count) in &wave.units { mix(unit as i64); mix(count as i64); }
         }
         mix(self.hunters.len() as i64);
-        for hunter in &self.hunters { id(mix, hunter.id); pos(mix, hunter.mark); mix(hunter.still as i64); }
+        for hunter in &self.hunters { id(mix, hunter.id); pos(mix, hunter.mark); mix(hunter.still as i64); mix(hunter.clearing.map_or(-1, |f| f as i64)); }
         mix(self.scripts.len() as i64);
         for script in &self.scripts {
             id(mix, script.unit); mix(script.owner as i64); mix(script.since as i64);
@@ -405,6 +455,15 @@ impl Sim {
             }
             self.events.push(SimEvent::MissionEnded { victory: won });
         }
+    }
+
+    /// The mission's goals met as things stand: its victory goals, then its defeat goals, each in
+    /// their order. Once the mission is decided, what decided it (the game's log says so). Reads
+    /// the game alone: nothing changes.
+    pub fn mission_goals_met(&self) -> (Vec<Objective>, Vec<Objective>) {
+        let Some(rules) = &self.mission else { return (Vec::new(), Vec::new()) };
+        let met = |goals: &[Objective]| goals.iter().filter(|o| self.objective_met(o, rules.human)).cloned().collect();
+        (met(&rules.victory), met(&rules.defeat))
     }
 
     fn objective_met(&self, o: &Objective, human: u8) -> bool {
@@ -502,7 +561,7 @@ impl Sim {
                 && wave.hunt
                 && !wave.friendly
             {
-                rules.hunters.extend(arrived.iter().map(|&id| Hunter { id, mark: FxVec3::ZERO, still: 0 }));
+                rules.hunters.extend(arrived.iter().map(|&id| Hunter::new(id)));
             }
         }
     }
@@ -531,6 +590,9 @@ impl Sim {
         // Hardly moving for three looks in a row (six seconds) with somewhere to go: wedged.
         const STILL_LOOKS: u8 = 3;
         let still_px = Fx::from_int(24);
+        // The wreckage found closing the ways of the wedged this look (movement class, where
+        // the one searched for stood and was going, the wreckage), and the searches made.
+        let mut shut: Vec<(crate::world::MoveSpec, FxVec3, FxVec3, Vec<usize>)> = Vec::new();
         for h in &mut hunters {
             let Some(u) = self.unit(h.id).filter(|u| u.is_complete() && u.carried_by.is_none() && types.get(u.type_id).locomotion != Locomotion::Static) else { continue };
             let pos = u.pos;
@@ -564,13 +626,82 @@ impl Sim {
                 }
             }
             let Some(u) = self.unit(h.id) else { continue };
+            // Firing on wreckage that closes its way: on with it while the wreck stands, then on
+            // with the hunt (the attack-move queued behind the shooting).
+            if let Some(f) = h.clearing {
+                let at = self.features.get(f).filter(|f| f.alive).map(|f| f.pos);
+                let shooting = |u: &Unit| matches!(u.orders.front(), Some(&Order::Attack(Target::Ground(p))) if Some(p) == at);
+                if at.is_some() && shooting(u) {
+                    (h.still, h.mark) = (0, pos);
+                    continue;
+                }
+                h.clearing = None;
+                if let Some(u) = self.unit_mut(h.id)
+                    && let Some(&Order::Attack(Target::Ground(p))) = u.orders.front()
+                {
+                    u.orders.pop_front();
+                    for slot in 0..u.weapons.len() {
+                        if u.weapons[slot].target == Some(Target::Ground(p)) {
+                            u.retarget(slot, None);
+                        }
+                    }
+                }
+                (h.still, h.mark) = (0, pos);
+                continue;
+            }
             let busy = !u.orders.is_empty();
             h.still = if busy && pos.within_xz(h.mark, still_px) { h.still.saturating_add(1) } else { 0 };
             h.mark = pos;
-            if busy && h.still < STILL_LOOKS {
+            let wedged = busy && h.still >= STILL_LOOKS;
+            // (On a way that stops short of where it is going: something closes it.)
+            let short = busy && !u.path_partial && matches!((u.path_goal, u.move_request), (Some(g), Some(m)) if !g.within_xz(m, Fx::from_int(96)));
+            if busy && !wedged && !short {
                 continue;
             }
             let Some(&target) = prey.iter().min_by_key(|p| (**p - pos).xz().length_sq_raw()) else { break };
+            // Wedged, on a way that stops short, or with nothing to do short of its prey: where
+            // wreckage closes the way the ground leads (not merely the crowd), those near it fire
+            // on it till it falls (to a heap, which blocks nothing), and the hunt goes on. (As a
+            // player clears a pass: the waves bring no constructors to reclaim it.)
+            let goal = match u.orders.front() {
+                Some(&Order::Fight(p)) => p,
+                _ => target,
+            };
+            let t = types.get(u.type_id);
+            if matches!(t.locomotion, Locomotion::Ground | Locomotion::Hover | Locomotion::Naval) && self.fires_on_ground(t) {
+                let spec = self.move_spec(u.type_id);
+                let share = Fx::from_int(CLEARING_SHARE);
+                let known = shut.iter().find(|(s, from, to, _)| *s == spec && from.within_xz(pos, share) && to.within_xz(goal, share)).map(|e| e.3.clone());
+                let wrecks = match known {
+                    Some(w) => w,
+                    None if shut.len() < CLEARING_SEARCHES => {
+                        let w: Vec<usize> = self
+                            .way_blockers(&spec, pos, goal)
+                            .into_iter()
+                            .filter(|&f| self.is_wreckage(self.features[f].def) && !self.data.features[self.features[f].def].indestructible)
+                            .collect();
+                        shut.push((spec, pos, goal, w.clone()));
+                        w
+                    }
+                    None => Vec::new(),
+                };
+                if let Some(at) = wrecks.iter().filter_map(|&f| self.features.get(f).filter(|f| f.alive).map(|w| (f, w.pos))).find(|&(_, p)| p.within_xz(pos, Fx::from_int(CLEARING_REACH))) {
+                    h.clearing = Some(at.0);
+                    h.still = 0;
+                    if let Some(u) = self.unit_mut(h.id) {
+                        u.orders.clear();
+                        u.path.clear();
+                        u.path_goal = None;
+                        u.orders.push_back(Order::Attack(Target::Ground(at.1)));
+                        u.orders.push_back(Order::Fight(goal));
+                    }
+                    continue;
+                }
+            }
+            // (Nothing to clear on a way that stops short: on as it goes, for now.)
+            if busy && !wedged {
+                continue;
+            }
             // (Wedged units each take a point of their own near it: the same goal would give
             // them the same way, and the same jam.)
             let target = if busy {
@@ -591,6 +722,12 @@ impl Sim {
         if let Some(rules) = &mut self.mission {
             rules.hunters = hunters;
         }
+    }
+
+    /// Whether a unit type has a weapon it fires at a place on the ground (not on order only, no
+    /// stockpiled missile or interceptor): what it can break wreckage up with.
+    fn fires_on_ground(&self, t: &UnitType) -> bool {
+        t.weapons.iter().flatten().map(|&w| self.weapon_types.get(w)).any(|w| w.hits_ground && !w.command_fire && !w.def.stockpile && !w.def.interceptor && w.default_damage > Fx::ZERO)
     }
 
     /// Whether every weapon of a unit type fires on order only (`commandfire`: TA's bombs, the
@@ -1018,6 +1155,69 @@ fn compile_script(sim: &Sim, id: UnitId, script: &[MissionCommand], names: &Miss
     }
     flush(&mut steps, &mut orders);
     steps
+}
+
+/// Why a mission can't be played with the game's data as it stands (the mods that are on), when
+/// it can't: what it gives the player to play with, or what would win it, is not in the data.
+/// Placed, it would be decided at its first look at its goals (lost to `AllUnitsKilled`, or won
+/// against nobody), or never won. TA's own missions all play (a few of their placed units name
+/// types TA never made, left out as TA left them).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unplayable {
+    /// It places no unit for the player at all: Total Mayhem's own campaign lists maps made for
+    /// skirmishes as missions, their goals added and no unit in them.
+    NoUnits,
+    /// None of the units it places for the player is in the data (a total conversion's units in
+    /// place of TA's): the names it places for them that the data lacks.
+    UnitsMissing(Vec<String>),
+    /// It is lost with the player's Commander (`CommanderKilled`), and of what it places for the
+    /// player, what the data has holds no Commander: theirs is among these names the data lacks.
+    CommanderMissing(Vec<String>),
+    /// Nothing can win it: every one of its victory goals names a unit type the data lacks (these).
+    Unwinnable(Vec<String>),
+}
+
+/// Whether `mission` can be played, at the difficulty `schema` is, with the game's unit types as
+/// they stand (the mods that are on), and if not, why ([`Unplayable`]). The game asks before it
+/// offers a mission and before it starts one, and says why to the player rather than starting a
+/// mission decided at once.
+pub fn unplayable(mission: &ta_data::mission::Mission, schema: &ta_data::mission::MissionSchema, types: &UnitTypes) -> Option<Unplayable> {
+    // (Each name once, in upper case, in order.)
+    fn names<'a>(all: impl Iterator<Item = &'a str>) -> Vec<String> {
+        let mut names: Vec<String> = all.map(|n| n.trim().to_ascii_uppercase()).collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+    // (The unit type a goal names.)
+    fn goal_unit(g: &Goal) -> Option<&str> {
+        match g {
+            Goal::KillUnitType { unit, .. } | Goal::UnitTypePasses { unit, .. } => Some(unit),
+            Goal::KillAllOfType(unit) | Goal::CaptureUnitType(unit) | Goal::BuildUnitType(unit) => Some(unit),
+            Goal::MoveUnitToRadius { unit, .. } => unit.as_deref(),
+            _ => None,
+        }
+    }
+    // (TA player 1 is the player.)
+    let ours: Vec<&ta_data::mission::PlacedUnit> = schema.units.iter().filter(|u| u.player == 1).collect();
+    if ours.is_empty() {
+        return Some(Unplayable::NoUnits);
+    }
+    let known: Vec<usize> = ours.iter().filter_map(|u| types.id(u.name.trim())).collect();
+    let missing = names(ours.iter().filter(|u| types.id(u.name.trim()).is_none()).map(|u| u.name.as_str()));
+    if known.is_empty() {
+        return Some(Unplayable::UnitsMissing(missing));
+    }
+    let commander = known.iter().any(|&t| types.get(t).def.is_commander);
+    if !commander && !missing.is_empty() && mission.defeat.contains(&Goal::CommanderKilled) {
+        return Some(Unplayable::CommanderMissing(missing));
+    }
+    // (Every victory goal must be met: one the data can't resolve is left out, and the rest still
+    // win it; with none left, nothing would.)
+    if !mission.victory.is_empty() && mission.victory.iter().all(|g| Objective::from_goal(g, types).is_none()) {
+        return Some(Unplayable::Unwinnable(names(mission.victory.iter().filter_map(goal_unit))));
+    }
+    None
 }
 
 /// Result of placing a mission: script idents resolved to units.

@@ -1,0 +1,181 @@
+//! A unit's enhancements (`[ENHANCEMENTS]` within its `[UNITINFO]`): parts it installs on itself,
+//! Supreme Commander's commander enhancements. Each takes a slot of the unit's (one enhancement a
+//! slot), may need another installed first, costs metal, energy and build time as a unit does, and
+//! changes the unit while installed: its numbers added to the unit's own, its weapon slots filled
+//! or swapped, its menu grown. TA's own units have none.
+//!
+//! ```text
+//! [UNITINFO]
+//! {
+//!     UnitName=UEL0001;
+//!     ...
+//!     [ENHANCEMENTS]
+//!     {
+//!         [AdvancedEngineering]
+//!         {
+//!         Name=Tech 2 Engineering Suite;
+//!         Slot=LCH;
+//!         BuildCostMetal=720;
+//!         BuildCostEnergy=18000;
+//!         BuildTime=9000;
+//!         WorkerTime=200;
+//!         MaxDamage=3000;
+//!         HealRate=20;
+//!         BuildOptions=UEB0201 UEB0202;
+//!         }
+//!         [T3Engineering]
+//!         {
+//!         Prerequisite=AdvancedEngineering;
+//!         ...
+//!         }
+//!     }
+//! }
+//! ```
+
+use ta_formats::tdf::TdfSection;
+
+use crate::unit::MAX_WEAPONS;
+
+/// Most enhancements a unit's file may give (the rest are left out, with a warning).
+pub const MAX_ENHANCEMENTS: usize = 64;
+
+/// One enhancement, as its section gives it. Its effects hold while it is installed, added to the
+/// unit's own (a slot's weapon named here takes the slot's place).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EnhancementDef {
+    /// Its id: the section's name (`AdvancedEngineering`), what another's `Prerequisite` names.
+    pub id: String,
+    /// What players see (`Name`; its id where it gives none) and a line of what it does
+    /// (`Description`).
+    pub name: String,
+    pub description: String,
+    /// The slot it takes (`Slot`: `Back`, `LCH`, `RCH` on Supreme Commander's commanders); one
+    /// enhancement a slot, one installed in it taking the place of the one there.
+    pub slot: String,
+    /// The enhancement it needs installed first (`Prerequisite`, an id of the unit's; empty: none).
+    pub prerequisite: String,
+    pub build_cost_metal: f64,
+    pub build_cost_energy: f64,
+    /// Build time in worker-time units, as a unit's: the unit installs it in `build_time /
+    /// WorkerTime` seconds with its own build power.
+    pub build_time: f64,
+    /// Its picture, `unitpics/<picture>.pcx` (empty: none; the menus draw its name).
+    pub picture: String,
+    /// Hit points added to the unit's most (`MaxDamage`).
+    pub max_damage: f64,
+    /// Hit points a second it mends besides its own (`HealRate`; its own is 100 every `HealTime`).
+    pub heal_rate: f64,
+    /// Build power added (`WorkerTime`).
+    pub worker_time: f64,
+    /// Sight, radar and sonar added (`SightDistance`, `RadarDistance`, `SonarDistance`, px).
+    pub sight_distance: f64,
+    pub radar_distance: f64,
+    pub sonar_distance: f64,
+    /// Units added to its menu (`BuildOptions`, their names apart by spaces or commas).
+    pub build_options: Vec<String>,
+    /// The weapons its slots fire while it is installed (`Weapon1` to `Weapon8`): an empty slot
+    /// filled (a missile launcher fitted), a slot's own weapon swapped for another (a longer gun).
+    pub weapons: [Option<String>; MAX_WEAPONS],
+    /// It cloaks the unit as TA's cloak does (`CloakCost` energy a second while cloaked,
+    /// `CloakCostMoving` while moving, seen through within `MinCloakDistance`): the unit may cloak.
+    pub cloak_cost: f64,
+    pub cloak_cost_moving: f64,
+    pub min_cloak_distance: f64,
+    /// It hides the unit from radar (`Stealth`).
+    pub stealth: bool,
+}
+
+impl EnhancementDef {
+    /// Reads one enhancement's section (its name is its id). None for one with no name.
+    pub fn from_tdf(s: &TdfSection) -> Option<EnhancementDef> {
+        let id = s.name.trim().to_string();
+        if id.is_empty() {
+            return None;
+        }
+        let f = |k: &str| s.get_f64_or(k, 0.0).max(0.0);
+        let st = |k: &str| s.get(k).unwrap_or("").trim().to_string();
+        let name = st("Name");
+        let weapon = |k: &str| s.get(k).map(|w| w.trim().to_ascii_uppercase()).filter(|w| !w.is_empty());
+        Some(EnhancementDef {
+            name: if name.is_empty() { id.clone() } else { name },
+            description: st("Description"),
+            slot: st("Slot"),
+            prerequisite: st("Prerequisite"),
+            build_cost_metal: f("BuildCostMetal"),
+            build_cost_energy: f("BuildCostEnergy"),
+            build_time: s.get_f64_or("BuildTime", 1.0).max(1.0),
+            picture: st("Picture"),
+            max_damage: f("MaxDamage"),
+            heal_rate: f("HealRate"),
+            worker_time: f("WorkerTime"),
+            sight_distance: f("SightDistance"),
+            radar_distance: f("RadarDistance"),
+            sonar_distance: f("SonarDistance"),
+            build_options: st("BuildOptions").split([' ', ',', '\t']).map(|u| u.trim().to_ascii_uppercase()).filter(|u| !u.is_empty()).collect(),
+            weapons: std::array::from_fn(|slot| weapon(&format!("Weapon{}", slot + 1))),
+            cloak_cost: f("CloakCost"),
+            cloak_cost_moving: f("CloakCostMoving"),
+            min_cloak_distance: f("MinCloakDistance"),
+            stealth: s.get_bool_or("Stealth", false),
+            id,
+        })
+    }
+
+    /// The enhancements of a unit's `[UNITINFO]` section: its `[ENHANCEMENTS]` section's own, in
+    /// the file's order (their index is the order players give), an id given twice taken once (the
+    /// first).
+    pub fn of_unit(info: &TdfSection) -> Vec<EnhancementDef> {
+        let Some(list) = info.sections.iter().find(|s| s.name.eq_ignore_ascii_case("ENHANCEMENTS")) else { return Vec::new() };
+        let mut out: Vec<EnhancementDef> = Vec::new();
+        for s in &list.sections {
+            let Some(e) = EnhancementDef::from_tdf(s) else { continue };
+            if out.iter().any(|o| o.id.eq_ignore_ascii_case(&e.id)) {
+                log::warn!("{}: enhancement {} given twice; the first is kept", info.get("UnitName").unwrap_or("?"), e.id);
+                continue;
+            }
+            if out.len() >= MAX_ENHANCEMENTS {
+                log::warn!("{}: more than {MAX_ENHANCEMENTS} enhancements; the rest are left out", info.get("UnitName").unwrap_or("?"));
+                break;
+            }
+            out.push(e);
+        }
+        out
+    }
+
+    /// Whether it fills or swaps any weapon slot.
+    pub fn arms(&self) -> bool {
+        self.weapons.iter().any(Option::is_some)
+    }
+
+    /// Whether it lets the unit cloak.
+    pub fn cloaks(&self) -> bool {
+        self.cloak_cost > 0.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ta_formats::tdf;
+
+    #[test]
+    fn a_units_enhancements_are_read_in_their_order() {
+        let doc = tdf::parse(
+            "[UNITINFO]{UnitName=ACU;\n[ENHANCEMENTS]{\n[AdvancedEngineering]{Name=Tech 2 Engineering Suite;Slot=LCH;BuildCostMetal=720;BuildCostEnergy=18000;BuildTime=9000;\
+             WorkerTime=200;MaxDamage=3000;HealRate=20;BuildOptions=ueb0201, UEB0202;}\n[T3Engineering]{Slot=LCH;Prerequisite=AdvancedEngineering;BuildTime=0;}\n\
+             [Missile]{Name=Tactical Missile Launcher;Slot=Back;Weapon4=acu_missile;CloakCost=-5;Stealth=1;}\n[missile]{Slot=RCH;}\n}}",
+        );
+        let info = doc.section("UNITINFO").unwrap();
+        let e = EnhancementDef::of_unit(info);
+        assert_eq!(e.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["AdvancedEngineering", "T3Engineering", "Missile"], "in order, an id given twice once");
+        assert_eq!((e[0].name.as_str(), e[0].slot.as_str(), e[0].build_cost_metal, e[0].build_cost_energy, e[0].build_time), ("Tech 2 Engineering Suite", "LCH", 720.0, 18000.0, 9000.0));
+        assert_eq!((e[0].worker_time, e[0].max_damage, e[0].heal_rate), (200.0, 3000.0, 20.0));
+        assert_eq!(e[0].build_options, ["UEB0201", "UEB0202"], "upper case, by spaces or commas");
+        assert_eq!((e[1].name.as_str(), e[1].prerequisite.as_str(), e[1].build_time), ("T3Engineering", "AdvancedEngineering", 1.0), "named by its id; a tick of building at least");
+        assert_eq!(e[2].weapons[3].as_deref(), Some("ACU_MISSILE"));
+        assert!(e[2].arms() && !e[0].arms());
+        assert!(e[2].stealth && !e[2].cloaks(), "no negative costs");
+        // A unit without the section has none.
+        assert!(EnhancementDef::of_unit(tdf::parse("[UNITINFO]{UnitName=ARMCOM;}").section("UNITINFO").unwrap()).is_empty());
+    }
+}

@@ -49,7 +49,7 @@ fn captured_wave_units_keep_their_new_owners_orders() {
     let id = sim.spawn_unit(tank, 1, pos, 0, true).unwrap();
     sim.unit_mut(id).unwrap().owner = 0;
     sim.unit_mut(id).unwrap().orders.push_back(Order::Wait(500));
-    sim.mission = Some(MissionRules { hunters: vec![Hunter { id, mark: pos, still: 2 }], ..Default::default() });
+    sim.mission = Some(MissionRules { hunters: vec![Hunter { id, mark: pos, still: 2, clearing: None }], ..Default::default() });
     sim.tick = 60;
     sim.check_mission();
     assert!(matches!(sim.unit(id).unwrap().orders.front(), Some(Order::Wait(500))));
@@ -65,7 +65,7 @@ fn carried_wave_units_are_not_retasked_by_the_hunter() {
     sim.spawn_unit(tank, 0, FxVec3::from_ints(200, 60, 200), 0, true).unwrap();
     sim.unit_mut(id).unwrap().carried_by = Some(carrier);
     sim.unit_mut(id).unwrap().orders.push_back(Order::Wait(500));
-    sim.mission = Some(MissionRules { hunters: vec![Hunter { id, mark: pos, still: 2 }], ..Default::default() });
+    sim.mission = Some(MissionRules { hunters: vec![Hunter { id, mark: pos, still: 2, clearing: None }], ..Default::default() });
     sim.tick = 60;
     sim.check_mission();
     assert!(matches!(sim.unit(id).unwrap().orders.front(), Some(Order::Wait(500))));
@@ -77,7 +77,7 @@ fn hunter_stall_counters_remain_bounded_without_any_prey() {
     let pos = FxVec3::from_ints(800, 60, 800);
     let id = sim.spawn_unit(tank, 1, pos, 0, true).unwrap();
     sim.unit_mut(id).unwrap().orders.push_back(Order::Wait(500));
-    sim.mission = Some(MissionRules { hunters: vec![Hunter { id, mark: pos, still: u8::MAX }], ..Default::default() });
+    sim.mission = Some(MissionRules { hunters: vec![Hunter { id, mark: pos, still: u8::MAX, clearing: None }], ..Default::default() });
     sim.tick = 60;
     sim.check_mission();
     assert_eq!(sim.mission.as_ref().unwrap().hunters[0].still, u8::MAX);
@@ -180,7 +180,7 @@ fn a_waves_bombers_are_sent_at_what_their_side_sees() {
     let hunter = sim.spawn_unit(bomber, 1, FxVec3::from_ints(900, 60, 900), 0, true).unwrap();
     sim.put_in_flight(hunter, None);
     let gunner = sim.spawn_unit(tank, 1, FxVec3::from_ints(950, 60, 950), 0, true).unwrap();
-    let hunters = [hunter, gunner].map(|id| Hunter { id, mark: FxVec3::ZERO, still: 0 }).to_vec();
+    let hunters = [hunter, gunner].map(Hunter::new).to_vec();
     sim.mission = Some(MissionRules { hunters, ..Default::default() });
     let front = |sim: &Sim, id: UnitId| sim.unit(id).unwrap().orders.front().cloned();
     let look = |sim: &mut Sim, tick: u64| {

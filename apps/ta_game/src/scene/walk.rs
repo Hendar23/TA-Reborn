@@ -378,7 +378,8 @@ impl Walker {
         // (Turning on the spot, it steps round: as far as its feet are carried round.)
         let pivot = since.map_or(0.0, |(_, _, turn)| turn.abs() * t.radius.to_f32() * PIVOT);
         let pivoting = since.is_some_and(|(dt, _, turn)| dt > 0.0 && turn.abs() >= PIVOTING * dt);
-        let walking = (u.moving || pivoting) && u.is_complete() && u.carried_by.is_none() && !u.dead;
+        // (Not one its script holds still, though on its way: it packs up first, `IMMOBILE`.)
+        let walking = (u.moving && !u.immobile || pivoting) && u.is_complete() && u.carried_by.is_none() && !u.dead;
         let wanted = if walking { 1.0 } else { 0.0 };
         let aim_wanted = if aiming { 1.0 } else { 0.0 };
         match since {

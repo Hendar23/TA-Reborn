@@ -628,5 +628,37 @@ A faction made playable is "uno schieramento da giocare in schermaglia". Straigh
 | the launcher's footer | la barra di stato del launcher |
 | Looking through {folder}… | Analisi di {folder}… |
 | UPDATE… / Update: import it again (a mod made by an older TA Reborn) | AGGIORNA… / Aggiornamento: reimportala |
-| the commanders' enhancements / upgrading buildings in place | i potenziamenti dei comandanti / gli edifici che salgono di livello sul posto |
+| the commanders' enhancements / upgrading buildings in place | i potenziamenti dei comandanti / il miglioramento degli edifici sul posto (the next section) |
 | shields / stealth fields / teleporting | scudi / campi di furtività (as "Furtiva: invisibile al radar") / teletrasporto |
+| experimental features / EXPERIMENTAL (tag) | funzioni sperimentali / SPERIMENTALE |
+
+## Miglioramenti sul posto e potenziamenti del comandante (`orders.rs`, `hud/deck.rs`, `hud/enhance.rs`, `hud/info.rs`, `hud_classic.rs`)
+
+A building's upgrade in place (it builds its higher-tech version on itself, on its own build power)
+is un miglioramento (migliorare, MIGLIORA), kept apart from a commander's enhancements, i
+potenziamenti (POTENZIA), and from the launcher's updates (AGGIORNA, which also reads as Refresh).
+"Upgrade into {name}" is worded with diventare ("Migliora ({key}): diventa {name}", "Sta per
+diventare {name}", refusal "non può diventare quell'unità") or as the noun "miglioramento in {name}",
+never as "migliora in", which reads as getting better at something. An enhancement is masculine
+(installato, rimuovilo, poi questo); slot names come from the data (LCH, RCH, Back). The Stop order
+in a sentence is Ferma, capitalised. Straight apostrophes. This replaces "gli edifici che salgono di
+livello sul posto" of the retired launcher line.
+
+| English | Italiano |
+|---|---|
+| upgrade (in place) / UPGRADE (button) / Upgrade (radial) / UPGR (classic short) | miglioramento (sul posto) / MIGLIORA / Migliora / MIGL. |
+| Upgrade in place (key binding) / Upgrades in place into {name} (abilities) | Migliora sul posto / Diventa {name} con un miglioramento sul posto |
+| Upgrading into {name}: {pct}% / About to upgrade into {name} (status) | Miglioramento in {name}: {pct}% / Sta per diventare {name} |
+| It works on while it upgrades / A factory makes nothing while it upgrades | Continua a funzionare durante il miglioramento / Una fabbrica non produce nulla durante il miglioramento |
+| enhancement / ENHANCEMENTS / ENHANCE (tab and button) / ENH (classic short) | potenziamento / POTENZIAMENTI / POTENZIA / POT. |
+| slot (one enhancement a slot) | slot (lo slot, invariable): uno per slot, Slot {slot} |
+| parts (what enhancements are) | componenti |
+| install / installed / being installed / installing (status) | installare / installato / in installazione / Installazione di {name}: {pct}% |
+| take out (an installed one) / Taking out {name} | rimuovere (Clic destro: rimuovilo) / Rimozione di {name} |
+| on its own build power / it has no build power | con la propria potenza di costruzione / non ha potenza di costruzione |
+| Stop calls it off, its metal back | Ferma lo annulla e restituisce il metallo |
+| Shift: queued (after the upgrade under way) | Shift: in coda (dopo il miglioramento in corso) |
+| Builds {n} more kinds: {names} and {more} others | Nuove opzioni di costruzione ({n}): {names} e {more} in più |
+| Mends {n} hit points a second | Rigenera {n} di salute al secondo (no "punti": right for any number) |
+| {weapon}: range {from} to {to} / stronger | {weapon}: gittata da {from} a {to} / più potente |
+| {n} of the selection upgrade | Unità della selezione da migliorare: {n} |

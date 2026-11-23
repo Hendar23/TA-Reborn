@@ -107,6 +107,83 @@ pub enum Order {
     /// Transports: set cargo down at a point.
     Unload(FxVec3),
     Stop,
+    /// Become the unit type given, built in place on itself (its type's `UpgradesTo`: Supreme
+    /// Commander's factories, extractors, radars...), with its own build power and that of the
+    /// builders helping it, paying as construction does (see `Sim::update_upgrade_order`). Taken
+    /// off its orders, the upgrade is called off. (After `Stop`: records keep the earlier
+    /// variants' numbers.)
+    Upgrade(usize),
+    /// Install (or with `remove`, take out) its type's enhancement `index` (`[ENHANCEMENTS]`:
+    /// Supreme Commander's commanders'): installed, it stands and builds it on itself as an
+    /// upgrade is built, in its slot in place of the one there; removed, at once, for nothing
+    /// (see `sim/enhance.rs`).
+    Enhance { index: u16, remove: bool },
+}
+
+/// What a unit builds on itself: the type it is becoming ([`Order::Upgrade`]), or an enhancement
+/// of its type's ([`Order::Enhance`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelfJob {
+    Upgrade(usize),
+    Enhance(u16),
+}
+
+/// A unit's figures with the enhancements it has installed (its type's with each one's added: see
+/// `sim/enhance.rs`), where it has any; [`Unit`]'s accessors give its type's otherwise.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Boost {
+    pub max_health: Fx,
+    /// Ticks it takes to mend 100 hit points (none: it does not).
+    pub heal_ticks: u64,
+    pub work_rate: u64,
+    pub worker_rate: Fx,
+    pub sight: Fx,
+    pub radar: Fx,
+    pub sonar: Fx,
+    /// The weapon in each slot.
+    pub weapons: [Option<usize>; ta_data::unit::MAX_WEAPONS],
+    pub stockpile: bool,
+    /// Its menu, and all it may be ordered to build.
+    pub build_options: Vec<usize>,
+    pub ai_build_options: Vec<usize>,
+    /// Its cloak, as `UnitType`'s def gives one (energy a second, on the move, seen within).
+    pub cloak: Option<(Fx, Fx, Fx)>,
+    pub stealth: bool,
+}
+
+/// What the buildings of its player beside a building give it (Supreme Commander's adjacency:
+/// `sim/adjacency.rs`), summed: the share each of its figures changes by, and who gives it what.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Adjacency {
+    /// The share added to each figure (by [`ta_data::AdjacencyAffect::index`]): the sum of what
+    /// its neighbours give it.
+    pub change: [Fx; ADJACENCY_AFFECTS],
+    /// The neighbours whose bonuses it takes, by slot, each with the figures it changes (a bit for
+    /// each affect's index).
+    pub from: Vec<(UnitId, u8)>,
+}
+
+/// How many figures adjacency changes ([`ta_data::AdjacencyAffect::ALL`]).
+pub const ADJACENCY_AFFECTS: usize = ta_data::AdjacencyAffect::ALL.len();
+
+impl Adjacency {
+    /// What a figure is multiplied by: one and the shares its neighbours add, never below none.
+    #[inline]
+    pub fn factor(&self, affect: ta_data::AdjacencyAffect) -> Fx {
+        (Fx::ONE + self.change[affect.index()]).max(Fx::ZERO)
+    }
+}
+
+/// A unit's work on itself under way: what, and the work done on it so far (of its whole, as
+/// construction counts work: [`crate::UnitType::build_work`] for an upgrade). Called off, the
+/// metal paid for it comes back (`Sim::cancel_self_work`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelfWork {
+    pub job: SelfJob,
+    pub work: u64,
+    /// The metal adjacency spared those working on it so far: called off, what was paid comes
+    /// back, not its price.
+    pub metal_saved: Fx,
 }
 
 /// A construction aircraft's sway round what it builds, facing it (`Sim::drift_round`).
@@ -123,6 +200,51 @@ pub struct Drift {
     pub distance: Fx,
     /// The way it sways first: 1 anticlockwise seen from above, -1 clockwise.
     pub side: i8,
+}
+
+/// A unit made by a factory with ways out (`UnitType::exits`, Supreme Commander's roll-off
+/// points): the way it is built facing and leaves by, and once it is let go its way on the
+/// factory's floor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RollOff {
+    /// The factory's way out (an index of its type's `exits`).
+    pub exit: u8,
+    /// Once it is let go, its way out on the factory's floor.
+    pub way: Option<Way>,
+}
+
+/// A unit's way out of a factory once it is let go ([`RollOff::way`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Way {
+    /// Where it set off from: the pad, at the pad's height.
+    pub from: FxVec3,
+    /// Where the way ends, on the ground.
+    pub to: FxVec3,
+    /// Pixels along the way: the pad's height kept to the first, the ground reached at the
+    /// second.
+    pub ramp: (Fx, Fx),
+}
+
+impl Way {
+    /// How high the factory's floor stands at `p` on the way out, `ground` the ground's height
+    /// there: the pad's as far as the ramp's top (measured along the way), down evenly to the
+    /// ground at its foot; none past it (or for a way of no length), only the ground.
+    pub fn floor(&self, p: FxVec3, ground: Fx) -> Option<Fx> {
+        let along = (self.to - self.from).xz();
+        let length = along.length_xz();
+        if length <= Fx::ZERO {
+            return None;
+        }
+        let d = (p - self.from).xz().dot(along) / length;
+        let (top, foot) = self.ramp;
+        if d <= top {
+            Some(self.from.y)
+        } else if d >= foot {
+            None
+        } else {
+            Some(self.from.y + (ground - self.from.y) * ((d - top) / (foot - top)))
+        }
+    }
 }
 
 /// Progress of a builder's current job.
@@ -183,11 +305,19 @@ pub struct Unit {
     /// The metal its side's reclaiming has taken off it so far, paid when it is gone: TA pays
     /// reclaiming at the end, not as the work goes. Lost with it if it dies first.
     pub reclaim_owed: Fx,
+    /// The metal adjacency spared its builders (`sim/adjacency.rs`; for one upgraded in place, those
+    /// who worked on the upgrade): given up unfinished, or taken apart by its side, it gives back
+    /// what was paid for it, not its price.
+    pub metal_saved: Fx,
     /// The last tick a builder worked on it unfinished (or set it down to build): construction
     /// left with nobody at it un-builds after a while, its metal coming back
     /// (`Sim::decay_abandoned_frames`). None for one nobody has worked on (a scene's or a
     /// mission's, placed unfinished).
     pub worked_at: Option<u64>,
+    /// The site a mobile unit built in the field (not in a factory) was laid on: the builders
+    /// ordered to build at that site work on it, wherever it has been pushed since; a frame laid
+    /// for another site, however near, is not theirs (`Sim::field_frame`).
+    pub field_site: Option<FxVec3>,
     pub activated: bool,
     /// The last economy tick charged its upkeep (or it has none): its conditional output (an
     /// extractor's, a metal maker's) came too. Without the energy, neither (`Sim::economy_end`).
@@ -199,6 +329,11 @@ pub struct Unit {
     pub yard_open: bool,
     pub armored: bool,
     pub busy: bool,
+    /// Its script holds it still (`IMMOBILE`: a weapon of Supreme Commander's unpacked that keeps
+    /// its unit where it stands, `WeaponUnpackLocksMotion`): it neither moves nor turns, its way
+    /// waiting; with somewhere to go, its script is told `StartMoving` so that it packs up and
+    /// lets it go (`Sim::ground_step`), firing nothing meanwhile ([`Unit::packing_to_go`]).
+    pub immobile: bool,
     pub fire_state: u8,
     /// Fires at will on what its side has on radar or sonar as well as on what it sees: guns a
     /// spotter directs, a scenario's (`radar_guided`: Iron Rain's battery, which a radar post
@@ -292,12 +427,31 @@ pub struct Unit {
     /// Whether `StartMoving` has been signalled to the script.
     pub moving: bool,
     pub build: Option<BuildJob>,
+    /// What it builds on itself now (an upgrade into another type, an enhancement), and how far
+    /// along.
+    pub self_work: Option<SelfWork>,
+    /// Its type's enhancements it has installed (indices, one a slot, in order), and its figures
+    /// with them (none without).
+    pub enhancements: Vec<u16>,
+    pub boost: Option<Box<Boost>>,
+    /// What the buildings of its player beside it give it (none: nothing, as every unit of TA's).
+    pub adjacency: Option<Box<Adjacency>>,
+    /// Where it stood for adjacency when last looked at (`Sim::update_adjacency`): its player and
+    /// its footprint (the top-left cell, its size), while it stands finished; none otherwise.
+    pub adjacency_key: Option<(u8, (i32, i32), (u32, u32))>,
+    /// Its only order is work it found itself (a building that works round it: `RepairPatrol`,
+    /// `AssistPatrol`): the player's next order, queued or not, takes its place.
+    pub auto_work: bool,
     /// Factory production queue (unit type ids), and the orders every unit it releases
     /// is given (its rally route: move, patrol, fight and guard orders).
     pub factory_queue: VecDeque<usize>,
     pub rally: Vec<Order>,
     /// Factory that is building / releasing this unit.
     pub factory: Option<UnitId>,
+    /// Made by a factory with ways out (`UnitType::exits`): the one it is built facing and leaves
+    /// by, and once it is let go the floor under it on its way out (`Sim::settle`). Gone once it is
+    /// out of the factory's footprint.
+    pub roll_off: Option<RollOff>,
     /// Factories: the units they built that may still be leaving their yard (those whose
     /// `factory` is this one; the others are dropped as they are found).
     pub yard: Vec<UnitId>,
@@ -392,13 +546,16 @@ impl Unit {
             finished: false,
             taken_apart_at: None,
             reclaim_owed: Fx::ZERO,
+            metal_saved: Fx::ZERO,
             worked_at: None,
+            field_site: None,
             activated: false,
             upkeep_paid: true,
             in_build_stance: false,
             yard_open: false,
             armored: false,
             busy: false,
+            immobile: false,
             fire_state: 2,
             radar_guided: false,
             move_state: 1,
@@ -442,9 +599,16 @@ impl Unit {
             squeeze_until: 0,
             moving: false,
             build: None,
+            self_work: None,
+            enhancements: Vec::new(),
+            boost: None,
+            adjacency: None,
+            adjacency_key: None,
+            auto_work: false,
             factory_queue: VecDeque::new(),
             rally: Vec::new(),
             factory: None,
+            roll_off: None,
             yard: Vec::new(),
             occupied_origin: None,
             cob: None,
@@ -478,12 +642,109 @@ impl Unit {
         self.build_progress >= Fx::ONE
     }
 
+    /// Its most health: its type's, with its enhancements'.
+    #[inline]
+    pub fn max_health(&self, t: &UnitType) -> Fx {
+        self.boost.as_ref().map_or(t.max_health, |b| b.max_health)
+    }
+
+    /// The weapon in each of its slots: its type's, as its enhancements fill and swap them.
+    #[inline]
+    pub fn weapon_slots<'a>(&'a self, t: &'a UnitType) -> &'a [Option<usize>; ta_data::unit::MAX_WEAPONS] {
+        self.boost.as_ref().map_or(&t.weapons, |b| &b.weapons)
+    }
+
+    /// Whether it has a weapon at all.
+    #[inline]
+    pub fn armed(&self, t: &UnitType) -> bool {
+        self.weapon_slots(t).iter().any(Option::is_some)
+    }
+
+    /// Whether one of its weapons builds missiles to launch.
+    #[inline]
+    pub fn stockpiles(&self, t: &UnitType) -> bool {
+        self.boost.as_ref().map_or(t.stockpile, |b| b.stockpile)
+    }
+
+    /// Its build power: work a tick (as [`UnitType::work_rate`]), and points a tick.
+    #[inline]
+    pub fn work_rate(&self, t: &UnitType) -> u64 {
+        self.boost.as_ref().map_or(t.work_rate, |b| b.work_rate)
+    }
+
+    #[inline]
+    pub fn worker_rate(&self, t: &UnitType) -> Fx {
+        self.boost.as_ref().map_or(t.worker_rate, |b| b.worker_rate)
+    }
+
+    /// Its menu (its type's, and what its enhancements add), and all it may be ordered to build.
+    #[inline]
+    pub fn build_options<'a>(&'a self, t: &'a UnitType) -> &'a [usize] {
+        self.boost.as_ref().map_or(&t.build_options, |b| &b.build_options)
+    }
+
+    #[inline]
+    pub fn ai_build_options<'a>(&'a self, t: &'a UnitType) -> &'a [usize] {
+        self.boost.as_ref().map_or(&t.ai_build_options, |b| &b.ai_build_options)
+    }
+
+    /// How far it sees, and its radar's and sonar's reach.
+    #[inline]
+    pub fn sight(&self, t: &UnitType) -> Fx {
+        self.boost.as_ref().map_or(t.sight, |b| b.sight)
+    }
+
+    #[inline]
+    pub fn radar(&self, t: &UnitType) -> Fx {
+        self.boost.as_ref().map_or(t.radar, |b| b.radar)
+    }
+
+    #[inline]
+    pub fn sonar(&self, t: &UnitType) -> Fx {
+        self.boost.as_ref().map_or_else(|| Fx::from_f64(t.def.sonar_distance), |b| b.sonar)
+    }
+
+    /// Ticks it takes to mend 100 hit points (none: it does not).
+    #[inline]
+    pub fn heal_ticks(&self, t: &UnitType) -> u64 {
+        self.boost.as_ref().map_or(t.heal_ticks, |b| b.heal_ticks)
+    }
+
+    /// Its cloak, if it can cloak: energy a second, on the move, and how near an enemy sees
+    /// through it.
+    pub fn cloak_costs(&self, t: &UnitType) -> Option<(Fx, Fx, Fx)> {
+        match &self.boost {
+            Some(b) => b.cloak,
+            None => (t.def.cloak_cost > 0.0).then(|| (Fx::from_f64(t.def.cloak_cost), Fx::from_f64(t.def.cloak_cost_moving), Fx::from_f64(t.def.min_cloak_distance))),
+        }
+    }
+
+    /// Whether radar does not show it.
+    #[inline]
+    pub fn stealthy(&self, t: &UnitType) -> bool {
+        self.boost.as_ref().map_or(t.def.stealth, |b| b.stealth)
+    }
+
+    /// What one of its figures is multiplied by for the buildings beside it ([`Adjacency::factor`]);
+    /// none: it stands by none that give it anything.
+    #[inline]
+    pub fn adjacency_factor(&self, affect: ta_data::AdjacencyAffect) -> Option<Fx> {
+        self.adjacency.as_ref().filter(|a| !a.change[affect.index()].is_zero()).map(|a| a.factor(affect))
+    }
+
     /// Whether its build stance is its script's to raise and drop (it has `StartBuilding`), as
     /// in TA: the game leaves it as the script last set it, also after a job. TA's scripts drop
     /// it in `StopBuilding`; Total Mayhem's construction kbots keep their nano arm out a while
     /// after a job, the stance raised, and do not raise it again for a job that comes meanwhile.
     pub fn stance_is_scripted(&self) -> bool {
         self.cob.as_ref().is_some_and(|c| c.has_function("StartBuilding"))
+    }
+
+    /// Held still by its script (`IMMOBILE`) and told to go: its script is packing it up so that
+    /// it can, and its weapons fire nothing meanwhile, as Supreme Commander's fire nothing as
+    /// they pack (`WeaponPackingState`).
+    pub fn packing_to_go(&self) -> bool {
+        self.immobile && self.moving
     }
 
     /// Physical model root. Naval movement keeps a surface anchor; submarine
@@ -521,6 +782,21 @@ impl Unit {
         }
     }
 
+    /// Its weapons' aims so far count no more, whatever they were at (their answers none of them:
+    /// those still running run on, see [`CobInstance::supersede_aims`]): each aims anew before it
+    /// fires. A unit its script holds still (`IMMOBILE`), told to go, packs up: an aim it answered
+    /// unpacked would otherwise fire it once let go, packed and on its way.
+    pub(crate) fn forget_aims(&mut self) {
+        for slot in 0..self.weapons.len() {
+            let ws = &mut self.weapons[slot];
+            ws.aimed = false;
+            ws.aim_asked = false;
+            if let Some(c) = &mut self.cob {
+                c.supersede_aims(slot as u16);
+            }
+        }
+    }
+
     /// Sets the work done building it (of `total`, its type's [`UnitType::build_work`]) and
     /// the progress that is: ONE exactly when it is all done.
     pub fn set_build_work(&mut self, work: u64, total: u64) {
@@ -530,10 +806,11 @@ impl Unit {
 
     /// Health as a percentage 0..=100 (COB `HEALTH`).
     pub fn health_percent(&self, t: &UnitType) -> i32 {
-        if t.max_health.is_zero() {
+        let most = self.max_health(t);
+        if most.is_zero() {
             return 100;
         }
-        ((self.health * Fx::from_int(100)) / t.max_health).to_int().clamp(0, 100) as i32
+        ((self.health * Fx::from_int(100)) / most).to_int().clamp(0, 100) as i32
     }
 
     /// Animation offset and rotation of a model piece (identity without a script).

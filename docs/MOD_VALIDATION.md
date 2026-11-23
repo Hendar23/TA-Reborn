@@ -250,6 +250,10 @@ original game's).
   average colour, and on the sides' own dark metal where it gives the plates no picture), a side
   the game has not (`theme.side`). And a `requires_reborn` that is not a version
   (`presentation.requires`): the mod is then mounted in any TA Reborn.
+- **Units' own keys that would do nothing:** an adjacency bonus (`[ADJACENCY]`) whose `Affects`
+  names nothing TA Reborn plays, or that adds nothing (`unit.adjacency`), and a building set to work
+  round it by itself (`DefaultMissionType=AssistPatrol`) with no build power (`unit.assist_patrol`):
+  warnings ([MODDING.md](MODDING.md#adjacency)).
 - **Limits:** footprints (a footprint of none is an upgrade module's, which takes no ground: kept), texture frames and layers (the textures the models in `objects3d`
   paint with, as the game loads them: an entry no model names takes no room, and the rest fit
   two arrays of the reference card's 2,048 layers), the sprite atlas's room for explosions.

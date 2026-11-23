@@ -285,6 +285,13 @@ impl CobInstance {
         self.program.function(name).is_some()
     }
 
+    /// A copy of its statics and pieces, without its threads, to try a function on with
+    /// [`CobInstance::call`] (and a host that changes nothing: `host::TrialHost`): where the
+    /// function puts the pieces, the script itself left as it is.
+    pub fn trial(&self) -> CobInstance {
+        CobInstance { program: self.program.clone(), statics: self.statics.clone(), pieces: self.pieces.clone(), threads: Vec::new(), finished: Vec::new(), next_id: 1, animating: false }
+    }
+
     /// Starts `name(args)` as a new thread (runs on the next [`CobInstance::run`]).
     pub fn start(&mut self, name: &str, args: &[i32], tag: ThreadTag) -> bool {
         let Some(f) = self.program.function(name) else { return false };

@@ -1526,6 +1526,7 @@ impl Renderer {
     pub fn prepare_models<'a>(&mut self, instances: impl IntoIterator<Item = DrawInstance<'a>>) {
         if let Some(m) = &mut self.models {
             m.set_art_style(self.art_style_reborn);
+            m.surfaces.set_fine(&self.gpu.device, &self.gpu.queue, self.lighting.hd_surfaces > 0.0);
             m.prepare(&self.gpu.device, &self.gpu.queue, instances, None, self.lighting.ray_tracing);
         }
     }
@@ -1535,6 +1536,9 @@ impl Renderer {
     pub fn prepare_models_for_view<'a>(&mut self, camera: &Camera, instances: impl IntoIterator<Item = DrawInstance<'a>>) {
         if let Some(m) = &mut self.models {
             m.set_art_style(self.art_style_reborn);
+            // (Supreme Commander's units' paint at 1024 texels with HD surfaces, else at 512:
+            // model/surfaced.rs.)
+            m.surfaces.set_fine(&self.gpu.device, &self.gpu.queue, self.lighting.hd_surfaces > 0.0);
             let traced = camera.mode == CameraMode::Perspective && self.lighting.ray_tracing;
             m.prepare(&self.gpu.device, &self.gpu.queue, instances, Some((camera, self.lighting.hd_surfaces > 0.0)), traced);
         }

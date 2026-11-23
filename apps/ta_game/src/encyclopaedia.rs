@@ -807,7 +807,8 @@ impl Encyclopaedia {
                             }
                         });
                     }
-                    crate::hud::info::facts(ui, game, ty);
+                    crate::hud::info::facts(ui, game, ty, None);
+                    crate::hud::info::enhancements(ui, game, ty, None);
                     let builds: Vec<&UnitType> = ty.build_options.iter().map(|&o| game.sim.types.get(o)).filter(|o| Self::archived(o)).collect();
                     if !builds.is_empty() {
                         panel::section(ui, n("BUILDS"));

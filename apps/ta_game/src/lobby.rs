@@ -337,7 +337,7 @@ impl NetLobby {
             for _ in 0..ais.min(max.saturating_sub(self.state.slots.len())) {
                 let team = first_free_team(&self.state);
                 let side = seat_side(&self.sides, self.state.slots.len());
-                self.state.slots.push(LobbySlot { kind: SlotKind::Ai { difficulty: 2 }, side, color: first_free_color(&self.state), ready: true, team });
+                self.state.slots.push(LobbySlot { kind: SlotKind::Ai { difficulty: 2, persona: 0 }, side, color: first_free_color(&self.state), ready: true, team });
             }
             return Some(self.start(max, assets));
         }
@@ -804,6 +804,24 @@ fn first_free_color(l: &Lobby) -> u8 {
     (0..10u8).find(|c| !l.slots.iter().any(|s| s.kind.plays() && s.color == *c)).unwrap_or(0)
 }
 
+/// A computer player's difficulty as a seat carries it (0 easy, 1 normal, 2 hard).
+pub fn ai_difficulty(code: u8) -> ta_ai::Difficulty {
+    match code {
+        0 => ta_ai::Difficulty::Easy,
+        2 => ta_ai::Difficulty::Hard,
+        _ => ta_ai::Difficulty::Normal,
+    }
+}
+
+/// A difficulty as a computer player's seat carries it.
+pub fn ai_difficulty_code(difficulty: ta_ai::Difficulty) -> u8 {
+    match difficulty {
+        ta_ai::Difficulty::Easy => 0,
+        ta_ai::Difficulty::Normal => 1,
+        ta_ai::Difficulty::Hard => 2,
+    }
+}
+
 /// The game setup every peer derives from the host's start message (`local` None: we
 /// watch; `available`: the map's start positions).
 fn setup_from(info: &StartInfo, local: Option<u8>, available: usize, spots: &[(f32, f32)]) -> GameSetup {
@@ -820,9 +838,7 @@ fn setup_from(info: &StartInfo, local: Option<u8>, available: usize, spots: &[(f
             side: s.side.clone(),
             color: s.color,
             controller: match s.kind {
-                SlotKind::Ai { difficulty: 0 } => Controller::Ai(ta_ai::Difficulty::Easy),
-                SlotKind::Ai { difficulty: 2 } => Controller::Ai(ta_ai::Difficulty::Hard),
-                SlotKind::Ai { .. } => Controller::Ai(ta_ai::Difficulty::Normal),
+                SlotKind::Ai { difficulty, persona } => Controller::Ai(ai_difficulty(difficulty), ta_ai::Persona::from_code(persona).unwrap_or_default()),
                 _ => Controller::Human,
             },
             start: i,
@@ -1036,7 +1052,7 @@ mod tests {
         let host = Assets { vfs, data, types, maps: vec![map.clone()], selectable_maps: vec![map], campaigns: Vec::new(), data_hash: 7, compatibility: Default::default(), mods: Default::default() };
         let mut client = host.clone();
         client.selectable_maps.clear(); // this client deactivated the host's chosen map
-        let info = StartInfo { map: "ten-starts".into(), seed: 123, slots: (0..4).map(|_| slot(SlotKind::Ai { difficulty: 1 })).collect(),
+        let info = StartInfo { map: "ten-starts".into(), seed: 123, slots: (0..4).map(|_| slot(SlotKind::Ai { difficulty: 1, persona: 0 })).collect(),
             rules: ta_sim::GameRules { random_starts: true, ..Default::default() }, spectators: Vec::new() };
         assert_eq!(start_positions(&host, &info.map), 10);
         assert_eq!(start_positions(&client, &info.map), 10);
@@ -1089,23 +1105,38 @@ mod tests {
         (lobby.slots[0].color, lobby.slots[1].color, lobby.slots[2].color) = (0, 1, 2);
         // The guest takes the open seat's colour (it plays nobody).
         assert!(set_slot(&mut lobby, 1, "ARM".into(), 2, false, &sides));
-        assert!(set_seat_kind(&mut lobby, 2, SlotKind::Ai { difficulty: 2 }));
+        assert!(set_seat_kind(&mut lobby, 2, SlotKind::Ai { difficulty: 2, persona: 0 }));
         let colours: Vec<u8> = lobby.slots.iter().map(|s| s.color).collect();
         assert_eq!(colours, [0, 2, 1], "the computer takes the colour the guest left");
         assert!(lobby.slots[2].ready);
-        // Another difficulty, or a closed seat, keeps the colour; people's seats are not the host's to fill.
-        assert!(set_seat_kind(&mut lobby, 2, SlotKind::Ai { difficulty: 0 }));
+        // Another difficulty or persona, or a closed seat, keeps the colour; people's seats are not the host's to fill.
+        assert!(set_seat_kind(&mut lobby, 2, SlotKind::Ai { difficulty: 0, persona: 0 }));
+        assert!(set_seat_kind(&mut lobby, 2, SlotKind::Ai { difficulty: 0, persona: 3 }));
+        assert_eq!(lobby.slots[2].color, 1);
         assert!(set_seat_kind(&mut lobby, 2, SlotKind::Closed));
         assert_eq!(lobby.slots[2].color, 1);
         assert!(!set_seat_kind(&mut lobby, 2, SlotKind::Closed), "no change");
-        assert!(!set_seat_kind(&mut lobby, 1, SlotKind::Ai { difficulty: 1 }), "a person's seat");
+        assert!(!set_seat_kind(&mut lobby, 1, SlotKind::Ai { difficulty: 1, persona: 0 }), "a person's seat");
         assert!(!set_seat_kind(&mut lobby, 2, SlotKind::Human { peer: 9, name: "X".into() }));
         assert!(!set_seat_kind(&mut lobby, 7, SlotKind::Open), "no such seat");
     }
 
     #[test]
+    fn a_computer_seat_carries_its_difficulty_and_persona_into_the_battle() {
+        let info = StartInfo { map: "m".into(), seed: 1, slots: vec![human(0, "Valkyrie"), slot(SlotKind::Ai { difficulty: 2, persona: ta_ai::Persona::Turtle.code() }),
+            slot(SlotKind::Ai { difficulty: 0, persona: ta_ai::Persona::Random.code() })], rules: Default::default(), spectators: Vec::new() };
+        let setup = setup_from(&info, Some(0), 3, &[]);
+        assert_eq!(setup.players[1].controller, Controller::Ai(ta_ai::Difficulty::Hard, ta_ai::Persona::Turtle));
+        // (Random stays Random in the setup: each machine draws it from the seed as the battle starts.)
+        assert_eq!(setup.players[2].controller, Controller::Ai(ta_ai::Difficulty::Easy, ta_ai::Persona::Random));
+        for d in [ta_ai::Difficulty::Easy, ta_ai::Difficulty::Normal, ta_ai::Difficulty::Hard] {
+            assert_eq!(ai_difficulty(ai_difficulty_code(d)), d);
+        }
+    }
+
+    #[test]
     fn closed_seats_take_no_part_in_the_battle() {
-        let info = StartInfo { map: "m".into(), seed: 1, slots: vec![human(0, "Valkyrie"), slot(SlotKind::Closed), slot(SlotKind::Ai { difficulty: 1 }), slot(SlotKind::Open)], rules: Default::default(), spectators: Vec::new() };
+        let info = StartInfo { map: "m".into(), seed: 1, slots: vec![human(0, "Valkyrie"), slot(SlotKind::Closed), slot(SlotKind::Ai { difficulty: 1, persona: 0 }), slot(SlotKind::Open)], rules: Default::default(), spectators: Vec::new() };
         let setup = setup_from(&info, info.player_of(0), 4, &[]);
         assert_eq!(setup.players.len(), 2);
         assert_eq!(info.player_of(0), Some(0));
@@ -1114,7 +1145,7 @@ mod tests {
     #[test]
     fn joining_a_smaller_map_does_not_take_a_slot_outside_its_capacity() {
         let mut lobby = Lobby {
-            slots: vec![slot(SlotKind::Ai { difficulty: 1 }), slot(SlotKind::Ai { difficulty: 1 }), slot(SlotKind::Open)],
+            slots: vec![slot(SlotKind::Ai { difficulty: 1, persona: 0 }), slot(SlotKind::Ai { difficulty: 1, persona: 0 }), slot(SlotKind::Open)],
             ..Default::default()
         };
         place_player(&mut lobby, slot(SlotKind::Human { peer: 2, name: "Guest".into() }), 2);

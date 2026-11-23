@@ -6,7 +6,9 @@
 //! - [`pictures`]: its build picture;
 //! - [`script`]: its script;
 //! - [`units`]: its unit file and its weapons';
+//! - [`enhance`]: a commander's enhancements;
 //! - [`faction`]: its faction's side, build menus, wrecks and weapons;
+//! - [`anims`], [`work`]: its walk and deaths, and what it does as it works;
 //! - [`make`]: the mod made whole.
 //!
 //! What is written must be the same, byte for byte, on every computer (a mod of units is part
@@ -14,6 +16,7 @@
 //! order.
 
 pub mod anims;
+pub mod enhance;
 pub mod faction;
 pub mod make;
 pub mod model;
@@ -21,6 +24,7 @@ pub mod pictures;
 pub mod script;
 pub mod textures;
 pub mod units;
+pub mod work;
 
 /// TA pixels per ogrid for units: twice the maps' 16 (a T1 tank about a TA tank's size, as the
 /// player chose: docs/SUPCOM_UNITS.md). Sizes, footprints, speeds and ranges are all taken so.

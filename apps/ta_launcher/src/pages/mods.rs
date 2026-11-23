@@ -81,12 +81,14 @@ impl LauncherApp {
     }
 
     fn mods_header(&mut self, ui: &mut Ui, short: bool) {
+        let supcom = self.experimental(crate::experimental::Feature::SupremeCommander);
         super::library_header(ui, n("MODS"), n("Mods change Total Annihilation's units, maps and look. Lower in the load order wins."), short,
-            &["INSTALL FROM FILE…", "SUPREME COMMANDER…", "MOD FOLDERS…", "RESCAN"], |ui, height| {
+            if supcom { &["INSTALL FROM FILE…", "SUPREME COMMANDER…", "MOD FOLDERS…", "RESCAN"] } else { &["INSTALL FROM FILE…", "MOD FOLDERS…", "RESCAN"] }, |ui, height| {
             if ui.add(ActionButton::primary("INSTALL FROM FILE…").height(height)).hover_tip(t("Install a mod you have downloaded (or drop it on this window)")).clicked() {
                 self.push(Action::BrowsePackage);
             }
-            if ui.add(ActionButton::secondary("SUPREME COMMANDER…").height(height))
+            // (An experimental feature's: `crate::experimental`.)
+            if supcom && ui.add(ActionButton::secondary("SUPREME COMMANDER…").height(height))
                 .hover_tip(t("Import the factions of Supreme Commander: Forged Alliance from your own copy of the game (GOG's or Steam's): their units and buildings, to play in skirmish.")).clicked() {
                 self.push(Action::SupcomOpen(crate::supcom::Tab::Factions));
             }
@@ -244,7 +246,7 @@ impl LauncherApp {
     /// The library's mods on show, in order (the hidden ones in HIDDEN, the others otherwise).
     pub(crate) fn visible_mods(&self) -> Vec<Item> {
         let status = |id: &str| self.mod_validation.status(id);
-        let facts = mod_library::Facts { mods: &self.mods, enabled: &self.config.mods.enabled, status: &status, hidden: &self.config.mods.hidden };
+        let facts = mod_library::Facts { mods: &self.mods, enabled: &self.config.mods.enabled, status: &status, hidden: &self.config.mods.hidden, supcom: self.experimental(crate::experimental::Feature::SupremeCommander) };
         self.mod_library.visible(&facts)
     }
 
@@ -556,7 +558,7 @@ impl LauncherApp {
             }
         }
         if installed.is_some()
-            && let Some(tab) = crate::supcom::update_tab(&self.mods, id)
+            && let Some(tab) = self.supcom_update(id)
         {
             menu.add(n("UPDATE…"), Icon::Download, ModChoice::Do(Action::SupcomOpen(tab))).main();
         }
@@ -629,7 +631,7 @@ impl LauncherApp {
         let version = installed.map(|entry| entry.info.manifest.version.as_str());
         let update = item.catalogue.and_then(|entry| mod_library::waiting_update(entry, self.mods.updatable_version(&item.id)));
         // (Supreme Commander's maps or factions made by an older converter: made again in their dialog.)
-        let remake = crate::supcom::update_tab(&self.mods, &item.id);
+        let remake = self.supcom_update(&item.id);
         let on = self.config.mods.enabled.contains(&item.id);
         let stage = self.installer.stages.get(&item.id).filter(|stage| stage.active());
         let detail = if let Some(stage) = stage {
@@ -860,7 +862,7 @@ impl LauncherApp {
                 if !manifest.authors.is_empty() {
                     ui.add(egui::Label::new(RichText::new(tf("by {team}", &[("team", &super::listed(&manifest.authors))])).font(strong(12.5)).color(AMBER)).wrap());
                 }
-                let remake = crate::supcom::update_tab(&self.mods, &item.id);
+                let remake = self.supcom_update(&item.id);
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
                     // (Made by an older converter: made again from the player's copy of the game.)
@@ -939,7 +941,7 @@ impl LauncherApp {
             }
             (None, Some(entry)) => {
                 let manifest = &entry.info.manifest;
-                if crate::supcom::update_tab(&self.mods, &item.id).is_some() {
+                if self.supcom_update(&item.id).is_some() {
                     ui.add(egui::Label::new(RichText::new(t("Made by an older TA Reborn: UPDATE… imports it again from your copy of the game.")).color(AMBER)).wrap());
                 }
                 let shown = if manifest.version.is_empty() { t("Unknown") } else { &manifest.version };

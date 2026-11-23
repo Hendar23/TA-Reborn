@@ -169,6 +169,14 @@ recognises; TA's own files never begin with one.
   along it. The scene draws the kicks of guns that point themselves only as far as they run
   clear (docs/ARCHITECTURE.md); `recoil_scan` in `crates/ta_sim/tests/animation_scan.rs` lists
   how every unit's guns are rigged and what their recoils pass through.
+* **Ground plates:** a piece's `SelectionPrimitive` is the plate under a unit that TA's editor
+  laid for its selection, a flat untextured quad, never drawn. Of TA's 288 wreck and heap models
+  (`*_dead`, `NxNa`...), 21 do not flag theirs: a black (colour 0) quad facing down at the foot of
+  the root, the size of the footprint (32, 48, 64, 80 or 128 square), among the rest of its faces
+  (`armss_dead`'s and `corss_dead`'s in colour 46, `corpyro_dead`'s in 95, `cordev1_dead`'s 1.25
+  under the origin); two more (`armah_dead`, `corckfus_dead`) carry a second copy of their flagged
+  one. Their debris mostly reaches lower (to −11.5 in `armemp_dead`). TA Reborn leaves these out
+  (`model::flag_ground_plates`, `wreck_ground_plates_are_left_out` lists them).
 
 ## Maps (TNT v0x2000 + OTA)
 
@@ -277,6 +285,12 @@ recognises; TA's own files never begin with one.
   units have one). `Immunity=1` (19 units in 5 missions) is a unit nothing harms: the Gate to
   capture in AC11, the player's own Gates, Core mission 1's Commander, "deactivated" (`o 0 0,
   w 3600`) while the player's strike force clears the Arm out, Titanium Fist Bay's scouts.
+* A schema's placed units are the subsections of its `[units]`. TA: Escalation's copies of the
+  missions (all 175 of its mission OTAs, in `TAESC.gp3`) keep them in `[unitsE]` alone, as its
+  patched engine read `unitse` for TA's `units` folder; TA Reborn reads a schema without
+  `[units]` from the section whose entries name units (`Unitname`). Total Mayhem's own
+  campaign (`camps/face to face.tdf`) lists three maps made for skirmishes (a `Network 1` schema
+  of start positions, no units) as missions, their goals added.
 * TA's map and mission editor, TAE (installed with the game: `TAEread.txt`, `TAE.hlp`), says
   what the rest of a unit's keys mean; it writes them all for every unit (Two Continents, a
   multiplayer map, keeps a test schema with each set: `OffMapUnit`, `Immunity`,
@@ -452,10 +466,16 @@ model, of the same name. Little-endian:
 * A primitive whose texture name is one of the surface's materials (any case) is painted with it;
   any other is drawn as TA draws it. A surface whose pieces or vertices do not match its model's is
   not used (the log and the mod check say so).
-* The textures' channels: the colour map's RGB (sRGB; alpha unused); the specular map's red (how
-  much it mirrors its surroundings), green (how glossy), blue (where it glows by itself) and alpha
-  (where it takes the player's colour); the normal map's tangent-space normal, x in alpha and y in
-  green (z made up), x along u and y along v down the picture, as Direct3D's are.
+* The textures' channels: the colour map's RGB (sRGB; alpha unused, so BC1 serves); the specular
+  map's red (how much it mirrors its surroundings), green (how glossy), blue (where it glows by
+  itself) and alpha (where it takes the player's colour); the normal map's tangent-space normal, x
+  in alpha and y in green (z made up), x along u and y along v down the picture, as Direct3D's are.
+  Each is drawn at its own size, 512 or (with HD surfaces) 1024 texels a side (see DDS textures
+  below): a material's three may differ.
+* How the channels are lit goes by the art style (docs/SUPCOM_UNITS.md, "Light"): Enhanced Classic
+  as Forged Alliance lights them (the green a broad, cool sheen); Reborn as a physically based
+  finish (the green, over some six texels round each, how glossy its paint is; where it is glossier
+  than round about, an edge worn to bare metal; strong red polished metal).
 * `far`: a lighter model (a 3DO with its own surface, of the same pieces in the same order) drawn
   in this one's place when it is under 48 pixels across on screen; a model drawn as itself the
   frame before stays so down to 42 (no swapping back and forth as the camera shakes).
@@ -486,6 +506,23 @@ posed by the ground they cover. Little-endian:
 * `death`, `death2`...: one of them, at random, plays where a unit of the model dies on the ground
   (an aircraft out of the sky and a ship going under go as TA Reborn's other units do); its wreck
   shows once the clip is over, lying in the pose it ends in.
+* `active`: a cycle (as `walk` is) played round and round while the unit works: finished, switched
+  on (or with no on/off switch), its energy upkeep paid, neither stunned nor carried, not
+  upgrading or installing an enhancement, and, for a factory or any unit with `Builder=1`, building
+  something. As the unit stops working the clip slows to a stop where it is (in 0.6 s) and goes on
+  from there when it starts again; as it starts an upgrade the clip fades out (in 0.4 s). A unit
+  first seen at work is somewhere in its cycle by its unit number, not at its start.
+* `open`: played forward as the unit starts working (as `active` has it) and held at its end while
+  it works; played back to its start as it stops. A building with no switch opens once, as it is
+  finished.
+* `upgrade`: while the unit upgrades in place (`UpgradesTo`), posed at its share of the upgrade
+  done (its first frame at none, its last at all of it), faded in as the upgrade starts and out if
+  it is called off. Once done, the unit it upgrades into stands in its place as its own model rests.
+* `active`, `open` and `upgrade` are added to what the unit's script does with the same pieces (a
+  piece its script spins spins on as a clip lifts it), each turn taken as running on from the frame
+  before (30,000 then -30,000 is 35,536): fading, a clip never turns a piece half a turn back.
+  Nothing else plays them: a TA script's own moves are untouched, and the simulation never sees
+  them.
 * A clip that moves a piece the model has not, more than once, or with its times out of order or
   past its length, is not played (the log and the mod check say so); the file's other clips are.
   A file that does not read is told in the log.
@@ -494,13 +531,22 @@ posed by the ground they cover. Little-endian:
 
 `ta_formats::dds` reads DirectDraw Surfaces: DXT1, DXT3 and DXT5 (BC1, BC2, BC3) and uncompressed
 colour of 8 to 32 bits described by masks, a mip level at a time, or its blocks as stored. The paint
-of models with surfaces is drawn from arrays of BC3 layers of 512 × 512 texels with every mip level
-(`to_bc3_levels`): a DXT5 of that size with its levels is taken as it is; DXT1's and DXT3's are made
-BC3 block by block (DXT1's four-colour blocks keep their colours under an opaque alpha, its
-three-colour ones are encoded again, since BC3 always reads four; DXT3's colours stay, its alpha is
-encoded); anything else is decoded, halved or grown to 512 and encoded level by level. The encoders
-(an alpha block's ends its least and greatest, a colour block's ends along the colours' main axis,
-refined once by least squares) use plain arithmetic in a fixed order: the same bytes everywhere.
+of models with surfaces is drawn from arrays of BC3 layers with every mip level, of 512 × 512
+texels and, for textures of 1024 or more a side with HD surfaces, of 1024 × 1024 (`paint_side`:
+the largest power of two a texture's larger side reaches, from 512 to the most the arrays take;
+`to_bc3_levels`): a DXT5 with a level of that size and every level below it is taken as it is;
+DXT1's and DXT3's are made BC3 block by block (DXT1's four-colour blocks keep their colours under
+an opaque alpha; its three-colour ones, which BC3 cannot read since it always reads four, are
+given the same three colours where four can hold them, one end kept and the other moved half as far
+again past it so that a third of the way along is the halfway colour, to a 565's rounding, and are
+encoded again where that comes no nearer or a texel takes the see-through black; DXT3's colours
+stay, its alpha is encoded); anything else is decoded, halved or grown to that side and encoded
+level by level. Growing doubles a texture each way at a time where it can (`enlarge`: each new
+texel from a Catmull-Rom spline through the 4 × 4 texels round it, its weights at a quarter of a
+texel whole 128ths, kept within the 2 × 2 texels nearest: edges stay sharp, nothing rings), and
+samples between texels for what is left. The encoders (an alpha block's ends its least and
+greatest, a colour block's ends along the colours' main axis, refined once by least squares) use
+plain arithmetic in a fixed order: the same bytes everywhere.
 A file claiming more mip levels than its size halves into is read with those its size has (a
 300 × 300 claiming four billion has nine), and only those its file holds; uncompressed channels
 take up to all 32 bits of a texel.
@@ -615,6 +661,12 @@ take up to all 32 bits of a texel.
     `CORASP_UPGRADE`'s 3,009,819 (its own module is 1,711,415), Big Bertha's for
     `CORINT_UPGRADE`'s 3,781,490 (its own 1,820,443). Their modules are made and stand by,
     never taken on, as they did in TA.
+  * ESC's repair tower upgrades (`ARMASP_UPGRADE`, `CORASP_UPGRADE`: `WorkerTime=360`,
+    `Builddistance=448`, `canmove=0`, `canpatrol=0`, `canguard=0`) say
+    `DefaultMissionType=RepairPatrol`, a mission none of TA's own units gives: on
+    their own (the Arm one standing by its pad, the Core one taken on) they mend the damaged
+    units of their side and its allies round them, the nearest first, whenever they have no
+    orders (`sim/repair_round.rs`; `mod_upgrades.rs`'s `mod_repair_report`).
   * TM's mines cloak themselves (`UNIT_CLOAKED` 111, from a later patch; free, their files
     giving no `CloakCost`). TA's own mines (Core Contingency's) start cloaked from
     `init_cloaked=1`, as TA spells it.
@@ -636,6 +688,20 @@ take up to all 32 bits of a texel.
     (TA Reborn asks after every shot), else its turret rests between shots.
   * Only the Commanders' `AimPrimary` answers "no" (0: while building); the others answer 1
     once on target.
+* **Firing**: the engine asks the weapon's `Query` function which piece the shot leaves from,
+  then starts its `Fire` function, and the shot leaves from where that piece is once the fire
+  function has run as far as its first wait (a flash shown, a barrel kicked back; `Sim::fire`).
+  TA's Hammer alternates its barrels, its `FirePrimary` switching to the other as it fires and
+  its `QueryPrimary` naming the one in use: asked before the fire function runs, the query names
+  the barrel that flashes. TA: Escalation's C.O.R.E. (`CORMKL`) moves its eighteen launch points
+  (single points in its six pods) 25,000 px off in `AimSecondary` and moves the one firing back
+  into its pod in `FireSecondary`, before it shows its launch flash there: with the piece's place
+  read before the fire function ran, every rocket left from off the map and went off at once, and
+  only the flashes were seen. Read after it: 15 of TA's fire functions move or turn a piece at
+  once before their first wait (most kick a barrel back a few px before they show their flash),
+  and their shots leave from the muzzle so moved, where the flash shows; TA: Escalation's Armada
+  (`ARMUSCAR`), which steps its anti-air rack's piece a slot down as it fires, launches each
+  missile a slot (9.4 px) below its flash.
 * `XZ_ATAN(dx, dz)` is the heading, relative to the unit's, that points a piece along
   **−(dx, dz)**. Only the four boom transports (`arm/corthovr`, `arm/cortship`) use it, as
   `XZ_ATAN(PIECE_XZ(pivot) − target)`: their booms pivot at the stern and rest pointing
@@ -776,6 +842,19 @@ take up to all 32 bits of a texel.
   is), as the Spring engine's do: TA's anti-nukes (`range` 22,000 to 32,000) take a nuke as it
   leaves its silo on TA's maps, a tactical defence a few hundred px across as the missile comes
   down on what it covers (`Sim::update_interceptors`).
+* **Missile speeds**: a missile leaves at its `startvelocity` (px/s; none given, at its
+  `weaponvelocity`, or launched upright with a `weaponacceleration`, at rest) and its speed goes by
+  its `weaponacceleration` (px/s a second) towards its `weaponvelocity`, stopping there. Every one
+  of TA's 198 weapons starts no faster than its `weaponvelocity` and gathers speed or holds it.
+  TA: Escalation's vertical missiles (12 weapons, among them its missile batteries' and the
+  Raptor's `VSPAM_ALL`, its battleships' and mobile fortresses', the Deluge's, Hammerhead's,
+  Arbitrator's and Talos's, the Abyssal's and Vortex's `NUKE_SUB_ARM`, `NUKE_SUB_CORE`) leave at
+  360 to 1,280 px a second with a `weaponvelocity` of -1 to -10 and a negative acceleration (-12
+  to -300): a missile launched faster than its top speed is not pulled down to it, and they slow as
+  they fly. Their flight times end before they would stop (half of them with about a tenth of their
+  start speed left): their makers timed them by the slowing. Its pulse bombs (`BOMB_MS`,
+  `BOMB_SHOCK`) are launched upright at -400 px a second with a `weaponvelocity` of -400: straight
+  down.
 * `tracks=1` (a guided weapon homes on the unit it is sent at): every guided weapon of TA's
   launched other than upright says it, and of the vertical launchers the anti-nukes
   (`AMD_ROCKET`, `FMD_ROCKET`, `ARMSCAB_WEAPON`, `CORMABM_WEAPON`) and the Krogoth's
@@ -924,6 +1003,70 @@ take up to all 32 bits of a texel.
   two cells wide through its middle, north to south, with walls either side: a unit built on
   the pad walks out through the factory's front wall (the engine lets it, until it is clear
   of the footprint).
+* **`UpgradesTo`** (TA Reborn's, for mods; Supreme Commander's `General.UpgradesTo`): the unit a
+  unit becomes upgraded in place (`Order::Upgrade`, docs/MODDING.md). None of TA's units gives
+  it. It builds that unit on itself with its own `WorkerTime` (and helpers'), at that unit's price
+  and build time, as construction pays and stalls; done, a unit of that type stands in its place,
+  finished, with its share of health, its queued orders, a factory's queue and route, its fire and
+  move orders and experience; the old one is taken off the map without a wreck or a loss. Called
+  off, its metal comes back (not its energy). A factory makes nothing while it upgrades.
+* **`[ENHANCEMENTS]`** (TA Reborn's, for mods; Supreme Commander's `Enhancements`), a section
+  within `[UNITINFO]`, one section an enhancement named by its id, in the menus' order: parts a
+  unit installs on itself (`Order::Enhance`), one a `Slot`, a `Prerequisite` first, at a unit's
+  price and work (`BuildCostMetal`, `BuildCostEnergy`, `BuildTime`) with its own build power, as an
+  upgrade in place is built. Installed, its `MaxDamage`, `HealRate` (hit points a second),
+  `WorkerTime`, `SightDistance`, `RadarDistance`, `SonarDistance` and `BuildOptions` add to the
+  unit's (`Boost`, `ta_sim::unit`), its `WeaponN` takes the unit's slot N, its `CloakCost`,
+  `CloakCostMoving`, `MinCloakDistance` and `Stealth` give it a cloak and stealth. The unit's
+  health rises with its most and falls to it, no further, when one is taken out (at once, for
+  nothing). The script's `SetEnhancement(index, on)` hears of each (the index in the file's order).
+  None of TA's units has any; the state is in the checksum (`Unit::enhancements`).
+* **`[EXITS]`** (TA Reborn's, for mods; Supreme Commander's `RollOffPoints`), a section within a
+  factory's `[UNITINFO]`, a section a way out in order (`ta_data::ExitDef`): `X` and `Z` where it
+  leads (px from the factory's middle at its heading 0, turned with it), `Heading` the way a unit
+  built for it faces (degrees, 0 the factory's front, 90 its +x; beside the pad's own turn), and
+  `Ramp` (two numbers, px along the way from the pad: the pad's height kept to the first, the
+  ground at the second). A unit begun takes the way nearest the first place of the factory's route
+  (else its front), of those whose end it may stand on, the first of equals, and stands on the pad
+  from its first tick facing it (one that never moves takes none: it is made as the pad faces);
+  done, it is sent to the way's end (`Order::Move`, then the route), its height on the way the
+  pad's to the ramp's top, down evenly to the ground at its foot (the higher of that and the
+  ground, and tipped by it: `unit::Way::floor`, `Sim::settle`), until it is out of the footprint.
+  Aircraft lift off the pad as before. A unit's own `BuildHeading` (degrees, as a way's `Heading`)
+  is the way it faces while built by such a factory, whichever way it takes
+  (`UnitType::build_heading`: Supreme Commander's `ForcedBuildSpin`). None of TA's factories has
+  any: they play as ever. The way is in the checksum (`Unit::roll_off`, only where there is one).
+* **`OnlyTargetCategory<n>`** (Spring's name; TA Reborn reads it for any slot, `n` from 1): the
+  categories of the only units the weapon in slot `n` takes on, automatically, firing back and by
+  order: an attack order on another unit, or on the ground, is not that weapon's (and ends when no
+  weapon of the unit's takes it), nor is a unit it names where it cannot hit it
+  (`Sim::only_allows`: `toairweapon` and a landed aircraft). None of TA's units names any: TA's
+  `toairweapon=1` weapons still fire on what an order names (`Sim::takes_order`).
+* **`TARGET_ID`** (unit value 83, Spring's: `get TARGET_ID(n)`): weapon `n`'s target (from 1), a
+  unit's script id, -1 none, -2 a place, -3 a missile it intercepts, -4 no such weapon.
+* **`IMMOBILE`** (unit value 200, TA Reborn's own): set by a script, its unit is held still
+  (`Unit::immobile`, in the checksum where set; a unit on the ground or the water: aircraft fly
+  on): no movement, no turning, not pushed by the crowd, its orders waiting. With a way to go it
+  counts as setting off for its script (`StartMoving`, once, `Unit::moving`), so that the script
+  can let it go; its way given up, `StopMoving`. From then until it is let go it fires nothing
+  (`Unit::packing_to_go`: an aim answered before no longer fires). The Supreme Commander
+  factions' weapons that lock their unit's motion while unpacked set it.
+* **`[ADJACENCY]`** and **`AdjacencySize`** (TA Reborn's, for mods; Supreme Commander's
+  `Adjacency` and its `SIZE4` to `SIZE20` categories): a section within `[UNITINFO]`, one section a
+  bonus (any name), each `Affects` (`BuildEnergy`, `BuildMetal`, `EnergyUse`, `EnergyPerShot`,
+  `ReloadTime`, `EnergyMake`, `MetalMake`), `Add` (the share added: -0.0625 a sixteenth less),
+  `Size` (the size class it reaches; none, any) and `Category` (tokens a receiver's `Category`
+  must all have). A finished building gives its bonuses to the finished buildings of its player
+  whose footprints meet its own along an edge, that have what the bonus changes; the shares of every
+  neighbour are summed, the figure times one and the sum (never below none), from at most
+  `AdjacencySize` neighbours (those along the most of its edge first; none given, any number).
+  Looked at again whenever a building there is finished, lost, upgraded or changes hands
+  (`sim/adjacency.rs`; docs/MODDING.md). None of TA's units has any.
+* **`DefaultMissionType=AssistPatrol`** (TA Reborn's, for mods; Supreme Commander's engineering
+  stations): a builder that, with no orders, helps build what its player puts up within its
+  `BuildDistance`, else mends its side's and its allies' damaged units there, else reclaims the
+  wreckage there, standing where it is (`sim/repair_round.rs`; docs/MODDING.md). None of TA's
+  units gives it.
 * Build menus: `guis/<BUILDER><page>.gui` + `download/*.tdf`. The 3.1 patch's `[CANBUILD]` in
   sidedata is the computer players' list, never a player's menu: mods list units of their AI
   there (TA: The Final Frontier's AI Boost: `AAISOLAR` beside the `ARMSOLAR` a player builds,

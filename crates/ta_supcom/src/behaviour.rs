@@ -43,14 +43,14 @@ impl Birth {
 /// A script's words: names, strings and single marks, comments and strings' insides left out of
 /// the marks (`#` and `--` comments to the line's end, `--[[ ]]` blocks).
 #[derive(Clone, Debug, PartialEq)]
-enum Token {
+pub(crate) enum Token {
     Name(String),
     Str(String),
     Num(String),
     Mark(char),
 }
 
-fn tokens(text: &str) -> Vec<Token> {
+pub(crate) fn tokens(text: &str) -> Vec<Token> {
     let b = text.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -92,13 +92,13 @@ fn tokens(text: &str) -> Vec<Token> {
     out
 }
 
-fn is_name(t: &Token, name: &str) -> bool {
+pub(crate) fn is_name(t: &Token, name: &str) -> bool {
     matches!(t, Token::Name(n) if n == name)
 }
 
 /// The end of the block that the opener at `start` opens (`function`, `if`, `do`, `repeat`: the
 /// index just past its `end` or `until`).
-fn block_end(t: &[Token], start: usize) -> usize {
+pub(crate) fn block_end(t: &[Token], start: usize) -> usize {
     let mut depth = 0i32;
     for (k, tok) in t.iter().enumerate().skip(start) {
         if let Token::Name(n) = tok {
@@ -240,7 +240,7 @@ pub fn birth(text: &str) -> Birth {
 }
 
 /// The index just past the `}` closing the table opened at `open` (`t[open]` is `{`).
-fn table_end(t: &[Token], open: usize) -> usize {
+pub(crate) fn table_end(t: &[Token], open: usize) -> usize {
     let mut depth = 0i32;
     for (k, tok) in t.iter().enumerate().skip(open) {
         match tok {
@@ -255,6 +255,106 @@ fn table_end(t: &[Token], open: usize) -> usize {
         }
     }
     t.len()
+}
+
+/// What a unit script's `CreateEnhancement` does for one enhancement (its branch: `if enh ==
+/// '<name>' then`, or `elseif`, several names to a branch with `or`): the weapons it switches on
+/// and off (`SetWeaponEnabledByLabel`) and the intel (`EnableUnitIntel`, `DisableUnitIntel`), in
+/// the branch and the blocks within it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EnhancementScript {
+    pub name: String,
+    pub weapons_on: Vec<String>,
+    pub weapons_off: Vec<String>,
+    pub intel_on: Vec<String>,
+    pub intel_off: Vec<String>,
+}
+
+/// What the unit script `text`'s `CreateEnhancement` (its last) does for each enhancement it names,
+/// in the order they first come.
+pub fn enhancements(text: &str) -> Vec<EnhancementScript> {
+    let t = tokens(text);
+    let Some((from, to)) = functions(&t, "CreateEnhancement", 0, t.len()).into_iter().last() else { return Vec::new() };
+    let mut out: Vec<EnhancementScript> = Vec::new();
+    let mut depth = 0i32;
+    // The branch's names and the depth of its `if`.
+    let mut current: Vec<String> = Vec::new();
+    let mut branch_depth = i32::MAX;
+    let mut k = from;
+    while k < to {
+        match &t[k] {
+            Token::Name(n) if n == "if" || n == "elseif" => {
+                if n == "if" {
+                    depth += 1;
+                }
+                let then = (k + 1..to).find(|&j| is_name(&t[j], "then")).unwrap_or(to);
+                let names: Vec<String> = (k + 1..then)
+                    .filter_map(|j| match (&t[j], t.get(j + 1), t.get(j + 2), t.get(j + 3)) {
+                        (Token::Name(e), Some(Token::Mark('=')), Some(Token::Mark('=')), Some(Token::Str(name))) if e == "enh" => Some(name.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if !names.is_empty() {
+                    current = names;
+                    branch_depth = depth;
+                } else if depth == branch_depth {
+                    // (An `elseif` of the chain naming none of them: no enhancement's branch.)
+                    current.clear();
+                }
+                k = then;
+            }
+            Token::Name(n) if n == "else" => {
+                if depth == branch_depth {
+                    current.clear();
+                }
+            }
+            Token::Name(n) if n == "do" || n == "function" || n == "repeat" => depth += 1,
+            Token::Name(n) if n == "end" || n == "until" => {
+                if depth == branch_depth {
+                    current.clear();
+                    branch_depth = i32::MAX;
+                }
+                depth -= 1;
+            }
+            Token::Name(n) if t.get(k + 1) == Some(&Token::Mark('(')) && !current.is_empty() => {
+                let first = match t.get(k + 2) {
+                    Some(Token::Str(s)) => Some(s.clone()),
+                    _ => None,
+                };
+                let second = match (t.get(k + 3), t.get(k + 4)) {
+                    (Some(Token::Mark(',')), Some(Token::Name(v))) if v == "true" => Some(true),
+                    (Some(Token::Mark(',')), Some(Token::Name(v))) if v == "false" => Some(false),
+                    _ => None,
+                };
+                if let Some(first) = first {
+                    for name in &current {
+                        let entry = match out.iter().position(|e| e.name.eq_ignore_ascii_case(name)) {
+                            Some(i) => &mut out[i],
+                            None => {
+                                out.push(EnhancementScript { name: name.clone(), ..Default::default() });
+                                out.last_mut().expect("just pushed")
+                            }
+                        };
+                        let put = |list: &mut Vec<String>, v: &str| {
+                            if !list.iter().any(|l| l.eq_ignore_ascii_case(v)) {
+                                list.push(v.to_string());
+                            }
+                        };
+                        match (n.as_str(), second) {
+                            ("SetWeaponEnabledByLabel", Some(true)) => put(&mut entry.weapons_on, &first),
+                            ("SetWeaponEnabledByLabel", Some(false)) => put(&mut entry.weapons_off, &first),
+                            ("EnableUnitIntel", _) => put(&mut entry.intel_on, &first),
+                            ("DisableUnitIntel", _) => put(&mut entry.intel_off, &first),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        k += 1;
+    }
+    out
 }
 
 /// What a projectile splits into as it lands: the child's blueprint (as written), how many of
@@ -314,6 +414,44 @@ pub fn fragments(text: &str) -> Option<Fragments> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A commander's `CreateEnhancement`: branches by name (two to one with `or`), what each
+    /// switches on and off, in blocks within it as well, and a branch for none of them.
+    #[test]
+    fn a_scripts_enhancements_are_read_branch_by_branch() {
+        let script = r#"
+Unit = Class(Base) {
+    CreateEnhancement = function(self, enh)
+        Base.CreateEnhancement(self, enh)
+        local bp = self:GetBlueprint().Enhancements[enh]
+        if enh == 'Missile' then
+            self:SetWeaponEnabledByLabel('Missile', true)
+        elseif enh =='Billy' then
+            if not self.Done then
+                self:SetWeaponEnabledByLabel('Missile', false)
+            end
+            self:SetWeaponEnabledByLabel('Nuke', true)
+        elseif enh == 'Stealth' then
+            self:EnableUnitIntel('RadarStealth')
+            self:EnableUnitIntel('SonarStealth')
+        elseif enh == 'StealthRemove' or enh == 'CloakRemove' then
+            self:DisableUnitIntel('RadarStealth')
+        elseif self.Other then
+            self:SetWeaponEnabledByLabel('Gun', true)
+        end
+        self:SetWeaponEnabledByLabel('After', true)
+    end,
+}
+"#;
+        let e = enhancements(script);
+        let find = |n: &str| e.iter().find(|x| x.name == n).unwrap_or_else(|| panic!("{n}: {e:?}"));
+        assert_eq!(find("Missile").weapons_on, ["Missile"]);
+        assert_eq!((find("Billy").weapons_on.clone(), find("Billy").weapons_off.clone()), (vec!["Nuke".to_string()], vec!["Missile".to_string()]), "within a block of its branch too");
+        assert_eq!(find("Stealth").intel_on, ["RadarStealth", "SonarStealth"]);
+        assert_eq!(find("CloakRemove").intel_off, ["RadarStealth"], "two to one branch");
+        assert!(!e.iter().any(|x| x.weapons_on.iter().any(|w| w == "Gun" || w == "After")), "a branch for none, and what comes after the chain: {e:?}");
+        assert!(enhancements("Unit = Class(Base) { OnCreate = function(self) end, }").is_empty());
+    }
 
     /// A unit made with a missile its class switches off, a toggled gun its OnCreate switches off,
     /// a gun its OnStopBeingBuilt switches back on, weapons switched by the layer it stands on,
