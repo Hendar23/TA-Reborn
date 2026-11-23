@@ -1,7 +1,16 @@
-//! Perspective: view from a unit, with direct control of the player's ground units and ships.
-//! Camera aiming uses the script's turning speeds without depending on muzzle model axes.
-//! Orders are suspended until leaving. Allies, aircraft, replays and spectators remain view-only.
-//! The cockpit round the view is drawn by `perspective_hud`.
+//! Perspective: riding along in a unit. The camera sits in it (on its turret, in a walker's
+//! head, on a ship's bridge, in a plane's canopy) and the mouse looks round, while the unit goes
+//! on with whatever it was doing: its orders are not touched, and nothing is sent to the
+//! simulation. The view is the player's alone, so it works the same in multiplayer, in a
+//! replay and when spectating: in the player's own units and their allies' (spectating, in
+//! anyone's). The cockpit round the view is drawn by `perspective_hud` (with the Minimalist
+//! First-Person View, only a sight, the unit's health and a radar).
+//!
+//! In one of their own ground units, hovercraft or ships the player may take control (E): W and
+//! S drive it ahead and astern, A and D turn it, on the spot too, the mouse aims its guns at their
+//! script's own pace and a click fires them (`Command::DirectControl`, sent as the input changes
+//! and once a second besides: `ta_sim`'s `sim/possession.rs`). Its orders wait meanwhile; E
+//! again, or leaving, lets it go, and it takes them up where they were.
 //!
 //! Entering, the camera dives from the map view into the unit; leaving (Escape), it climbs back
 //! out. A unit destroyed with the player inside loses its signal before the camera pulls away.
@@ -381,11 +390,24 @@ impl HudState {
 }
 
 pub struct Perspective {
+    /// The unit's model as lines, piece by piece (its edges, in the piece's own frame: drawn
+    /// beside the sight, each piece as it is turned this frame; [`Self::load_wireframe`]).
     pub wireframe: Vec<(usize, Vec<[Vec3; 2]>)>,
-    controlling: bool,
-    control_tick: Option<u64>,
+    /// The player asked to drive the unit (E), and whether its input goes to the battle now (they
+    /// may: [`Self::may_control`]); when they last took control or let go (the keys' hints
+    /// show again then).
+    want_control: bool,
+    pub(crate) controlling: bool,
+    pub(crate) control_toggled: Option<f64>,
+    /// The last input sent and the tick it went at: it goes again as it changes, and once a
+    /// second besides ([`send_input`]).
+    sent: Option<(ta_sim::DirectInput, u64)>,
+    /// A click since the last input went (a shot, however short the click).
     fire_pending: bool,
+    /// How fast the sight may turn while driving, across and up (radians a second): its gun's
+    /// script's turning speeds, so that the view never runs ahead of the gun.
     aim_rates: Vec2,
+    /// The Minimalist First-Person View (the settings'): no cockpit round the view.
     pub minimalist: bool,
     pub reduced_motion: bool,
     pub reduced_flashes: bool,
@@ -500,8 +522,10 @@ impl Perspective {
         let model = cockpit.model();
         let mut p = Perspective {
             wireframe: Vec::new(),
+            want_control: false,
             controlling: false,
-            control_tick: None,
+            control_toggled: None,
+            sent: None,
             fire_pending: false,
             aim_rates: Vec2::splat(std::f32::consts::FRAC_PI_2),
             reduced_motion: false,
@@ -573,9 +597,13 @@ impl Perspective {
             game.selection = vec![id];
         }
         game.follow = None;
+        p.want_control = capture_control().take && p.may_control(game);
         Some(p)
     }
 
+    /// The unit's model as lines, for the sight's picture of it: each piece's edges, once each,
+    /// leaving out the face a selection is drawn with; on a model of many faces (a Supreme
+    /// Commander unit's) only the longest [`WIREFRAME_MOST`] of them, which keep its shape.
     pub fn load_wireframe(&mut self, vfs: &ta_vfs::Vfs, game: &Game) {
         let object = &game.sim.types.get(self.type_id).def.object;
         let Some(model) = vfs.read_opt(&format!("objects3d/{object}.3do")).and_then(|bytes| ta_formats::model3do::Model3do::parse(&bytes).ok()) else { return };
@@ -592,6 +620,20 @@ impl Perspective {
             }
             (piece, edges)
         }).collect();
+        let total: usize = self.wireframe.iter().map(|(_, edges)| edges.len()).sum();
+        if total > WIREFRAME_MOST {
+            let mut lengths: Vec<f32> = self.wireframe.iter().flat_map(|(_, edges)| edges.iter().map(|[a, b]| a.distance_squared(*b))).collect();
+            lengths.sort_by(|a, b| b.total_cmp(a));
+            let least = lengths[WIREFRAME_MOST - 1];
+            let mut kept = 0;
+            for (_, edges) in &mut self.wireframe {
+                edges.retain(|[a, b]| {
+                    let keep = a.distance_squared(*b) >= least && kept < WIREFRAME_MOST;
+                    kept += keep as usize;
+                    keep
+                });
+            }
+        }
     }
 
     pub fn leave(&mut self, game: &mut Game) {
@@ -643,6 +685,11 @@ impl Perspective {
         if alive && !self.leaving {
             self.update_aim_rates(game);
             self.look(input, dt, now);
+            // E: take control of the unit, or let it go.
+            if input.pressed(winit::keyboard::KeyCode::KeyE) && self.may_control(game) {
+                self.want_control = !self.want_control;
+                self.control_toggled = Some(now);
+            }
             self.control(game, input);
             self.place_eye(game, dt);
         } else {
@@ -833,6 +880,8 @@ impl Perspective {
         }
     }
 
+    /// The sight's turning speeds while driving ([`Self::aim_rates`]): the slowest turning of each
+    /// axis (across, up) among the pieces from the gun to the body, as its script turns them.
     fn update_aim_rates(&mut self, game: &Game) {
         let Some(unit) = game.sim.unit(self.unit) else { return };
         let Some(script) = unit.cob.as_ref() else { return };
@@ -855,34 +904,55 @@ impl Perspective {
         }
     }
 
+    /// Whether the player may take control of the unit: their own finished ground unit, hovercraft
+    /// or ship, in a battle they play (not watching it, not a replay of it).
+    pub fn may_control(&self, game: &Game) -> bool {
+        !game.spectator && game.playback.is_none() && game.sim.unit(self.unit).is_some_and(|unit| {
+            unit.owner == game.local_player && !unit.dead && unit.is_complete()
+                && matches!(game.sim.unit_type(unit).locomotion, Locomotion::Ground | Locomotion::Hover | Locomotion::Naval)
+        })
+    }
+
+    /// Lets the unit go, if the player was driving it: it takes up its orders.
     fn release_control(&mut self, game: &mut Game) {
         if self.controlling {
             game.issue(ta_sim::Command::DirectControl { player: game.local_player, unit: self.unit, input: None });
             self.controlling = false;
-            self.control_tick = None;
-            self.fire_pending = false;
         }
+        self.sent = None;
+        self.fire_pending = false;
     }
 
+    /// The player's hands on the unit, while they have taken control of it: its input goes to the
+    /// battle as it changes, and once a second besides (at most once a tick), the sight where the
+    /// view looks. Let go (E again), or no longer theirs to drive, it is released.
     fn control(&mut self, game: &mut Game, input: &Input) {
-        let allowed = game.can_order() && game.playback.is_none() && game.sim.unit(self.unit).is_some_and(|unit| {
-            unit.owner == game.local_player && matches!(game.sim.unit_type(unit).locomotion, Locomotion::Ground | Locomotion::Hover | Locomotion::Naval)
-        });
-        if !allowed { self.release_control(game); return; }
+        if !(self.want_control && self.may_control(game)) {
+            self.want_control = false;
+            self.release_control(game);
+            return;
+        }
         self.fire_pending |= input.buttons_pressed.contains(&crate::input::MouseButtonId::Left);
-        if self.control_tick == Some(game.sim.tick) { return; }
+        let tick = game.sim.tick;
+        if self.sent.is_some_and(|(_, at)| at == tick) {
+            return;
+        }
         use winit::keyboard::KeyCode as K;
         let angle = |radians: f32| ((radians * 65536.0 / std::f32::consts::TAU).round() as i64 + 32768).rem_euclid(65536) as i32 - 32768;
+        let capture = capture_control();
         let command = ta_sim::DirectInput {
-            throttle: input.held(K::KeyW) as i8 - input.held(K::KeyS) as i8,
+            throttle: if capture.drive { 1 } else { input.held(K::KeyW) as i8 - input.held(K::KeyS) as i8 },
             turn: input.held(K::KeyD) as i8 - input.held(K::KeyA) as i8,
             heading: angle(self.look_yaw),
             pitch: angle(self.look_pitch).clamp(-16384, 16384),
-            fire: self.fire_pending || input.buttons_held.contains(&crate::input::MouseButtonId::Left),
+            fire: capture.fire || self.fire_pending || input.buttons_held.contains(&crate::input::MouseButtonId::Left),
         };
+        if !send_input(self.sent, command, tick) {
+            return;
+        }
         game.issue(ta_sim::Command::DirectControl { player: game.local_player, unit: self.unit, input: Some(command) });
         self.controlling = true;
-        self.control_tick = Some(game.sim.tick);
+        self.sent = Some((command, tick));
         self.fire_pending = false;
     }
 
@@ -1313,11 +1383,44 @@ fn slerp_dir(a: Vec3, b: Vec3, t: f32) -> Vec3 {
     glam::Quat::IDENTITY.slerp(q, t) * a
 }
 
+/// The most lines of a unit's model drawn beside the sight ([`Perspective::load_wireframe`]).
+const WIREFRAME_MOST: usize = 1200;
+
+/// Whether a driven unit's `input` goes to the battle at `tick`, the last having gone as `sent`:
+/// when it differs, and once a second while it does not (the battle lets go of a unit it hears
+/// nothing from for [`ta_sim::DIRECT_CONTROL_TICKS`]).
+fn send_input(sent: Option<(ta_sim::DirectInput, u64)>, input: ta_sim::DirectInput, tick: u64) -> bool {
+    sent.is_none_or(|(last, at)| last != input || tick.saturating_sub(at) >= ta_sim::DIRECT_CONTROL_TICKS / 3)
+}
+
+/// `TA_PERSPECTIVE_CONTROL=take|drive|fire` (several, comma-separated): for captures, the view
+/// takes control of its unit as it goes in (`take`; `drive` and `fire` take it too), driving it
+/// ahead (`drive`) with its trigger held (`fire`). Read once.
+#[derive(Clone, Copy, Default)]
+struct CaptureControl {
+    take: bool,
+    drive: bool,
+    fire: bool,
+}
+
+fn capture_control() -> CaptureControl {
+    static ASKED: OnceLock<CaptureControl> = OnceLock::new();
+    *ASKED.get_or_init(|| {
+        let words = std::env::var("TA_PERSPECTIVE_CONTROL").unwrap_or_default().to_ascii_lowercase();
+        let has = |word: &str| words.split(',').any(|w| w.trim() == word);
+        let (drive, fire) = (has("drive"), has("fire"));
+        CaptureControl { take: has("take") || drive || fire, drive, fire }
+    })
+}
+
+/// The sight's turn this frame, `motion` (radians across and up), held to `rates` (radians a
+/// second) over `dt`.
 fn limit_aim_motion(motion: Vec2, rates: Vec2, dt: f32) -> Vec2 {
     let limit = rates * dt.max(0.0);
     motion.clamp(-limit, limit)
 }
 
+/// The way a view `yaw` round from north and `pitch` up from the level looks.
 fn aim_direction(yaw: f32, pitch: f32) -> Vec3 {
     let (sy, cy) = yaw.sin_cos();
     let (sp, cp) = pitch.sin_cos();
@@ -1327,6 +1430,30 @@ fn aim_direction(yaw: f32, pitch: f32) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A driven unit's input goes to the battle as it changes, and once a second while it does not:
+    /// not every tick (a command a tick swelled the battle's record, which saved games are made
+    /// from), and never so seldom that the battle lets the unit go.
+    #[test]
+    fn driving_sends_input_as_it_changes_and_once_a_second() {
+        let still = ta_sim::DirectInput { throttle: 0, turn: 0, heading: 100, pitch: 0, fire: false };
+        assert!(send_input(None, still, 7), "the first goes at once");
+        let keep = ta_sim::DIRECT_CONTROL_TICKS / 3;
+        let sent = Some((still, 10));
+        assert!(!send_input(sent, still, 11), "unchanged: not again the next tick");
+        assert!(!send_input(sent, still, 10 + keep - 1));
+        assert!(send_input(sent, still, 10 + keep), "unchanged: once a second");
+        assert!(keep * 2 < ta_sim::DIRECT_CONTROL_TICKS, "with room to spare before the battle lets the unit go");
+        for changed in [
+            ta_sim::DirectInput { throttle: 1, ..still },
+            ta_sim::DirectInput { turn: -1, ..still },
+            ta_sim::DirectInput { heading: 101, ..still },
+            ta_sim::DirectInput { pitch: -5, ..still },
+            ta_sim::DirectInput { fire: true, ..still },
+        ] {
+            assert!(send_input(sent, changed, 11), "{changed:?} goes at once");
+        }
+    }
 
     #[test]
     fn controlled_vertical_aim_remains_free_and_rate_limited() {

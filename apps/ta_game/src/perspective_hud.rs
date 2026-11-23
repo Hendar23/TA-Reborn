@@ -96,9 +96,25 @@ fn draw_minimalist(ctx: &egui::Context, health: f32, p: &Perspective, game: &Gam
         health_pen.text(bar.center_bottom() + vec2(0.0, 4.0), Align2::CENTER_TOP, format!("{} / {}", readouts.hp, readouts.hp_max), 11.0, PHOSPHOR);
         armour::sight(&pen, &view, &Window { rect, round: false }, p, game, &readouts, now);
     }
+    if p.controlling {
+        control_tag(&painter, bar.center_bottom() + vec2(0.0, 22.0), 1.0, 1.0);
+    }
     let radar = minimalist_radar_rect(rect);
     painter.circle_filled(radar.center(), radar.width() * 0.5, Color32::from_black_alpha(150));
     glass_radar(&painter, radar, p, game, now);
+    // (Over the radar, clear of the sight and the unit's picture beside it.)
+    hints(&painter, rect, p, (now - p.hud.entered) as f32, game, now, Some(radar.top() - 12.0));
+}
+
+/// The tag that says the player is driving the unit (E): on a plate like the keys', its top
+/// centred on `at`, `scale` times its size at 1080 lines.
+fn control_tag(painter: &Painter, at: Pos2, scale: f32, alpha: f32) {
+    let galley = painter.layout_no_wrap(t("IN CONTROL").to_string(), mono(14.0 * scale), AMBER_BRIGHT);
+    let pad = vec2(9.0, 4.0) * scale;
+    let chip = Rect::from_min_size(at - vec2(galley.size().x / 2.0 + pad.x, 0.0), galley.size() + 2.0 * pad);
+    painter.rect_filled(chip, 3.0, Color32::from_black_alpha((165.0 * alpha) as u8));
+    painter.rect_stroke(chip, 3.0, egui::Stroke::new(1.0, fade(AMBER, 0.55 * alpha)), egui::StrokeKind::Inside);
+    painter.galley(chip.min + pad, galley, fade(AMBER_BRIGHT, alpha));
 }
 
 fn minimalist_health_rect(rect: Rect) -> Rect {
@@ -244,7 +260,10 @@ pub fn draw(p: &Perspective, ctx: &egui::Context, game: &Game, camera: &Camera, 
     let chevrons = sight::threats(&edge, &view, &window, p, game, now);
     sparks(&top.with_clip_rect(window.rect), &window, p, now);
     boot(&top, rect, p, since, &side, game);
-    let keys = hints(&top, rect, p, since);
+    let keys = hints(&top, rect, p, since, game, now, None);
+    if p.controlling {
+        control_tag(&top, window.rect.center_top() + vec2(0.0, pen.s(12.0)), pen.s(1.0), on);
+    }
     // (The message keeps off everything else written low in the window.)
     room.extend(target);
     room.extend(chevrons);
@@ -1630,16 +1649,32 @@ fn boot(painter: &Painter, rect: Rect, p: &Perspective, since: f32, side: &str, 
 }
 
 /// The view's keys, shown for a few seconds once the link's message has gone (it stands where they
-/// do). `TA_PERSPECTIVE_HINTS=0` leaves them out, for captures; a benchmark's ride has none:
-/// nothing there takes them. Returns the room they take while they show.
-fn hints(painter: &Painter, rect: Rect, p: &Perspective, since: f32) -> Option<Rect> {
+/// do), and again for a while when the player takes control of the unit or lets it go: riding in
+/// one of their own that they may drive, E among them; driving, the keys that drive it.
+/// `TA_PERSPECTIVE_HINTS=0` leaves them out, for captures; a benchmark's ride has none: nothing
+/// there takes them. Low on the glass, or ending over `above` (the minimalist view's radar).
+/// Returns the room they take while they show.
+fn hints(painter: &Painter, rect: Rect, p: &Perspective, since: f32, game: &Game, now: f64, above: Option<f32>) -> Option<Rect> {
     const FROM: f32 = 3.2;
     const TO: f32 = 11.0;
-    if p.leaving || !(FROM..TO).contains(&since) || crate::benchmark::running() || std::env::var("TA_PERSPECTIVE_HINTS").is_ok_and(|v| v == "0") {
+    // (After E: at once, for a little less long.)
+    const TOGGLED_FOR: f32 = 7.5;
+    if p.leaving || crate::benchmark::running() || std::env::var("TA_PERSPECTIVE_HINTS").is_ok_and(|v| v == "0") {
         return None;
     }
-    let a = ((since - FROM) / 0.5).clamp(0.0, 1.0) * (1.0 - ((since - (TO - 1.5)) / 1.5).clamp(0.0, 1.0));
-    let text = t("MOUSE LOOKS ROUND · WHEEL ZOOM · V VIEW · N NIGHT · ESC LEAVES");
+    let toggled = p.control_toggled.map(|at| (now - at) as f32).filter(|t| (0.0..TOGGLED_FOR).contains(t));
+    let a = match toggled {
+        Some(t) => (t / 0.3).clamp(0.0, 1.0) * (1.0 - ((t - (TOGGLED_FOR - 1.5)) / 1.5).clamp(0.0, 1.0)),
+        None if (FROM..TO).contains(&since) => ((since - FROM) / 0.5).clamp(0.0, 1.0) * (1.0 - ((since - (TO - 1.5)) / 1.5).clamp(0.0, 1.0)),
+        None => return None,
+    };
+    let text = if p.controlling {
+        t("W S DRIVES · A D TURNS · CLICK FIRES · E LETS GO · ESC LEAVES")
+    } else if p.may_control(game) {
+        t("MOUSE LOOKS ROUND · WHEEL ZOOM · V VIEW · N NIGHT · E TAKES CONTROL · ESC LEAVES")
+    } else {
+        t("MOUSE LOOKS ROUND · WHEEL ZOOM · V VIEW · N NIGHT · ESC LEAVES")
+    };
     // Each key on a plate of its own ("V VIEW"), in rows centred low on the glass, no wider than
     // the middle of the picture (in proportion to its height); they come up one after another.
     let chips: Vec<_> = text.split(" · ").map(|s| painter.layout_no_wrap(s.trim().to_string(), mono(14.0), AMBER)).collect();
@@ -1663,10 +1698,10 @@ fn hints(painter: &Painter, rect: Rect, p: &Perspective, since: f32) -> Option<R
     }
     let h = chips.first().map_or(16.0, |g| g.size().y) + 2.0 * pad.y;
     let tall = rows.len() as f32 * (h + row_gap) - row_gap;
-    let mut y = rect.top() + rect.height() * 0.66 - tall / 2.0;
+    let mut y = above.map_or(rect.top() + rect.height() * 0.66 - tall / 2.0, |bottom| bottom - tall);
     // In a modelled cockpit, on its window, over the sill: where the dashboard stands higher (a
     // ship's bridge's), they lay over its lamps.
-    if let Some(sill) = p.sill_y.filter(|_| p.model.is_some() && p.seat > 0.02 && !p.chase && p.zoom == 0) {
+    if let Some(sill) = p.sill_y.filter(|_| p.model.is_some() && !p.minimalist && p.seat > 0.02 && !p.chase && p.zoom == 0) {
         y = y.min(sill / painter.ctx().pixels_per_point() - 12.0 - tall).max(rect.top() + rect.height() * 0.4);
     }
     let mut room = Rect::NOTHING;

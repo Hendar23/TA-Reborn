@@ -3,11 +3,16 @@
 ## Unreleased
 
 ### Added
-- Optional Minimalist First Person View: aiming sight, an animated wireframe of the ridden unit,
-  standalone radar at bottom centre and a segmented health display, without a cockpit.
-- Direct possession of your ground units and ships: W/S drives and reverses, A/D turns the hull
-  (including on the spot), the mouse aims, and left mouse fires normal weapons. Leaving resumes
-  previous orders. Aiming at a visible enemy assists elevation for its height and shot trajectory.
+- Taking control of a unit: riding along in one of your own ground units, hovercraft or ships (the
+  perspective key, Q), press E to drive it yourself. W and S drive it ahead and astern (astern at
+  half speed), A and D turn it, on the spot too, and the mouse aims its guns, which follow at their
+  own turning speed; a click fires them. With the sight on an enemy you can see, the guns lift for
+  its range and height as they would for an order to attack it. Its orders wait meanwhile, and E
+  again, or leaving, lets it go back to them. Riding along is as it was: the unit goes on with its
+  orders until you take control. Multiplayer and replays need everyone on this build.
+- A Minimalist First-Person View (Options, INTERFACE): riding in a unit, only a sight with its
+  range, a wireframe of the unit with its turret turning, its health in a bar along the top and a
+  radar at the bottom, without the cockpit round them.
 
 ### Fixed
 - The game speed keys (+ and -) could leave a battle unable to get back to normal speed: each
